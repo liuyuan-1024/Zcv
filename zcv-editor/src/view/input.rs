@@ -80,7 +80,7 @@ impl Editor {
         }
         let before_selections = self.resolved_selections(cx);
         let composition = self.composition.take();
-        // 自动闭合行为只作用于普通单字符输入（IME 组合会话与指定替换范围不进入）。
+        // 自动闭合行为只作用于普通输入（IME 组合会话与指定替换范围不进入），并支持配置中的多字符起始配对。
         if range_utf16.is_none()
             && composition.is_none()
             && self.try_auto_pair_input(text, &before_selections, cx)
@@ -202,11 +202,7 @@ impl Editor {
         before: &SelectionSet,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(typed) = text.chars().next() else {
-            return false;
-        };
-        // 自动闭合只处理单字符输入；多字符文本（粘贴等）不走此路径。
-        if text.len() != typed.len_utf8() {
+        if text.is_empty() {
             return false;
         }
         let before = before.normalized();
@@ -227,13 +223,11 @@ impl Editor {
         let mut consumed = false;
         for selection in before.as_slice() {
             if !selection.is_caret() {
-                let pairs = self
-                    .auto_close_pairs(selection.start(), cx)
-                    .unwrap_or_default();
+                let scope = snapshot.input_scope_at(selection.start());
                 if auto_surround_enabled
-                    && let Some(pair) = pairs
-                        .iter()
-                        .find(|pair| pair.surround && pair.start == typed.to_string())
+                    && let Some(pair) = scope.iter().flat_map(|scope| scope.pairs()).find(|pair| {
+                        pair.surround && pair.start == text && pair.start.chars().count() == 1
+                    })
                 {
                     targets.push((Selection::caret(selection.start()), Arc::from(pair.start)));
                     targets.push((Selection::caret(selection.end()), Arc::from(pair.end)));
@@ -247,9 +241,13 @@ impl Editor {
                 }
                 continue;
             }
+            let scope = snapshot.input_scope_at(selection.end());
             if auto_close_enabled
                 && let Some((region, close_start)) =
-                    self.autoclose_region_at(selection.end(), typed, &snapshot)
+                    self.autoclose_region_at(selection.end(), text, &snapshot)
+                && scope.is_some_and(|scope| {
+                    scope.pairs().any(|pair| pair.close && *pair == region.pair)
+                })
             {
                 after_actions.push(AfterAction::SkipPast {
                     end: close_start,
@@ -258,15 +256,24 @@ impl Editor {
                 consumed = true;
                 continue;
             }
-            let pairs = self
-                .auto_close_pairs(selection.end(), cx)
-                .unwrap_or_default();
             if auto_close_enabled
-                && let Some(pair) = pairs
-                    .iter()
-                    .find(|pair| pair.close && pair.start == typed.to_string())
-                && following_text_allows_autoclose(&snapshot, selection.end())
-                && preceding_text_allows_autoclose(&snapshot, selection.end(), pair)
+                && let Some(pair) = scope.iter().flat_map(|scope| scope.pairs()).find(|pair| {
+                    pair.close
+                        && pair.start.ends_with(text)
+                        && preceding_pair_prefix_matches(&snapshot, selection.end(), pair, text)
+                })
+                && following_text_allows_autoclose(
+                    &snapshot,
+                    selection.end(),
+                    scope.as_ref().expect("已匹配配对的作用域存在"),
+                )
+                && preceding_text_allows_autoclose(
+                    &snapshot,
+                    selection.end(),
+                    pair,
+                    scope.as_ref().expect("已匹配配对的作用域存在"),
+                )
+                && !is_closing_quote(&snapshot, selection.end(), pair)
             {
                 targets.push((*selection, Arc::from(format!("{text}{}", pair.end))));
                 after_actions.push(AfterAction::BetweenPair {
@@ -318,7 +325,7 @@ impl Editor {
                             Selection::caret(if *was_caret {
                                 start.into()
                             } else {
-                                MultiBufferOffset::new(start.get() + typed.len_utf8())
+                                MultiBufferOffset::new(start.get() + text.len())
                             })
                         }
                         AfterAction::BetweenPair { close_len } => {
@@ -381,23 +388,12 @@ impl Editor {
             );
     }
 
-    /// `offset` 处所在源语言的自动闭合配对表。
-    pub(super) fn auto_close_pairs(
-        &self,
-        offset: MultiBufferOffset,
-        cx: &App,
-    ) -> Option<&'static [AutoClosePair]> {
-        self.multi_buffer
-            .read(cx)
-            .auto_close_pairs(offset.into(), cx)
-    }
-
     /// 光标处的待跳过自动闭合区域：区域末端锚与光标重合、该处文本确为配对闭合符。
     /// 嵌套配对取最内层（区域起点最大者）；区域版本滞后于当前快照（未跟踪的外部编辑）视为失效。
     fn autoclose_region_at(
         &self,
         end: MultiBufferOffset,
-        typed: char,
+        typed: &str,
         snapshot: &MultiBufferSnapshot,
     ) -> Option<(AutocloseRegion, MultiBufferOffset)> {
         self.autoclose_regions
@@ -412,7 +408,7 @@ impl Editor {
                     .ok()
                     .flatten()?;
                 (end_offset == end
-                    && region.pair.end == typed.to_string()
+                    && region.pair.end == typed
                     && text_at(snapshot, end, region.pair.end))
                 .then_some((region.clone(), start, end_offset))
             })
@@ -514,12 +510,10 @@ impl Editor {
     }
 }
 
-/// 自动闭合的后续检查：光标后是空白、行尾或常见语句分隔符时才自动闭合，避免在标识符前键入 open 时被自动补上 close。
-const AUTOCLOSE_BEFORE: &str = ";:.,=}])>";
-
 fn following_text_allows_autoclose(
     snapshot: &MultiBufferSnapshot,
     offset: MultiBufferOffset,
+    scope: &zcv_language::InputScope<'_>,
 ) -> bool {
     let Ok((chunk, chunk_start)) = snapshot.chunk_at_byte(offset) else {
         return true;
@@ -527,7 +521,61 @@ fn following_text_allows_autoclose(
     let Some(next) = chunk[offset.get() - chunk_start.get()..].chars().next() else {
         return true;
     };
-    next.is_whitespace() || AUTOCLOSE_BEFORE.contains(next)
+    scope.should_autoclose_before(next)
+}
+
+fn preceding_pair_prefix_matches(
+    snapshot: &MultiBufferSnapshot,
+    offset: MultiBufferOffset,
+    pair: &AutoClosePair,
+    text: &str,
+) -> bool {
+    let prefix_len = pair.start.len() - text.len();
+    prefix_len == 0
+        || offset.get().checked_sub(prefix_len).is_some_and(|start| {
+            text_at(
+                snapshot,
+                MultiBufferOffset::new(start),
+                &pair.start[..prefix_len],
+            )
+        })
+}
+
+fn is_closing_quote(
+    snapshot: &MultiBufferSnapshot,
+    offset: MultiBufferOffset,
+    pair: &AutoClosePair,
+) -> bool {
+    if pair.start != pair.end || pair.start.chars().count() != 1 {
+        return false;
+    }
+    let quote = pair.start.chars().next().expect("单字符引号应存在");
+    let Ok((line, _)) = snapshot.byte_to_point(offset) else {
+        return false;
+    };
+    let Ok(start) = snapshot.line_start_byte(line) else {
+        return false;
+    };
+    let Ok(prefix) =
+        snapshot.text_for_range(MultiBufferRange::new(start, offset).expect("行前缀范围必须合法"))
+    else {
+        return false;
+    };
+    let count = prefix
+        .char_indices()
+        .filter(|(_, c)| *c == quote)
+        .filter(|(index, _)| {
+            let at = MultiBufferOffset::new(start.get() + index);
+            let before_enabled = snapshot
+                .input_scope_at(at)
+                .is_none_or(|scope| scope.pairs().any(|candidate| candidate.start == pair.start));
+            let after_disabled = snapshot
+                .input_scope_at(MultiBufferOffset::new(at.get() + quote.len_utf8()))
+                .is_some_and(|scope| !scope.pairs().any(|candidate| candidate.start == pair.start));
+            before_enabled && !after_disabled
+        })
+        .count();
+    count % 2 == 1
 }
 
 /// 自动闭合的前置检查：引号类配对（start == end）前是词字符时不自动闭合，避免在单词末尾输入引号时被当成新的开启引号。
@@ -535,6 +583,7 @@ fn preceding_text_allows_autoclose(
     snapshot: &MultiBufferSnapshot,
     offset: MultiBufferOffset,
     pair: &AutoClosePair,
+    scope: &zcv_language::InputScope<'_>,
 ) -> bool {
     if pair.start != pair.end {
         return true;
@@ -565,7 +614,7 @@ fn preceding_text_allows_autoclose(
     !prefix
         .chars()
         .next_back()
-        .is_some_and(|character| character.is_alphanumeric() || character == '_')
+        .is_some_and(|character| scope.is_word_character(character))
 }
 
 /// `offset` 处是否为指定文本（越界或文本不符返回 false）。

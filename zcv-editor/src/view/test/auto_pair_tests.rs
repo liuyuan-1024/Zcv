@@ -4,7 +4,7 @@ use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
 use std::path::PathBuf;
 
-use gpui::{AppContext, TestAppContext, VisualTestContext};
+use gpui::{AppContext, EntityInputHandler, TestAppContext, VisualTestContext};
 use zcv_actions::Backspace;
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
@@ -13,9 +13,10 @@ use zcv_text::{Buffer, BufferConfig};
 use super::Editor;
 use crate::selection::{Selection, SelectionSet};
 
-/// 带 Rust 语言的窗口化编辑器：语言在构造时同步识别（见 `LanguageBuffer::new`），自动闭合行为依赖语言提供的配对表。
-fn editor_with_rust<'a>(
+/// 按路径识别语言的窗口化编辑器。
+fn editor_with_path<'a>(
     cx: &'a mut TestAppContext,
+    path: &'static str,
     text: &str,
     selections: SelectionSet,
 ) -> (
@@ -28,7 +29,7 @@ fn editor_with_rust<'a>(
     let language_buffer = cx.new(move |cx| {
         LanguageBuffer::new(
             buffer,
-            Some(PathBuf::from("test.rs")),
+            Some(PathBuf::from(path)),
             std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
@@ -42,6 +43,18 @@ fn editor_with_rust<'a>(
         }
     });
     (language_buffer, editor.0, editor.1)
+}
+
+fn editor_with_rust<'a>(
+    cx: &'a mut TestAppContext,
+    text: &str,
+    selections: SelectionSet,
+) -> (
+    gpui::Entity<LanguageBuffer>,
+    gpui::Entity<Editor>,
+    &'a mut VisualTestContext,
+) {
+    editor_with_path(cx, "test.rs", text, selections)
 }
 
 /// 不带语言的编辑器（无配对表，输入应原样插入）。
@@ -167,6 +180,305 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
 
     assert_eq!(buffer_text(&plain, cx), "x( ");
     assert_eq!(buffer_text(&rust, cx), "y() ");
+    cx.read_entity(&editor, |editor, cx| {
+        let heads: Vec<_> = editor
+            .selections(cx)
+            .as_slice()
+            .iter()
+            .map(|selection| selection.head())
+            .collect();
+        assert_eq!(
+            heads,
+            vec![MultiBufferOffset::new(2), MultiBufferOffset::new(6)]
+        );
+    });
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&plain, cx), "x ");
+    assert_eq!(buffer_text(&rust, cx), "y ");
+    cx.read_entity(&editor, |editor, cx| {
+        let heads: Vec<_> = editor
+            .selections(cx)
+            .as_slice()
+            .iter()
+            .map(|selection| selection.head())
+            .collect();
+        assert_eq!(
+            heads,
+            vec![MultiBufferOffset::new(1), MultiBufferOffset::new(4)]
+        );
+    });
+}
+
+#[gpui::test]
+fn composite_rust_selections_use_each_sources_current_scope(cx: &mut TestAppContext) {
+    let registry = std::sync::Arc::new(LanguageRegistry::new());
+    let first = cx.new({
+        let registry = registry.clone();
+        move |cx| {
+            LanguageBuffer::new(
+                Buffer::from_text("x  ".to_owned(), BufferConfig::default()).unwrap(),
+                Some(PathBuf::from("a.rs")),
+                registry,
+                cx,
+            )
+        }
+    });
+    let second = cx.new(move |cx| {
+        LanguageBuffer::new(
+            Buffer::from_text("\"ab\"".to_owned(), BufferConfig::default()).unwrap(),
+            Some(PathBuf::from("b.rs")),
+            registry,
+            cx,
+        )
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        for source in [&first, &second] {
+            let len = source.read(cx).text_snapshot().len_bytes();
+            buffer.set_excerpts_for_path(
+                vec![ExcerptRange::new(
+                    source.clone(),
+                    MultiBufferRange::new(
+                        MultiBufferOffset::ZERO,
+                        MultiBufferOffset::new(len.get()),
+                    )
+                    .unwrap()
+                    .into(),
+                    Vec::new(),
+                )],
+                cx,
+            );
+        }
+    });
+    let (editor, cx) = cx.add_window_view({
+        let combined = combined.clone();
+        move |_, cx| {
+            let mut editor = Editor::for_multi_buffer(combined, cx);
+            editor.set_selections(
+                SelectionSet::new(vec![
+                    Selection::caret(MultiBufferOffset::new(2)),
+                    Selection::caret(MultiBufferOffset::new(6)),
+                ]),
+                cx,
+            );
+            editor
+        }
+    });
+    cx.run_until_parked();
+    type_text(&editor, cx, "\"");
+    assert_eq!(buffer_text(&first, cx), "x \"\" ");
+    assert_eq!(buffer_text(&second, cx), "\"a\"b\"");
+    cx.read_entity(&editor, |editor, cx| {
+        let heads: Vec<_> = editor
+            .selections(cx)
+            .as_slice()
+            .iter()
+            .map(|selection| selection.head())
+            .collect();
+        assert_eq!(
+            heads,
+            vec![MultiBufferOffset::new(3), MultiBufferOffset::new(9)]
+        );
+    });
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&first, cx), "x  ");
+    assert_eq!(buffer_text(&second, cx), "\"ab\"");
+    cx.read_entity(&editor, |editor, cx| {
+        let heads: Vec<_> = editor
+            .selections(cx)
+            .as_slice()
+            .iter()
+            .map(|selection| selection.head())
+            .collect();
+        assert_eq!(
+            heads,
+            vec![MultiBufferOffset::new(2), MultiBufferOffset::new(6)]
+        );
+    });
+}
+
+#[gpui::test]
+fn rust_string_disables_quote_pair_but_comment_keeps_brackets(cx: &mut TestAppContext) {
+    let original = "let s = \"ab\"; // ";
+    let quote_position = original.find("ab").unwrap() + 1;
+    let (buffer, editor, cx) = editor_with_rust(
+        cx,
+        original,
+        SelectionSet::caret(MultiBufferOffset::new(quote_position)),
+    );
+    cx.run_until_parked();
+    type_text(&editor, cx, "\"");
+    assert_eq!(buffer_text(&buffer, cx), "let s = \"a\"b\"; // ");
+    assert_eq!(
+        primary_head(&editor, cx),
+        MultiBufferOffset::new(quote_position + 1)
+    );
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), original);
+    assert_eq!(
+        primary_head(&editor, cx),
+        MultiBufferOffset::new(quote_position)
+    );
+
+    let comment_position = original.find("// ").unwrap() + 3;
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::caret(MultiBufferOffset::new(comment_position)),
+            cx,
+        );
+    });
+    type_text(&editor, cx, "(");
+    assert_eq!(buffer_text(&buffer, cx), "let s = \"ab\"; // ()");
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), original);
+}
+
+#[gpui::test]
+fn rust_code_quote_pair_restores_text_and_caret_on_undo(cx: &mut TestAppContext) {
+    let source = "let x = ;";
+    let at = source.find(';').unwrap();
+    let (buffer, editor, cx) =
+        editor_with_rust(cx, source, SelectionSet::caret(MultiBufferOffset::new(at)));
+    cx.run_until_parked();
+    type_text(&editor, cx, "\"");
+    assert_eq!(buffer_text(&buffer, cx), "let x = \"\";");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(at + 1));
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), source);
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(at));
+}
+
+#[gpui::test]
+fn rust_multicharacter_start_autocloses_on_last_character(cx: &mut TestAppContext) {
+    let (buffer, editor, cx) =
+        editor_with_rust(cx, "", SelectionSet::caret(MultiBufferOffset::ZERO));
+    type_text(&editor, cx, "r");
+    type_text(&editor, cx, "#");
+    type_text(&editor, cx, "\"");
+    assert_eq!(buffer_text(&buffer, cx), "r#\"\"#");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(3));
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "r#");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(2));
+}
+
+#[gpui::test]
+fn complete_multicharacter_pair_input_and_manual_close_share_region(cx: &mut TestAppContext) {
+    let (buffer, editor, cx) =
+        editor_with_rust(cx, "", SelectionSet::caret(MultiBufferOffset::ZERO));
+    type_text(&editor, cx, "r#\"");
+    assert_eq!(buffer_text(&buffer, cx), "r#\"\"#");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(3));
+    type_text(&editor, cx, "\"#");
+    assert_eq!(buffer_text(&buffer, cx), "r#\"\"#");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(5));
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::ZERO);
+}
+
+#[gpui::test]
+fn rapid_input_then_parse_install_uses_current_string_scope(cx: &mut TestAppContext) {
+    let source = "let x = ;";
+    let at = source.find(';').unwrap();
+    let (buffer, editor, cx) =
+        editor_with_rust(cx, source, SelectionSet::caret(MultiBufferOffset::new(at)));
+    type_text(&editor, cx, "\"");
+    type_text(&editor, cx, "a");
+    assert_eq!(buffer_text(&buffer, cx), "let x = \"a\";");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(at + 2));
+
+    cx.run_until_parked();
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(at + 1)), cx);
+    });
+    type_text(&editor, cx, "\"");
+    assert_eq!(buffer_text(&buffer, cx), "let x = \"\"a\";");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(at + 2));
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "let x = \"a\";");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(at + 1));
+}
+
+#[gpui::test]
+fn markdown_fence_uses_injected_rust_pair_policy(cx: &mut TestAppContext) {
+    let source = "```rust\nlet x = ;\n```\n";
+    let at = source.find(" = ").unwrap() + 3;
+    let (buffer, editor, cx) = editor_with_path(
+        cx,
+        "README.md",
+        source,
+        SelectionSet::caret(MultiBufferOffset::new(at)),
+    );
+    cx.run_until_parked();
+    type_text(&editor, cx, "\"");
+    assert_eq!(buffer_text(&buffer, cx), "```rust\nlet x = \"\";\n```\n");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(at + 1));
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), source);
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(at));
+}
+
+#[gpui::test]
+fn markdown_list_newline_keeps_stage_zero_baseline(cx: &mut TestAppContext) {
+    let source = "- ";
+    let (buffer, editor, cx) = editor_with_path(
+        cx,
+        "README.md",
+        source,
+        SelectionSet::caret(MultiBufferOffset::new(2)),
+    );
+    cx.run_until_parked();
+    cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+    assert_eq!(buffer_text(&buffer, cx), "- \n");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(3));
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), source);
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(2));
+}
+
+#[gpui::test]
+fn script_string_scope_disables_same_quote_in_javascript_and_tsx(cx: &mut TestAppContext) {
+    for path in ["main.js", "main.tsx"] {
+        let source = "const value = \"ab\";";
+        let at = source.find("ab").unwrap() + 1;
+        let (buffer, editor, cx) = editor_with_path(
+            cx,
+            path,
+            source,
+            SelectionSet::caret(MultiBufferOffset::new(at)),
+        );
+        cx.run_until_parked();
+        type_text(&editor, cx, "\"");
+        assert_eq!(
+            buffer_text(&buffer, cx),
+            "const value = \"a\"b\";",
+            "{path}"
+        );
+        assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(at + 1));
+        cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+        assert_eq!(buffer_text(&buffer, cx), source);
+        assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(at));
+    }
+}
+
+#[gpui::test]
+fn ime_preedit_quote_does_not_create_an_autoclose_pair(cx: &mut TestAppContext) {
+    let source = "let x = ;";
+    let at = source.find(';').unwrap();
+    let (buffer, editor, cx) =
+        editor_with_rust(cx, source, SelectionSet::caret(MultiBufferOffset::new(at)));
+    cx.update(|window, app| {
+        editor.update(app, |editor, cx| {
+            editor.replace_and_mark_text_in_range(None, "\"", None, window, cx);
+            editor.unmark_text(window, cx);
+        });
+    });
+    assert_eq!(buffer_text(&buffer, cx), "let x = \";");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(at + 1));
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), source);
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(at));
 }
 
 #[gpui::test]

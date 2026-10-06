@@ -14,6 +14,8 @@ excerpt 结构由 `SumTree` 承载，查询通过 summary 与连续 cursor 推�
 
 `MultiBufferLineCursor::source` 复用已定位的行游标取得源映射。`MultiBufferSource::project_range` 从该映射开始，只访问候选跨越的连续工作区片段，返回当前快照内的 `MultiBufferOffset` 范围；不能跨过未展示的源区间。消费方直接用这些坐标筛选可见候选，需要长期保存时再创建组合 Anchor。
 
+`MultiBufferSnapshot::input_scope_at` 把组合输出光标映射到可编辑 excerpt 的源字节位置，再从该源固化的文本／语法快照查询输入政策。不同源和注入语言沿同一入口向 `Editor` 提供政策；组合层不复制配对表或维护语法状态。
+
 大纲查询在源快照中固定标签及其相对语法高亮，组合层仅在同一快照内投影源范围并生成 `MultiBufferAnchor`。面板可在 diff 拓扑变化后的重算窗口继续展示旧标签；点击时由当前组合快照解析名称锚点。
 
 Anchor 查询通过路径键、源身份与 excerpt 摘要中的末端 Anchor 定位，源快照通过身份索引读取。删除侧长期位置以 working hunk 起点为主 Anchor，另携带基线 Anchor：展开时解析并排序旧侧位置，收起后投影查询失效，总坐标解析落到 working 边界。

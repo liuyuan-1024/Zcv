@@ -347,20 +347,3 @@ fn languages_declare_their_extra_word_characters() {
         "下划线始终是词字符"
     );
 }
-
-#[test]
-fn loaded_languages_declare_input_autoclose_pairs() {
-    for path in ["main.rs", "main.py", "data.json", "README.md", "style.css"] {
-        let language = LanguageRegistry::new()
-            .language_for_file(Path::new(path), None)
-            .unwrap_or_else(|| panic!("{path} 应加载语言"));
-        let pairs = language.auto_close_pairs();
-        assert!(!pairs.is_empty(), "{path} 应声明输入自动闭合配对");
-        assert!(
-            pairs
-                .iter()
-                .any(|pair| pair.start == "(" && pair.end == ")"),
-            "{path} 应含括号对"
-        );
-    }
-}

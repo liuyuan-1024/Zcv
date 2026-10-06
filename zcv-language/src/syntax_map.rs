@@ -7,12 +7,12 @@ use std::thread;
 use tree_sitter::StreamingIterator;
 use zcv_text::{Anchor, BufferVersion, ByteOffset, Snapshot, TextChangeBatch, TextRange};
 
-use crate::Language;
 use crate::registry::LanguageRegistry;
 use crate::tree_sitter_utils::{
     IncrementalParser, PARSE_TIME_SLICE, ParseCancellation, ParseError, QueryCursorHandle,
     SnapshotTextProvider, drop_offloaded, edit_tree, node_text, parse_tree, ranges_overlap,
 };
+use crate::{InputScope, Language};
 
 /// 可增量更新的语法状态。
 ///
@@ -33,6 +33,8 @@ pub(crate) struct SyntaxMap {
 struct SyntaxState {
     tree: Option<tree_sitter::Tree>,
     injections: Vec<SyntaxLayer>,
+    /// 与注入层同序：同深度截至本项最远的终点，用于光标点查询剪枝。
+    injection_max_ends: Vec<Anchor>,
     /// 最近一次解析安装的 capture 全局表（见 `SyntaxSnapshot::rebuild_capture_table`）。
     capture_names: Arc<[Arc<str>]>,
     capture_index_by_language: HashMap<&'static str, Arc<[u32]>>,
@@ -43,6 +45,7 @@ impl Clone for SyntaxState {
         Self {
             tree: self.tree.clone(),
             injections: self.injections.clone(),
+            injection_max_ends: self.injection_max_ends.clone(),
             capture_names: Arc::clone(&self.capture_names),
             capture_index_by_language: self.capture_index_by_language.clone(),
         }
@@ -163,6 +166,25 @@ fn layer_bytes(snapshot: &Snapshot, layer: &SyntaxLayer) -> Option<Range<usize>>
     Some(start.get()..end.get())
 }
 
+fn injection_max_ends(layers: &[SyntaxLayer], snapshot: &Snapshot) -> Vec<Anchor> {
+    let mut result = Vec::with_capacity(layers.len());
+    let mut current_depth = None;
+    let mut farthest = 0;
+    let mut max_anchor = None;
+    for layer in layers {
+        let end = layer_bytes(snapshot, layer)
+            .expect("保留的注入层必须能在当前快照解析")
+            .end;
+        if current_depth != Some(layer.depth) || end > farthest {
+            current_depth = Some(layer.depth);
+            farthest = end;
+            max_anchor = Some(layer.range.end);
+        }
+        result.push(max_anchor.expect("注入层必须存在终点"));
+    }
+    result
+}
+
 /// 取同一 Buffer 生命周期内的坐标编辑批次。
 ///
 /// 坐标索引不衰减，插值/解析版本始终落在其覆盖范围内；
@@ -220,6 +242,7 @@ fn interpolate_state(
             invalid_layers.push(layer);
         }
     }
+    state.injection_max_ends = injection_max_ends(&retained, new_snapshot);
     state.injections = retained;
     if !invalid_layers.is_empty() {
         drop_offloaded(invalid_layers);
@@ -372,6 +395,92 @@ impl SyntaxSnapshot {
         self.version
     }
 
+    /// 在同版本快照上按注入深度与最窄语法节点解析光标输入政策。
+    /// 捕获只查询光标附近；普通捕获不含端点，`.inclusive` 包含端点。
+    pub fn input_scope_at<'a>(
+        &'a self,
+        offset: ByteOffset,
+        text: &'a Snapshot,
+    ) -> Option<InputScope<'a>> {
+        assert_eq!(
+            self.version,
+            text.version(),
+            "输入作用域查询要求文本与语法同版本"
+        );
+        let offset = offset.get();
+        if offset > text.len_bytes().get() {
+            return None;
+        }
+        let mut selected: Option<(usize, u32, &'a Language, &'a tree_sitter::Tree)> = None;
+        let mut consider = |layer: SyntaxLayerRef<'a>| {
+            let root = layer.tree.root_node();
+            let Some(node) = root.descendant_for_byte_range(offset, offset) else {
+                return;
+            };
+            if node.start_byte() > offset || node.end_byte() <= offset {
+                return;
+            }
+            let width = node.end_byte() - node.start_byte();
+            if selected
+                .as_ref()
+                .is_none_or(|(old_width, old_depth, _, _)| {
+                    layer.depth > *old_depth || (layer.depth == *old_depth && width < *old_width)
+                })
+            {
+                selected = Some((width, layer.depth, layer.language, layer.tree));
+            }
+        };
+        if let (Some(language), Some(tree)) = (&self.language, &self.state.tree) {
+            consider(SyntaxLayerRef {
+                language,
+                tree,
+                depth: 0,
+            });
+        }
+        // 注入层按 (深度, 起点) 排序；前缀最大终点剪除不可能覆盖光标的层。
+        let layers = &self.state.injections;
+        let max_ends = &self.state.injection_max_ends;
+        let max_depth = layers.last().map_or(0, |layer| layer.depth);
+        for depth in 1..=max_depth {
+            let first = layers.partition_point(|layer| layer.depth < depth);
+            let end = layers.partition_point(|layer| layer.depth <= depth);
+            let at_depth = &layers[first..end];
+            let insertion = at_depth.partition_point(|layer| {
+                layer_bytes(text, layer)
+                    .expect("同版本注入层的 Anchor 必须可解析")
+                    .start
+                    <= offset
+            });
+            let mut index = insertion;
+            while let Some(previous) = index.checked_sub(1) {
+                let farthest = max_ends[first + previous]
+                    .resolve_in(text)
+                    .expect("同版本注入索引的 Anchor 必须可解析")
+                    .get();
+                if farthest <= offset {
+                    break;
+                }
+                if let Some(layer) =
+                    resolved_layer_ref(text, &at_depth[previous], &(offset..offset))
+                {
+                    consider(layer);
+                }
+                index = previous;
+            }
+        }
+        let (language, override_name) = if let Some((_, _, language, tree)) = selected {
+            (language, override_name_at(language, tree, offset, text))
+        } else {
+            (self.language.as_deref()?, None)
+        };
+        Some(InputScope {
+            language,
+            override_name,
+            version: self.version,
+            parsed_version: self.parsed_version,
+        })
+    }
+
     /// 在快照副本上把语法树坐标推进到 `new_snapshot`，不执行真正解析。
     ///
     /// 供后台派生快照使用：调用方随后对本快照调用 `reparse` 安装真实解析结果。
@@ -401,8 +510,9 @@ impl SyntaxSnapshot {
     pub(crate) fn layers_for_range<'a>(
         &'a self,
         text: &'a Snapshot,
-        range: &'a Range<usize>,
+        range: &Range<usize>,
     ) -> impl Iterator<Item = SyntaxLayerRef<'a>> + 'a {
+        let range = range.clone();
         let main = match (&self.language, &self.state.tree) {
             (Some(language), Some(tree)) => Some(SyntaxLayerRef {
                 language: language.as_ref(),
@@ -415,7 +525,7 @@ impl SyntaxSnapshot {
             self.state
                 .injections
                 .iter()
-                .filter_map(|layer| resolved_layer_ref(text, layer, range)),
+                .filter_map(move |layer| resolved_layer_ref(text, layer, &range)),
         )
     }
 
@@ -565,6 +675,7 @@ impl SyntaxSnapshot {
                     layer_bytes(snapshot, layer).map(|bytes| (bytes.start, bytes.end)),
                 )
             });
+            state.injection_max_ends = injection_max_ends(&final_layers, snapshot);
             state.injections = final_layers;
         }
         self.version = snapshot.version();
@@ -629,6 +740,39 @@ pub(crate) struct SyntaxLayerRef<'a> {
     pub(crate) language: &'a Language,
     pub(crate) tree: &'a tree_sitter::Tree,
     pub(crate) depth: u32,
+}
+
+fn override_name_at<'a>(
+    language: &'a Language,
+    tree: &tree_sitter::Tree,
+    offset: usize,
+    text: &Snapshot,
+) -> Option<&'a str> {
+    let query = language.overrides()?;
+    let mut cursor = QueryCursorHandle::new();
+    let end = offset.saturating_add(1).min(text.len_bytes().get());
+    cursor.set_byte_range(offset.saturating_sub(1)..end);
+    let names = query.capture_names();
+    let mut matches = cursor.matches(query, tree.root_node(), SnapshotTextProvider(text));
+    let mut selected: Option<(&str, usize)> = None;
+    while let Some(query_match) = matches.next() {
+        for capture in query_match.captures {
+            let Some(name) = names.get(capture.index as usize).copied() else {
+                continue;
+            };
+            let range = capture.node.byte_range();
+            let inclusive = name.ends_with(".inclusive");
+            if (inclusive && range.start <= offset && offset <= range.end)
+                || (!inclusive && range.start < offset && offset < range.end)
+            {
+                let width = range.end - range.start;
+                if selected.is_none_or(|(_, old_width)| width < old_width) {
+                    selected = Some((name.trim_end_matches(".inclusive"), width));
+                }
+            }
+        }
+    }
+    selected.map(|(name, _)| name)
 }
 
 /// 把一条注入层解析到当前快照；待处理层或与查询范围不相交时返回 None。

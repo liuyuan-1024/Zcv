@@ -25,6 +25,7 @@ pub(crate) struct LanguageQuerySources {
     pub(crate) folds: Option<&'static str>,
     pub(crate) outline: Option<&'static str>,
     pub(crate) locals: Option<&'static str>,
+    pub(crate) overrides: Option<&'static str>,
 }
 
 impl LanguageQuerySources {
@@ -42,6 +43,7 @@ impl LanguageQuerySources {
             folds: Some(folds),
             outline: None,
             locals: None,
+            overrides: None,
         }
     }
 
@@ -54,6 +56,7 @@ impl LanguageQuerySources {
             folds: None,
             outline: None,
             locals: None,
+            overrides: None,
         }
     }
 
@@ -69,6 +72,11 @@ impl LanguageQuerySources {
 
     pub(crate) const fn with_locals(mut self, source: &'static str) -> Self {
         self.locals = Some(source);
+        self
+    }
+
+    pub(crate) const fn with_overrides(mut self, source: &'static str) -> Self {
+        self.overrides = Some(source);
         self
     }
 }
@@ -110,6 +118,7 @@ pub(crate) struct LanguageSpec {
     /// 注入查询使用的别名；只参与注入查找，不参与文件识别。
     pub(crate) injection_alias: Option<&'static str>,
     pub(crate) auto_close_pairs: &'static [AutoClosePair],
+    pub(crate) autoclose_before: &'static str,
     /// 除字母数字与 `_` 外，本语言额外视为词字符的字符集合（对齐 Zed 的 word_characters）。
     pub(crate) word_characters: &'static str,
 }
@@ -122,6 +131,7 @@ impl LanguageSpec {
         queries: LanguageQuerySources,
         injection_alias: Option<&'static str>,
         auto_close_pairs: &'static [AutoClosePair],
+        autoclose_before: &'static str,
     ) -> Self {
         Self {
             name,
@@ -129,6 +139,7 @@ impl LanguageSpec {
             support: LanguageSupport::TreeSitter { grammar, queries },
             injection_alias,
             auto_close_pairs,
+            autoclose_before,
             word_characters: "",
         }
     }
@@ -140,6 +151,7 @@ impl LanguageSpec {
             support: LanguageSupport::PlainText,
             injection_alias: None,
             auto_close_pairs: &[],
+            autoclose_before: "",
             word_characters: "",
         }
     }
@@ -178,6 +190,7 @@ const COMMON_PAIRS: &[AutoClosePair] = &[
         close: true,
         surround: true,
         newline: true,
+        not_in: &[],
     },
     AutoClosePair {
         start: "[",
@@ -185,6 +198,7 @@ const COMMON_PAIRS: &[AutoClosePair] = &[
         close: true,
         surround: true,
         newline: true,
+        not_in: &[],
     },
     AutoClosePair {
         start: "{",
@@ -192,6 +206,7 @@ const COMMON_PAIRS: &[AutoClosePair] = &[
         close: true,
         surround: true,
         newline: true,
+        not_in: &[],
     },
     AutoClosePair {
         start: "\"",
@@ -199,6 +214,7 @@ const COMMON_PAIRS: &[AutoClosePair] = &[
         close: true,
         surround: true,
         newline: false,
+        not_in: &[],
     },
     AutoClosePair {
         start: "'",
@@ -206,6 +222,303 @@ const COMMON_PAIRS: &[AutoClosePair] = &[
         close: true,
         surround: true,
         newline: false,
+        not_in: &[],
+    },
+];
+
+const DEFAULT_INPUT_FOLLOWERS: &str = ";:.,=}])>";
+const SHELL_INPUT_FOLLOWERS: &str = "}])";
+const JSON_INPUT_FOLLOWERS: &str = ",]}";
+
+const RUST_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "r###\"",
+        end: "\"###",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "r##\"",
+        end: "\"##",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "r#\"",
+        end: "\"#",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "<",
+        end: ">",
+        close: false,
+        surround: true,
+        newline: true,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "`",
+        end: "`",
+        close: false,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "/*",
+        end: " */",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+];
+
+const SCRIPT_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "<",
+        end: ">",
+        close: false,
+        surround: true,
+        newline: true,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "`",
+        end: "`",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "/*",
+        end: " */",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+];
+
+const TS_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "<",
+        end: ">",
+        close: false,
+        surround: true,
+        newline: true,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "`",
+        end: "`",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "/*",
+        end: " */",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+];
+
+const MARKDOWN_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "<",
+        end: ">",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: false,
+        surround: true,
+        newline: false,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: false,
+        surround: true,
+        newline: false,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "`",
+        end: "`",
+        close: false,
+        surround: true,
+        newline: false,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "*",
+        end: "*",
+        close: false,
+        surround: true,
+        newline: false,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "~",
+        end: "~",
+        close: false,
+        surround: true,
+        newline: false,
+        not_in: &[],
     },
 ];
 
@@ -225,9 +538,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("rust")
                 .with_injections(include_str!("../queries/rust/injections.scm"))
                 .with_outline(include_str!("../queries/rust/outline.scm"))
-                .with_locals(include_str!("../queries/rust/locals.scm")),
+                .with_locals(include_str!("../queries/rust/locals.scm"))
+                .with_overrides(include_str!("../queries/rust/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            RUST_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "C",
@@ -241,6 +556,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_locals(include_str!("../queries/c/locals.scm")),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "C++",
@@ -257,6 +573,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_locals(include_str!("../queries/cpp/locals.scm")),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "C#",
@@ -268,6 +585,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("c_sharp", tree_sitter_c_sharp::HIGHLIGHTS_QUERY),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "Go",
@@ -281,6 +599,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_locals(include_str!("../queries/go/locals.scm")),
             Some("golang"),
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "Python",
@@ -297,6 +616,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_locals(include_str!("../queries/python/locals.scm")),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "JavaScript",
@@ -310,9 +630,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("javascript")
                 .with_injections(include_str!("../queries/javascript/injections.scm"))
                 .with_outline(include_str!("../queries/javascript/outline.scm"))
-                .with_locals(include_str!("../queries/javascript/locals.scm")),
+                .with_locals(include_str!("../queries/javascript/locals.scm"))
+                .with_overrides(include_str!("../queries/javascript/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            SCRIPT_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         )
         .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
@@ -325,9 +647,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("jsx", include_str!("../queries/javascript/highlights.scm"))
                 .with_injections(include_str!("../queries/jsx/injections.scm"))
                 .with_outline(include_str!("../queries/jsx/outline.scm"))
-                .with_locals(include_str!("../queries/jsx/locals.scm")),
+                .with_locals(include_str!("../queries/jsx/locals.scm"))
+                .with_overrides(include_str!("../queries/jsx/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            TS_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         )
         .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
@@ -340,9 +664,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("typescript")
                 .with_injections(include_str!("../queries/typescript/injections.scm"))
                 .with_outline(include_str!("../queries/typescript/outline.scm"))
-                .with_locals(include_str!("../queries/typescript/locals.scm")),
+                .with_locals(include_str!("../queries/typescript/locals.scm"))
+                .with_overrides(include_str!("../queries/typescript/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            TS_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         )
         .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
@@ -355,9 +681,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("tsx")
                 .with_injections(include_str!("../queries/tsx/injections.scm"))
                 .with_outline(include_str!("../queries/tsx/outline.scm"))
-                .with_locals(include_str!("../queries/tsx/locals.scm")),
+                .with_locals(include_str!("../queries/tsx/locals.scm"))
+                .with_overrides(include_str!("../queries/tsx/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            TS_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         )
         .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
@@ -370,6 +698,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("java"),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "Kotlin",
@@ -381,6 +710,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("kotlin"),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "Shell",
@@ -394,6 +724,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("bash"),
             None,
             COMMON_PAIRS,
+            SHELL_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "Ruby",
@@ -407,6 +738,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("ruby", tree_sitter_ruby::HIGHLIGHTS_QUERY),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "PHP",
@@ -421,6 +753,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_injections(include_str!("../queries/php/injections.scm")),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "Swift",
@@ -434,6 +767,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("swift", tree_sitter_swift::HIGHLIGHTS_QUERY),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "Lua",
@@ -448,6 +782,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_injections(include_str!("../queries/lua/injections.scm")),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "Zig",
@@ -459,6 +794,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("zig", tree_sitter_zig::HIGHLIGHTS_QUERY),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "SQL",
@@ -470,6 +806,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("sql"),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "TOML",
@@ -481,6 +818,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("toml"),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "JSON",
@@ -492,6 +830,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("json"),
             None,
             COMMON_PAIRS,
+            JSON_INPUT_FOLLOWERS,
         )
         .with_word_characters("#"),
         LanguageSpec::tree_sitter(
@@ -505,6 +844,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_injections(include_str!("../queries/yaml/injections.scm")),
             None,
             COMMON_PAIRS,
+            JSON_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "Markdown",
@@ -517,7 +857,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_injections(include_str!("../queries/markdown/injections.scm"))
                 .with_outline(include_str!("../queries/markdown/outline.scm")),
             None,
-            COMMON_PAIRS,
+            MARKDOWN_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "Markdown Inline",
@@ -532,6 +873,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             .with_injections(include_str!("../queries/markdown_inline/injections.scm")),
             Some("markdown_inline"),
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "HTML",
@@ -545,6 +887,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_outline(include_str!("../queries/html/outline.scm")),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         ),
         LanguageSpec::tree_sitter(
             "CSS",
@@ -556,6 +899,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("css"),
             None,
             COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
         )
         .with_word_characters("#"),
         LanguageSpec::plain_text(

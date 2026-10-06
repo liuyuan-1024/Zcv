@@ -22,7 +22,7 @@ pub use language_buffer::{
     EditedLanguageBufferSnapshot, LanguageBuffer, LanguageBufferEvent, LanguageBufferSnapshot,
 };
 pub use language_settings::{IndentGuideSettings, LanguageSettings};
-pub use registry::{Language, LanguageRegistry};
+pub use registry::{InputScope, Language, LanguageRegistry};
 pub use snippet::{
     SnippetHighlightCancellation, SnippetHighlights, highlight_snippet_with_cancellation,
 };
@@ -43,4 +43,6 @@ pub struct AutoClosePair {
     pub surround: bool,
     /// 光标处于该对之间时按回车额外补一个空行（闭合符前回退到基准缩进）。
     pub newline: bool,
+    /// 当前语法作用域包含其中任一名称时禁用该配对。
+    pub not_in: &'static [&'static str],
 }

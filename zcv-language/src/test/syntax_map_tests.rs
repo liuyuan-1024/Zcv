@@ -47,6 +47,144 @@ fn layer_tree(layer: &SyntaxLayer) -> &tree_sitter::Tree {
 }
 
 #[test]
+fn input_scope_uses_rust_override_boundaries_and_pair_policy() {
+    let source = "let x = \"ab\"; // comment\n";
+    let (buffer, syntax) = parsed_syntax("main.rs", source);
+    let text = buffer.snapshot();
+    let tree = syntax.snapshot();
+    let string_start = source.find('"').unwrap();
+    let inside = tree
+        .input_scope_at(ByteOffset::new(string_start + 2), &text)
+        .unwrap();
+    assert_eq!(inside.override_name(), Some("string"));
+    assert!(!inside.pairs().any(|pair| pair.start == "\""));
+    let boundary = tree
+        .input_scope_at(ByteOffset::new(string_start), &text)
+        .unwrap();
+    assert_eq!(boundary.override_name(), None);
+    let string_end = string_start + "\"ab\"".len();
+    assert_eq!(
+        tree.input_scope_at(ByteOffset::new(string_end), &text)
+            .unwrap()
+            .override_name(),
+        None
+    );
+    let comment_start = source.find("//").unwrap();
+    let comment = tree
+        .input_scope_at(ByteOffset::new(comment_start), &text)
+        .unwrap();
+    assert_eq!(comment.override_name(), Some("comment"));
+    let comment_end = source.find("comment").unwrap() + "comment".len();
+    assert_eq!(
+        tree.input_scope_at(ByteOffset::new(comment_end), &text)
+            .unwrap()
+            .override_name(),
+        Some("comment")
+    );
+    assert!(comment.pairs().any(|pair| pair.start == "("));
+    assert!(!comment.pairs().any(|pair| pair.start == "r#\""));
+    assert_eq!(comment.version(), text.version());
+    assert_eq!(comment.parsed_version(), text.version());
+}
+
+#[test]
+fn input_scope_uses_known_language_without_tree_and_survives_syntax_error() {
+    let buffer =
+        Buffer::from_text("let x = \"unfinished".to_owned(), BufferConfig::default()).unwrap();
+    let text = buffer.snapshot();
+    let registry = std::sync::Arc::new(crate::LanguageRegistry::new());
+    let mut syntax = SyntaxMap::new(registry, &text);
+    syntax.set_language_for_file(std::path::Path::new("main.rs"), None, &text);
+    let unparsed = syntax.snapshot();
+    let scope = unparsed.input_scope_at(ByteOffset::new(3), &text).unwrap();
+    assert_eq!(scope.language_name(), "Rust");
+    assert_eq!(scope.override_name(), None);
+    let parsed = unparsed
+        .reparse(&text, &syntax.registry(), &ParseCancellation::default())
+        .unwrap();
+    assert!(syntax.did_parse(parsed));
+    let current = syntax.snapshot();
+    let scope = current
+        .input_scope_at(ByteOffset::new(text.len_bytes().get() - 1), &text)
+        .unwrap();
+    assert_eq!(scope.version(), text.version());
+}
+
+#[test]
+fn markdown_list_position_uses_host_input_scope() {
+    let (buffer, syntax) = parsed_syntax("README.md", "- ");
+    let text = buffer.snapshot();
+    let current = syntax.snapshot();
+    let scope = current.input_scope_at(ByteOffset::new(2), &text).unwrap();
+    assert_eq!(scope.language_name(), "Markdown");
+    assert_eq!(scope.override_name(), None);
+}
+
+#[test]
+fn input_scope_prefers_markdown_rust_injection() {
+    let source = "```rust\nlet x = \"ab\";\n```\n";
+    let (buffer, syntax) = parsed_syntax("README.md", source);
+    let text = buffer.snapshot();
+    let syntax_snapshot = syntax.snapshot();
+    let scope = syntax_snapshot
+        .input_scope_at(ByteOffset::new(source.find("ab").unwrap() + 1), &text)
+        .unwrap();
+    assert_eq!(scope.language_name(), "Rust");
+    assert_eq!(scope.override_name(), Some("string"));
+    let rust_range = layer_range(find_layer(&syntax_snapshot.state.injections, 1, "Rust"));
+    assert_eq!(
+        syntax_snapshot
+            .input_scope_at(ByteOffset::new(rust_range.start), &text)
+            .unwrap()
+            .language_name(),
+        "Rust"
+    );
+    assert_ne!(
+        syntax_snapshot
+            .input_scope_at(ByteOffset::new(rust_range.end), &text)
+            .unwrap()
+            .language_name(),
+        "Rust"
+    );
+}
+
+#[test]
+fn input_scope_marks_interpolated_tree_as_not_yet_reparsed() {
+    let (mut buffer, mut syntax) = parsed_syntax("main.rs", "let x = ;\n");
+    let old = buffer.snapshot();
+    let at = "let x = ".len();
+    buffer
+        .edit(
+            vec![Edit::replace(
+                TextRange::new(ByteOffset::new(at), ByteOffset::new(at)).unwrap(),
+                "\"ab\"",
+            )],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let text = buffer.snapshot();
+    syntax.interpolate(&text);
+    let interpolated = syntax.snapshot();
+    let scope = interpolated
+        .input_scope_at(ByteOffset::new(at + 2), &text)
+        .unwrap();
+    assert_eq!(scope.version(), text.version());
+    assert_eq!(scope.parsed_version(), old.version());
+    let reparsed = syntax
+        .snapshot()
+        .reparse(&text, &syntax.registry(), &ParseCancellation::default())
+        .expect("新文本应可解析");
+    assert!(syntax.did_parse(reparsed));
+    let parsed_text = buffer.snapshot();
+    let parsed_snapshot = syntax.snapshot();
+    let parsed = parsed_snapshot
+        .input_scope_at(ByteOffset::new(at + 2), &parsed_text)
+        .unwrap();
+    assert_eq!(parsed.override_name(), Some("string"));
+    assert_eq!(parsed.parsed_version(), parsed_text.version());
+}
+
+#[test]
 fn go_annotated_string_creates_sql_injection_layer() {
     let source = "package main\nconst query = /* sql */ `SELECT name FROM users`\n";
     let (_, syntax) = parsed_syntax("main.go", source);

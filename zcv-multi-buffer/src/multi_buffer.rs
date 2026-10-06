@@ -27,7 +27,7 @@ use sum_tree::{Bias, ContextLessSummary, Cursor, Dimension, Item, SeekTarget, Su
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_language::{
-    AutoClosePair, BracketPair, HighlightCache, HighlightSpan, IndentGuideSettings, LanguageBuffer,
+    BracketPair, HighlightCache, HighlightSpan, IndentGuideSettings, InputScope, LanguageBuffer,
     LanguageBufferEvent, LanguageBufferSnapshot, LanguageRegistry, LanguageSettings, LocalBinding,
     NewlineIndent, OutlineItem, SyntaxNode, SyntaxSnapshot,
 };
@@ -3531,6 +3531,15 @@ impl MultiBufferSnapshot {
         })
     }
 
+    /// 组合输出位置映射到可编辑源后，查询该源同版本的输入政策。
+    pub fn input_scope_at(&self, offset: MultiBufferOffset) -> Option<InputScope<'_>> {
+        let (mapping, source, source_offset) = self.source_point(offset.into())?;
+        if !mapping.editable {
+            return None;
+        }
+        source.syntax.input_scope_at(source_offset, &source.text)
+    }
+
     pub fn bracket_pairs_at(&self, offset: impl Into<MultiBufferOffset>) -> Vec<BracketPair> {
         let offset: MultiBufferOffset = offset.into();
         let offset = ByteOffset::new(offset.get());
@@ -6406,17 +6415,6 @@ impl MultiBuffer {
     fn mapping_at(&self, offset: ByteOffset) -> Option<ExcerptMapping> {
         mapping_at_tree(&self.state.excerpts, &self.state.diff_transforms, offset)
             .map(|(mapping, _)| mapping)
-    }
-
-    /// `offset` 处所在 excerpt 源语言的自动闭合对。
-    pub fn auto_close_pairs(
-        &self,
-        offset: ByteOffset,
-        cx: &App,
-    ) -> Option<&'static [AutoClosePair]> {
-        let mapping = self.mapping_at(offset)?;
-        let source = self.state.sources.get(mapping.source_index)?;
-        Some(source.entity.read(cx).language()?.auto_close_pairs())
     }
 }
 

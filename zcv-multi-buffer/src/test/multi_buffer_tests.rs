@@ -981,6 +981,45 @@ fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<La
 }
 
 #[gpui::test]
+fn input_scope_maps_each_excerpt_and_rejects_read_only_region(cx: &mut TestAppContext) {
+    let rust = singleton("a.rs", "let a = 1;\n", cx);
+    let script = singleton("b.js", "const b = 2;\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(rust.clone(), 0..1, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(script.clone(), 0..1, cx)], cx);
+    });
+    cx.run_until_parked();
+    let snapshot = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+    let output = String::from_utf8(snapshot.text_bytes()).unwrap();
+    let first = snapshot
+        .input_scope_at(MultiBufferOffset::new(output.find("let").unwrap()))
+        .unwrap();
+    let second = snapshot
+        .input_scope_at(MultiBufferOffset::new(output.find("const").unwrap()))
+        .unwrap();
+    assert_eq!(first.language_name(), "Rust");
+    assert_eq!(second.language_name(), "JavaScript");
+
+    combined.update(cx, |buffer, cx| {
+        let mut excerpt = ExcerptRange::line_range(script, 0..1, cx);
+        excerpt.editable = false;
+        buffer.set_excerpts_for_path(vec![excerpt], cx);
+    });
+    let snapshot = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+    assert!(
+        snapshot
+            .input_scope_at(MultiBufferOffset::new(output.find("let").unwrap()))
+            .is_some()
+    );
+    assert!(
+        snapshot
+            .input_scope_at(MultiBufferOffset::new(output.find("const").unwrap()))
+            .is_none()
+    );
+}
+
+#[gpui::test]
 fn indent_guides_follow_nested_indentation_and_blank_lines(cx: &mut TestAppContext) {
     let source = singleton(
         "src/indent.rs",

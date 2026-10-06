@@ -6,6 +6,8 @@
 
 文本编辑后先插值语法树坐标；没有在途解析时，在编辑线程内给增量解析约 1 ms 的预算。预算耗尽才转入后台；在途期间的新编辑合并为任务完成后的一次补解析。前台与后台结果共用安装入口，只有与当前文本版本和语言匹配的结果才能安装。插值快照的文本版本已更新，但节点类别可能要等解析完成后才更新；解析安装通过 `Reparsed` 事件推进上层快照。
 
+输入配对、`not_in` 与 `autoclose_before` 由语言规格持有。`overrides.scm` 在装配时编译；其捕获与 `not_in` 名称同时校验。`SyntaxSnapshot::input_scope_at` 在同版本文本上按深度和区间终点索引定位可能覆盖光标的注入层，再选择最深语言层与最窄捕获；结果带语言、作用域、输入政策、文本版本与真正解析版本。没有语法树时使用已知源语言的默认政策；待解析注入层仍保留在语法模型中。
+
 文件级符号使用各语言自己的 `queries/<language>/outline.scm`。`SyntaxSnapshot::outline` 在同一份源快照中使用共享高亮缓存生成标签文本、标签相对高亮和源 `Anchor` 范围，并记录语法层与父子层级；没有该查询的语言明确返回空结果。`MultiBuffer` 把完整落在 excerpt 内的结果映射为组合 `Anchor`，`Editor` 在导航时按当前快照解析锚点。面板刷新期间可以继续绘制旧标签，无需用旧字节范围查询当前文本；捕获名称按当前主题解析样式。
 
 节点导航使用 `SyntaxSnapshot::node_at` 和 `SyntaxSnapshot::node_ancestors`，返回带版本、UTF-8 字节范围、节点种类和语法层的不可变节点摘要。
@@ -38,6 +40,7 @@ indents.scm             文件语言必需，换行缩进
 folds.scm               文件语言必需，代码折叠
 outline.scm             可选，文件级符号与代码大纲
 locals.scm              可选，局部绑定与引用
+overrides.scm           按语法范围覆盖输入政策时提供
 ```
 
 结构查询不能跨语言目录共享。即使两门语言当前规则相同，也应分别保存查询文件，让后续语法差异在各自语言边界内演进。语言注入只在存在明确嵌套语义时接入；仅供 Markdown 内部使用的 `Markdown Inline` 不受文件语言的结构查询基线约束。
@@ -47,7 +50,7 @@ locals.scm              可选，局部绑定与引用
 1. 在工作区和 `zcv-language` 中加入与当前 Tree-sitter 版本兼容的 grammar 依赖。
 2. 引用 grammar crate 自带的高亮查询；crate 未提供或 Zcv 需要定制时，建立 `queries/<language>/highlights.scm`。
 3. 在语言目录中提供 `brackets.scm`、`indents.scm` 和 `folds.scm`；存在嵌套语言时再提供 `injections.scm`。
-4. 在 `builtin_languages` 中通过 `LanguageSpec::tree_sitter` 登记识别规则、grammar、查询和输入配对。
+4. 在 `builtin_languages` 中通过 `LanguageSpec::tree_sitter` 登记识别规则、grammar、查询、输入配对与 `autoclose_before`；配对使用 `not_in` 时提供对应 `overrides.scm` 捕获。
 5. 高亮 capture 优先复用主题已有名称；新增根 capture 时同步更新深色、浅色主题。
 6. 增加文件识别、代表性 capture 和新增结构能力的行为测试。
 

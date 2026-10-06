@@ -281,7 +281,7 @@ impl Editor {
                 } else {
                     String::new()
                 };
-                let extra = self.extra_newline_in_pair(offset, &snapshot, cx);
+                let extra = self.extra_newline_in_pair(offset, &snapshot);
                 let text = if extra {
                     format!(
                         "\n{}{indent}\n{}",
@@ -326,9 +326,8 @@ impl Editor {
         &self,
         offset: MultiBufferOffset,
         snapshot: &MultiBufferSnapshot,
-        cx: &App,
     ) -> bool {
-        let Some(pairs) = self.auto_close_pairs(offset, cx) else {
+        let Some(scope) = snapshot.input_scope_at(offset) else {
             return false;
         };
         let Ok((line, column)) = snapshot.byte_to_point(offset) else {
@@ -351,7 +350,7 @@ impl Editor {
             return false;
         };
         let before = &before[..column.min(before.len())];
-        pairs.iter().any(|pair| {
+        scope.pairs().any(|pair| {
             pair.newline
                 && before.trim_end().ends_with(pair.start)
                 && text_after_trim_is(snapshot, offset, pair.end)

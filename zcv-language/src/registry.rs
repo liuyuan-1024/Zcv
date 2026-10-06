@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use tree_sitter::Query;
-use zcv_text::WordBoundaryPolicy;
+use zcv_text::{BufferVersion, WordBoundaryPolicy};
 
 use crate::AutoClosePair;
 use crate::available_languages::{
@@ -18,6 +18,7 @@ pub struct Language {
     name: &'static str,
     syntax: LanguageSyntax,
     auto_close_pairs: &'static [AutoClosePair],
+    autoclose_before: &'static str,
     word_characters: &'static str,
 }
 
@@ -40,6 +41,53 @@ struct CompiledLanguageQueries {
     folds: Option<Arc<Query>>,
     outline: Option<Arc<Query>>,
     locals: Option<Arc<Query>>,
+    overrides: Option<Arc<Query>>,
+}
+
+/// 同一文本／语法快照在输入位置解析出的只读政策。
+#[derive(Clone, Copy, Debug)]
+pub struct InputScope<'a> {
+    pub(crate) language: &'a Language,
+    pub(crate) override_name: Option<&'a str>,
+    pub(crate) version: BufferVersion,
+    pub(crate) parsed_version: BufferVersion,
+}
+
+impl InputScope<'_> {
+    pub fn language_name(&self) -> &'static str {
+        self.language.name()
+    }
+
+    pub fn override_name(&self) -> Option<&str> {
+        self.override_name
+    }
+
+    pub fn version(&self) -> BufferVersion {
+        self.version
+    }
+
+    /// 插值树的节点类别仍可能属于更早的真正解析版本。
+    pub fn parsed_version(&self) -> BufferVersion {
+        self.parsed_version
+    }
+
+    pub fn pairs(&self) -> impl Iterator<Item = &'static AutoClosePair> {
+        self.language.auto_close_pairs.iter().filter(|pair| {
+            !self
+                .override_name
+                .is_some_and(|name| pair.not_in.contains(&name))
+        })
+    }
+
+    pub fn should_autoclose_before(&self, next: char) -> bool {
+        next.is_whitespace() || self.language.autoclose_before.contains(next)
+    }
+
+    pub fn is_word_character(&self, character: char) -> bool {
+        self.language
+            .word_boundary()
+            .is_identifier_continue(character)
+    }
 }
 
 impl Language {
@@ -103,9 +151,11 @@ impl Language {
         }
     }
 
-    /// 输入级自动闭合配对表（编辑器输入行为的数据源）。
-    pub fn auto_close_pairs(&self) -> &'static [AutoClosePair] {
-        self.auto_close_pairs
+    pub(crate) fn overrides(&self) -> Option<&Arc<Query>> {
+        match &self.syntax {
+            LanguageSyntax::PlainText => None,
+            LanguageSyntax::TreeSitter { queries, .. } => queries.overrides.as_ref(),
+        }
     }
 
     /// 本语言的词边界分类策略（对齐 Zed 的 `LanguageConfig::word_characters`）。
@@ -131,6 +181,24 @@ impl LanguageSpec {
             LanguageSupportSpec::TreeSitter { grammar, queries } => {
                 let grammar = grammar();
                 let queries = compile_queries(self.name, &grammar, *queries);
+                for pair in self.auto_close_pairs {
+                    for scope in pair.not_in {
+                        let query = queries.overrides.as_ref().unwrap_or_else(|| {
+                            panic!(
+                                "{} 的输入配对引用了作用域 {scope}，但缺少覆盖查询",
+                                self.name
+                            )
+                        });
+                        assert!(
+                            query
+                                .capture_names()
+                                .iter()
+                                .any(|name| name.trim_end_matches(".inclusive") == *scope),
+                            "{} 的输入配对引用了未知作用域 {scope}",
+                            self.name
+                        );
+                    }
+                }
                 let capture_names = queries
                     .highlights
                     .capture_names()
@@ -148,6 +216,7 @@ impl LanguageSpec {
             name: self.name,
             syntax,
             auto_close_pairs: self.auto_close_pairs,
+            autoclose_before: self.autoclose_before,
             word_characters: self.word_characters,
         }
     }
@@ -166,6 +235,7 @@ fn compile_queries(
         folds: compile_optional_query(language_name, "折叠", grammar, sources.folds),
         outline: compile_optional_query(language_name, "大纲", grammar, sources.outline),
         locals: compile_optional_query(language_name, "局部语义", grammar, sources.locals),
+        overrides: compile_optional_query(language_name, "覆盖作用域", grammar, sources.overrides),
     }
 }
 

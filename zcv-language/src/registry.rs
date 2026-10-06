@@ -23,6 +23,7 @@ pub struct Language {
     autoclose_before: &'static str,
     input: LanguageInputConfig,
     word_characters: &'static str,
+    word_character_overrides: &'static [(&'static str, &'static str)],
 }
 
 #[derive(Debug)]
@@ -87,9 +88,22 @@ impl InputScope<'_> {
     }
 
     pub fn is_word_character(&self, character: char) -> bool {
-        self.language
-            .word_boundary()
-            .is_identifier_continue(character)
+        self.word_boundary().is_identifier_continue(character)
+    }
+
+    /// 当前语言与 `overrides.scm` 捕获共同决定的词分类政策。
+    pub fn word_boundary(&self) -> WordBoundaryPolicy {
+        let word_characters = self
+            .override_name
+            .and_then(|name| {
+                self.language
+                    .word_character_overrides
+                    .iter()
+                    .find(|(scope, _)| *scope == name)
+                    .map(|(_, characters)| *characters)
+            })
+            .unwrap_or(self.language.word_characters);
+        WordBoundaryPolicy { word_characters }
     }
 
     pub fn line_comment_prefixes(&self) -> &'static [&'static str] {
@@ -237,6 +251,22 @@ impl LanguageSpec {
                         );
                     }
                 }
+                for (scope, _) in self.word_character_overrides {
+                    let query = queries.overrides.as_ref().unwrap_or_else(|| {
+                        panic!(
+                            "{} 的词字符覆盖引用了作用域 {scope}，但缺少覆盖查询",
+                            self.name
+                        )
+                    });
+                    assert!(
+                        query
+                            .capture_names()
+                            .iter()
+                            .any(|name| name.trim_end_matches(".inclusive") == *scope),
+                        "{} 的词字符覆盖引用了未知作用域 {scope}",
+                        self.name
+                    );
+                }
                 let capture_names = queries
                     .highlights
                     .capture_names()
@@ -257,6 +287,7 @@ impl LanguageSpec {
             autoclose_before: self.autoclose_before,
             input: self.input,
             word_characters: self.word_characters,
+            word_character_overrides: self.word_character_overrides,
         }
     }
 }

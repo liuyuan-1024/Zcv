@@ -2912,6 +2912,10 @@ mod scroll_tests;
 mod mouse_selection_tests;
 
 #[cfg(test)]
+#[path = "test/word_scope_tests.rs"]
+mod word_scope_tests;
+
+#[cfg(test)]
 #[path = "test/cursor_activation_tests.rs"]
 mod cursor_activation_tests;
 

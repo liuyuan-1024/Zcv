@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};
+use zcv_text::{
+    Buffer, BufferConfig, ByteOffset, CharOffset, Edit, MovementDirection, MovementUnit, TextRange,
+    TransactionMetadata,
+};
 
 use super::*;
 use crate::highlight_cache::HighlightCache;
@@ -150,6 +153,117 @@ fn input_scope_prefers_markdown_rust_injection() {
             .unwrap()
             .language_name(),
         "Rust"
+    );
+}
+
+#[test]
+fn word_policy_uses_code_string_comment_and_nested_injection_scopes() {
+    let source = "const foo$bar = \"foo.bar\"; // foo-bar\n";
+    let (buffer, syntax) = parsed_syntax("main.js", source);
+    let text = buffer.snapshot();
+    let tree = syntax.snapshot();
+    let at = |needle: &str| ByteOffset::new(source.find(needle).unwrap() + 3);
+    let code = tree.input_scope_at(at("foo$bar"), &text).unwrap();
+    let string = tree.input_scope_at(at("foo.bar"), &text).unwrap();
+    let comment = tree.input_scope_at(at("foo-bar"), &text).unwrap();
+    assert!(code.word_boundary().is_identifier_continue('$'));
+    assert!(!code.word_boundary().is_identifier_continue('.'));
+    assert!(string.word_boundary().is_identifier_continue('.'));
+    assert!(!string.word_boundary().is_identifier_continue('$'));
+    assert!(comment.word_boundary().is_identifier_continue('-'));
+    assert!(!comment.word_boundary().is_identifier_continue('$'));
+
+    let tail = "// foo-bar";
+    let (buffer, syntax) = parsed_syntax("main.js", tail);
+    let text = buffer.snapshot();
+    let scope = syntax.snapshot();
+    let at_end = scope
+        .word_scope_at(ByteOffset::new(tail.len()), &text)
+        .unwrap();
+    assert_eq!(at_end.override_name(), Some("comment"));
+    assert!(at_end.word_boundary().is_identifier_continue('-'));
+
+    let markdown = "```javascript\nconst x = \"foo.bar\";\n```\n";
+    let (buffer, syntax) = parsed_syntax("README.md", markdown);
+    let text = buffer.snapshot();
+    let scope = syntax.snapshot();
+    let injected = scope
+        .input_scope_at(
+            ByteOffset::new(markdown.find("foo.bar").unwrap() + 3),
+            &text,
+        )
+        .unwrap();
+    assert_eq!(injected.language_name(), "JavaScript");
+    assert_eq!(injected.override_name(), Some("string"));
+    assert!(injected.word_boundary().is_identifier_continue('.'));
+
+    let nested = "<script>const x = \"foo.bar\";</script>\n";
+    let (buffer, syntax) = parsed_syntax("README.md", nested);
+    let text = buffer.snapshot();
+    let syntax = syntax.snapshot();
+    let scope = syntax
+        .input_scope_at(ByteOffset::new(nested.find("foo.bar").unwrap() + 3), &text)
+        .unwrap();
+    assert_eq!(scope.language_name(), "JavaScript");
+    assert_eq!(scope.override_name(), Some("string"));
+    assert!(scope.word_boundary().is_identifier_continue('.'));
+}
+
+#[test]
+fn interpolated_word_scope_uses_current_text_version_then_reparsed_capture() {
+    let (mut buffer, mut syntax) = parsed_syntax("main.js", "const x = ;\n");
+    let old_version = buffer.snapshot().version();
+    let at = "const x = ".len();
+    buffer
+        .edit(
+            vec![Edit::replace(
+                TextRange::new(ByteOffset::new(at), ByteOffset::new(at)).unwrap(),
+                "\"foo.bar\"",
+            )],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let text = buffer.snapshot();
+    syntax.interpolate(&text);
+    let interpolated = syntax.snapshot();
+    let scope = interpolated
+        .input_scope_at(ByteOffset::new(at + 4), &text)
+        .unwrap();
+    assert_eq!(scope.version(), text.version());
+    assert_eq!(scope.parsed_version(), old_version);
+    assert!(!scope.word_boundary().is_identifier_continue('.'));
+    assert_eq!(
+        buffer
+            .movement_boundary(
+                scope.word_boundary(),
+                CharOffset::new(at + 1),
+                MovementDirection::Next,
+                MovementUnit::Word,
+            )
+            .unwrap(),
+        CharOffset::new(at + 4)
+    );
+    let parsed = syntax
+        .snapshot()
+        .reparse(&text, &syntax.registry(), &ParseCancellation::default())
+        .unwrap();
+    assert!(syntax.did_parse(parsed));
+    let parsed_snapshot = syntax.snapshot();
+    let scope = parsed_snapshot
+        .input_scope_at(ByteOffset::new(at + 4), &text)
+        .unwrap();
+    assert_eq!(scope.parsed_version(), text.version());
+    assert!(scope.word_boundary().is_identifier_continue('.'));
+    assert_eq!(
+        buffer
+            .movement_boundary(
+                scope.word_boundary(),
+                CharOffset::new(at + 1),
+                MovementDirection::Next,
+                MovementUnit::Word,
+            )
+            .unwrap(),
+        CharOffset::new(at + 8)
     );
 }
 

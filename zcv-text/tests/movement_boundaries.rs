@@ -20,7 +20,7 @@ fn movement_boundaries_dispatch_by_unit_and_reject_invalid_offsets() {
                 MovementUnit::Word
             )
             .unwrap(),
-        c(3)
+        c(12)
     );
     assert_eq!(
         buffer

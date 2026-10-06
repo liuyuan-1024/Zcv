@@ -62,8 +62,8 @@ impl WordBoundaryClassifier {
 
     pub(crate) fn is_body(self, ch: char) -> bool {
         match self.unit {
-            MovementUnit::Word | MovementUnit::Subword => is_natural_word_body(ch),
-            MovementUnit::Identifier => self.policy.is_identifier_continue(ch),
+            MovementUnit::Word | MovementUnit::Identifier => self.policy.is_identifier_continue(ch),
+            MovementUnit::Subword => is_natural_word_body(ch),
             MovementUnit::Symbol => self.policy.is_symbol_char(ch),
             MovementUnit::Grapheme | MovementUnit::LineEdge => unreachable!("non-word classifier"),
         }

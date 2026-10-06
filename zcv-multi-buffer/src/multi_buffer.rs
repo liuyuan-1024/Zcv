@@ -248,8 +248,6 @@ struct ExcerptSource {
     syntax: SyntaxSnapshot,
     /// 派生高亮缓存句柄；随源快照版本变化整体替换。
     highlight_cache: Arc<HighlightCache>,
-    /// 源语言的词边界策略（对齐 Zed 的 per-language word_characters）。
-    word_boundary: WordBoundaryPolicy,
     /// 源语言解析后的编辑器设置。
     settings: Arc<LanguageSettings>,
     capture_map: Arc<[u32]>,
@@ -266,7 +264,6 @@ struct ExcerptSourceSnapshot {
     text: Snapshot,
     syntax: SyntaxSnapshot,
     highlight_cache: Arc<HighlightCache>,
-    word_boundary: WordBoundaryPolicy,
     settings: Arc<LanguageSettings>,
     capture_map: Arc<[u32]>,
     is_dirty: bool,
@@ -2404,20 +2401,41 @@ impl MultiBufferSnapshot {
         self.excerpt_sources.first().map(|(_, source)| source)
     }
 
-    /// 主源语言的词边界策略；无源时返回默认。
-    ///
-    /// 全文搜索等不携带具体位置的消费方使用它；按位置消费方用 `word_boundary_at`。
-    pub fn word_boundary(&self) -> WordBoundaryPolicy {
+    /// 全文搜索使用首个源的宿主语言政策，不伪造光标位置。
+    pub fn global_search_word_boundary(&self) -> WordBoundaryPolicy {
         self.first_source_snapshot()
-            .map_or_else(WordBoundaryPolicy::default, |source| source.word_boundary)
+            .map_or_else(WordBoundaryPolicy::default, |source| {
+                source.syntax.global_word_boundary()
+            })
     }
 
-    /// 指定组合偏移所属源语言的词边界策略。
-    fn word_boundary_at(&self, offset: MultiBufferOffset) -> WordBoundaryPolicy {
-        self.source_point(offset.into())
-            .map_or_else(WordBoundaryPolicy::default, |(_, source, _)| {
-                source.word_boundary
-            })
+    /// 政策与可见源片段范围一起派生，词扫描不能把相邻 excerpt 拼成一个词。
+    fn word_context_at(
+        &self,
+        offset: MultiBufferOffset,
+    ) -> TextResult<(WordBoundaryPolicy, Range<usize>)> {
+        let at = self.source_point(offset.into());
+        let at = if at
+            .as_ref()
+            .is_some_and(|(mapping, _, _)| mapping.entry.source_range.is_empty())
+            && offset > MultiBufferOffset::ZERO
+        {
+            let previous = self.previous_grapheme_boundary(offset.into())?;
+            self.source_point(previous).or(at)
+        } else {
+            at
+        };
+        Ok(at.map_or_else(
+            || (WordBoundaryPolicy::default(), 0..self.len_bytes().get()),
+            |(mapping, source, source_offset)| {
+                let policy = source
+                    .syntax
+                    .word_scope_at(source_offset, &source.text)
+                    .map_or_else(WordBoundaryPolicy::default, |scope| scope.word_boundary());
+                let start = mapping.output_range.start().get();
+                (policy, start..start + mapping.entry.source_range.len())
+            },
+        ))
     }
 
     /// 主源语言解析后的编辑器设置（对齐 Zed `LanguageSettings::for_buffer`）。
@@ -2998,39 +3016,53 @@ impl MultiBufferSnapshot {
     ) -> TextResult<CharOffset> {
         // 与单 Buffer 共用同一份文本移动语义，组合文档不得另实现一套边界规则。
         let byte = self.char_to_byte(offset)?;
-        let policy = self.word_boundary_at(byte);
-        zcv_text::movement_boundary_in_text(self, policy, offset, direction, unit)
+        let (policy, source_range) = self.word_context_at(byte)?;
+        let target = zcv_text::movement_boundary_in_text(self, policy, offset, direction, unit)?;
+        if matches!(
+            unit,
+            MovementUnit::Word
+                | MovementUnit::Identifier
+                | MovementUnit::Subword
+                | MovementUnit::Symbol
+        ) {
+            if (direction == MovementDirection::Next && byte.get() == source_range.end)
+                || (direction == MovementDirection::Previous && byte.get() == source_range.start)
+            {
+                return Ok(target);
+            }
+            let target_byte = self
+                .char_to_byte(target)?
+                .get()
+                .clamp(source_range.start, source_range.end);
+            self.byte_to_char(ByteOffset::new(target_byte).into())
+        } else {
+            Ok(target)
+        }
     }
 
     /// 返回包含当前位置的词边界。组合文本沿连续 chunk 读取，不构造临时字符串。
     pub fn surrounding_word(&self, offset: CharOffset) -> TextResult<(CharOffset, CharOffset)> {
-        let offset = self.char_to_byte(offset)?;
-        let policy = self.word_boundary_at(offset);
-        let is_word = |byte: ByteOffset| {
-            self.char_at_byte(byte)
-                .is_some_and(|character| policy.is_identifier_continue(character))
-        };
-        let mut start = offset;
-        while start > ByteOffset::ZERO.into() {
-            let previous = self.previous_grapheme_boundary(start.into())?;
-            if !is_word(previous) {
-                break;
-            }
-            start = previous.into();
-        }
-        let mut end = offset;
-        while end < self.len_bytes() && is_word(end.into()) {
-            end = self.next_grapheme_boundary(end.into())?.into();
-        }
-        Ok((self.byte_to_char(start)?, self.byte_to_char(end)?))
+        let byte = self.char_to_byte(offset)?;
+        let (policy, source_range) = self.word_context_at(byte)?;
+        zcv_text::surrounding_word_in_range(
+            self,
+            policy,
+            offset,
+            self.byte_to_char(ByteOffset::new(source_range.start).into())?
+                ..self.byte_to_char(ByteOffset::new(source_range.end).into())?,
+        )
     }
 
     pub fn is_inside_word(&self, offset: CharOffset) -> TextResult<bool> {
-        let offset = self.char_to_byte(offset)?;
-        let policy = self.word_boundary_at(offset);
-        Ok(self
-            .char_at_byte(offset.into())
-            .is_some_and(|character| policy.is_identifier_continue(character)))
+        let byte = self.char_to_byte(offset)?;
+        let (policy, source_range) = self.word_context_at(byte)?;
+        zcv_text::is_inside_word_in_range(
+            self,
+            policy,
+            offset,
+            self.byte_to_char(ByteOffset::new(source_range.start).into())?
+                ..self.byte_to_char(ByteOffset::new(source_range.end).into())?,
+        )
     }
 
     pub fn byte_to_utf16_cu(&self, offset: MultiBufferOffset) -> TextResult<Utf16Offset> {
@@ -4404,7 +4436,6 @@ impl From<Snapshot> for MultiBufferSnapshot {
                     text,
                     syntax,
                     highlight_cache: Arc::new(HighlightCache::new()),
-                    word_boundary: WordBoundaryPolicy::default(),
                     settings: Arc::new(LanguageSettings::default()),
                     capture_map: Arc::from([]),
                     is_dirty: false,
@@ -4436,16 +4467,6 @@ impl MultiBufferSnapshot {
         snapshot.singleton_source_index = None;
         snapshot
     }
-}
-
-/// 取源快照对应语言的词边界策略；未识别语言回退默认策略。
-fn snapshot_word_boundary(snapshot: &LanguageBufferSnapshot) -> WordBoundaryPolicy {
-    snapshot
-        .language
-        .as_ref()
-        .map_or_else(WordBoundaryPolicy::default, |language| {
-            language.word_boundary()
-        })
 }
 
 /// 取源快照按语言解析后的设置。
@@ -4898,7 +4919,6 @@ impl MultiBuffer {
                         entity: excerpt.source.clone(),
                         path: path.clone(),
                         buffer_id,
-                        word_boundary: snapshot_word_boundary(&snapshot),
                         settings: snapshot_settings(&snapshot),
                         text: snapshot.text,
                         syntax: snapshot.syntax,
@@ -4939,7 +4959,6 @@ impl MultiBuffer {
                     entity: entity.clone(),
                     path: path_key_for_source(source),
                     buffer_id: source.buffer_id(),
-                    word_boundary: snapshot_word_boundary(&snapshot),
                     settings: snapshot_settings(&snapshot),
                     text: snapshot.text,
                     syntax: snapshot.syntax,
@@ -5314,7 +5333,6 @@ impl MultiBuffer {
                 entity: source.clone(),
                 path,
                 buffer_id,
-                word_boundary: snapshot_word_boundary(&snapshot),
                 settings: snapshot_settings(&snapshot),
                 text: snapshot.text,
                 syntax: snapshot.syntax,
@@ -5525,7 +5543,6 @@ impl MultiBuffer {
             excerpt_source.text = snapshot.text.clone();
             excerpt_source.syntax = snapshot.syntax.clone();
             excerpt_source.highlight_cache = Arc::clone(&snapshot.highlight_cache);
-            excerpt_source.word_boundary = snapshot_word_boundary(&snapshot);
             excerpt_source.settings = snapshot_settings(&snapshot);
         }
         self.mark_source_snapshot_changed(source_id);
@@ -5588,7 +5605,6 @@ impl MultiBuffer {
             .iter_mut()
             .find(|source| source.entity.entity_id() == source_id)
         {
-            excerpt_source.word_boundary = snapshot_word_boundary(&snapshot);
             excerpt_source.settings = snapshot_settings(&snapshot);
             excerpt_source.is_dirty = snapshot.is_dirty;
             excerpt_source.text = snapshot.text;
@@ -6133,7 +6149,6 @@ impl MultiBuffer {
             text: source.text.clone(),
             syntax: source.syntax.clone(),
             highlight_cache: Arc::clone(&source.highlight_cache),
-            word_boundary: source.word_boundary,
             settings: Arc::clone(&source.settings),
             capture_map: Arc::clone(&source.capture_map),
             is_dirty: source.is_dirty,

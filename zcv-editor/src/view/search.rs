@@ -411,7 +411,7 @@ impl Editor {
             .search_in(
                 &virtual_snapshot,
                 virtual_snapshot.version(),
-                virtual_snapshot.word_boundary(),
+                virtual_snapshot.global_search_word_boundary(),
             )
             .ok()?;
         let matches = result

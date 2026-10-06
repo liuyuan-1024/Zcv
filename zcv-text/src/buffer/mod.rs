@@ -29,7 +29,7 @@ mod transaction_pipeline;
 mod validation;
 mod versioning;
 
-pub use movement::movement_boundary_in_text;
+pub use movement::{is_inside_word_in_range, movement_boundary_in_text, surrounding_word_in_range};
 pub(crate) use movement::{is_inside_word_in_text, surrounding_word_in_text};
 
 pub use derived::EditedBufferSnapshot;

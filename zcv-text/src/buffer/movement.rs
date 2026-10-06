@@ -10,6 +10,7 @@ use crate::{
     storage::TextRead,
     types::{CharOffset, Line},
 };
+use std::ops::Range;
 
 impl Buffer {
     /// 按纯文本粒度查找相邻边界。垂直移动与 selection 变换由宿主 Editor 负责。
@@ -467,13 +468,29 @@ pub(crate) fn surrounding_word_in_text<T: TextRead>(
     policy: WordBoundaryPolicy,
     offset: CharOffset,
 ) -> TextResult<(CharOffset, CharOffset)> {
+    surrounding_word_in_range(
+        storage,
+        policy,
+        offset,
+        CharOffset::ZERO..storage.len_chars(),
+    )
+}
+
+/// 只在给定可见片段内分类与扩展，供组合文档阻止词跨越 excerpt。
+pub fn surrounding_word_in_range<T: TextRead>(
+    storage: &T,
+    policy: WordBoundaryPolicy,
+    offset: CharOffset,
+    range: Range<CharOffset>,
+) -> TextResult<(CharOffset, CharOffset)> {
     validate_movement_offset(storage, offset)?;
     let Some(classifier) = policy.classifier(MovementUnit::Identifier) else {
         return movement_unit_bug(MovementUnit::Identifier);
     };
 
-    let previous = grapheme_before(storage, offset)?;
-    let next = grapheme_at(storage, offset)?;
+    let previous =
+        grapheme_before(storage, offset)?.filter(|grapheme| grapheme.start >= range.start);
+    let next = grapheme_at(storage, offset)?.filter(|grapheme| grapheme.end <= range.end);
     // 目标类别：光标两侧"更词"的一侧；两侧都为空（空文档）时范围退化到 offset 本身。
     let target = match (previous, next) {
         (Some(prev), Some(next)) => {
@@ -490,6 +507,9 @@ pub(crate) fn surrounding_word_in_text<T: TextRead>(
 
     let mut start = offset;
     while let Some(grapheme) = grapheme_before(storage, start)? {
+        if grapheme.start < range.start {
+            break;
+        }
         if surrounding_kind(classifier, grapheme.first) == target {
             start = grapheme.start;
         } else {
@@ -499,6 +519,9 @@ pub(crate) fn surrounding_word_in_text<T: TextRead>(
 
     let mut end = offset;
     while let Some(grapheme) = grapheme_at(storage, end)? {
+        if grapheme.end > range.end {
+            break;
+        }
         if surrounding_kind(classifier, grapheme.first) == target {
             end = grapheme.end;
         } else {
@@ -514,12 +537,28 @@ pub(crate) fn is_inside_word_in_text<T: TextRead>(
     policy: WordBoundaryPolicy,
     offset: CharOffset,
 ) -> TextResult<bool> {
+    is_inside_word_in_range(
+        storage,
+        policy,
+        offset,
+        CharOffset::ZERO..storage.len_chars(),
+    )
+}
+
+/// 判断片段内光标两侧是否都属于同一词，不跨越 excerpt 边界。
+pub fn is_inside_word_in_range<T: TextRead>(
+    storage: &T,
+    policy: WordBoundaryPolicy,
+    offset: CharOffset,
+    range: Range<CharOffset>,
+) -> TextResult<bool> {
     let Some(classifier) = policy.classifier(MovementUnit::Identifier) else {
         return movement_unit_bug(MovementUnit::Identifier);
     };
-    let previous = grapheme_before(storage, offset)?
-        .is_some_and(|grapheme| classifier.is_body(grapheme.first));
-    let next =
-        grapheme_at(storage, offset)?.is_some_and(|grapheme| classifier.is_body(grapheme.first));
+    let previous = grapheme_before(storage, offset)?.is_some_and(|grapheme| {
+        grapheme.start >= range.start && classifier.is_body(grapheme.first)
+    });
+    let next = grapheme_at(storage, offset)?
+        .is_some_and(|grapheme| grapheme.end <= range.end && classifier.is_body(grapheme.first));
     Ok(previous && next)
 }

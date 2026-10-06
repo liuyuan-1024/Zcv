@@ -395,6 +395,31 @@ impl SyntaxSnapshot {
         self.version
     }
 
+    /// 不带位置的全局操作采用宿主语言政策，不以某个假定光标查询作用域。
+    pub fn global_word_boundary(&self) -> zcv_text::WordBoundaryPolicy {
+        self.language
+            .as_ref()
+            .map_or_else(zcv_text::WordBoundaryPolicy::default, |language| {
+                language.word_boundary()
+            })
+    }
+
+    /// 文尾的按词操作查看前一个字形所属作用域；普通输入仍按文尾边界查询。
+    pub fn word_scope_at<'a>(
+        &'a self,
+        offset: ByteOffset,
+        text: &'a Snapshot,
+    ) -> Option<InputScope<'a>> {
+        let query_offset = if offset == text.len_bytes() && offset > ByteOffset::ZERO {
+            let char_offset = text.byte_to_char(offset).ok()?;
+            let previous = text.previous_grapheme_boundary(char_offset).ok()?;
+            text.char_to_byte(previous).ok()?
+        } else {
+            offset
+        };
+        self.input_scope_at(query_offset, text)
+    }
+
     /// 在同版本快照上按注入深度与最窄语法节点解析光标输入政策。
     /// 捕获只查询光标附近；普通捕获不含端点，`.inclusive` 包含端点。
     pub fn input_scope_at<'a>(

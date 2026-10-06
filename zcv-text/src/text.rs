@@ -20,7 +20,10 @@ mod transaction;
 mod types;
 pub mod word_diff;
 
-pub use buffer::{Buffer, EditedBufferSnapshot, HistoryEditOutcome, movement_boundary_in_text};
+pub use buffer::{
+    Buffer, EditedBufferSnapshot, HistoryEditOutcome, is_inside_word_in_range,
+    movement_boundary_in_text, surrounding_word_in_range,
+};
 pub use config::{BufferConfig, LargeFilePolicy, LargeTransactionPolicy, WordBoundaryPolicy};
 pub use diff::diff_edits;
 pub use errors::{

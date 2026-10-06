@@ -26,7 +26,7 @@
 - `PlainText`：真正的纯文本兜底，不创建语法树；
 - `TreeSitter`：必须同时提供 grammar 与高亮查询；可直接识别文件的语言还必须提供括号、缩进和折叠查询。
 
-规格可通过 `with_word_characters` 声明除字母数字与 `_` 外额外视为词字符的字符（对齐 Zed 的 `word_characters`），例如 JavaScript/TypeScript 的 `$`、`#`；词边界策略由 `Language::word_boundary()` 提供给文本移动消费方。
+规格可通过 `with_word_characters` 声明语言默认的额外词字符，例如 JavaScript/TypeScript 的 `$`、`#`。`with_word_character_overrides` 为 `overrides.scm` 的已验证捕获声明完整替换值；当前 JavaScript/JSX 的字符串使用 `.`，注释使用 `-`。这是阶段 3 语境差异验收指定的 Zcv 输入语义；本机 Zed 对应配置目前没有词字符覆盖值，不能将这两个值称为与 Zed 逐项一致。`SyntaxSnapshot::word_scope_at` 在当前文本／语法快照和源位置按注入层与捕获选择政策，文尾按词操作回看前一个字形；普通输入继续用 `input_scope_at` 的文尾边界语义。作用域结果由 `InputScope::word_boundary()` 提供，不保存按源语言复制的长期策略。没有位置的全局搜索读取宿主 `SyntaxSnapshot::global_word_boundary()`。
 
 不要登记只有文件名、没有 grammar 的占位语言。尚未完整支持的文件统一按纯文本打开。
 

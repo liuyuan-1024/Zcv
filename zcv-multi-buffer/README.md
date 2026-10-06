@@ -16,6 +16,8 @@ excerpt 结构由 `SumTree` 承载，查询通过 summary 与连续 cursor 推�
 
 `MultiBufferSnapshot::input_scope_at` 把组合输出光标映射到可编辑 excerpt 的源字节位置，再从该源固化的文本／语法快照查询输入政策。不同源和注入语言沿同一入口向 `Editor` 提供政策；组合层不复制配对表或维护语法状态。
 
+按词移动、删除和选词从组合位置映射到当前源的同版本语法快照，按作用域读取 `WordBoundaryPolicy`，词扫描限制在当前源片段内；结构分隔换行不能成为一个词的一部分。只读段仍可按词导航和选择，编辑能力由事务入口判定。无光标位置的全文搜索明确使用首个源的宿主语言政策；组合层不保存按源语言复制的词政策，也不为搜索伪造一个位置。
+
 `MultiBufferSnapshot::newline_only_bracket_at` 对一个选区查询源 excerpt 的 `brackets.scm` 元数据，并拒绝只读映射、跨 excerpt 选区、跨换行内容或括号外选区。它只返回可在当前 Editor 事务中消费的结构性额外空行事实。
 `newline_input_pair_at` 在同一可编辑源行内检查语言配置的输入配对和选区两侧空白；`MultiBufferSource::project_point` 在事务重做时把源内光标重新映射回当前 excerpt。
 

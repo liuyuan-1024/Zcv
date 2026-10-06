@@ -124,6 +124,8 @@ pub(crate) struct LanguageSpec {
     pub(crate) input: LanguageInputConfig,
     /// 除字母数字与 `_` 外，本语言额外视为词字符的字符集合（对齐 Zed 的 word_characters）。
     pub(crate) word_characters: &'static str,
+    /// `overrides.scm` 捕获名到额外词字符的完整覆盖值。
+    pub(crate) word_character_overrides: &'static [(&'static str, &'static str)],
 }
 
 impl LanguageSpec {
@@ -145,6 +147,7 @@ impl LanguageSpec {
             autoclose_before,
             input: LanguageInputConfig::empty(),
             word_characters: "",
+            word_character_overrides: &[],
         }
     }
 
@@ -158,12 +161,21 @@ impl LanguageSpec {
             autoclose_before: "",
             input: LanguageInputConfig::empty(),
             word_characters: "",
+            word_character_overrides: &[],
         }
     }
 
     /// 声明语言的额外词字符（对齐 Zed `LanguageConfig::word_characters`）。
     fn with_word_characters(mut self, word_characters: &'static str) -> Self {
         self.word_characters = word_characters;
+        self
+    }
+
+    fn with_word_character_overrides(
+        mut self,
+        overrides: &'static [(&'static str, &'static str)],
+    ) -> Self {
+        self.word_character_overrides = overrides;
         self
     }
 
@@ -781,7 +793,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             DEFAULT_INPUT_FOLLOWERS,
         )
         .with_input(SCRIPT_INPUT)
-        .with_word_characters("$#"),
+        .with_word_characters("$#")
+        .with_word_character_overrides(&[("string", "."), ("comment", "-")]),
         LanguageSpec::tree_sitter(
             "JSX",
             LanguageMatcher {
@@ -799,7 +812,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             DEFAULT_INPUT_FOLLOWERS,
         )
         .with_input(JSX_INPUT)
-        .with_word_characters("$#"),
+        .with_word_characters("$#")
+        .with_word_character_overrides(&[("string", "."), ("comment", "-")]),
         LanguageSpec::tree_sitter(
             "TypeScript",
             LanguageMatcher {

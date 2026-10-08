@@ -94,6 +94,7 @@ actions!(
     [
         Save,
         OpenSettings,
+        FocusGlobalSearch,
         GitFetch,
         GitPull,
         GitPush,

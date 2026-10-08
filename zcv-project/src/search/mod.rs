@@ -77,15 +77,7 @@ pub(crate) async fn search_worktree(
     // 查询只解析一次；尤其是正则查询，编译出的自动机会复用于每个文件快照。
     let prepared_query = query.prepare()?;
 
-    // `git ls-files` 已按路径排序；只有递归文件系统回退路径需要额外排序。
-    let paths = if let Some(paths) = git_search_paths(&plan) {
-        paths
-    } else {
-        let mut paths: Vec<AbsolutePathBuf> = Vec::new();
-        collect_files(&plan.root, &plan, &mut paths);
-        paths.sort();
-        paths
-    };
+    let paths = searchable_file_paths(&plan);
     if paths.is_empty() {
         return Ok(());
     }
@@ -152,6 +144,20 @@ pub(crate) async fn search_worktree(
         }
     }
     Ok(())
+}
+
+/// 文件名搜索与内容搜索共用候选集和排除规则。
+pub(crate) fn searchable_file_paths(plan: &WorktreeSearchPlan) -> Vec<AbsolutePathBuf> {
+    // `git ls-files` 已按路径排序；
+    // 只有递归文件系统回退路径需要额外排序。
+    if let Some(paths) = git_search_paths(plan) {
+        paths
+    } else {
+        let mut paths = Vec::new();
+        collect_files(&plan.root, plan, &mut paths);
+        paths.sort();
+        paths
+    }
 }
 
 fn search_file(

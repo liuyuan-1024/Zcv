@@ -340,6 +340,20 @@ impl Project {
         SearchResults { task, rx }
     }
 
+    /// 后台列出可供项目文件快速打开的路径，与项目内容搜索使用同一候选集。
+    pub fn searchable_file_paths(&self, cx: &App) -> Task<Vec<PathBuf>> {
+        let Some(worktree) = &self.worktree else {
+            return Task::ready(Vec::new());
+        };
+        let plan = worktree.snapshot.search_plan();
+        cx.background_executor().spawn(async move {
+            search::searchable_file_paths(&plan)
+                .into_iter()
+                .map(AbsolutePathBuf::into_path_buf)
+                .collect()
+        })
+    }
+
     /// 保存真实源文件的 Buffer；组合投影不会参与落盘。
     pub fn save_file_buffers(
         &mut self,

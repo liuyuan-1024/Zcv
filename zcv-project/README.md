@@ -4,6 +4,8 @@
 
 `Project` 管理项目根、目录快照（Worktree）、按路径复用的文档实体（`BufferStore`）与文件系统监听；`GitStore` 管理仓库与修订文本。窗口布局、Pane、Dock 与其他界面状态由 `zcv-workspace` 管理。
 
+文件快速打开通过 `Project::searchable_file_paths` 在后台取得候选路径；它与项目内容搜索共用文件收集与扫描排除规则。匹配、选择与结果展示由工作区组件负责，打开仍走 `Workspace::open_path` 和项目文档索引。
+
 ## 文档实体与所有权
 
 - 文件到文档的索引保存弱引用；只要还有 `Editor` 或视图持有文档，就复用同一条文档链，最后一个使用者释放后整条链结束。

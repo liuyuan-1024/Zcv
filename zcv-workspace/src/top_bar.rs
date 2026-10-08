@@ -14,6 +14,7 @@ use zcv_theme::{color, scale};
 use zcv_ui::Button;
 
 use crate::branch_picker::{BranchPicker, OnBranchSelected};
+use crate::global_search::GlobalSearch;
 use crate::project_picker::ProjectPicker;
 use crate::{OnProjectSelected, Workspace};
 
@@ -34,6 +35,7 @@ pub struct TopBar {
     pub project_picker: Entity<ProjectPicker>,
     /// 分支选择器（显示当前分支名；与 TopBar 一样直接读取 GitStore）。
     pub branch_picker: Entity<BranchPicker>,
+    global_search: Entity<GlobalSearch>,
     /// Git 状态权威；TopBar 只在渲染时读取，不再由宿主推送可写副本。
     git_store: Entity<GitStore>,
     /// 应用级更新控件由 binary 装配层注入；TopBar 只负责其固定布局位置。
@@ -54,14 +56,17 @@ impl TopBar {
         cx: &mut gpui::Context<Self>,
     ) -> Self {
         let git_store = project.read(cx).git_store();
-        let project_picker =
-            cx.new(|cx| ProjectPicker::new(on_selected, project, workspace.clone(), window, cx));
+        let project_picker = cx.new(|cx| {
+            ProjectPicker::new(on_selected, project.clone(), workspace.clone(), window, cx)
+        });
         let branch_picker =
             cx.new(|cx| BranchPicker::new(git_store.clone(), on_branch, window, cx));
+        let global_search = cx.new(|cx| GlobalSearch::new(project, workspace.clone(), window, cx));
         let git_subscription = cx.subscribe(&git_store, |_, _, _: &GitStoreEvent, cx| cx.notify());
         Self {
             project_picker,
             branch_picker,
+            global_search,
             git_store,
             update_control: None,
             workspace,
@@ -74,6 +79,11 @@ impl TopBar {
         self.update_control = Some(update_control);
         cx.notify();
     }
+
+    pub fn focus_global_search(&self, window: &mut Window, cx: &mut App) {
+        self.global_search
+            .update(cx, |search, cx| search.focus(window, cx));
+    }
 }
 
 impl gpui::Render for TopBar {
@@ -84,13 +94,31 @@ impl gpui::Render for TopBar {
     ) -> impl gpui::IntoElement {
         bar_frame(cx)
             .id("top-bar")
-            .child(cluster(leading_slots(window, self, cx)))
-            .child(drag_spacer())
-            .child(cluster(trailing_slots(
-                self.update_control.as_ref(),
-                self.workspace.clone(),
-                cx,
-            )))
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_x_hidden()
+                    .child(cluster(leading_slots(window, self, cx))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .justify_center()
+                    .child(self.global_search.clone()),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_x_hidden()
+                    .flex()
+                    .child(cluster(trailing_slots(
+                        self.update_control.as_ref(),
+                        self.workspace.clone(),
+                        cx,
+                    ))),
+            )
     }
 }
 
@@ -111,10 +139,6 @@ fn bar_frame(cx: &gpui::App) -> Div {
 
 fn cluster(items: Vec<AnyElement>) -> Div {
     div().flex().items_center().gap_2().children(items)
-}
-
-fn drag_spacer() -> Div {
-    div().flex_1().h_full()
 }
 
 fn leading_slots(window: &Window, top_bar: &TopBar, cx: &App) -> Vec<AnyElement> {

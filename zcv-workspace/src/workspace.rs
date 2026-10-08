@@ -11,6 +11,7 @@ mod activity_indicator;
 mod branch_picker;
 mod breadcrumbs;
 mod dock;
+mod global_search;
 mod item;
 mod item_provider;
 mod layout_state;

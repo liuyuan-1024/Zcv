@@ -29,6 +29,23 @@ fn match_count(results: &[FileSearchResult]) -> usize {
 }
 
 #[gpui::test]
+async fn file_candidates_share_project_search_exclusions(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    std::fs::create_dir_all(root.join("target")).expect("应创建排除目录");
+    std::fs::create_dir_all(root.join("src")).expect("应创建源码目录");
+    std::fs::write(root.join("target/hidden.rs"), "hidden").expect("应创建排除文件");
+    std::fs::write(root.join("src/main.rs"), "main").expect("应创建源码文件");
+
+    let project = test_project(root.clone(), cx);
+    project.update(cx, |project, _| {
+        project.set_exclusions(&["**/target".to_string()]);
+    });
+    let files = project.read_with(cx, |project, cx| project.searchable_file_paths(cx));
+    assert_eq!(files.await, vec![root.join("src/main.rs")]);
+}
+
+#[gpui::test]
 async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");

@@ -12,10 +12,10 @@ use zcv_actions::{
 };
 use zcv_fuzzy::{Matcher, PathMatchScore};
 use zcv_project::{Project, ProjectEvent};
-use zcv_theme::{color, scale, typography};
+use zcv_theme::{color, scale};
 use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, ListItem, SvgIcon};
 
-use crate::Workspace;
+use crate::{Workspace, typography_for_window};
 
 const SEARCH_WIDTH: gpui::DefiniteLength = scale::structural(420.0);
 const MAX_RESULTS: usize = 100;
@@ -24,7 +24,7 @@ const RESULTS_MAX_HEIGHT: Pixels = px(420.0);
 type OnFileOpen = Box<dyn Fn(PathBuf, &mut Window, &mut App)>;
 
 fn search_height(window: &Window, cx: &App) -> Pixels {
-    typography::ui_line_at(window.rem_size(), cx) + scale::to_pixels(scale::S4, window) * 2.0
+    typography_for_window(window, cx).ui_line() + scale::to_pixels(scale::S4, window) * 2.0
 }
 
 fn positioned_results(content: impl IntoElement, window: &Window, cx: &App) -> impl IntoElement {

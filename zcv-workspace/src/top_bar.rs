@@ -105,6 +105,7 @@ impl gpui::Render for TopBar {
                     .flex_1()
                     .min_w_0()
                     .flex()
+                    .items_center()
                     .justify_center()
                     .child(self.global_search.clone()),
             )
@@ -125,6 +126,7 @@ impl gpui::Render for TopBar {
 fn bar_frame(cx: &gpui::App) -> Div {
     div()
         .window_control_area(WindowControlArea::Drag)
+        .relative()
         .flex()
         .flex_row()
         .items_center()
@@ -133,13 +135,22 @@ fn bar_frame(cx: &gpui::App) -> Div {
         .gap(scale::S6)
         .bg(color::current(cx).title_bar_background)
         .text_color(color::current(cx).text)
-        .border_b_1()
-        .border_color(color::current(cx).border)
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .border_b_1()
+                .border_color(color::current(cx).border),
+        )
 }
 
 fn cluster(items: Vec<AnyElement>) -> Div {
     div().flex().items_center().gap_2().children(items)
 }
+
+#[cfg(test)]
+#[path = "test/top_bar_tests.rs"]
+mod tests;
 
 fn leading_slots(window: &Window, top_bar: &TopBar, cx: &App) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();

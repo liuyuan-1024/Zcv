@@ -1,3 +1,4 @@
 [alias]
 rd = "run -p Zcv"
 rr = "run --release -p Zcv"
+cp = "clippy"

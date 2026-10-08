@@ -581,6 +581,51 @@ fn revision_diff_source_survives_missing_and_present_transitions(cx: &mut gpui::
 }
 
 #[gpui::test]
+fn binary_revision_is_not_installed_as_text_and_recovers_after_restage(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (root, _temp) = test_git_repo();
+    let path = root.join("tracked.txt");
+    fs::write(&path, b"binary\0content").unwrap();
+    run_git(&root, &["add", "tracked.txt"]);
+    let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    store.update(cx, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    store
+        .update(cx, |store, cx| {
+            store.load_revision_document(GitRevision::Index, &path, cx)
+        })
+        .detach();
+    cx.run_until_parked();
+    store.update(cx, |store, cx| {
+        assert!(store.revision_document_loaded(GitRevision::Index, &path));
+        assert!(store.revision_document_unsupported(GitRevision::Index, &path));
+        assert!(store.revision_text(GitRevision::Index, &path, cx).is_none());
+        assert!(
+            store
+                .revision_diff_document(GitRevision::Index, &path, cx)
+                .is_none()
+        );
+    });
+
+    fs::write(&path, "文本修订\n").unwrap();
+    run_git(&root, &["add", "tracked.txt"]);
+    store.update(cx, |store, cx| {
+        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+    });
+    cx.run_until_parked();
+    store.read_with(cx, |store, cx| {
+        assert!(!store.revision_document_unsupported(GitRevision::Index, &path));
+        assert_eq!(
+            store
+                .revision_text(GitRevision::Index, &path, cx)
+                .as_deref(),
+            Some("文本修订\n")
+        );
+    });
+}
+
+#[gpui::test]
 fn status_for_directory_returns_ignored_for_ignored_directory(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     fs::create_dir_all(root.join("node_modules/pkg")).expect("应创建目录");

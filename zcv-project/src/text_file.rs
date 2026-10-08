@@ -19,6 +19,7 @@ const UTF8_BOM: &[u8; 3] = b"\xEF\xBB\xBF";
 #[derive(Debug)]
 pub enum BufferLoadError {
     Io(io::Error),
+    Binary,
     InvalidUtf8 {
         valid_up_to: usize,
         error_len: Option<usize>,
@@ -42,6 +43,7 @@ impl std::fmt::Display for BufferLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(error) => write!(f, "文件加载 IO 失败：{error}"),
+            Self::Binary => write!(f, "二进制文件不能作为文本打开"),
             Self::InvalidUtf8 {
                 valid_up_to,
                 error_len,
@@ -59,8 +61,14 @@ impl std::error::Error for BufferLoadError {
         match self {
             Self::Io(error) => Some(error),
             Self::Text(error) => Some(error),
-            Self::InvalidUtf8 { .. } => None,
+            Self::Binary | Self::InvalidUtf8 { .. } => None,
         }
+    }
+}
+
+impl BufferLoadError {
+    pub fn is_unsupported_content(&self) -> bool {
+        matches!(self, Self::Binary | Self::InvalidUtf8 { .. })
     }
 }
 
@@ -131,6 +139,10 @@ pub fn decode_to_string<R: io::Read>(mut reader: R) -> Result<String, BufferLoad
             } else {
                 continue;
             }
+        }
+
+        if buffer[..fill_idx].contains(&0) {
+            return Err(BufferLoadError::Binary);
         }
 
         let valid = classify_utf8(&buffer[..fill_idx]);

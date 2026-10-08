@@ -30,6 +30,12 @@ fn invalid_utf8_is_rejected() {
 }
 
 #[test]
+fn binary_content_is_rejected_even_when_utf8_is_valid() {
+    let error = decode(b"text\0more text").unwrap_err();
+    assert!(matches!(error, BufferLoadError::Binary));
+}
+
+#[test]
 fn write_rejects_stale_version() {
     let mut buffer = Buffer::from_text("a\nb".to_string(), BufferConfig::default()).unwrap();
     let stale = buffer.version();

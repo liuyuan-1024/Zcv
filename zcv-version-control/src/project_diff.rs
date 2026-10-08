@@ -597,6 +597,7 @@ impl DiffView {
                     }
                     view.refresh_files(cx);
                 }
+                GitStoreEvent::RevisionSupportChanged => view.refresh_files(cx),
                 GitStoreEvent::HunkOperationFailed(message) => {
                     cx.emit(EditorEvent::Error(format!("变更块操作失败：{message}")));
                 }
@@ -998,24 +999,7 @@ impl DiffView {
         }
         let root = self.project.read(cx).root().map(Path::to_path_buf);
         let background = cx.background_executor().clone();
-        let attached = self
-            .editor
-            .read(cx)
-            .diff_paths(cx)
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let files = self
-            .files
-            .iter()
-            .filter(|file| {
-                let display_path = root
-                    .as_deref()
-                    .and_then(|root| file.path.strip_prefix(root).ok())
-                    .unwrap_or(&file.path);
-                !attached.contains(display_path)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        let files = self.files.clone();
         if files.is_empty() {
             self.revision_load_task = None;
             return;
@@ -1041,9 +1025,7 @@ impl DiffView {
                     let tasks = git_store.update(&mut cx, |store, cx| {
                         let mut tasks = Vec::new();
                         for revision in revisions {
-                            if !store.revision_document_loaded(revision, &file.path) {
-                                tasks.push(store.load_revision_document(revision, &file.path, cx));
-                            }
+                            tasks.push(store.load_revision_document(revision, &file.path, cx));
                         }
                         tasks
                     });
@@ -1053,18 +1035,28 @@ impl DiffView {
                             error = Some(format!("{failure:#}"));
                         }
                     }
+                    let mut unsupported = git_store.read_with(&cx, |store, _| {
+                        store.revision_document_unsupported(kind.base_revision(), &file.path)
+                            || (kind == ProjectDiffKind::Staged
+                                && store
+                                    .revision_document_unsupported(GitRevision::Index, &file.path))
+                    });
                     let working = if let Some(source_load) = source_load {
                         match source_load.await {
                             Ok(source) => Some(source),
                             Err(failure) => {
-                                error = Some(format!("{failure:#}"));
+                                if failure.is_unsupported_content() {
+                                    unsupported = true;
+                                } else {
+                                    error = Some(format!("{failure:#}"));
+                                }
                                 None
                             }
                         }
                     } else {
                         None
                     };
-                    let revision_texts = if error.is_none() {
+                    let revision_texts = if error.is_none() && !unsupported {
                         let (base, index) = git_store.update(&mut cx, |store, cx| {
                             let base = store
                                 .revision_document(kind.base_revision(), &file.path)
@@ -1093,13 +1085,25 @@ impl DiffView {
                     } else {
                         (None, None)
                     };
-                    (file, working, revision_texts, error)
+                    (file, working, revision_texts, unsupported, error)
                 }
             }))
             .buffered(MAX_CONCURRENT_BUFFER_LOADS);
 
-            while let Some((file, working, revisions, error)) = loads.next().await {
+            while let Some((file, working, revisions, unsupported, error)) = loads.next().await {
                 yield_now().await;
+                if unsupported {
+                    this.update(cx, |view, cx| {
+                        view.files.retain(|current| current.path != file.path);
+                        view.diff_subscriptions.retain(|_, subscription| {
+                            subscription.diff.read(cx).path() != &file.path
+                        });
+                        view.sync_projection_paths(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                    continue;
+                }
                 if let Some(error) = error {
                     this.update(cx, |_, cx| {
                         cx.emit(EditorEvent::Error(format!(
@@ -1111,7 +1115,17 @@ impl DiffView {
                     continue;
                 }
                 this.update(cx, |view, cx| {
-                    if view.files.iter().any(|current| current.path == file.path)
+                    let display_path = root
+                        .as_deref()
+                        .and_then(|root| file.path.strip_prefix(root).ok())
+                        .unwrap_or(&file.path);
+                    if !view
+                        .editor
+                        .read(cx)
+                        .diff_paths(cx)
+                        .iter()
+                        .any(|path| path == display_path)
+                        && view.files.iter().any(|current| current.path == file.path)
                         && view.revision_requirements_ready(&file, cx)
                     {
                         let source = if kind == ProjectDiffKind::Staged {

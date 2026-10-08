@@ -242,17 +242,13 @@ impl Project {
         self.buffer_store.open_buffer(path, cx)
     }
 
-    /// 在后台读取文件，在 Project 的文档索引中安装并复用唯一的源文档。
+    /// 在后台检查磁盘内容并读取文件，在 Project 的文档索引中安装或复用源文档。
+    /// 即使文档已打开，也要确认当前文件仍能作为文本参与组合文档。
     pub fn open_buffer_async(
         &mut self,
         path: PathBuf,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<LanguageBuffer>, BufferLoadError>> {
-        match self.buffer_store.opened_buffer(&path) {
-            Ok(Some(buffer)) => return Task::ready(Ok(buffer)),
-            Err(error) => return Task::ready(Err(error)),
-            Ok(None) => {}
-        }
         let load_path = path.clone();
         let loaded = cx
             .background_executor()

@@ -29,6 +29,11 @@ $appDirectory = Join-Path $outputDirectory $appName
 $zipPath = Join-Path $outputDirectory "$distributionName.zip"
 $binaryPath = Join-Path $outputDirectory "Zcv.exe"
 $helperPath = Join-Path $outputDirectory "zcv-update-helper.exe"
+$iconPath = Join-Path $root "assets\branding\Zcv.ico"
+
+if (-not (Test-Path -LiteralPath $iconPath -PathType Leaf)) {
+    throw "应用图标不存在: $iconPath；请先在 macOS 上运行 scripts/generate-app-icons"
+}
 
 Write-Host "==> cargo build --release -p Zcv --target $target"
 Invoke-Cargo -Arguments @("build", "--release", "-p", "Zcv", "--target", $target)

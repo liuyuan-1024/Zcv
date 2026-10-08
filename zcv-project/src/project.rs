@@ -6,6 +6,7 @@ mod git_store;
 mod project_store;
 mod search;
 mod text_file;
+pub use text_file::BufferLoadError;
 
 #[cfg(test)]
 #[path = "test/test_support.rs"]

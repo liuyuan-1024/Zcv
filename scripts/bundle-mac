@@ -21,6 +21,7 @@ BIN_NAME="Zcv"
 PACKAGE="Zcv"
 HELPER_PACKAGE="zcv-update"
 HELPER_BIN_NAME="zcv-update-helper"
+ICON_SOURCE="assets/branding/Zcv.icns"
 VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"
 
 MAKE_DMG=1
@@ -40,6 +41,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 TARGET="aarch64-apple-darwin"
+
+if [[ ! -f "$ICON_SOURCE" ]]; then
+    echo "应用图标不存在: $ICON_SOURCE；请先运行 scripts/generate-app-icons" >&2
+    exit 1
+fi
 
 OS="darwin"
 ARCH="arm64"
@@ -74,10 +80,11 @@ done
 APP="$OUT_DIR/$APP_NAME.app"
 echo "==> 组装 $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/$BIN_NAME"
 cp "$HELPER_BIN" "$APP/Contents/Helpers/$HELPER_BIN_NAME"
+cp "$ICON_SOURCE" "$APP/Contents/Resources/Zcv.icns"
 chmod +x "$APP/Contents/MacOS/$BIN_NAME"
 chmod +x "$APP/Contents/Helpers/$HELPER_BIN_NAME"
 
@@ -106,6 +113,9 @@ cat > "$APP/Contents/Info.plist" <<EOF
 
   <key>CFBundleExecutable</key>
   <string>$BIN_NAME</string>
+
+  <key>CFBundleIconFile</key>
+  <string>Zcv.icns</string>
 
   <key>CFBundleSupportedPlatforms</key>
   <array>

@@ -147,6 +147,13 @@ pub fn inject_editor_diff(
     {
         return;
     }
+    if [GitRevision::Head, GitRevision::Index]
+        .into_iter()
+        .any(|revision| store.read(cx).revision_document_unsupported(revision, path))
+    {
+        editor.update(cx, |editor, cx| editor.clear_diffs(cx));
+        return;
+    }
     let base_text = store
         .read(cx)
         .revision_text(GitRevision::Head, path, cx)

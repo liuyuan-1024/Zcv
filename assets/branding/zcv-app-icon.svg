@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">Zcv 字母连接式应用图标</title>
+  <desc id="description">带柔和光影的深灰色圆角方形中，C 的两端连接 Z 的上横与斜线，V 的两个上端连接斜线，底部连接下横。</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#383838"/>
+      <stop offset=".42" stop-color="#252525"/>
+      <stop offset="1" stop-color="#0D0D0D"/>
+    </linearGradient>
+    <radialGradient id="ambient-light" cx=".27" cy=".17" r=".85">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".12"/>
+      <stop offset=".55" stop-color="#FFFFFF" stop-opacity=".025"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="surface-vignette" cx=".5" cy=".43" r=".76">
+      <stop offset=".52" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity=".19"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".34"/>
+      <stop offset=".48" stop-color="#FFFFFF" stop-opacity=".09"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity=".025"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="260" y1="280" x2="750" y2="740" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset=".27" stop-color="#F5F5F5"/>
+      <stop offset=".5" stop-color="#D3D3D3"/>
+      <stop offset=".64" stop-color="#EFEFEF"/>
+      <stop offset="1" stop-color="#AEAEAE"/>
+    </linearGradient>
+    <filter id="mark-shadow" x="-25%" y="-35%" width="150%" height="175%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="17" result="soft-blur"/>
+      <feOffset in="soft-blur" dx="3" dy="17" result="soft-offset"/>
+      <feFlood flood-color="#000000" flood-opacity=".55" result="soft-shade"/>
+      <feComposite in="soft-shade" in2="soft-offset" operator="in" result="soft-shadow"/>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3" result="contact-blur"/>
+      <feOffset in="contact-blur" dx="1" dy="4" result="contact-offset"/>
+      <feFlood flood-color="#000000" flood-opacity=".3" result="contact-shade"/>
+      <feComposite in="contact-shade" in2="contact-offset" operator="in" result="contact-shadow"/>
+      <feOffset in="SourceAlpha" dx="2" dy="2" result="highlight-offset"/>
+      <feComposite in="SourceAlpha" in2="highlight-offset" operator="out" result="highlight-mask"/>
+      <feFlood flood-color="#FFFFFF" flood-opacity=".22" result="highlight-color"/>
+      <feComposite in="highlight-color" in2="highlight-mask" operator="in" result="highlight"/>
+      <feMerge>
+        <feMergeNode in="soft-shadow"/>
+        <feMergeNode in="contact-shadow"/>
+        <feMergeNode in="SourceGraphic"/>
+        <feMergeNode in="highlight"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="218" fill="url(#background)"/>
+  <rect x="32" y="32" width="960" height="960" rx="218" fill="url(#ambient-light)"/>
+  <rect x="32" y="32" width="960" height="960" rx="218" fill="url(#surface-vignette)"/>
+  <rect x="33.5" y="33.5" width="957" height="957" rx="216.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
+  <g filter="url(#mark-shadow)">
+    <path d="M265 285H745L265 735H745" fill="none" stroke="url(#mark)" stroke-width="54" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M428 285C242.843 386.795 309.036 554.182 513.737 501.809" fill="none" stroke="url(#mark)" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M476 537.1875L661.44921875 735L687 339.375" fill="none" stroke="url(#mark)" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

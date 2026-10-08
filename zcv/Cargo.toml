@@ -40,5 +40,8 @@ zcv-workspace.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
 
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3.0"
+
 [lints]
 workspace = true

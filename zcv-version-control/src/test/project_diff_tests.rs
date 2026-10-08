@@ -115,6 +115,160 @@ fn canonical_root(path: &Path) -> PathBuf {
 }
 
 #[gpui::test]
+fn binary_files_stay_in_status_but_not_staged_or_unstaged_diff(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时仓库");
+    let root = canonical_root(directory.path());
+    run_in(&root, &["git", "init", "-q", "-b", "master"]);
+    run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+    run_in(&root, &["git", "config", "user.name", "Test User"]);
+    std::fs::write(root.join("keep.txt"), "原始内容\n").unwrap();
+    run_in(&root, &["git", "add", "keep.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+
+    std::fs::write(root.join("keep.txt"), "已暂存文本\n").unwrap();
+    std::fs::write(root.join("staged.ico"), b"\0\0\x01\0\xff\xfe\0\x01").unwrap();
+    run_in(&root, &["git", "add", "keep.txt", "staged.ico"]);
+    std::fs::write(root.join("keep.txt"), "未暂存文本\n").unwrap();
+    std::fs::write(root.join("untracked.icns"), b"icns\0\0\x01\0\xff\xfe").unwrap();
+
+    let project = test_project(root.clone(), cx);
+    let store = project.read_with(cx, |project, _| project.git_store());
+    let staged = cx.new(|cx| DiffView::new(ProjectDiffKind::Staged, project.clone(), cx));
+    let unstaged = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
+    cx.run_until_parked();
+    cx.run_until_parked();
+
+    for view in [&staged, &unstaged] {
+        view.update(cx, |view, cx| {
+            let snapshot = view
+                .multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx));
+            let paths = snapshot
+                .excerpts()
+                .map(|excerpt| excerpt.display_path().to_path_buf())
+                .collect::<Vec<_>>();
+            assert_eq!(paths, vec![PathBuf::from("keep.txt")]);
+        });
+    }
+    for name in ["staged.ico", "untracked.icns"] {
+        assert!(store.read_with(cx, |store, _| {
+            store.status_for_path(&root.join(name)).is_some()
+        }));
+    }
+}
+
+#[gpui::test]
+fn unstaged_diff_removes_open_file_when_disk_content_becomes_binary(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时仓库");
+    let root = canonical_root(directory.path());
+    run_in(&root, &["git", "init", "-q", "-b", "master"]);
+    run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+    run_in(&root, &["git", "config", "user.name", "Test User"]);
+    let path = root.join("tracked.txt");
+    std::fs::write(&path, "原始内容\n").unwrap();
+    run_in(&root, &["git", "add", "tracked.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+    std::fs::write(&path, "修改内容\n").unwrap();
+
+    let project = test_project(root.clone(), cx);
+    let store = project.read_with(cx, |project, _| project.git_store());
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
+    cx.run_until_parked();
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx))
+                .excerpts()
+                .count(),
+            1
+        );
+    });
+
+    std::fs::write(&path, b"binary\0content").unwrap();
+    store.update(cx, |store, cx| {
+        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+    });
+    cx.run_until_parked();
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx))
+                .excerpts()
+                .count(),
+            0
+        );
+    });
+    assert!(store.read_with(cx, |store, _| store.status_for_path(&path).is_some()));
+
+    std::fs::write(&path, "再次修改\n").unwrap();
+    store.update(cx, |store, cx| {
+        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+    });
+    cx.run_until_parked();
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx))
+                .excerpts()
+                .count(),
+            1
+        );
+    });
+}
+
+#[gpui::test]
+fn staged_diff_tracks_revision_text_support_changes(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时仓库");
+    let root = canonical_root(directory.path());
+    run_in(&root, &["git", "init", "-q", "-b", "master"]);
+    run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+    run_in(&root, &["git", "config", "user.name", "Test User"]);
+    let path = root.join("tracked.txt");
+    std::fs::write(&path, "原始内容\n").unwrap();
+    run_in(&root, &["git", "add", "tracked.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+    std::fs::write(&path, "已暂存修改\n").unwrap();
+    run_in(&root, &["git", "add", "tracked.txt"]);
+
+    let project = test_project(root.clone(), cx);
+    let store = project.read_with(cx, |project, _| project.git_store());
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Staged, project, cx));
+    cx.run_until_parked();
+    cx.run_until_parked();
+    let excerpt_count = |view: &Entity<DiffView>, cx: &mut TestAppContext| {
+        view.update(cx, |view, cx| {
+            view.multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx))
+                .excerpts()
+                .count()
+        })
+    };
+    assert_eq!(excerpt_count(&view, cx), 1);
+
+    std::fs::write(&path, b"binary\0content").unwrap();
+    run_in(&root, &["git", "add", "tracked.txt"]);
+    store.update(cx, |store, cx| {
+        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+    });
+    cx.run_until_parked();
+    cx.run_until_parked();
+    assert_eq!(excerpt_count(&view, cx), 0);
+    assert!(store.read_with(cx, |store, _| store.status_for_path(&path).is_some()));
+
+    std::fs::write(&path, "重新暂存文本\n").unwrap();
+    run_in(&root, &["git", "add", "tracked.txt"]);
+    store.update(cx, |store, cx| {
+        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+    });
+    cx.run_until_parked();
+    cx.run_until_parked();
+    assert_eq!(excerpt_count(&view, cx), 1);
+}
+
+#[gpui::test]
 fn conflict_projection_refresh_preserves_unchanged_files(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = canonical_root(directory.path());

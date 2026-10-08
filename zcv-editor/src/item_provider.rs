@@ -2,7 +2,6 @@
 //!
 //! 打开文件时工作区经 ItemProvider 注册表分发到本 provider，使 Workspace 不直接依赖 Editor 类型。
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use gpui::{App, AppContext, Entity, Task};
@@ -11,9 +10,6 @@ use zcv_project::Project;
 use zcv_workspace::{ItemHandle, ItemProvider};
 
 use crate::Editor;
-
-/// 二进制检测窗口：读取文件头 8KB 检查 null 字节，命中视为二进制拒绝文本打开。
-const BINARY_SNIFF_SIZE: usize = 8192;
 
 /// 任何普通文件都交给编辑器打开（文本兜底，含 .gitignore 等无扩展名文件）。
 pub(crate) struct TextFileProvider;
@@ -29,10 +25,6 @@ impl ItemProvider for TextFileProvider {
         project: Entity<Project>,
         cx: &mut App,
     ) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
-        // 二进制防护：文件头含 null 字节（如 .DS_Store）以文本打开只会得到乱码，直接拒绝。
-        if is_binary(&path) {
-            return Task::ready(Err(anyhow::anyhow!("二进制文件，无法以文本打开")));
-        }
         let language_buffer = match project.update(cx, |project, cx| project.open_buffer(&path, cx))
         {
             Ok(language_buffer) => language_buffer,
@@ -49,16 +41,6 @@ impl ItemProvider for TextFileProvider {
 /// 注册文本文件 Provider；可重复调用（按具体 Provider 类型去重）。
 pub(crate) fn init(cx: &mut App) {
     zcv_workspace::register_item_provider(TextFileProvider, cx);
-}
-
-/// 文件头含 null 字节视为二进制（只读前 8KB，读取失败按文本放行）。
-fn is_binary(path: &Path) -> bool {
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut head = [0u8; BINARY_SNIFF_SIZE];
-    let read = file.read(&mut head).unwrap_or(0);
-    head[..read].contains(&0)
 }
 
 #[cfg(test)]

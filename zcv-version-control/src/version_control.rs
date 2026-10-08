@@ -378,7 +378,8 @@ impl VersionControlPanel {
                 GitStoreEvent::JobsUpdated
                 | GitStoreEvent::HunkOperationFailed(_)
                 | GitStoreEvent::UncommitFailed(_)
-                | GitStoreEvent::RevisionLoadFailed(_) => {}
+                | GitStoreEvent::RevisionLoadFailed(_)
+                | GitStoreEvent::RevisionSupportChanged => {}
             }
         })
         .detach();

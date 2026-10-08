@@ -48,14 +48,6 @@ impl BufferStore {
         self.get_or_load_buffer(path, || load_buffer(path), cx)
     }
 
-    pub(crate) fn opened_buffer(
-        &self,
-        path: &Path,
-    ) -> Result<Option<Entity<LanguageBuffer>>, BufferLoadError> {
-        let path = index_path(path).map_err(BufferLoadError::Io)?;
-        Ok(self.opened_buffers.get(&path).and_then(WeakEntity::upgrade))
-    }
-
     pub(crate) fn install_loaded_buffer(
         &mut self,
         path: &Path,

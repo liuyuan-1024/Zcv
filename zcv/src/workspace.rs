@@ -738,7 +738,10 @@ fn initialize_workspace(
         // 展开状态按工作区文本跟踪区间跨刷新迁移（HEAD 变化不重置，见 diff_projection 模块说明）。
         if matches!(
             event,
-            GitStoreEvent::Repositories | GitStoreEvent::Statuses | GitStoreEvent::Head
+            GitStoreEvent::Repositories
+                | GitStoreEvent::Statuses
+                | GitStoreEvent::Head
+                | GitStoreEvent::RevisionSupportChanged
         ) {
             refresh_pane_git_projection(workspace.pane(), workspace.project(), cx);
         }

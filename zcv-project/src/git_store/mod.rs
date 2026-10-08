@@ -39,6 +39,8 @@ use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_path::{AbsolutePathBuf, RelativePathBuf, normalize_for_comparison};
 use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, Snapshot, TextRange};
 
+use crate::text_file::{BufferLoadError, decode_to_string};
+
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
 
@@ -65,6 +67,8 @@ pub enum GitStoreEvent {
     HunkOperationFailed(String),
     /// 修订读取失败；缓存保持原内容，由工作区统一提示。
     RevisionLoadFailed(String),
+    /// 已加载修订在可组合文本与不支持的内容之间切换。
+    RevisionSupportChanged,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -278,6 +282,7 @@ impl PendingIndex {
 #[derive(Clone)]
 enum RevisionDocument {
     Present(Entity<LanguageBuffer>),
+    Unsupported,
     Missing {
         /// 缺失修订在 diff 新侧需要一个稳定的空文档实体；普通修订读取仍保持缺失语义。
         empty_diff_source: Option<Entity<LanguageBuffer>>,
@@ -288,7 +293,7 @@ impl RevisionDocument {
     fn present(&self) -> Option<Entity<LanguageBuffer>> {
         match self {
             Self::Present(document) => Some(document.clone()),
-            Self::Missing { .. } => None,
+            Self::Missing { .. } | Self::Unsupported => None,
         }
     }
 
@@ -296,8 +301,19 @@ impl RevisionDocument {
         match self {
             Self::Present(document) => Some(document.clone()),
             Self::Missing { empty_diff_source } => empty_diff_source.clone(),
+            Self::Unsupported => None,
         }
     }
+}
+
+enum LoadedRevision {
+    Text {
+        text: String,
+        text_arc: Arc<str>,
+        buffer: Option<Box<Buffer>>,
+    },
+    Missing,
+    Unsupported,
 }
 
 type RevisionKey = (GitRevision, AbsolutePathBuf);
@@ -1208,40 +1224,45 @@ impl GitStore {
         let generation = state.generation;
         let loaded = self.background.spawn(async move {
             let contents = repository.load_revisions(&[&revision_spec])?;
-            let text = contents
-                .into_iter()
-                .next()
-                .flatten()
-                .map(|content| String::from_utf8_lossy(&content).into_owned());
-            let text_arc = text.as_deref().map(Arc::from);
-            let buffer = if needs_buffer {
-                text.as_ref()
-                    .map(|text| Buffer::from_text(text.clone(), BufferConfig::default()))
-                    .transpose()?
-            } else {
-                None
+            let Some(content) = contents.into_iter().next().flatten() else {
+                return Ok::<_, anyhow::Error>(LoadedRevision::Missing);
             };
-            Ok::<_, anyhow::Error>((text, text_arc, buffer))
+            let text = match decode_to_string(content.as_slice()) {
+                Ok(text) => text,
+                Err(BufferLoadError::Binary | BufferLoadError::InvalidUtf8 { .. }) => {
+                    return Ok(LoadedRevision::Unsupported);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let text_arc = Arc::from(text.as_str());
+            let buffer = needs_buffer
+                .then(|| Buffer::from_text(text.clone(), BufferConfig::default()).map(Box::new))
+                .transpose()?;
+            Ok(LoadedRevision::Text {
+                text,
+                text_arc,
+                buffer,
+            })
         });
         let task_key = key.clone();
         let task = cx
             .spawn(async move |this, cx| {
                 let mut loaded = loaded.await.map_err(Arc::new);
-                let edit_text = loaded
-                    .as_mut()
-                    .ok()
-                    .and_then(|(text, _, _)| text.take())
-                    .unwrap_or_default();
+                let edit_text = match loaded.as_mut().ok() {
+                    Some(LoadedRevision::Text { text, .. }) => Some(std::mem::take(text)),
+                    Some(LoadedRevision::Missing) => Some(String::new()),
+                    Some(LoadedRevision::Unsupported) | None => None,
+                };
                 let source = this
                     .update(cx, |store, _| {
                         let state = store.revision_documents.get(&key)?;
-                        (state.generation == generation && loaded.is_ok())
+                        (state.generation == generation && edit_text.is_some())
                             .then(|| state.document.as_ref().and_then(RevisionDocument::source))
                             .flatten()
                     })
                     .ok()
                     .flatten();
-                let edited = if let Some(source) = &source {
+                let edited = if let (Some(source), Some(edit_text)) = (&source, edit_text) {
                     Some(
                         source
                             .update(cx, |source, cx| source.snapshot_with_text(edit_text, cx))
@@ -1275,7 +1296,7 @@ impl GitStore {
                         )));
                         return Ok(Err(error));
                     }
-                    let (_, text_arc, buffer) = loaded.expect("读取失败已提前返回");
+                    let loaded = loaded.expect("读取失败已提前返回");
                     // 版本检查覆盖读取、文本差异计算和语法解析，安装与 diff 推送在同一轮更新中完成。
                     if let (Some(source), Some(edited)) = (&source, edited) {
                         let saved_version = edited.base_version();
@@ -1287,7 +1308,7 @@ impl GitStore {
                         });
                     }
                     let document =
-                        store.store_revision_document(revision, path, text_arc, source, buffer, cx);
+                        store.store_revision_document(revision, path, loaded, source, cx);
                     store.revision_documents.get_mut(&key).unwrap().loading = RevisionLoading::Idle;
                     Ok(Ok(document))
                 });
@@ -1308,35 +1329,59 @@ impl GitStore {
         &mut self,
         revision: GitRevision,
         path: AbsolutePathBuf,
-        text_arc: Option<Arc<str>>,
+        loaded: LoadedRevision,
         source: Option<Entity<LanguageBuffer>>,
-        buffer: Option<Buffer>,
         cx: &mut Context<Self>,
     ) -> Option<Entity<LanguageBuffer>> {
         let key = (revision, path.clone());
-        let document = match &text_arc {
-            None => RevisionDocument::Missing {
-                empty_diff_source: source,
-            },
-            Some(_) => RevisionDocument::Present(source.unwrap_or_else(|| {
-                let buffer = buffer.expect("新修订文档必须由后台准备文本 Buffer");
-                let registry = Arc::clone(&self.language_registry);
-                cx.new(|cx| {
-                    LanguageBuffer::new(buffer, Some(path.as_path().to_path_buf()), registry, cx)
-                })
-            })),
+        let (document, diff_text_update) = match loaded {
+            LoadedRevision::Missing => (
+                RevisionDocument::Missing {
+                    empty_diff_source: source,
+                },
+                Some(None),
+            ),
+            LoadedRevision::Unsupported => (RevisionDocument::Unsupported, None),
+            LoadedRevision::Text {
+                text_arc, buffer, ..
+            } => (
+                RevisionDocument::Present(source.unwrap_or_else(|| {
+                    let buffer = *buffer.expect("新修订文档必须由后台准备文本 Buffer");
+                    let registry = Arc::clone(&self.language_registry);
+                    cx.new(|cx| {
+                        LanguageBuffer::new(
+                            buffer,
+                            Some(path.as_path().to_path_buf()),
+                            registry,
+                            cx,
+                        )
+                    })
+                })),
+                Some(Some(text_arc)),
+            ),
         };
         let present = document.present();
-        self.revision_documents.get_mut(&key).unwrap().document = Some(document);
+        let state = self.revision_documents.get_mut(&key).unwrap();
+        let was_unsupported = state
+            .document
+            .as_ref()
+            .map(|document| matches!(document, RevisionDocument::Unsupported));
+        let is_unsupported = matches!(document, RevisionDocument::Unsupported);
+        state.document = Some(document);
         if revision == GitRevision::Index
-            && self
-                .pending_index
-                .get(&path)
-                .is_some_and(|pending| Some(pending.base.as_ref()) != text_arc.as_deref())
+            && self.pending_index.get(&path).is_some_and(|pending| {
+                Some(pending.base.as_ref())
+                    != diff_text_update.as_ref().and_then(|text| text.as_deref())
+            })
         {
             self.pending_index.remove(&path);
         }
-        self.push_revision_text_to_diffs(revision, &path, text_arc, cx);
+        if let Some(text) = diff_text_update {
+            self.push_revision_text_to_diffs(revision, &path, text, cx);
+        }
+        if was_unsupported.is_some_and(|previous| previous != is_unsupported) {
+            cx.emit(GitStoreEvent::RevisionSupportChanged);
+        }
         present
     }
 
@@ -1386,6 +1431,7 @@ impl GitStore {
         let absolute_path = key.1.as_path().to_path_buf();
         match self.revision_documents.get_mut(&key)?.document.as_mut()? {
             RevisionDocument::Present(document) => Some(document.clone()),
+            RevisionDocument::Unsupported => None,
             RevisionDocument::Missing { empty_diff_source } => {
                 if let Some(document) = empty_diff_source {
                     return Some(document.clone());
@@ -1420,6 +1466,17 @@ impl GitStore {
         self.revision_documents
             .get(&(revision, path))
             .is_some_and(|state| state.document.is_some())
+    }
+
+    /// 已读取的修订内容不能作为文本组合进编辑器。
+    pub fn revision_document_unsupported(&self, revision: GitRevision, path: &Path) -> bool {
+        let Ok(path) = canonicalize_path(path) else {
+            return false;
+        };
+        self.revision_documents
+            .get(&(revision, path))
+            .and_then(|state| state.document.as_ref())
+            .is_some_and(|document| matches!(document, RevisionDocument::Unsupported))
     }
 
     /// 修订内容可能变化：对已加载或被共享 diff 引用的路径就地重新读取。

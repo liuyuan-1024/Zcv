@@ -24,6 +24,8 @@ Zcv 是一个以本地编辑体验为核心的代码编辑器，使用 Rust 与 
 
 平台构建与打包配置见 [发布流程](.github/workflows/release.yml)、[macOS 打包脚本](scripts/bundle-mac)与 [Windows 打包脚本](scripts/bundle-windows.ps1)。
 
+应用图标以 [`assets/branding/zcv-app-icon.svg`](assets/branding/zcv-app-icon.svg) 为原稿。修改原稿后，在 macOS 上运行 `scripts/generate-app-icons`，重新生成提交到仓库的 `Zcv.icns` 和 `Zcv.ico`。该脚本需要 `rsvg-convert`、`iconutil` 和 `python3`。macOS 打包时将 `Zcv.icns` 放入 `.app`；Windows 构建时将 `Zcv.ico` 嵌入 `Zcv.exe` 的图标资源 ID 1，打包脚本直接收集该 exe。
+
 ### 启动应用
 
 以下命令在项目根目录执行，由 [Cargo 配置](.cargo/config.toml) 定义。

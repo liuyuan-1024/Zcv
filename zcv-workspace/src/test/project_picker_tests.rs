@@ -76,6 +76,29 @@ fn remove_project_drops_entry_and_keeps_filter(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn project_query_matches_noncontiguous_name_characters(cx: &mut TestAppContext) {
+    let mut delegate = cx.update(|cx| {
+        ProjectPickerDelegate::new(
+            cx.new(|cx| Project::empty(Arc::new(LanguageRegistry::new()), cx)),
+            vec![
+                ProjectEntry {
+                    path: "/tmp/alpha-project".into(),
+                },
+                ProjectEntry {
+                    path: "/tmp/beta".into(),
+                },
+            ],
+            Rc::new(|_, _, _| {}),
+            Rc::new(|_, _| {}),
+            Rc::new(|_, _| {}),
+            cx,
+        )
+    });
+    delegate.update_matches("apj".into());
+    assert_eq!(delegate.filtered, vec![0]);
+}
+
+#[gpui::test]
 fn remove_selected_project_selects_the_next_entry(cx: &mut TestAppContext) {
     let mut delegate = cx.update(test_delegate);
     delegate.selected_index = 1;

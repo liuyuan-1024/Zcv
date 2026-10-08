@@ -190,7 +190,7 @@ impl OutlinePanel {
 
     /// 按当前查询在缓存条目上重建行并刷新折叠集合；不访问语法层。
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
-        let query = self.search_input.read(cx).text(cx).trim().to_lowercase();
+        let query = self.search_input.read(cx).text(cx);
         let tree = has_multiple_files(&self.source_entries);
         let rows = outline_rows(&self.source_entries, tree, &query, &self.collapsed_rows);
         let current_keys: HashSet<_> = rows.iter().map(OutlineRow::key).collect();

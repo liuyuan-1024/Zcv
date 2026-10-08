@@ -15,6 +15,7 @@ use gpui::{
     prelude::*,
 };
 use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
+use zcv_fuzzy::Matcher;
 use zcv_keymap::{KeyBindings, display_shortcut};
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, picker_divider};
 use zcv_project::Project;
@@ -100,19 +101,21 @@ impl ProjectPickerDelegate {
     }
 
     fn do_filter(&mut self) {
-        if self.query.is_empty() {
-            self.filtered = (0..self.projects.len()).collect();
-        } else {
-            let q = self.query.to_lowercase();
-            self.filtered = self
+        if let Some(mut matcher) = Matcher::new(&self.query) {
+            let mut ranked: Vec<_> = self
                 .projects
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| {
-                    p.label().to_lowercase().contains(&q) || p.path.to_lowercase().contains(&q)
+                .filter_map(|(index, project)| {
+                    matcher
+                        .score_path(&project.label(), &project.path)
+                        .map(|score| (score, index))
                 })
-                .map(|(i, _)| i)
                 .collect();
+            ranked.sort_unstable_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+            self.filtered = ranked.into_iter().map(|(_, index)| index).collect();
+        } else {
+            self.filtered = (0..self.projects.len()).collect();
         }
         self.selected_index = self
             .selected_index

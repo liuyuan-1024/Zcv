@@ -10,6 +10,7 @@ use gpui::{
 use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
 };
+use zcv_fuzzy::{Matcher, PathMatchScore};
 use zcv_project::{Project, ProjectEvent};
 use zcv_theme::{color, scale, typography};
 use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, ListItem, SvgIcon};
@@ -42,8 +43,6 @@ struct FileCandidate {
     path: PathBuf,
     relative: String,
     name: String,
-    path_key: String,
-    name_key: String,
 }
 
 impl FileCandidate {
@@ -60,57 +59,30 @@ impl FileCandidate {
             .into_owned();
         Self {
             path,
-            path_key: relative.to_lowercase(),
-            name_key: name.to_lowercase(),
             relative,
             name,
         }
     }
 }
 
-fn subsequence_gap(haystack: &str, needle: &str) -> Option<usize> {
-    let mut positions = haystack.chars().enumerate();
-    let mut last = 0;
-    for character in needle.chars() {
-        let (position, _) = positions.find(|(_, candidate)| *candidate == character)?;
-        last = position;
-    }
-    Some(last + 1 - needle.chars().count())
-}
-
-fn match_rank(candidate: &FileCandidate, query: &str) -> Option<(u8, usize)> {
-    if candidate.name_key == query {
-        Some((0, 0))
-    } else if candidate.name_key.starts_with(query) {
-        Some((1, candidate.name_key.len()))
-    } else if let Some(position) = candidate.name_key.find(query) {
-        Some((2, position))
-    } else if candidate.path_key.starts_with(query) {
-        Some((3, candidate.path_key.len()))
-    } else if let Some(position) = candidate.path_key.find(query) {
-        Some((4, position))
-    } else {
-        subsequence_gap(&candidate.path_key, query).map(|gap| (5, gap))
-    }
-}
-
 fn ranked_matches(files: &[FileCandidate], query: &str) -> Vec<usize> {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
+    let Some(mut matcher) = Matcher::new(query) else {
         return Vec::new();
-    }
+    };
     let mut ranked: Vec<_> = files
         .iter()
         .enumerate()
         .filter_map(|(index, file)| {
-            match_rank(file, &query).map(|(tier, distance)| (tier, distance, index))
+            matcher
+                .score_path(&file.name, &file.relative)
+                .map(|score| (score, index))
         })
         .collect();
-    let compare = |left: &(u8, usize, usize), right: &(u8, usize, usize)| {
-        left.0
-            .cmp(&right.0)
-            .then(left.1.cmp(&right.1))
-            .then_with(|| files[left.2].relative.cmp(&files[right.2].relative))
+    let compare = |left: &(PathMatchScore, usize), right: &(PathMatchScore, usize)| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| files[left.1].relative.cmp(&files[right.1].relative))
     };
     if ranked.len() > MAX_RESULTS {
         ranked.select_nth_unstable_by(MAX_RESULTS, compare);
@@ -120,7 +92,7 @@ fn ranked_matches(files: &[FileCandidate], query: &str) -> Vec<usize> {
     ranked
         .into_iter()
         .take(MAX_RESULTS)
-        .map(|(_, _, index)| index)
+        .map(|(_, index)| index)
         .collect()
 }
 

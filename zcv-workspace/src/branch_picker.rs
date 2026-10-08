@@ -4,12 +4,13 @@
 //! 分支列表直接读取 GitStore 快照（打开即渲染，无加载态）；
 //! 切换/创建分支通过回调转发到 git_store 后台执行，完成后 GitStore 自动重扫。
 //!
-//! 搜索无匹配时列表尾部追加"创建分支"虚拟行：以当前 HEAD 为基创建并切换。
+//! 查询与现有分支名不完全相同时，列表尾部追加“创建分支”行：以当前 HEAD 为基创建并切换。
 
 use std::rc::Rc;
 
 use gpui::{App, Context, Entity, Render, Subscription, Window, div, prelude::*};
 use zcv_actions::{DeleteGitBranch, SelectGitBranch};
+use zcv_fuzzy::Matcher;
 use zcv_git::Branch;
 use zcv_keymap::display_shortcut;
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost};
@@ -63,31 +64,31 @@ impl BranchPickerDelegate {
         self.do_filter();
     }
 
-    /// 搜索无匹配且 query 非空时，列表尾部追加"创建分支"虚拟行。
+    /// 查询不是已有分支的完整名称时，保留显式创建入口。
     fn create_row_visible(&self) -> bool {
-        !self.query.is_empty() && self.filtered.is_empty()
+        !self.query.trim().is_empty()
+            && !self.branches.iter().any(|branch| branch.name == self.query)
     }
 
     fn do_filter(&mut self) {
-        if self.query.is_empty() {
-            self.filtered = (0..self.branches.len()).collect();
-            self.selected_index = self.branches.iter().position(|b| b.is_head).unwrap_or(0);
-        } else {
-            let q = self.query.to_lowercase();
-            self.filtered = self
+        if let Some(mut matcher) = Matcher::new(&self.query) {
+            let mut ranked: Vec<_> = self
                 .branches
                 .iter()
                 .enumerate()
-                .filter(|(_, b)| b.name.to_lowercase().contains(&q))
-                .map(|(i, _)| i)
+                .filter_map(|(index, branch)| {
+                    matcher.score(&branch.name).map(|score| (score, index))
+                })
                 .collect();
-            // 无匹配时选中"创建分支"虚拟行；有匹配时钳制到列表内。
-            self.selected_index = if self.filtered.is_empty() {
-                0
-            } else {
-                self.selected_index
-                    .min(self.filtered.len().saturating_sub(1))
-            };
+            ranked.sort_unstable_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+            self.filtered = ranked.into_iter().map(|(_, index)| index).collect();
+            // 无匹配时选中“创建分支”行；有匹配时钳制到已有分支行。
+            self.selected_index = self
+                .selected_index
+                .min(self.filtered.len().saturating_sub(1));
+        } else {
+            self.filtered = (0..self.branches.len()).collect();
+            self.selected_index = self.branches.iter().position(|b| b.is_head).unwrap_or(0);
         }
     }
 }
@@ -114,8 +115,7 @@ impl PickerDelegate for BranchPickerDelegate {
         if self.match_count() == 0 {
             return;
         }
-        if self.create_row_visible() {
-            // 无匹配分支 → 以当前 HEAD 为基创建。
+        if self.create_row_visible() && self.selected_index == self.filtered.len() {
             let cb = self.on_select.clone();
             cb(GitBranchAction::Create(self.query.clone()), window, cx);
         } else {
@@ -280,7 +280,7 @@ impl BranchPicker {
     ) {
         self.picker.update(cx, |picker, cx| {
             let delegate = picker.delegate();
-            if delegate.create_row_visible() || delegate.filtered.is_empty() {
+            if delegate.selected_index >= delegate.filtered.len() {
                 return;
             }
             let branch = &delegate.branches[delegate.filtered[delegate.selected_index]];

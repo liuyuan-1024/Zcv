@@ -67,6 +67,7 @@ fn matches_file_name_and_project_relative_path() {
     assert_eq!(ranked_matches(&files, "SEARCH.RS"), vec![2, 1, 0]);
     assert_eq!(ranked_matches(&files, "test/search"), vec![1]);
     assert_eq!(ranked_matches(&files, "glbsrch"), vec![0]);
+    assert_eq!(ranked_matches(&files, "srchrs"), vec![2, 1, 0]);
     assert!(ranked_matches(&files, "not-found").is_empty());
 }
 

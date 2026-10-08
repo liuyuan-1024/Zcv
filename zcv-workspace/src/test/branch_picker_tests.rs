@@ -65,11 +65,20 @@ fn empty_query_selects_current_branch() {
 }
 
 #[test]
-fn query_filters_by_substring() {
+fn query_ranks_fuzzy_matches_and_keeps_create_action() {
     let mut delegate = test_delegate();
-    delegate.update_matches("feat".into());
+    delegate.update_matches("ftr".into());
     assert_eq!(delegate.filtered, vec![1]);
-    assert_eq!(delegate.match_count(), 1);
+    assert!(delegate.create_row_visible());
+    assert_eq!(delegate.match_count(), 2);
+}
+
+#[test]
+fn exact_branch_name_hides_create_action() {
+    let mut delegate = test_delegate();
+    delegate.update_matches("feature".into());
+    assert_eq!(delegate.filtered, vec![1]);
+    assert!(!delegate.create_row_visible());
 }
 
 #[test]
@@ -99,6 +108,33 @@ fn confirm_create_invokes_callback(cx: &mut gpui::TestAppContext) {
     assert!(matches!(
         triggered.take(),
         Some(GitBranchAction::Create(name)) if name == "new-feat"
+    ));
+}
+
+#[gpui::test]
+fn confirm_create_row_works_alongside_fuzzy_matches(cx: &mut gpui::TestAppContext) {
+    let triggered = Rc::new(Cell::new(None::<GitBranchAction>));
+    let on_select: OnBranchSelected = {
+        let triggered = triggered.clone();
+        Rc::new(move |action, _window, _cx| triggered.set(Some(action)))
+    };
+    let mut delegate = BranchPickerDelegate::new(
+        vec![Branch {
+            name: "feature".into(),
+            is_head: true,
+        }],
+        on_select,
+    );
+    delegate.update_matches("ftr".into());
+    delegate.selected_index = delegate.filtered.len();
+
+    let window = cx.add_window(|_window, _cx| TestView);
+    window
+        .update(cx, |_, window, cx| delegate.confirm(window, cx))
+        .expect("测试窗口应可更新");
+    assert!(matches!(
+        triggered.take(),
+        Some(GitBranchAction::Create(name)) if name == "ftr"
     ));
 }
 

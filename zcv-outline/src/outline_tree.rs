@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use zcv_editor::OutlineEntry;
+use zcv_fuzzy::Matcher;
 use zcv_ui::{AutoFoldDir, auto_fold_dirs};
 
 use crate::outline_item::OutlineItemKey;
@@ -72,14 +73,14 @@ pub(crate) fn outline_rows(
     query: &str,
     collapsed: &HashSet<OutlineRowKey>,
 ) -> Vec<OutlineRow> {
-    let filtered = if query.is_empty() {
-        entries.to_vec()
-    } else {
+    let filtered = if let Some(mut matcher) = Matcher::new(query) {
         entries
             .iter()
-            .filter(|entry| entry.item.text.to_lowercase().contains(query))
+            .filter(|entry| matcher.score(&entry.item.text).is_some())
             .cloned()
             .collect()
+    } else {
+        entries.to_vec()
     };
     if !tree {
         return flat_symbol_rows(&filtered);

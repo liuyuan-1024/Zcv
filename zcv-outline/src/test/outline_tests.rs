@@ -81,6 +81,8 @@ fn outline_filter_matches_text_case_insensitively() {
     ];
     let filtered = outline_rows(&entries, false, "build", &HashSet::new());
     assert_eq!(texts(&filtered), vec!["fn build() {}"]);
+    let fuzzy = outline_rows(&entries, false, "bld", &HashSet::new());
+    assert_eq!(texts(&fuzzy), vec!["fn build() {}"]);
     assert_eq!(
         outline_rows(&entries, false, "", &HashSet::new()).len(),
         2,

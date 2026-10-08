@@ -1,0 +1,11 @@
+[package]
+name = "zcv-fuzzy"
+version.workspace = true
+edition.workspace = true
+description = "候选名称的模糊匹配与评分"
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

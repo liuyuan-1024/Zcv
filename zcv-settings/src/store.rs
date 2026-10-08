@@ -2,11 +2,8 @@
 //!
 //! `SettingsStore` 是用户设置 global 的唯一载体；错误经 `SettingsErrorReporter` 通知装配层。
 
-use std::sync::Arc;
-
 use anyhow::Result;
-use gpui::{App, Context, Entity, EventEmitter, Global, Task};
-use zcv_fs_watch::Watcher;
+use gpui::{App, Context, Entity, EventEmitter, Global};
 
 use super::merge::UserSettings;
 use super::schema::parse_user_settings;
@@ -14,6 +11,7 @@ use super::schema::parse_user_settings;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingsError(pub String);
 
+#[derive(Default)]
 pub struct SettingsErrorReporter {
     pending: Option<String>,
 }
@@ -25,10 +23,6 @@ pub struct GlobalSettingsErrorReporter(pub Entity<SettingsErrorReporter>);
 impl Global for GlobalSettingsErrorReporter {}
 
 impl SettingsErrorReporter {
-    pub(crate) fn new() -> Self {
-        Self { pending: None }
-    }
-
     pub fn take_pending(&mut self) -> Option<String> {
         self.pending.take()
     }
@@ -42,13 +36,19 @@ impl SettingsErrorReporter {
 pub struct SettingsStore {
     pub(crate) settings: UserSettings,
     pub(crate) last_user_settings_content: Option<String>,
-    pub(crate) _watcher: Arc<dyn Watcher>,
-    pub(crate) _watch_task: Task<()>,
 }
 
 impl Global for SettingsStore {}
 
 impl SettingsStore {
+    /// 从已解析的设置创建运行时存储；文件监听由初始化模块独立持有。
+    pub fn new(settings: UserSettings) -> Self {
+        Self {
+            settings,
+            last_user_settings_content: None,
+        }
+    }
+
     pub fn get(cx: &App) -> UserSettings {
         cx.global::<Self>().settings.clone()
     }

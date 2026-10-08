@@ -816,7 +816,9 @@ fn newline_in_markdown_injected_rust_uses_the_injected_scope(cx: &mut TestAppCon
 #[gpui::test]
 fn newline_settings_can_disable_comment_and_list_continuation(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        zcv_settings::init(cx);
+        cx.set_global(zcv_settings::SettingsStore::new(
+            zcv_settings::UserSettings::default(),
+        ));
         cx.update_global::<zcv_settings::SettingsStore, _>(|settings, _| {
             settings
                 .set_user_settings(

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt as _;
-use gpui::{App, AppContext as _};
+use gpui::{App, AppContext as _, Global, Task};
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 
 use super::config_dir;
@@ -21,8 +21,16 @@ use super::store::{GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsS
 
 const SETTINGS_RELOAD_DEBOUNCE: Duration = Duration::from_millis(75);
 
+/// 应用级设置监听生命周期，与可直接从内存构造的设置值分开。
+struct SettingsReload {
+    _watcher: Arc<dyn Watcher>,
+    _watch_task: Task<()>,
+}
+
+impl Global for SettingsReload {}
+
 pub fn init(cx: &mut App) {
-    let error_reporter = cx.new(|_| SettingsErrorReporter::new());
+    let error_reporter = cx.new(|_| SettingsErrorReporter::default());
     cx.set_global(GlobalSettingsErrorReporter(error_reporter.clone()));
     let settings_path = settings_file();
     if let Err(error) = ensure_user_settings_file() {
@@ -122,9 +130,10 @@ pub fn init(cx: &mut App) {
         }
     });
 
-    cx.set_global(SettingsStore {
-        settings,
-        last_user_settings_content,
+    let mut store = SettingsStore::new(settings);
+    store.last_user_settings_content = last_user_settings_content;
+    cx.set_global(store);
+    cx.set_global(SettingsReload {
         _watcher: watcher,
         _watch_task: watch_task,
     });

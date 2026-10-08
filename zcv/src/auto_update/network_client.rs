@@ -10,6 +10,10 @@ use gpui::http_client::{
 use reqwest::header::{HeaderMap, HeaderValue};
 
 pub(super) fn new() -> Result<Arc<dyn HttpClient>> {
+    Ok(Arc::new(build_client(reqwest::Client::builder())?))
+}
+
+fn build_client(builder: reqwest::ClientBuilder) -> Result<UpdateHttpClient> {
     let user_agent = HeaderValue::from_str(&format!(
         "Zcv/{} ({}; {})",
         env!("CARGO_PKG_VERSION"),
@@ -18,17 +22,17 @@ pub(super) fn new() -> Result<Arc<dyn HttpClient>> {
     ))?;
     let mut headers = HeaderMap::new();
     headers.insert(http::header::USER_AGENT, user_agent.clone());
-    let client = reqwest::Client::builder()
+    let client = builder
         .use_rustls_tls()
         .connect_timeout(Duration::from_secs(10))
         .default_headers(headers)
         .build()?;
 
-    Ok(Arc::new(UpdateHttpClient {
+    Ok(UpdateHttpClient {
         client,
         runtime: runtime().handle().clone(),
         user_agent,
-    }))
+    })
 }
 
 fn runtime() -> &'static tokio::runtime::Runtime {
@@ -103,3 +107,7 @@ impl HttpClient for UpdateHttpClient {
         None
     }
 }
+
+#[cfg(test)]
+#[path = "../test/network_client_tests.rs"]
+mod tests;

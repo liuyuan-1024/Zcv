@@ -140,12 +140,13 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const tag = context.payload.ref;
-            let release;
-            try {
-              ({ data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag }));
-            } catch (error) {
-              if (error.status !== 404) throw error;
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner, repo, per_page: 100,
+            });
+            const release = releases.find(({ tag_name }) => tag_name === tag);
+            if (!release) {
               core.info(`tag ${tag} 没有对应的 Release`);
               return;
             }
             await github.rest.repos.deleteRelease({ owner, repo, release_id: release.id });
+            core.info(`已删除 tag ${tag} 对应的 Release ${release.id}`);

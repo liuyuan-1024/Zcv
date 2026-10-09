@@ -57,7 +57,7 @@ GitHub Release 必须同时包含：
 
 发布 tag 必须是 `v<版本>`，并与根 `Cargo.toml` 的工作区版本一致。不要手工编辑清单中的大小或 SHA-256。
 
-删除远程版本 tag 时，发布工作流会删除同名 GitHub Release；没有对应 Release 时无需额外处理。删除事件只会在工作流已进入默认分支时运行。GitHub 一次删除超过三个 tag 不会产生删除事件，这种批量删除需要单独清理 Release。
+删除远程版本 tag 时，发布工作流会删除同名 GitHub Release（包括草稿）；没有对应 Release 时无需额外处理。删除事件只会在工作流已进入默认分支时运行。GitHub 一次删除超过三个 tag 不会产生删除事件，这种批量删除需要单独清理 Release。
 
 ## 修改约束
 

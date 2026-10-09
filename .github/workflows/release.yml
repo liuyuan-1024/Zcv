@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  delete:
   workflow_dispatch:
     inputs:
       tag:
@@ -14,11 +15,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'delete' && github.event.ref || inputs.tag || github.ref_name }}
+  queue: max
   cancel-in-progress: false
 
 jobs:
   build-macos:
+    if: github.event_name != 'delete'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
@@ -47,6 +50,7 @@ jobs:
           path: target/aarch64-apple-darwin/release/Zcv_*_darwin_arm64.zip
 
   build-windows:
+    if: github.event_name != 'delete'
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v5
@@ -74,6 +78,7 @@ jobs:
           path: target/x86_64-pc-windows-msvc/release/Zcv_*_windows_x86_64.zip
 
   release:
+    if: github.event_name != 'delete'
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
@@ -103,6 +108,8 @@ jobs:
           printf '%s\n' "${{ secrets.ZCV_UPDATE_PRIVATE_KEY }}" > /tmp/zcv-update-key.b64
           chmod 600 /tmp/zcv-update-key.b64
       - name: 生成清单并签名
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
         run: scripts/release-update /tmp/zcv-update-key.b64 --no-build
       - name: 清理私钥
         if: always()
@@ -120,4 +127,25 @@ jobs:
             "$OUT_DIR/Zcv_${VERSION}_darwin_arm64.zip" \
             "$WINDOWS_ZIP" \
             --title "Zcv $VERSION" \
-            --generate-notes
+            --generate-notes \
+            --verify-tag
+
+  delete-release:
+    if: github.event_name == 'delete' && github.event.ref_type == 'tag' && startsWith(github.event.ref, 'v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 删除已删除 tag 对应的 Release
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = context.payload.ref;
+            let release;
+            try {
+              ({ data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.info(`tag ${tag} 没有对应的 Release`);
+              return;
+            }
+            await github.rest.repos.deleteRelease({ owner, repo, release_id: release.id });

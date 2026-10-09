@@ -43,10 +43,10 @@
       </feMerge>
     </filter>
     <mask id="mark-mask" maskUnits="userSpaceOnUse" x="250" y="260" width="530" height="500">
-      <path d="M300 600V355Q300 305 350 305H690L305 718H665Q720 718 720 663V500L605 612L502.3 506.35" fill="none" stroke="#FFFFFF" stroke-width="36" stroke-linejoin="round"/>
+      <path d="M300 600V355Q300 305 350 305H720L305 718H665Q720 718 720 663V500L605 612L517.7 506.35" fill="none" stroke="#FFFFFF" stroke-width="36" stroke-linejoin="round"/>
       <circle cx="300" cy="600" r="18" fill="#FFFFFF"/>
-      <path d="M690 305L305 718" fill="none" stroke="#FFFFFF" stroke-width="38"/>
-      <path d="M590 405H455Q410 405 410 450V480Q410 520 450 520H490" fill="none" stroke="#FFFFFF" stroke-width="34" stroke-linejoin="round"/>
+      <path d="M720 305L305 718" fill="none" stroke="#FFFFFF" stroke-width="38"/>
+      <path d="M620 405H455Q410 405 410 450V480Q410 520 450 520H504" fill="none" stroke="#FFFFFF" stroke-width="34" stroke-linejoin="round"/>
     </mask>
   </defs>
   <rect x="32" y="32" width="960" height="960" rx="218" fill="url(#background)"/>

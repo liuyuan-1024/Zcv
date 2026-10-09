@@ -70,6 +70,70 @@ fn single_click_places_a_caret(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn clicking_last_digit_and_closing_quote_uses_glyph_start(cx: &mut TestAppContext) {
+    let text = "version = \"0.9.140\"";
+    let zero_start = text.rfind('0').unwrap();
+    let quote_start = text.rfind('"').unwrap();
+    let buffer = test_buffer(cx, text);
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
+    });
+    cx.run_until_parked();
+
+    let caret_at = |offset, cx: &mut TestAppContext| {
+        cx.update_entity(&editor, |editor, cx| {
+            editor.set_selections(SelectionSet::caret(b(offset)), cx);
+            cx.notify();
+        });
+        cx.refresh().expect("测试窗口应可刷新");
+        cx.read_entity(&editor, |editor, _| {
+            editor
+                .pixel_position_of_newest_cursor
+                .expect("光标应有布局位置")
+        })
+    };
+    let before_zero = caret_at(zero_start, cx);
+    let before_quote = caret_at(quote_start, cx);
+    let after_quote = caret_at(quote_start + 1, cx);
+    let (origin, line_height) = cx.read_entity(&editor, |editor, _| {
+        (
+            editor.last_bounds.expect("渲染后应有编辑器范围").origin,
+            editor.last_line_height.expect("渲染后应有行高"),
+        )
+    });
+    let click_zero = point(
+        origin.x + before_zero.x + (before_quote.x - before_zero.x) * 0.75,
+        origin.y + before_zero.y + line_height * 0.5,
+    );
+    cx.simulate_mouse_down(click_zero, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.selections(cx).primary().head(),
+            b(zero_start),
+            "点击末尾 0 的右半部分时，光标应停在 0 前"
+        );
+    });
+    cx.simulate_mouse_up(click_zero, MouseButton::Left, Modifiers::default());
+
+    let click_quote = point(
+        origin.x + before_quote.x + (after_quote.x - before_quote.x) * 0.25,
+        origin.y + before_quote.y + line_height * 0.5,
+    );
+
+    cx.simulate_mouse_down(click_quote, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.selections(cx).primary().head(),
+            b(quote_start),
+            "点击紧邻末尾 0 的右引号时，光标应停在右引号前"
+        );
+    });
+}
+
+#[gpui::test]
 fn pending_selection_commits_only_when_mouse_gesture_ends(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "abcdef");
     let (editor, cx) = cx.add_window_view({

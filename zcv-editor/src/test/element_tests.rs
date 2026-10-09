@@ -97,8 +97,8 @@ fn word_diff_background_has_character_geometry_inside_a_ligature() {
         "新增背景必须覆盖等号的实际字形宽度"
     );
     assert_eq!(
-        line.closest_index_for_x(symbol_x + symbol.width * 0.2),
-        start,
+        line.index_for_x(symbol_x + symbol.width * 0.2),
+        Some(start),
         "高亮内的命中必须返回新增字符"
     );
     assert_eq!(
@@ -1540,14 +1540,14 @@ fn folded_element_participates_in_cross_fragment_coordinates(cx: &mut TestAppCon
                 "元素之后必须回到元素终点"
             );
             assert_eq!(
-                line.closest_index_for_x(element_start + px(5.)),
-                6,
+                line.index_for_x(element_start + px(5.)),
+                Some(6),
                 "元素区间命中必须返回元素边界"
             );
             for index in 0..6 {
                 assert_eq!(
-                    line.closest_index_for_x(line.x_for_index(index)),
-                    index,
+                    line.index_for_x(line.x_for_index(index)),
+                    Some(index),
                     "文本片段内的索引与 x 必须往返一致"
                 );
             }

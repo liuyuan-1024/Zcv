@@ -205,10 +205,10 @@ impl FragmentedLine {
         x
     }
 
-    /// 行内 x 坐标对应的完整行文本字节。
+    /// 行内 x 坐标命中的字形在完整行文本中的起始字节。
     ///
     /// 落在元素内部时返回元素起点字节，和 Zed 的 `index_for_x` 一致。
-    fn closest_index_for_x(&self, x: Pixels) -> usize {
+    fn index_for_x(&self, x: Pixels) -> Option<usize> {
         let mut start_x = Pixels::ZERO;
         let mut start = 0usize;
         for fragment in &self.fragments {
@@ -216,7 +216,7 @@ impl FragmentedLine {
                 LineFragment::Text(line) => {
                     let end_x = start_x + line.width;
                     if x < end_x {
-                        return start + line.closest_index_for_x(x - start_x);
+                        return line.index_for_x(x - start_x).map(|index| start + index);
                     }
                     start_x = end_x;
                     start += line.len();
@@ -224,14 +224,14 @@ impl FragmentedLine {
                 LineFragment::Element { len, size, .. } => {
                     let end_x = start_x + size.width;
                     if x < end_x {
-                        return start;
+                        return Some(start);
                     }
                     start_x = end_x;
                     start += len;
                 }
             }
         }
-        start
+        None
     }
 }
 
@@ -626,7 +626,10 @@ impl EditorLayout {
                 .find(|line| position.y < line.origin.y + self.line_height)
                 .unwrap_or(last)
         };
-        let byte_index = line.line.closest_index_for_x(position.x - line.origin.x);
+        let byte_index = line
+            .line
+            .index_for_x(position.x - line.origin.x)
+            .unwrap_or(line.line.len());
         let column = display_column_for_byte(
             &line.line.text,
             line.window_start_column,
@@ -707,7 +710,10 @@ impl EditorInputLayout {
                 .find(|line| point.y < line.origin.y + line_height)
                 .unwrap_or(last)
         };
-        let byte = line.line.closest_index_for_x(point.x - line.origin.x);
+        let byte = line
+            .line
+            .index_for_x(point.x - line.origin.x)
+            .unwrap_or(line.line.len());
         Some(line.global_utf16_start + line.line.text[..byte].encode_utf16().count())
     }
 }

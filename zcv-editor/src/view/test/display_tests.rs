@@ -1127,22 +1127,33 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
     });
 
     cx.refresh().expect("折叠后的编辑器应能刷新");
-    let line_height = cx.read_entity(&editor, |editor, _| {
-        editor.last_line_height.expect("渲染后应有行高")
+    let click_offset = MultiBufferOffset::new(after_offset.get() + 3);
+    let next_offset = MultiBufferOffset::new(click_offset.get() + 1);
+    let (click, next, line_height, origin) = cx.read_entity(&editor, |editor, _| {
+        let layout = editor.input_layout.as_ref().expect("刷新后应有输入布局");
+        (
+            layout
+                .caret_position_for_offset(click_offset)
+                .expect("折叠后的目标字符应可见"),
+            layout
+                .caret_position_for_offset(next_offset)
+                .expect("折叠后的下一字符应可见"),
+            layout.line_height(),
+            editor.last_bounds.expect("刷新后应有编辑器范围").origin,
+        )
     });
     cx.simulate_click(
-        point(px(100.), px(2.) + line_height * 2.),
+        point(
+            origin.x + click.x + (next.x - click.x) * 0.25,
+            origin.y + click.y + line_height * 0.5,
+        ),
         gpui::Modifiers::default(),
     );
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor
-                .render_snapshot(cx)
-                .byte_to_position(editor.selections(cx).primary().head())
-                .expect("点击后的光标应有效")
-                .line(),
-            Line::new(4),
-            "折叠后的下一行应能通过点击获得光标"
+            editor.selections(cx).primary().head(),
+            click_offset,
+            "折叠后的下一行应能通过点击定位到目标字符"
         );
     });
 

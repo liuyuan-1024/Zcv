@@ -1000,6 +1000,22 @@ fn input_scope_maps_each_excerpt_and_rejects_read_only_region(cx: &mut TestAppCo
         .unwrap();
     assert_eq!(first.language_name(), "Rust");
     assert_eq!(second.language_name(), "JavaScript");
+    let first_start = MultiBufferOffset::new(output.find("let").unwrap());
+    let second_start = MultiBufferOffset::new(output.find("const").unwrap());
+    assert_eq!(
+        snapshot
+            .input_scope_at_range_start(
+                MultiBufferRange::new(first_start, first_start + 3).unwrap()
+            )
+            .unwrap()
+            .language_name(),
+        "Rust"
+    );
+    assert!(
+        snapshot
+            .input_scope_at_range_start(MultiBufferRange::new(first_start, second_start).unwrap())
+            .is_none()
+    );
 
     combined.update(cx, |buffer, cx| {
         let mut excerpt = ExcerptRange::line_range(script, 0..1, cx);
@@ -1015,6 +1031,13 @@ fn input_scope_maps_each_excerpt_and_rejects_read_only_region(cx: &mut TestAppCo
     assert!(
         snapshot
             .input_scope_at(MultiBufferOffset::new(output.find("const").unwrap()))
+            .is_none()
+    );
+    assert!(
+        snapshot
+            .input_scope_at_range_start(
+                MultiBufferRange::new(second_start, second_start + 5).unwrap()
+            )
             .is_none()
     );
 }

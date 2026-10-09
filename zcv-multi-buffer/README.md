@@ -15,6 +15,7 @@ excerpt 结构由 `SumTree` 承载，查询通过 summary 与连续 cursor 推�
 `MultiBufferLineCursor::source` 复用已定位的行游标取得源映射。`MultiBufferSource::project_range` 从该映射开始，只访问候选跨越的连续工作区片段，返回当前快照内的 `MultiBufferOffset` 范围；不能跨过未展示的源区间。消费方直接用这些坐标筛选可见候选，需要长期保存时再创建组合 Anchor。
 
 `MultiBufferSnapshot::input_scope_at` 把组合输出光标映射到可编辑 excerpt 的源字节位置，再从该源固化的文本／语法快照查询输入政策。不同源和注入语言沿同一入口向 `Editor` 提供政策；组合层不复制配对表或维护语法状态。
+`input_scope_at_range_start` 只在整个组合范围属于同一可编辑 excerpt 时返回起点作用域，供列表续行等以行首标记为政策来源的输入操作使用。
 
 按词移动、删除和选词从组合位置映射到当前源的同版本语法快照，按作用域读取 `WordBoundaryPolicy`，词扫描限制在当前源片段内；结构分隔换行不能成为一个词的一部分。只读段仍可按词导航和选择，编辑能力由事务入口判定。无光标位置的全文搜索明确使用首个源的宿主语言政策；组合层不保存按源语言复制的词政策，也不为搜索伪造一个位置。
 

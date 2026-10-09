@@ -644,9 +644,20 @@ fn newline_plan(
             });
         }
 
-        if settings.extend_list_on_newline
-            && let Some(scope) = scope
-            && let Some(list) = list_continuation(content, cursor, scope, settings.tab.tab_size())
+        let leading_len = content.len() - content.trim_start_matches([' ', '\t']).len();
+        // 列表政策属于标记所在的源作用域，正文中的注入层不能改写它。
+        let list_scope = (settings.extend_list_on_newline && cursor >= leading_len)
+            .then(|| {
+                MultiBufferRange::new(
+                    MultiBufferOffset::new(line_start.get() + leading_len),
+                    offset,
+                )
+                .expect("行首标记到光标的范围必须正序")
+            })
+            .and_then(|range| snapshot.input_scope_at_range_start(range));
+        if let Some(marker_scope) = list_scope
+            && let Some(list) =
+                list_continuation(content, cursor, &marker_scope, settings.tab.tab_size())
         {
             let (target, text) = match list {
                 ListContinuation::Continue(prefix) => {

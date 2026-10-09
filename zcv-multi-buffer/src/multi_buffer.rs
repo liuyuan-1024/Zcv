@@ -3746,6 +3746,18 @@ impl MultiBufferSnapshot {
         source.syntax.input_scope_at(source_offset, &source.text)
     }
 
+    /// 在同一可编辑 excerpt 内，按范围起点查询源语言的输入政策。
+    pub fn input_scope_at_range_start(&self, range: MultiBufferRange) -> Option<InputScope<'_>> {
+        let (mapping, source, source_range) =
+            self.source_range(range.start().get()..range.end().get())?;
+        if !mapping.editable {
+            return None;
+        }
+        source
+            .syntax
+            .input_scope_at(ByteOffset::new(source_range.start), &source.text)
+    }
+
     /// 组合输出位置映射到可编辑源后，查询该处应补全的 JSX/TSX 闭合标签文本。
     pub fn jsx_tag_close_text_at(&self, offset: MultiBufferOffset) -> Option<String> {
         let (mapping, source, source_offset) = self.source_point(offset.into())?;

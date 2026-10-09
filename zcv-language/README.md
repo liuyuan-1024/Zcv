@@ -45,7 +45,7 @@ overrides.scm           按语法范围覆盖输入政策时提供
 
 ### 换行输入政策
 
-`LanguageInputConfig` 是语言层的唯一注释、文档注释和列表续行配置来源。`InputScope` 按当前位置返回这些政策；注入语言和 `overrides.scm` 捕获可以覆盖宿主语言。换行缩进仍只由同版本 `indents.scm` 的 `NewlineIndent` 提供。
+`LanguageInputConfig` 是语言层的唯一注释、文档注释和列表续行配置来源。`InputScope` 按查询位置返回这些政策；注入语言和 `overrides.scm` 捕获可以覆盖宿主语言。列表续行由编辑器查询行首标记位置的作用域，正文中的 Markdown Inline 注入层不会遮蔽列表政策。换行缩进仍只由同版本 `indents.scm` 的 `NewlineIndent` 提供。
 
 JSX／TSX（以及使用 TSX grammar 的 JavaScript）的标签自动闭合节点配置由语言规格的 `with_jsx_tag_auto_close` 声明，描述开放标签、闭合标签、元素与标签名节点种类；`SyntaxSnapshot::jsx_tag_close_text_at` 只在选中语法层内按这些节点判断，不进入输入配对。语言规格的 `with_jsx_tag_auto_close` 与 `overrides.scm` 一样在装配期校验。
 

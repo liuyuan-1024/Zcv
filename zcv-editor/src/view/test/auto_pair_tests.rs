@@ -627,6 +627,42 @@ fn markdown_lists_continue_ordered_unordered_and_tasks(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+fn markdown_lists_continue_when_splitting_item_content(cx: &mut TestAppContext) {
+    for (source, cursor, expected, after) in [
+        ("- item", 4, "- it\n- em", 7),
+        ("1. item", 5, "1. it\n2. em", 9),
+        ("- [x] item", 8, "- [x] it\n- [ ] em", 15),
+        ("- 你好", 5, "- 你\n- 好", 8),
+        ("  - item", 6, "  - it\n  - em", 11),
+    ] {
+        let (buffer, editor, cx) = editor_with_path(
+            cx,
+            "README.md",
+            source,
+            SelectionSet::caret(MultiBufferOffset::new(cursor)),
+        );
+        cx.run_until_parked();
+        assert_newline_roundtrip(&buffer, &editor, cx, source, expected, cursor, after);
+    }
+}
+
+#[gpui::test]
+fn markdown_fenced_code_does_not_continue_list_like_text(cx: &mut TestAppContext) {
+    let source = "```rust\n- item\n```";
+    let cursor = source.find("item").unwrap() + 2;
+    let expected = "```rust\n- it\nem\n```";
+    let after = "```rust\n- it\n".len();
+    let (buffer, editor, cx) = editor_with_path(
+        cx,
+        "README.md",
+        source,
+        SelectionSet::caret(MultiBufferOffset::new(cursor)),
+    );
+    cx.run_until_parked();
+    assert_newline_roundtrip(&buffer, &editor, cx, source, expected, cursor, after);
+}
+
+#[gpui::test]
 fn markdown_empty_task_and_ordered_items_clear_or_unindent(cx: &mut TestAppContext) {
     for (source, expected) in [
         ("- [ ] ", ""),

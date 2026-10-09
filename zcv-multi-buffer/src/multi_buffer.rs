@@ -1,6 +1,7 @@
 //! Editor 与具体文本 Buffer 之间的组合文档边界。
 //!
-//! 组合文档按调用方给出的顺序组织多个来源的 excerpts，并保留组合坐标到源文件坐标的映射。
+//! 普通组合文档按自然路径顺序组织 excerpts；项目差异组合文档按目录优先的树形自然顺序组织。
+//! 两种顺序由创建入口固定，组合坐标到源文件坐标的映射仍归同一模型维护。
 //! 普通编辑器是「整文件单 excerpt」的组合文档；差异投影在稳定 excerpts 上叠加输出变换。
 //! Editor 始终只消费本层，不感知来源数量。
 //! diff 显示拓扑（git hunks、展开状态、跟踪区间与显示坐标）见 [`diff_projection`]。
@@ -13,7 +14,7 @@ pub use diff_projection::{
     DiffDisplaySnapshot, DiffExcerptRanges, DiffFile, DiffHunkSource, DisplayHunk,
     ResolvedDiffHunk, WordDiffs,
 };
-pub(crate) use path_key::{PathKey, PathKeyIndex};
+pub(crate) use path_key::{PathKey, PathKeyIndex, PathOrder};
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -254,8 +255,8 @@ struct ExcerptSource {
     is_dirty: bool,
 }
 
-fn path_key_for_source(source: &LanguageBuffer) -> PathKey {
-    PathKey::for_buffer(source.file_path(), source.buffer_id())
+fn path_key_for_source(source: &LanguageBuffer, order: PathOrder) -> PathKey {
+    PathKey::for_buffer(source.file_path(), source.buffer_id(), order)
 }
 
 /// 不可变快照帧中的源状态（不携带实体引用）。
@@ -2244,6 +2245,7 @@ pub struct OutlineEntry {
 pub struct MultiBufferSnapshot {
     projection_version: BufferVersion,
     topology_version: u64,
+    path_order: PathOrder,
     /// 输入侧 excerpts 的权威快照；源坐标由自身 Summary 派生。
     excerpts: SumTree<Excerpt>,
     /// 由输入 excerpts 派生的输出变换树；输出坐标由累积 Summary 派生。
@@ -3598,7 +3600,7 @@ impl MultiBufferSnapshot {
 
     /// 按逻辑路径定位输出读取区域，不扫描其它文件。
     pub fn regions_for_path(&self, path: &Path) -> impl Iterator<Item = ExcerptSnapshot> {
-        let path_key = PathKey::new(path);
+        let path_key = PathKey::with_order(path, self.path_order);
         let mut cursor = MultiBufferCursor::new(
             &self.excerpts,
             &self.diff_transforms,
@@ -4638,6 +4640,7 @@ impl From<Snapshot> for MultiBufferSnapshot {
         Self {
             projection_version: text.version(),
             topology_version: 0,
+            path_order: PathOrder::Natural,
             excerpts: SumTree::from_iter([excerpt], ()),
             diff_transforms,
             path_keys: Arc::from([PathKey::min()]),
@@ -4739,6 +4742,7 @@ impl Capability {
 pub struct MultiBuffer {
     state: ExcerptState,
     capability: Capability,
+    path_order: PathOrder,
     /// 普通整文件文档的稳定角色与权威源。
     ///
     /// excerpts 会因 diff 展开而改变形状，不能据此推断文档角色；
@@ -4788,9 +4792,19 @@ impl MultiBuffer {
         }
     }
 
-    /// 创建空的可编辑组合文档；调用方可重复设置 ordered excerpts。
+    /// 创建空的可编辑组合文档；后续 excerpts 按稳定路径键组织。
     pub fn empty(cx: &mut Context<Self>) -> Self {
-        Self::empty_with_capability(Capability::ReadWrite, cx)
+        Self::empty_with_capability(Capability::ReadWrite, PathOrder::Natural, cx)
+    }
+
+    /// 创建按树形顺序排列文件的组合文档。
+    pub fn empty_tree_ordered(cx: &mut Context<Self>) -> Self {
+        Self::empty_with_capability(Capability::ReadWrite, PathOrder::Tree, cx)
+    }
+
+    /// 创建按树形顺序排列文件的只读组合文档。
+    pub fn empty_tree_ordered_read_only(cx: &mut Context<Self>) -> Self {
+        Self::empty_with_capability(Capability::ReadOnly, PathOrder::Tree, cx)
     }
 
     /// 从工作区源构建独立的组合文档（整文件可编辑 excerpt）。
@@ -4810,19 +4824,27 @@ impl MultiBuffer {
 
     /// 创建空的只读组合文档；用于 index 等不可直接编辑的数据投影。
     pub fn empty_read_only(cx: &mut Context<Self>) -> Self {
-        Self::empty_with_capability(Capability::ReadOnly, cx)
+        Self::empty_with_capability(Capability::ReadOnly, PathOrder::Natural, cx)
     }
 
-    fn empty_with_capability(capability: Capability, cx: &mut Context<Self>) -> Self {
+    fn empty_with_capability(
+        capability: Capability,
+        path_order: PathOrder,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             state: Self::empty_excerpt_state(cx),
             capability,
+            path_order,
             singleton_source: None,
             title: None,
             diffs: Vec::new(),
             diff: None,
             diff_expanded_by_default: false,
-            snapshot: MultiBufferSnapshot::empty(),
+            snapshot: MultiBufferSnapshot {
+                path_order,
+                ..MultiBufferSnapshot::empty()
+            },
             snapshot_dirty: true,
             snapshot_source_updates: None,
             projection_sync: None,
@@ -5123,7 +5145,7 @@ impl MultiBuffer {
         let mut prepared = Vec::with_capacity(excerpts.len());
         for excerpt in excerpts {
             let source = excerpt.source.read(cx);
-            let path = path_key_for_source(source);
+            let path = path_key_for_source(source, self.path_order);
             let buffer_id = source.buffer_id();
             let source_id = excerpt.source.entity_id();
             let source_index = match next_source_indices.get(&source_id).copied() {
@@ -5172,7 +5194,7 @@ impl MultiBuffer {
                 entry.insert(index);
                 next_sources.push(ExcerptSource {
                     entity: entity.clone(),
-                    path: path_key_for_source(source),
+                    path: path_key_for_source(source, self.path_order),
                     buffer_id: source.buffer_id(),
                     settings: snapshot_settings(&snapshot),
                     text: snapshot.text,
@@ -5496,7 +5518,7 @@ impl MultiBuffer {
     ///
     /// 只重算映射与匹配范围，不重建源订阅；路径不存在时返回 false。
     pub fn remove_excerpts_for_path(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
-        let path_key = PathKey::new(path.to_path_buf());
+        let path_key = PathKey::with_order(path.to_path_buf(), self.path_order);
         let removed = {
             let mut cursor = MultiBufferCursor::new(
                 &self.state.excerpts,
@@ -5549,7 +5571,7 @@ impl MultiBuffer {
         self.state.sources.extend(new_sources.iter().map(|source| {
             let language_buffer = source.read(cx);
             let snapshot = language_buffer.snapshot();
-            let path = path_key_for_source(language_buffer);
+            let path = path_key_for_source(language_buffer, self.path_order);
             let buffer_id = language_buffer.buffer_id();
             ExcerptSource {
                 entity: source.clone(),
@@ -6046,7 +6068,7 @@ impl MultiBuffer {
         let mut entries = self.state.excerpts.iter().cloned().collect::<Vec<_>>();
         for excerpt in &mut entries {
             let source = &mut self.state.sources[excerpt.source_index];
-            let path = path_key_for_source(source.entity.read(cx));
+            let path = path_key_for_source(source.entity.read(cx), self.path_order);
             source.path = path.clone();
             excerpt.path = path.clone();
             excerpt.display_path = path.clone();
@@ -6469,6 +6491,7 @@ impl MultiBuffer {
         self.snapshot = MultiBufferSnapshot {
             projection_version: self.state.projection_version,
             topology_version: self.state.topology_version,
+            path_order: self.path_order,
             excerpts: self.state.excerpts.clone(),
             diff_transforms: self.state.diff_transforms.clone(),
             path_keys: if self.snapshot.path_keys.len() == self.state.path_keys.len() {

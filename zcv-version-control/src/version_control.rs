@@ -22,7 +22,7 @@ use zcv_actions::{
 use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus};
 use zcv_keymap::display_shortcut;
-use zcv_path::{AbsolutePathBuf, RelativePathBuf};
+use zcv_path::{AbsolutePathBuf, RelativePathBuf, compare_tree_entries};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, scale};
 use zcv_ui::{
@@ -133,8 +133,10 @@ fn build_section_trees<'a>(
         for node in section_tree.iter_mut() {
             finalize_node(node);
         }
-        // 顶层节点同样按（目录优先、名称）排序。
-        section_tree.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+        // 顶层节点与子目录使用同一树形顺序。
+        section_tree.sort_by(|a, b| {
+            compare_tree_entries((a.path.as_path(), a.is_dir), (b.path.as_path(), b.is_dir))
+        });
     }
     roots
 }
@@ -210,7 +212,7 @@ fn insert_entry(
 
 /// 目录节点聚合子项状态（priority 最高）与 diff 统计（求和），并排序 children。
 ///
-/// 排序规则：目录优先，再按名称。
+/// 排序规则：目录优先，再按名称自然排序。
 fn finalize_node(node: &mut GitTreeNode) {
     if node.is_dir {
         let mut status: Option<FileStatus> = None;
@@ -229,8 +231,9 @@ fn finalize_node(node: &mut GitTreeNode) {
         node.status = status;
         node.diff_stat = diff_stat;
     }
-    node.children
-        .sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+    node.children.sort_by(|a, b| {
+        compare_tree_entries((a.path.as_path(), a.is_dir), (b.path.as_path(), b.is_dir))
+    });
 }
 
 /// 树 → 有序行列表：分组头前置，展开的空组显示一行提示，非空组按 DFS 先序展开；折叠的分区只留标题行。

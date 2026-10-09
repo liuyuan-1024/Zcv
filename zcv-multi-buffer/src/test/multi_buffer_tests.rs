@@ -200,6 +200,95 @@ fn diff_materialization_handles_insertion_before_a_pending_file(cx: &mut TestApp
     });
 }
 
+#[gpui::test]
+fn tree_ordered_diff_keeps_directory_first_order_during_out_of_order_arrival(
+    cx: &mut TestAppContext,
+) {
+    let sources = [
+        singleton("a.rs", "a\n", cx),
+        singleton("src/file10.rs", "ten\n", cx),
+        singleton("src/File2.rs", "two\n", cx),
+        singleton("src/sub/child.rs", "child\n", cx),
+    ];
+    let combined = cx.new(MultiBuffer::empty_tree_ordered);
+    let files = combined.update(cx, |buffer, cx| {
+        let files = sources
+            .into_iter()
+            .zip(["a.rs", "src/file10.rs", "src/File2.rs", "src/sub/child.rs"])
+            .map(|(source, path)| test_diff_file(source, path, "old\n", cx))
+            .collect::<Vec<_>>();
+        for file in &files {
+            buffer.add_diff(file.clone(), cx);
+        }
+        files
+    });
+    cx.run_until_parked();
+    let paths = combined.update(cx, |buffer, cx| {
+        buffer
+            .snapshot(cx)
+            .excerpts()
+            .map(|excerpt| excerpt.path().to_path_buf())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        paths,
+        [
+            PathBuf::from("src/sub/child.rs"),
+            PathBuf::from("src/File2.rs"),
+            PathBuf::from("src/file10.rs"),
+            PathBuf::from("a.rs"),
+        ]
+    );
+
+    let rebuilt = cx.new(MultiBuffer::empty_tree_ordered);
+    rebuilt.update(cx, |buffer, cx| {
+        buffer.set_diff_files(files, cx);
+    });
+    cx.run_until_parked();
+    let rebuilt_paths = rebuilt.update(cx, |buffer, cx| {
+        buffer
+            .snapshot(cx)
+            .excerpts()
+            .map(|excerpt| excerpt.path().to_path_buf())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(rebuilt_paths, paths);
+}
+
+#[gpui::test]
+fn ordinary_multi_buffer_uses_natural_path_order_without_directory_grouping(
+    cx: &mut TestAppContext,
+) {
+    let sources = [
+        singleton("src/sub/b.rs", "sub\n", cx),
+        singleton("src/file10.rs", "ten\n", cx),
+        singleton("a.rs", "a\n", cx),
+        singleton("src/file2.rs", "two\n", cx),
+    ];
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        for source in sources {
+            buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..1, cx)], cx);
+        }
+    });
+    let paths = combined.update(cx, |buffer, cx| {
+        buffer
+            .snapshot(cx)
+            .excerpts()
+            .map(|excerpt| excerpt.path().to_path_buf())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        paths,
+        [
+            PathBuf::from("a.rs"),
+            PathBuf::from("src/file2.rs"),
+            PathBuf::from("src/file10.rs"),
+            PathBuf::from("src/sub/b.rs"),
+        ]
+    );
+}
+
 /// 整体替换时保留仍有效的就绪映射；移除尚未就绪的文件后，其结果不能重新进入投影。
 #[gpui::test]
 fn diff_materialization_tracks_pending_replacement_and_removal(cx: &mut TestAppContext) {

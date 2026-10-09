@@ -44,6 +44,24 @@ fn children_return_sorted_static_entries() {
 }
 
 #[test]
+fn children_use_tree_order_for_mixed_case_and_numbers() {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    std::fs::create_dir(directory.path().join("Zoo")).expect("应创建目录");
+    for name in ["file10.rs", "File3.rs", "file2.rs"] {
+        std::fs::write(directory.path().join(name), name).expect("应创建文件");
+    }
+    let worktree = Worktree::new(absolute(directory.path()));
+    let entries = children_sorted(directory.path(), directory.path(), &worktree.filter());
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Zoo", "file2.rs", "File3.rs", "file10.rs"]
+    );
+}
+
+#[test]
 fn file_scan_exclusions_hide_entries_and_their_children() {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let target = directory.path().join("target");

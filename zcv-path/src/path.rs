@@ -4,12 +4,107 @@
 //! 项目内部的相对路径使用 `/` 保存，需要传给 Git 或持久化时不再依赖当前平台的 `PathBuf` 字符串格式。
 
 use std::{
+    cmp::Ordering,
     fmt, io,
     ops::Deref,
     path::{Path, PathBuf},
 };
 
 mod platform;
+
+/// 按路径分量自然排序；不按目录或文件分组。
+pub fn compare_natural_paths(left: &Path, right: &Path) -> Ordering {
+    let mut left_parts = left.components();
+    let mut right_parts = right.components();
+    loop {
+        match (left_parts.next(), right_parts.next()) {
+            (Some(left_part), Some(right_part)) => {
+                let names = natural_name_cmp(
+                    &left_part.as_os_str().to_string_lossy(),
+                    &right_part.as_os_str().to_string_lossy(),
+                );
+                if !names.is_eq() {
+                    return names;
+                }
+            }
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => return left.cmp(right),
+        }
+    }
+}
+
+/// 比较文件树中的两条路径：逐层目录优先，名称忽略 ASCII 大小写并按数字值自然排序。
+///
+/// 大小写与数字前导零只在主排序相同时决定先后，最终以原始路径保证全序。
+pub fn compare_tree_entries(
+    (left, left_is_dir): (&Path, bool),
+    (right, right_is_dir): (&Path, bool),
+) -> Ordering {
+    let mut left_parts = left.components().peekable();
+    let mut right_parts = right.components().peekable();
+    loop {
+        match (left_parts.next(), right_parts.next()) {
+            (Some(left_part), Some(right_part)) => {
+                let left_dir = left_parts.peek().is_some() || left_is_dir;
+                let right_dir = right_parts.peek().is_some() || right_is_dir;
+                let kind = right_dir.cmp(&left_dir);
+                if !kind.is_eq() {
+                    return kind;
+                }
+                let left_name = left_part.as_os_str().to_string_lossy();
+                let right_name = right_part.as_os_str().to_string_lossy();
+                let names = natural_name_cmp(&left_name, &right_name);
+                if !names.is_eq() {
+                    return names;
+                }
+            }
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => return left.cmp(right),
+        }
+    }
+}
+
+fn natural_name_cmp(left: &str, right: &str) -> Ordering {
+    let mut left_chars = left.chars().peekable();
+    let mut right_chars = right.chars().peekable();
+    loop {
+        match (left_chars.peek(), right_chars.peek()) {
+            (None, None) => return right.cmp(left),
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(&a), Some(&b)) if a.is_ascii_digit() && b.is_ascii_digit() => {
+                let mut left_digits = String::new();
+                let mut right_digits = String::new();
+                while left_chars.peek().is_some_and(char::is_ascii_digit) {
+                    left_digits.push(left_chars.next().expect("已检查数字"));
+                }
+                while right_chars.peek().is_some_and(char::is_ascii_digit) {
+                    right_digits.push(right_chars.next().expect("已检查数字"));
+                }
+                let left_value = left_digits.trim_start_matches('0');
+                let right_value = right_digits.trim_start_matches('0');
+                let numbers = left_value
+                    .len()
+                    .cmp(&right_value.len())
+                    .then_with(|| left_value.cmp(right_value))
+                    .then_with(|| left_digits.len().cmp(&right_digits.len()));
+                if !numbers.is_eq() {
+                    return numbers;
+                }
+            }
+            (Some(&a), Some(&b)) => {
+                let ordering = a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase());
+                if !ordering.is_eq() {
+                    return ordering;
+                }
+                left_chars.next();
+                right_chars.next();
+            }
+        }
+    }
+}
 
 /// 当前路径字符串使用的语法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

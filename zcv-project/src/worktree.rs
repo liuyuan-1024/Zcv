@@ -103,7 +103,7 @@ impl TreeFilter {
     }
 }
 
-/// 读取 `dir` 的直接子项（纯函数，可在后台线程执行）：目录优先、名称升序，扫描排除名单命中即过滤。
+/// 读取 `dir` 的直接子项（纯函数，可在后台线程执行）：目录优先、名称自然排序，扫描排除名单命中即过滤。
 ///
 /// `collect_visible_entries` 逐层递归复用本函数，排序与排除规则天然一致。
 fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<WorktreeEntry> {
@@ -117,13 +117,7 @@ fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<Worktree
             .collect(),
         Err(_) => return Vec::new(),
     };
-    entries.sort_by(|a, b| {
-        if a.1 != b.1 {
-            b.1.cmp(&a.1)
-        } else {
-            a.0.file_name().cmp(&b.0.file_name())
-        }
-    });
+    entries.sort_by(|a, b| zcv_path::compare_tree_entries((&a.0, a.1), (&b.0, b.1)));
     entries
         .into_iter()
         .filter_map(|(path, is_dir)| {

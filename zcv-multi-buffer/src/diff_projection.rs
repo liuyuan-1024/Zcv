@@ -691,9 +691,10 @@ impl MultiBuffer {
             self.replace_diff_file(index, file, cx);
             return true;
         }
-        let insert_at = self.diffs.partition_point(|current| {
-            current.display_path.as_path() < file.display_path.as_path()
-        });
+        let display_key = PathKey::with_order(&file.display_path, self.path_order);
+        let insert_at = self
+            .diffs
+            .partition_point(|current| current.display_path < display_key);
         self.insert_diff_file(insert_at, file, cx);
         true
     }
@@ -746,7 +747,7 @@ impl MultiBuffer {
             == file.diff.read(cx).working().entity_id();
         let mut next = DiffState::new(
             file.diff,
-            PathKey::new(file.display_path),
+            PathKey::with_order(file.display_path, self.path_order),
             file.excerpt_ranges,
             cx,
         );
@@ -775,7 +776,7 @@ impl MultiBuffer {
     fn insert_diff_file(&mut self, insert_at: usize, file: DiffFile, cx: &mut Context<Self>) {
         let state = DiffState::new(
             file.diff,
-            PathKey::new(file.display_path),
+            PathKey::with_order(file.display_path, self.path_order),
             file.excerpt_ranges,
             cx,
         );
@@ -808,7 +809,7 @@ impl MultiBuffer {
         let source_path = {
             let working = self.diffs[file_index].diff.read(cx).working().clone();
             let working = working.read(cx);
-            PathKey::for_buffer(working.file_path(), working.buffer_id())
+            PathKey::for_buffer(working.file_path(), working.buffer_id(), self.path_order)
         };
         self.remove_excerpts_for_path(source_path.as_path(), cx);
 
@@ -830,7 +831,11 @@ impl MultiBuffer {
     /// 用给定文件列表整体替换投影；结构性变化（刷新、展开策略切换）的重建入口。
     ///
     /// 按路径增量更新请使用 Self::add_diff / Self::remove_diff。
-    pub fn set_diff_files(&mut self, inputs: Vec<DiffFile>, cx: &mut Context<Self>) -> bool {
+    pub fn set_diff_files(&mut self, mut inputs: Vec<DiffFile>, cx: &mut Context<Self>) -> bool {
+        inputs.sort_by(|left, right| {
+            PathKey::with_order(&left.display_path, self.path_order)
+                .cmp(&PathKey::with_order(&right.display_path, self.path_order))
+        });
         if inputs.is_empty()
             && let Some(source) = self.singleton_source.clone()
         {
@@ -875,7 +880,7 @@ impl MultiBuffer {
             .map(|file| {
                 DiffState::new(
                     file.diff,
-                    PathKey::new(file.display_path),
+                    PathKey::with_order(file.display_path, self.path_order),
                     file.excerpt_ranges,
                     cx,
                 )
@@ -918,7 +923,7 @@ impl MultiBuffer {
                 .iter()
                 .map(|file| {
                     let working = file.diff.read(cx).working().read(cx);
-                    crate::path_key_for_source(working)
+                    crate::path_key_for_source(working, self.path_order)
                 })
                 .collect::<HashSet<_>>();
             let removed_paths = self
@@ -1273,7 +1278,7 @@ impl MultiBuffer {
         let mut excerpts = Vec::new();
         materialize_file(&self.diffs[file_index], cx, &mut excerpts);
         let working = self.diffs[file_index].diff.read(cx).working().clone();
-        let path = crate::path_key_for_source(working.read(cx));
+        let path = crate::path_key_for_source(working.read(cx), self.path_order);
         self.prepare_diff_source_for_file(file_index, cx);
         if excerpts.is_empty() {
             self.remove_excerpts_for_path(path.as_path(), cx);
@@ -1310,7 +1315,7 @@ impl MultiBuffer {
             .end
             .resolve_in(text)
             .expect("diff 增量终点必须属于工作区版本链");
-        let path = crate::path_key_for_source(working.read(cx));
+        let path = crate::path_key_for_source(working.read(cx), self.path_order);
         let mut cursor = self.state.excerpts.cursor::<ExcerptSummary>(());
         cursor.seek(&path, Bias::Left);
         let mut edits = Vec::new();

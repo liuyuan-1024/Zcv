@@ -1016,7 +1016,7 @@ fn newline_at_composite_excerpt_boundary_does_not_borrow_next_scope(cx: &mut Tes
     let rust = cx.new(|cx| {
         LanguageBuffer::new(
             Buffer::from_text("fn main() {}".to_owned(), BufferConfig::default()).unwrap(),
-            Some(PathBuf::from("main.rs")),
+            Some(PathBuf::from("z.rs")),
             std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )

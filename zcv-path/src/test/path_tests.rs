@@ -1,6 +1,65 @@
 use super::*;
 
 #[test]
+fn tree_order_groups_directories_and_sorts_names_naturally() {
+    let mut entries = [
+        (Path::new("src/file10.rs"), false),
+        (Path::new("src/a.rs"), false),
+        (Path::new("src/Zip"), true),
+        (Path::new("src/file2.rs"), false),
+        (Path::new("src/apple"), true),
+        (Path::new("src/File2.rs"), false),
+    ];
+    entries.sort_by(|&left, &right| compare_tree_entries(left, right));
+    assert_eq!(
+        entries.map(|(path, _)| path),
+        [
+            Path::new("src/apple"),
+            Path::new("src/Zip"),
+            Path::new("src/a.rs"),
+            Path::new("src/file2.rs"),
+            Path::new("src/File2.rs"),
+            Path::new("src/file10.rs"),
+        ]
+    );
+
+    let mut files = [
+        Path::new("a.rs"),
+        Path::new("src/z.rs"),
+        Path::new("src/B.rs"),
+    ];
+    files.sort_by(|&left, &right| compare_tree_entries((left, false), (right, false)));
+    assert_eq!(
+        files,
+        [
+            Path::new("src/B.rs"),
+            Path::new("src/z.rs"),
+            Path::new("a.rs")
+        ]
+    );
+}
+
+#[test]
+fn natural_path_order_does_not_group_directories_before_files() {
+    let mut paths = [
+        Path::new("src/sub/b.rs"),
+        Path::new("a.rs"),
+        Path::new("src/file10.rs"),
+        Path::new("src/file2.rs"),
+    ];
+    paths.sort_by(|&left, &right| compare_natural_paths(left, right));
+    assert_eq!(
+        paths,
+        [
+            Path::new("a.rs"),
+            Path::new("src/file2.rs"),
+            Path::new("src/file10.rs"),
+            Path::new("src/sub/b.rs"),
+        ]
+    );
+}
+
+#[test]
 fn relative_paths_use_unix_separators() {
     assert_eq!(
         RelativePathBuf::from_path_with_style(

@@ -24,7 +24,7 @@ use zcv_git::{
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, DiffHunkSource};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
-use zcv_path::AbsolutePathBuf;
+use zcv_path::{AbsolutePathBuf, compare_tree_entries};
 use zcv_project::{GitStoreEvent, Project};
 use zcv_search::{SearchBar, SearchBarConfig, SearchBarSlots};
 use zcv_text::{BufferId, ByteOffset, Snapshot, TextRange};
@@ -553,9 +553,10 @@ impl DiffView {
         let weak_view = cx.weak_entity();
         let empty_focus = cx.focus_handle();
         let multi_buffer = match kind {
-            ProjectDiffKind::Staged => cx.new(MultiBuffer::empty_read_only),
-            ProjectDiffKind::Unstaged => cx.new(MultiBuffer::empty),
-            ProjectDiffKind::Conflict => cx.new(MultiBuffer::empty),
+            ProjectDiffKind::Staged => cx.new(MultiBuffer::empty_tree_ordered_read_only),
+            ProjectDiffKind::Unstaged | ProjectDiffKind::Conflict => {
+                cx.new(MultiBuffer::empty_tree_ordered)
+            }
         };
         let editor = cx.new(|cx| {
             let mut editor = Editor::for_multi_buffer(multi_buffer.clone(), cx);
@@ -662,7 +663,9 @@ impl DiffView {
                         })
                 })
                 .collect::<Vec<_>>();
-            changed.sort_by(|left, right| left.path.cmp(&right.path));
+            changed.sort_by(|left, right| {
+                compare_tree_entries((&left.path, false), (&right.path, false))
+            });
             changed
         };
 

@@ -900,7 +900,6 @@ impl Editor {
         self.set_selections_without_clearing_structured_history(selections, cx);
         self.request_autoscroll(cx);
         self.input_layout = None;
-        cx.notify();
     }
 
     pub(crate) fn render_snapshot(&self, cx: &App) -> MultiBufferSnapshot {
@@ -1050,8 +1049,13 @@ impl Editor {
         self.resolved_selections(cx)
     }
 
+    fn selections_did_change(&mut self, cx: &mut Context<Self>) {
+        self.blink_manager.update(cx, BlinkManager::pause_blinking);
+        cx.notify();
+    }
+
     /// 把 offset 版选区集合重锚定到当前显示快照版本。
-    pub(crate) fn set_selections(&mut self, selections: SelectionSet, cx: &App) {
+    pub(crate) fn set_selections(&mut self, selections: SelectionSet, cx: &mut Context<Self>) {
         self.structured_selection_history.clear();
         self.set_selections_without_clearing_structured_history(selections, cx);
     }
@@ -1059,17 +1063,18 @@ impl Editor {
     fn set_selections_without_clearing_structured_history(
         &mut self,
         selections: SelectionSet,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) {
         // 任何普通选区替换都会终止 pending selection，避免旧鼠标锚点在之后复活。
         self.pending_selection = None;
         self.set_committed_selections(selections, cx);
     }
 
-    fn set_committed_selections(&mut self, selections: SelectionSet, cx: &App) {
+    fn set_committed_selections(&mut self, selections: SelectionSet, cx: &mut Context<Self>) {
         self.selections = selections.anchored(self.display_snapshot(cx).buffer_snapshot());
         // 所有偏移态选择/编辑落地都经这里：自动闭合区域在此按新选择收敛，不另设清理入口。
         self.invalidate_autoclose_regions(cx);
+        self.selections_did_change(cx);
     }
 
     /// 用已锚定的选区替换当前选择，并清空结构化选择链；结束鼠标手势。
@@ -1097,9 +1102,9 @@ impl Editor {
         self.selections = selections;
         // undo/redo 与结构化收缩同样属于选择落地：按当前快照收敛自动闭合区域。
         self.invalidate_autoclose_regions(cx);
+        self.selections_did_change(cx);
         self.request_autoscroll(cx);
         self.input_layout = None;
-        cx.notify();
     }
 
     /// 按当前派生快照把源锚点选区解析为投影 offset 版选区集合。
@@ -1211,7 +1216,7 @@ impl Editor {
         self.display_map.read(cx).longest_unwrapped_row()
     }
 
-    pub(super) fn select_line(&mut self, line: Line, extend: bool, cx: &App) {
+    pub(super) fn select_line(&mut self, line: Line, extend: bool, cx: &mut Context<Self>) {
         let snapshot = self.render_snapshot(cx);
         let Ok(start) = snapshot.line_start_byte(line) else {
             return;
@@ -1370,9 +1375,9 @@ impl Editor {
             mode,
         });
         self.invalidate_autoclose_regions(cx);
+        self.selections_did_change(cx);
         self.request_autoscroll(cx);
         self.input_layout = None;
-        cx.notify();
     }
 
     /// 鼠标拖动：按按下时的粒度把选区活动端更新到当前位置。
@@ -1493,8 +1498,8 @@ impl Editor {
             .expect("拖拽选区必须存在进行中的手势")
             .selection = SelectionSet::new(vec![Selection::new(tail, head)]).anchored(&snapshot);
         self.invalidate_autoclose_regions(cx);
+        self.selections_did_change(cx);
         self.input_layout = None;
-        cx.notify();
     }
 
     /// 鼠标松开：把临时选区提交到已确定集合。
@@ -2275,9 +2280,6 @@ impl Editor {
                 }
                 self.request_autoscroll(cx);
                 self.input_layout = None;
-                self.blink_manager.update(cx, |blink, cx| {
-                    blink.pause_blinking(cx);
-                });
                 cx.notify();
             }
             Err(error) => cx.emit(EditorEvent::Error(format!("选区移动失败：{error:#}"))),

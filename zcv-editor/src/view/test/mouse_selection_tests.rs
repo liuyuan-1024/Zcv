@@ -7,6 +7,7 @@ use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
 use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, point, px};
 use std::path::PathBuf;
+use std::time::Duration;
 use zcv_language::LanguageBuffer;
 use zcv_text::{Buffer, BufferConfig};
 
@@ -66,6 +67,30 @@ fn single_click_places_a_caret(cx: &mut TestAppContext) {
     begin_selection_at_offset(&editor, b(5), 1, false, cx);
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.selections(cx), selections(Selection::caret(b(5))));
+    });
+}
+
+#[gpui::test]
+fn clicking_while_cursor_is_blink_hidden_shows_the_new_caret(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "hello world");
+    let (editor, cx) = cx.add_window_view(move |window, cx| {
+        let editor = Editor::for_language_buffer(buffer, cx);
+        window.focus(&editor.focus_handle(), cx);
+        editor
+    });
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    cx.read_entity(&editor, |editor, cx| {
+        assert!(!editor.blink_manager.read(cx).visible());
+    });
+
+    begin_selection_at_offset(&editor, b(5), 1, false, cx);
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.selections(cx), SelectionSet::caret(b(5)));
+        assert!(editor.blink_manager.read(cx).visible());
     });
 }
 

@@ -462,7 +462,7 @@ impl Editor {
     }
 
     /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对，使退格一次删除整对；非空选区或未命中区域时选区不变。
-    pub(super) fn select_autoclose_pair(&mut self, cx: &App) {
+    pub(super) fn select_autoclose_pair(&mut self, cx: &mut Context<Self>) {
         let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
         let before = self.resolved_selections(cx);
         let mut changed = false;

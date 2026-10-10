@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyEntity, App, Bounds, Context, Element, ElementId, Entity, EventEmitter,
+    AnyElement, AnyEntity, App, Bounds, Context, Corners, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, HighlightStyle, Hsla, Image,
     ImageFormat, InspectorElementId, InteractiveText, LayoutId, ObjectFit, Pixels, Render,
     ScrollHandle, SharedString, StatefulInteractiveElement, StrikethroughStyle, StyledImage,
@@ -29,17 +29,31 @@ use zcv_workspace::{
     typography_for_window,
 };
 
-use crate::document::{Block, Inline, parse};
+use crate::document::{Block, Inline, InlineStyle, parse};
 
 const MARKDOWN_REPARSE_DEBOUNCE: Duration = Duration::from_millis(200);
 const INLINE_CODE_CHIP_VERTICAL_INSET: f32 = 0.1;
 const INLINE_CODE_CHIP_CORNER_RADIUS: Pixels = px(4.);
+/// 行内公式在文本流中预留宽度时使用的不可断行空格。
+const MATH_PLACEHOLDER: char = '\u{00A0}';
+
+/// 渲染后的公式：光栅图像与其逻辑尺寸。
+///
+/// 逻辑尺寸用于在文本流中预留宽度，使公式后的文字继续排在同一行而不是整体换行。
+#[derive(Clone)]
+struct MathImage {
+    image: Arc<gpui::RenderImage>,
+    size: gpui::Size<Pixels>,
+}
+
+type MathImages = HashMap<String, Result<MathImage, String>>;
 
 struct MarkdownRenderContext<'a> {
     source_directory: Option<&'a Path>,
     open_path: Option<&'a OpenPathCallback>,
     type_scale: typography::Typography,
-    math_images: &'a HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
+    math_images: &'a MathImages,
+    window: &'a Window,
     cx: &'a App,
 }
 
@@ -60,7 +74,7 @@ pub(crate) struct MarkdownPreviewView {
     refresh_task: Option<Task<()>>,
     _document_subscription: Subscription,
     _item_subscription: Subscription,
-    math_images: Arc<HashMap<String, Result<Arc<gpui::RenderImage>, String>>>,
+    math_images: Arc<MathImages>,
     math_content_size: Option<gpui::Pixels>,
     math_color: Option<gpui::Rgba>,
     math_render_task: Option<Task<()>>,
@@ -210,7 +224,7 @@ impl MarkdownPreviewView {
         let generation = self.math_render_generation;
         let math_sources = collect_math_sources(&self.blocks);
         if math_sources.is_empty() {
-            self.math_images = Arc::new(HashMap::new());
+            self.math_images = Arc::new(MathImages::new());
             self.math_render_task = None;
             return;
         }
@@ -233,7 +247,7 @@ impl MarkdownPreviewView {
                     );
                     (source, result)
                 })
-                .collect::<HashMap<_, _>>()
+                .collect::<MathImages>()
         });
         self.math_render_task = Some(cx.spawn(async move |this, cx| {
             let images = math_task.await;
@@ -271,6 +285,7 @@ impl Render for MarkdownPreviewView {
             open_path: self.open_path.as_ref(),
             type_scale,
             math_images: &self.math_images,
+            window,
             cx,
         };
         let content = self
@@ -338,15 +353,22 @@ fn render_block(
     match block {
         Block::Heading { level, content } => {
             let size = heading_size(*level, type_scale);
+            let line_height = heading_line_height(*level, size, type_scale)
+                .max(inline_math_height(content, math_images).unwrap_or(Pixels::ZERO));
             div()
                 .text_size(size)
-                .line_height(heading_line_height(*level, size, type_scale))
+                .line_height(line_height)
                 .font_weight(FontWeight::BOLD)
                 .child(render_inline(content, key, render_context))
                 .into_any_element()
         }
         Block::Paragraph(content) => div()
             .whitespace_normal()
+            .line_height(
+                type_scale
+                    .content_line()
+                    .max(inline_math_height(content, math_images).unwrap_or(Pixels::ZERO)),
+            )
             .child(render_inline(content, key, render_context))
             .into_any_element(),
         Block::Code {
@@ -415,6 +437,11 @@ fn render_block(
                         || "•".to_owned(),
                         |start| format!("{}.", start + item_index as u64),
                     );
+                    // 项头只占第一行的高度并顶端对齐，避免多行内容的项头被垂直居中。
+                    let first_line_height = item
+                        .first()
+                        .map(|block| block_line_height(block, type_scale, math_images))
+                        .unwrap_or_else(|| type_scale.content_line());
                     let mut item_children = item
                         .iter()
                         .map(|block| {
@@ -422,28 +449,48 @@ fn render_block(
                         })
                         .collect::<Vec<_>>()
                         .into_iter();
-                    let marker = || {
-                        div()
-                            .w(marker_width)
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .text_left()
-                            .text_color(color::current(cx).text_muted)
-                            .child(marker_text.clone())
-                    };
+                    let marker_gap = scale::to_pixels(scale::S2, render_context.window);
                     let mut content = div().flex().flex_col().gap(scale::S4);
                     if let Some(first_child) = item_children.next() {
+                        // 项头绝对定位到项首行顶端，避免被 flex 拉伸后垂直居中到多行内容中间。
                         content = content.child(
                             div()
+                                .relative()
+                                .w_full()
                                 .flex()
-                                .gap(scale::S2)
-                                .line_height(type_scale.content_line())
-                                .child(marker())
-                                .child(div().flex_1().min_w_0().child(first_child)),
+                                .line_height(first_line_height)
+                                .child(
+                                    div()
+                                        .debug_selector(|| "markdown-list-marker".into())
+                                        .absolute()
+                                        .left_0()
+                                        .top_0()
+                                        .w(marker_width)
+                                        .h(first_line_height)
+                                        .line_height(first_line_height)
+                                        .text_left()
+                                        .text_color(color::current(cx).text_muted)
+                                        .child(marker_text.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(|| "markdown-list-item-content".into())
+                                        .flex_1()
+                                        .min_w_0()
+                                        .pl(marker_width + marker_gap)
+                                        .child(first_child),
+                                ),
                         );
                     } else {
-                        content = content.child(marker());
+                        content = content.child(
+                            div()
+                                .w(marker_width)
+                                .flex_none()
+                                .line_height(first_line_height)
+                                .text_left()
+                                .text_color(color::current(cx).text_muted)
+                                .child(marker_text.clone()),
+                        );
                     }
                     content.children(item_children)
                 })
@@ -502,6 +549,38 @@ fn render_block(
             .w_full()
             .bg(color::current(cx).border)
             .into_any_element(),
+    }
+}
+
+/// 行内公式的最大逻辑高度。
+///
+/// 公式图像高于正文行高时需要把所在行撑高，否则相邻行会重叠。
+fn inline_math_height(content: &[Inline], math_images: &MathImages) -> Option<Pixels> {
+    content
+        .iter()
+        .filter(|inline| inline.style.math)
+        .filter_map(|inline| math_images.get(&inline.text))
+        .filter_map(|result| result.as_ref().ok())
+        .map(|math| math.size.height)
+        .max()
+}
+
+/// 块首行的有效行高；列表项头据此对齐到首行。
+fn block_line_height(
+    block: &Block,
+    type_scale: typography::Typography,
+    math_images: &MathImages,
+) -> Pixels {
+    match block {
+        Block::Heading { level, content } => {
+            let size = heading_size(*level, type_scale);
+            heading_line_height(*level, size, type_scale)
+                .max(inline_math_height(content, math_images).unwrap_or(Pixels::ZERO))
+        }
+        Block::Paragraph(content) => type_scale
+            .content_line()
+            .max(inline_math_height(content, math_images).unwrap_or(Pixels::ZERO)),
+        _ => type_scale.content_line(),
     }
 }
 
@@ -579,6 +658,12 @@ fn render_table_row(
                 .flex_1()
                 .min_w(scale::S32)
                 .p(scale::S2)
+                .line_height(
+                    render_context.type_scale.content_line().max(
+                        inline_math_height(cell_content, render_context.math_images)
+                            .unwrap_or(Pixels::ZERO),
+                    ),
+                )
                 .when(cell_index > 0, |cell| {
                     cell.border_l_1().border_color(color::current(cx).border)
                 })
@@ -599,62 +684,204 @@ fn render_table_row(
         .into_any_element()
 }
 
+/// 行内文本的构建结果：一段连续文本，加上叠绘在文本布局上的装饰。
+#[derive(Default)]
+struct InlineText {
+    text: String,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+    links: Vec<String>,
+    link_ranges: Vec<Range<usize>>,
+    code_ranges: Vec<Range<usize>>,
+    math_placements: Vec<MathPlacement>,
+}
+
+/// 行内公式在文本流中的位置、图像与逻辑尺寸。
+#[derive(Clone)]
+struct MathPlacement {
+    /// 公式占位符在文本中的起始字节偏移。
+    byte_offset: usize,
+    image: Arc<gpui::RenderImage>,
+    size: gpui::Size<Pixels>,
+    /// 占位符预留宽度；不小于公式宽度，用于把公式居中绘制在占位区域内。
+    reserved: Pixels,
+}
+
+impl InlineText {
+    fn push(&mut self, text: &str, style: &InlineStyle, cx: &App) {
+        let start = self.text.len();
+        self.text.push_str(text);
+        let end = self.text.len();
+        if start == end {
+            return;
+        }
+        if style.code {
+            self.code_ranges.push(start..end);
+        }
+        if style.emphasis || style.strong || style.strikethrough || style.link.is_some() {
+            self.highlights
+                .push((start..end, inline_highlight(style, cx)));
+        }
+        if let Some(url) = &style.link {
+            self.link_ranges.push(start..end);
+            self.links.push(url.clone());
+        }
+    }
+
+    /// 公式以不可断行空格预留宽度，绘制阶段再把图像覆盖到占位区域。
+    ///
+    /// 这样公式后的文字会继续排在同一行并按容器宽度换行，而不是整体掉到下一行。
+    fn push_math(&mut self, source: &str, render_context: &MarkdownRenderContext<'_>) {
+        match render_context.math_images.get(source) {
+            Some(Ok(math)) => {
+                let space =
+                    math_placeholder_advance(render_context.window, render_context.type_scale);
+                // 向上取整保证占位宽度不小于公式宽度，避免公式右侧被后续文字覆盖。
+                let count = if space > Pixels::ZERO {
+                    (math.size.width / space).ceil().max(1.) as usize
+                } else {
+                    1
+                };
+                let byte_offset = self.text.len();
+                self.text
+                    .extend(std::iter::repeat_n(MATH_PLACEHOLDER, count));
+                self.math_placements.push(MathPlacement {
+                    byte_offset,
+                    image: math.image.clone(),
+                    size: math.size,
+                    reserved: space * count as f32,
+                });
+            }
+            Some(Err(error)) => {
+                self.push_muted(&format!("公式渲染失败：{error}"), render_context.cx);
+            }
+            None => {
+                self.push_muted(source, render_context.cx);
+            }
+        }
+    }
+
+    fn push_muted(&mut self, text: &str, cx: &App) {
+        let start = self.text.len();
+        self.text.push_str(text);
+        let end = self.text.len();
+        if start < end {
+            self.highlights.push((
+                start..end,
+                HighlightStyle {
+                    color: Some(color::current(cx).text_muted.into()),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+
+    fn finish(
+        self,
+        key: usize,
+        source_directory: Option<&Path>,
+        open_path: Option<&OpenPathCallback>,
+        cx: &App,
+    ) -> AnyElement {
+        let InlineText {
+            text,
+            highlights,
+            links,
+            link_ranges,
+            code_ranges,
+            math_placements,
+        } = self;
+        let text = StyledText::new(text).with_highlights(highlights);
+        let layout = text.layout().clone();
+        let text = if links.is_empty() {
+            text.into_any_element()
+        } else {
+            let source_directory = source_directory.map(Path::to_path_buf);
+            let open_path = open_path.cloned();
+            InteractiveText::new(("markdown-link", key), text)
+                .on_click(link_ranges, move |index, window, cx| {
+                    let link = &links[index];
+                    if let Some(path) =
+                        resolve_markdown_file_link(link, source_directory.as_deref())
+                        && let Some(open_path) = &open_path
+                    {
+                        open_path(path, window, cx);
+                    } else {
+                        cx.open_url(link);
+                    }
+                })
+                .into_any_element()
+        };
+        if code_ranges.is_empty() && math_placements.is_empty() {
+            text
+        } else {
+            MarkdownInlineText {
+                text,
+                layout,
+                code_ranges,
+                code_color: color::current(cx).border_variant.into(),
+                math_placements,
+            }
+            .into_any_element()
+        }
+    }
+}
+
+fn inline_highlight(style: &InlineStyle, cx: &App) -> HighlightStyle {
+    HighlightStyle {
+        font_style: style.emphasis.then_some(FontStyle::Italic),
+        font_weight: style.strong.then_some(FontWeight::BOLD),
+        strikethrough: style.strikethrough.then_some(StrikethroughStyle {
+            thickness: px(2.),
+            color: Some(color::current(cx).text.into()),
+        }),
+        color: style
+            .link
+            .as_ref()
+            .map(|_| color::current(cx).icon_accent.into()),
+        underline: style.link.as_ref().map(|_| UnderlineStyle {
+            thickness: px(2.),
+            color: Some(color::current(cx).icon_accent.into()),
+            wavy: false,
+        }),
+        ..Default::default()
+    }
+}
+
+fn math_placeholder_advance(window: &Window, type_scale: typography::Typography) -> Pixels {
+    let font = window.text_style().font();
+    let font_id = window.text_system().resolve_font(&font);
+    window
+        .text_system()
+        .layout_width(font_id, type_scale.content_size(), MATH_PLACEHOLDER)
+}
+
 fn render_inline(
     content: &[Inline],
     key: usize,
     render_context: &MarkdownRenderContext<'_>,
 ) -> AnyElement {
-    let type_scale = render_context.type_scale;
-    let math_images = render_context.math_images;
-    let cx = render_context.cx;
     if content.iter().any(|inline| inline.style.math) {
-        let mut lines = vec![Vec::new()];
+        let mut inline_text = InlineText::default();
         for inline in content {
-            let parts = inline.text.split('\n').collect::<Vec<_>>();
-            for (index, part) in parts.iter().enumerate() {
-                if !part.is_empty() {
-                    lines.last_mut().unwrap().push(Inline {
-                        text: (*part).to_owned(),
-                        style: inline.style.clone(),
-                    });
-                }
-                if index + 1 < parts.len() {
-                    lines.push(Vec::new());
-                }
+            if inline.style.math {
+                inline_text.push_math(&inline.text, render_context);
+            } else {
+                inline_text.push(&inline.text, &inline.style, render_context.cx);
             }
         }
-        return div()
-            .flex()
-            .flex_col()
-            .children(lines.into_iter().enumerate().map(|(line_index, line)| {
-                div()
-                    .w_full()
-                    .flex_wrap()
-                    .min_h(type_scale.content_line())
-                    .flex()
-                    .items_center()
-                    .children(line.iter().enumerate().map(|(index, inline)| {
-                        if inline.style.math {
-                            render_math_inline(&inline.text, math_images, cx)
-                        } else {
-                            render_text_inline(
-                                std::slice::from_ref(inline),
-                                key + line_index + index,
-                                render_context.source_directory,
-                                render_context.open_path,
-                                cx,
-                            )
-                        }
-                    }))
-            }))
-            .into_any_element();
+        return inline_text.finish(
+            key,
+            render_context.source_directory,
+            render_context.open_path,
+            render_context.cx,
+        );
     }
     render_text_inline(
         content,
         key,
         render_context.source_directory,
         render_context.open_path,
-        cx,
+        render_context.cx,
     )
 }
 
@@ -665,83 +892,11 @@ fn render_text_inline(
     open_path: Option<&OpenPathCallback>,
     cx: &App,
 ) -> AnyElement {
-    let mut text = String::new();
-    let mut highlights = Vec::new();
-    let mut links = Vec::new();
-    let mut link_ranges = Vec::new();
-    let mut code_ranges = Vec::new();
-
+    let mut inline_text = InlineText::default();
     for inline in content {
-        let start = text.len();
-        text.push_str(&inline.text);
-        let end = text.len();
-        if start == end {
-            continue;
-        }
-        let style = &inline.style;
-        if style.code {
-            code_ranges.push(start..end);
-        }
-        if style.emphasis || style.strong || style.strikethrough || style.link.is_some() {
-            highlights.push((
-                start..end,
-                HighlightStyle {
-                    font_style: style.emphasis.then_some(FontStyle::Italic),
-                    font_weight: style.strong.then_some(FontWeight::BOLD),
-                    strikethrough: style.strikethrough.then_some(StrikethroughStyle {
-                        thickness: px(2.),
-                        color: Some(color::current(cx).text.into()),
-                    }),
-                    color: style
-                        .link
-                        .as_ref()
-                        .map(|_| color::current(cx).icon_accent.into()),
-                    underline: style.link.as_ref().map(|_| UnderlineStyle {
-                        thickness: px(2.),
-                        color: Some(color::current(cx).icon_accent.into()),
-                        wavy: false,
-                    }),
-                    ..Default::default()
-                },
-            ));
-        }
-        if let Some(url) = &style.link {
-            link_ranges.push(start..end);
-            links.push(url.clone());
-        }
+        inline_text.push(&inline.text, &inline.style, cx);
     }
-
-    let text = StyledText::new(text).with_highlights(highlights);
-    let layout = text.layout().clone();
-    let text = if links.is_empty() {
-        text.into_any_element()
-    } else {
-        let source_directory = source_directory.map(Path::to_path_buf);
-        let open_path = open_path.cloned();
-        InteractiveText::new(("markdown-link", key), text)
-            .on_click(link_ranges, move |index, window, cx| {
-                let link = &links[index];
-                if let Some(path) = resolve_markdown_file_link(link, source_directory.as_deref())
-                    && let Some(open_path) = &open_path
-                {
-                    open_path(path, window, cx);
-                } else {
-                    cx.open_url(link);
-                }
-            })
-            .into_any_element()
-    };
-    if code_ranges.is_empty() {
-        text
-    } else {
-        MarkdownInlineText {
-            text,
-            layout,
-            code_ranges,
-            code_color: color::current(cx).border_variant.into(),
-        }
-        .into_any_element()
-    }
+    inline_text.finish(key, source_directory, open_path, cx)
 }
 
 fn resolve_markdown_file_link(link: &str, source_directory: Option<&Path>) -> Option<PathBuf> {
@@ -758,12 +913,13 @@ fn resolve_markdown_file_link(link: &str, source_directory: Option<&Path>) -> Op
     })
 }
 
-/// 在文本布局上绘制行内代码背景，不把视觉留白写入文本内容或交互索引。
+/// 在文本布局上叠加绘制行内代码背景与行内公式图像。
 struct MarkdownInlineText {
     text: AnyElement,
     layout: TextLayout,
     code_ranges: Vec<Range<usize>>,
     code_color: Hsla,
+    math_placements: Vec<MathPlacement>,
 }
 
 impl Element for MarkdownInlineText {
@@ -811,6 +967,7 @@ impl Element for MarkdownInlineText {
         cx: &mut App,
     ) {
         paint_inline_code_chips(&self.layout, &self.code_ranges, self.code_color, window);
+        paint_inline_math(&self.layout, &self.math_placements, window);
         self.text.paint(window, cx);
     }
 }
@@ -896,13 +1053,94 @@ fn paint_inline_code_chips(
     }
 }
 
-fn render_math_inline(
-    source: &str,
-    math_images: &HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
-    cx: &App,
-) -> AnyElement {
+/// 计算行内公式图像在文本布局中的绘制边界。
+///
+/// 公式占位起点常常正好落在换行边界上；此时按字节偏移定位会归到上一行末尾，
+/// 因此这里沿换行边界逐行定位，保证图像落在占位符真正所在的行上。
+fn inline_math_bounds(
+    layout: &TextLayout,
+    placement: &MathPlacement,
+    text_align: TextAlign,
+) -> Option<Bounds<Pixels>> {
+    let line_bounds = layout.bounds();
+    let line_height = layout.line_height();
+    let mut row_top = line_bounds.origin.y;
+    let mut logical_start = 0;
+
+    for line in layout.line_layouts() {
+        let logical_end = logical_start + line.len();
+        let unwrapped_layout = &line.unwrapped_layout;
+        let mut row_start = logical_start;
+        let mut row_start_x = Pixels::ZERO;
+        let row_ends = line
+            .wrap_boundaries()
+            .iter()
+            .map(|boundary| {
+                let glyph = &unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix];
+                (glyph.index, glyph.position.x)
+            })
+            .chain([(logical_end, unwrapped_layout.width)]);
+
+        for (row_end, row_end_x) in row_ends {
+            if placement.byte_offset < row_start || placement.byte_offset >= row_end {
+                row_start = row_end;
+                row_start_x = row_end_x;
+                row_top += line_height;
+                continue;
+            }
+
+            let alignment_offset = match text_align {
+                TextAlign::Left => Pixels::ZERO,
+                TextAlign::Center => {
+                    ((line_bounds.size.width - (row_end_x - row_start_x)) / 2.).max(px(0.))
+                }
+                TextAlign::Right => {
+                    (line_bounds.size.width - (row_end_x - row_start_x)).max(px(0.))
+                }
+            };
+            let x = line_bounds.left()
+                + alignment_offset
+                + unwrapped_layout.x_for_index(placement.byte_offset)
+                - row_start_x;
+            let top = row_top + (line_height - placement.size.height) / 2.;
+            let left = x + (placement.reserved - placement.size.width) / 2.;
+            return Some(Bounds {
+                origin: point(left, top),
+                size: placement.size,
+            });
+        }
+
+        logical_start = logical_end + 1;
+    }
+
+    None
+}
+
+/// 把行内公式图像覆盖到文本流中预留的占位区域。
+///
+/// 占位宽度由不可断行空格近似公式宽度，图像在占位区域内垂直居中，
+/// 因此公式与前后文字共享同一套换行与行高逻辑。
+fn paint_inline_math(layout: &TextLayout, placements: &[MathPlacement], window: &mut Window) {
+    let text_align = window.text_style().text_align;
+    for placement in placements {
+        let Some(bounds) = inline_math_bounds(layout, placement, text_align) else {
+            continue;
+        };
+        // 图像已在渲染阶段成功光栅化，绘制失败只可能来自图集分配；预览不做额外恢复。
+        let _ = window.paint_image(
+            bounds,
+            bounds,
+            Corners::default(),
+            placement.image.clone(),
+            0,
+            false,
+        );
+    }
+}
+
+fn render_math_inline(source: &str, math_images: &MathImages, cx: &App) -> AnyElement {
     match math_images.get(source) {
-        Some(Ok(image)) => img(image.clone())
+        Some(Ok(math)) => img(math.image.clone())
             .object_fit(ObjectFit::Contain)
             .max_w_full()
             .flex_none()
@@ -922,7 +1160,7 @@ fn render_math_block(
     source: &str,
     display: bool,
     key: usize,
-    math_images: &HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
+    math_images: &MathImages,
     cx: &App,
 ) -> AnyElement {
     div()
@@ -983,7 +1221,7 @@ fn render_math(
     font_size: f64,
     color: ratex_types::color::Color,
     renderer: gpui::SvgRenderer,
-) -> Result<Arc<gpui::RenderImage>, String> {
+) -> Result<MathImage, String> {
     let nodes = ratex_parser::parse(source).map_err(|error| error.to_string())?;
     let layout_options = ratex_layout::LayoutOptions {
         color,
@@ -1000,9 +1238,16 @@ fn render_math(
             ..Default::default()
         },
     );
-    Image::from_bytes(ImageFormat::Svg, svg.into_bytes())
+    let image = Image::from_bytes(ImageFormat::Svg, svg.into_bytes())
         .to_image_data(renderer)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    // SVG 光栅化时按 SMOOTH_SVG_SCALE_FACTOR 放大，逻辑宽度需还原后再用于文本流占位。
+    let raw = image.size(0);
+    let size = gpui::size(
+        px(raw.width.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
+        px(raw.height.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
+    );
+    Ok(MathImage { image, size })
 }
 
 fn highlight_code_blocks(

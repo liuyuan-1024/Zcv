@@ -16,6 +16,7 @@ use gpui::{
     ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
     prelude::*,
 };
+use zcv_actions::DeployBufferSearch;
 use zcv_buffer_diff::{BufferDiff, BufferDiffEvent, BufferDiffInput, diff_line_boundary};
 use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorHunk, HunkControlTarget};
 use zcv_git::{
@@ -26,7 +27,7 @@ use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, DiffHunkSource};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_path::{AbsolutePathBuf, compare_tree_entries};
 use zcv_project::{GitStoreEvent, Project};
-use zcv_search::{SearchBar, SearchBarConfig, SearchBarSlots};
+use zcv_search::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
 use zcv_text::{BufferId, ByteOffset, Snapshot, TextRange};
 use zcv_theme::{color, scale};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, Checkbox, SvgIcon};
@@ -369,7 +370,7 @@ pub struct DiffView {
     revision_load_task: Option<Task<()>>,
     /// 按工作区 Buffer 身份拥有 diff 订阅，控件与文件头共享此领域入口。
     diff_subscriptions: HashMap<BufferId, DiffFileSubscription>,
-    /// 共享搜索栏会话：查询、匹配选项、可见性与替换开关由它唯一持有。
+    /// 本差异视图的搜索会话：查询、匹配选项、可见性与替换开关由它唯一持有。
     search_bar: Entity<SearchBar>,
     _subscriptions: Vec<Subscription>,
 }
@@ -629,7 +630,7 @@ impl DiffView {
                         supports_replace: kind == ProjectDiffKind::Unstaged,
                         query_placeholder: "搜索...",
                         replace_placeholder: "替换为...",
-                        dismissible: false,
+                        presentation: SearchBarPresentation::Persistent,
                     },
                     language_registry,
                     cx,
@@ -1204,6 +1205,14 @@ impl Render for DiffView {
             })
             .track_focus(&self.empty_focus)
             .key_context("DiffView")
+            .on_action({
+                let search_bar = self.search_bar.downgrade();
+                move |_: &DeployBufferSearch, window, cx| {
+                    if let Some(search_bar) = search_bar.upgrade() {
+                        search_bar.update(cx, |bar, cx| bar.deploy(None, window, cx));
+                    }
+                }
+            })
             .size_full()
             .bg(color::current(cx).editor_background)
             .when(!is_empty, |view| view.child(self.editor.clone()))

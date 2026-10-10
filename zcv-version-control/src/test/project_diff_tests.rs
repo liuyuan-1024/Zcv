@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use gpui::{AppContext as _, TestAppContext};
 
+use zcv_actions::DeployBufferSearch;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging, PendingHunk};
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
@@ -1897,6 +1898,98 @@ fn project_diff_toolbar_follows_active_item(cx: &mut TestAppContext) {
         });
         assert_eq!(hidden, ToolbarItemLocation::Hidden);
     });
+}
+
+struct DiffSearchHost {
+    view: Entity<DiffView>,
+    toolbar: Entity<ProjectDiffToolbar>,
+}
+
+impl Render for DiffSearchHost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().child(self.toolbar.clone()).child(self.view.clone())
+    }
+}
+
+fn assert_project_diff_find_seeds_query_from_editor_selection(
+    kind: ProjectDiffKind,
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let (host, cx) = cx.add_window_view(move |_, cx| DiffSearchHost {
+        view: cx.new(|cx| DiffView::new(kind, project, cx)),
+        toolbar: cx.new(|_| ProjectDiffToolbar::new()),
+    });
+    let (view, toolbar) = host.read_with(cx, |host, _| (host.view.clone(), host.toolbar.clone()));
+    view.update(cx, |view, cx| {
+        for (name, text) in [("a.rs", "alpha\n"), ("b.rs", "beta\n")] {
+            let path = directory.path().join(name);
+            let source = cx.new(|cx| {
+                LanguageBuffer::new(
+                    Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap(),
+                    Some(path.clone()),
+                    Arc::new(LanguageRegistry::new()),
+                    cx,
+                )
+            });
+            view.files.push(GitChangeFile {
+                path,
+                status: FileStatus::Tracked {
+                    index_status: StatusCode::Unmodified,
+                    worktree_status: StatusCode::Modified,
+                },
+            });
+            view.multi_buffer.update(cx, |buffer, cx| {
+                buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..1, cx)], cx)
+            });
+        }
+    });
+    cx.refresh().unwrap();
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        view.editor.update(cx, |editor, cx| {
+            assert!(<Editor as Item>::navigate_to_byte_range(editor, 7..11, cx));
+        });
+    });
+    cx.update(|window, cx| {
+        toolbar.update(cx, |toolbar, cx| {
+            toolbar.set_active_pane_item(Some(&view as &dyn ItemHandle), window, cx)
+        });
+        window.focus(&view.read(cx).editor.read(cx).focus_handle(), cx);
+    });
+    cx.refresh().unwrap();
+    cx.dispatch_action(DeployBufferSearch);
+    let query = view.read_with(cx, |view, cx| view.search_bar.read(cx).query_text(cx));
+    assert_eq!(query, "beta");
+
+    view.update(cx, |view, cx| {
+        view.editor.update(cx, |editor, cx| {
+            assert!(<Editor as Item>::navigate_to_byte_range(editor, 0..5, cx));
+        });
+    });
+    cx.dispatch_action(DeployBufferSearch);
+    let query = view.read_with(cx, |view, cx| view.search_bar.read(cx).query_text(cx));
+    assert_eq!(query, "alpha");
+
+    view.update(cx, |view, cx| {
+        view.editor.update(cx, |editor, cx| {
+            assert!(<Editor as Item>::navigate_to_byte_range(editor, 0..0, cx));
+        });
+    });
+    cx.dispatch_action(DeployBufferSearch);
+    let query = view.read_with(cx, |view, cx| view.search_bar.read(cx).query_text(cx));
+    assert_eq!(query, "alpha");
+}
+
+#[gpui::test]
+fn unstaged_project_diff_find_seeds_query_from_editor_selection(cx: &mut TestAppContext) {
+    assert_project_diff_find_seeds_query_from_editor_selection(ProjectDiffKind::Unstaged, cx);
+}
+
+#[gpui::test]
+fn staged_project_diff_find_seeds_query_from_editor_selection(cx: &mut TestAppContext) {
+    assert_project_diff_find_seeds_query_from_editor_selection(ProjectDiffKind::Staged, cx);
 }
 
 #[gpui::test]

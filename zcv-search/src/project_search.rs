@@ -1,7 +1,7 @@
 //! 项目级跨文件内容搜索视图。
 //!
-//! 与文件内搜索复用 SearchBar UI、快捷键和查询协议，但持有独立状态机；
-//! 本 Item 搜索整个 Project，并把 ordered excerpts 写入 MultiBuffer。
+//! 与文件内搜索复用 SearchBar 会话和快捷键；本 Item 负责跨项目搜索，
+//! 并把按路径排序的 excerpts 写入 MultiBuffer。
 
 use std::any::TypeId;
 use std::path::PathBuf;
@@ -11,7 +11,7 @@ use gpui::{
     AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, ParentElement, Render,
     SharedString, Styled, Subscription, Task, WeakEntity, Window, div, prelude::*,
 };
-use zcv_actions::DeployProjectSearch;
+use zcv_actions::{DeployBufferSearch, DeployProjectSearch};
 use zcv_editor::{Editor, EditorEvent};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_project::Project;
@@ -21,10 +21,10 @@ use zcv_ui::{Button, MatchOptions};
 use zcv_workspace::{
     Direction, Item, ItemEvent, ItemHandle, SearchEvent, SearchableItem, SearchableItemHandle,
     SerializedItemProvider, SerializedPaneItem, StatusItemView, ToolbarItemEvent,
-    ToolbarItemLocation, ToolbarItemView, WeakSearchableItemHandle, Workspace,
+    ToolbarItemLocation, ToolbarItemView, Workspace,
 };
 
-use crate::{SearchBar, SearchBarConfig, SearchBarSlots};
+use crate::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
 
 const PROJECT_SEARCH_SERIALIZED_KIND: &str = "project-search";
 
@@ -60,7 +60,7 @@ pub(crate) struct ProjectSearchView {
     search_generation: u64,
     debounce_task: Option<Task<()>>,
     pending_search: Option<Task<()>>,
-    /// 共享搜索栏会话：查询、匹配选项、可见性与按键接线由它唯一持有。
+    /// 本 Item 的搜索会话：查询、匹配选项、可见性与按键接线由它唯一持有。
     search_bar: Entity<SearchBar>,
     _subscriptions: Vec<Subscription>,
 }
@@ -107,10 +107,9 @@ impl ToolbarItemView for ProjectSearchToolbar {
         {
             previous.update(cx, |bar, cx| bar.set_target(None, window, cx));
         }
-        // 项目搜索的搜索目标是视图自身：它的 SearchableItem 驱动全项目扫描。
-        // 目标以弱句柄保存，视图持有搜索栏也不会与其构成强引用环。
-        let target: Box<dyn WeakSearchableItemHandle> = Box::new(view.downgrade());
-        bar.update(cx, |bar, cx| bar.set_target(Some(target), window, cx));
+        // 搜索目标按 Item 协议解析为项目搜索视图自身，弱句柄避免与搜索栏成环。
+        let target = view.as_searchable(cx).map(|handle| handle.downgrade());
+        bar.update(cx, |bar, cx| bar.set_target(target, window, cx));
         ToolbarItemLocation::PrimaryLeft
     }
 }
@@ -232,7 +231,7 @@ impl ProjectSearchView {
                         supports_replace: false,
                         query_placeholder: "搜索...",
                         replace_placeholder: "替换为...",
-                        dismissible: true,
+                        presentation: SearchBarPresentation::Persistent,
                     },
                     language_registry,
                     cx,
@@ -394,6 +393,14 @@ impl Render for ProjectSearchView {
 
         div()
             .key_context("ProjectSearchView")
+            .on_action({
+                let search_bar = self.search_bar.downgrade();
+                move |_: &DeployBufferSearch, window, cx| {
+                    if let Some(search_bar) = search_bar.upgrade() {
+                        search_bar.update(cx, |bar, cx| bar.deploy(None, window, cx));
+                    }
+                }
+            })
             .size_full()
             .flex()
             .flex_col()
@@ -496,14 +503,13 @@ impl Item for ProjectSearchView {
         })
     }
 
-    /// 缓冲区级搜索目标是结果编辑器本身；
-    /// 项目搜索栏的目标是视图自身（它的 `SearchableItem` 驱动项目级搜索），由 `ProjectSearchToolbar` 注入，不经过这里。
+    /// 当前 Item 的搜索目标是项目搜索视图本身；结果编辑器只展示项目查询结果。
     fn as_searchable(
         &self,
-        _self_handle: &Entity<Self>,
+        self_handle: &Entity<Self>,
         _cx: &App,
     ) -> Option<Box<dyn SearchableItemHandle>> {
-        Some(Box::new(self.results_editor.clone()))
+        Some(Box::new(self_handle.clone()))
     }
 }
 

@@ -1,9 +1,53 @@
 use std::sync::Arc;
 
+use zcv_actions::DeployBufferSearch;
 use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
 
 use super::*;
+
+struct GitGraphSearchHost {
+    view: Entity<GitGraphView>,
+    toolbar: Entity<GitGraphToolbar>,
+}
+
+impl Render for GitGraphSearchHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(self.toolbar.clone()).child(self.view.clone())
+    }
+}
+
+#[gpui::test]
+fn git_graph_find_from_content_focuses_its_search_bar(cx: &mut gpui::TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let project = cx.new(|cx| {
+        Project::new(
+            AbsolutePathBuf::canonicalize(directory.path()).expect("测试项目根目录应可规范化"),
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+    });
+    let (host, cx) = cx.add_window_view(move |_, cx| GitGraphSearchHost {
+        view: cx.new(|cx| GitGraphView::new(project, cx)),
+        toolbar: cx.new(|_| GitGraphToolbar::new()),
+    });
+    let (view, toolbar) = host.read_with(cx, |host, _| (host.view.clone(), host.toolbar.clone()));
+    cx.update(|window, cx| {
+        toolbar.update(cx, |toolbar, cx| {
+            toolbar.set_active_pane_item(Some(&view as &dyn ItemHandle), window, cx)
+        });
+        let focus = view.read(cx).focus.clone();
+        window.focus(&focus, cx);
+    });
+    cx.refresh().unwrap();
+    cx.dispatch_action(DeployBufferSearch);
+    let query_focus = view.read_with(cx, |view, cx| {
+        let bar = view.search_bar.read(cx);
+        assert!(bar.visible());
+        bar.query_focus_handle(cx)
+    });
+    cx.update(|window, _| assert!(query_focus.is_focused(window)));
+}
 
 /// 行高必须跟随内容字号通道：内容字号放大后行高应变大。
 /// 若走错通道，`cmd-=`（workspace::IncreaseContentFontSize）对版本控制图没有任何可见效果。

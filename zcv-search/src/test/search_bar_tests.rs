@@ -1,9 +1,63 @@
 use std::sync::Arc;
 
-use gpui::{AppContext, TestAppContext, VisualTestContext};
-use zcv_workspace::SearchableItem;
+use gpui::{AppContext, Context, Render, TestAppContext, VisualTestContext, Window, prelude::*};
+use zcv_actions::DeployBufferSearch;
+use zcv_workspace::{Item, SearchableItem};
 
 use super::*;
+
+struct SearchBarHost {
+    bar: Entity<SearchBar>,
+}
+
+impl Render for SearchBarHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.bar.update(cx, |bar, cx| {
+            bar.render(SearchBarSlots::default(), window, cx)
+        })
+    }
+}
+
+#[gpui::test]
+fn find_from_query_input_uses_target_selection(cx: &mut TestAppContext) {
+    let registry = Arc::new(LanguageRegistry::new());
+    let editor = cx.new({
+        let registry = Arc::clone(&registry);
+        move |cx| Editor::single_line(registry, cx)
+    });
+    editor.update(cx, |editor, cx| editor.set_text("alpha beta", cx));
+    let bar = cx.new(|cx| {
+        SearchBar::new(
+            SearchBarConfig {
+                id_prefix: "test-find-input",
+                key_context: "BufferSearchBar",
+                supports_replace: true,
+                query_placeholder: "搜索...",
+                replace_placeholder: "替换为...",
+                presentation: SearchBarPresentation::OnDemand,
+            },
+            registry,
+            cx,
+        )
+    });
+    let (_, cx) = cx.add_window_view({
+        let bar = bar.clone();
+        move |_, _| SearchBarHost { bar }
+    });
+    cx.update(|window, cx| {
+        bar.update(cx, |bar, cx| {
+            bar.set_target(Some(Box::new(editor.downgrade())), window, cx);
+            bar.deploy(None, window, cx);
+            bar.focus_query(window, cx);
+        });
+    });
+    editor.update(cx, |editor, cx| {
+        assert!(<Editor as Item>::navigate_to_byte_range(editor, 6..10, cx));
+    });
+    cx.refresh().unwrap();
+    cx.dispatch_action(DeployBufferSearch);
+    assert_eq!(bar.read_with(cx, |bar, cx| bar.query_text(cx)), "beta");
+}
 
 fn search_bar_with_text<'a>(
     cx: &'a mut TestAppContext,
@@ -26,7 +80,7 @@ fn search_bar_with_text<'a>(
                 supports_replace: true,
                 query_placeholder: "搜索...",
                 replace_placeholder: "替换为...",
-                dismissible: true,
+                presentation: SearchBarPresentation::OnDemand,
             },
             registry,
             cx,

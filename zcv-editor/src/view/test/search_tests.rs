@@ -1,6 +1,6 @@
 //! 文件内搜索：SearchableItem 实现（搜索/跳转/替换/编辑后自动重搜）。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
+use zcv_multi_buffer::{ExcerptRange, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
 
 use gpui::{AppContext, TestAppContext, VisualTestContext};
 use zcv_language::LanguageRegistry;
@@ -669,6 +669,32 @@ fn query_suggestion_seeds_search_from_selection(cx: &mut TestAppContext) {
                 None,
                 "空选区（仅光标）不应产生查询建议"
             );
+        });
+    });
+}
+
+#[gpui::test]
+fn query_suggestion_seeds_search_from_composite_selection(cx: &mut TestAppContext) {
+    let first = test_buffer(cx, "alpha\n");
+    first.update(cx, |buffer, cx| buffer.set_file_path("a.rs".into(), cx));
+    let second = test_buffer(cx, "beta\n");
+    second.update(cx, |buffer, cx| buffer.set_file_path("b.rs".into(), cx));
+    let combined = cx.new(MultiBuffer::empty_read_only);
+    combined.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first, 0..1, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(second, 0..1, cx)], cx);
+    });
+    let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_multi_buffer(combined, cx));
+    cx.update(|_, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.set_selections(
+                SelectionSet::new(vec![Selection::new(
+                    MultiBufferOffset::new(7),
+                    MultiBufferOffset::new(11),
+                )]),
+                cx,
+            );
+            assert_eq!(editor.query_suggestion(cx).as_deref(), Some("beta"));
         });
     });
 }

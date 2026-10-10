@@ -1,7 +1,7 @@
-//! 文件内搜索工具项：面包屑、预览入口与共享搜索栏。
+//! 普通文档工具项：面包屑、预览入口与 Pane 持有的文件搜索栏。
 //!
 //! 搜索会话（查询/替换输入、匹配选项、可见性、替换开关、按键接线与命中导航）
-//! 由 zcv-search 的共享 SearchBar 承担；
+//! 由 zcv-search 的 SearchBar 承担；
 //! 本模块只负责工具项位置、活动 Item 的目标解析，以及面包屑与预览入口。
 //! 面包屑与搜索栏是两个独立的工具项元素，搜索栏独立渲染。
 
@@ -18,7 +18,7 @@ use zcv_workspace::{
     Workspace,
 };
 
-use crate::{SearchBar, SearchBarConfig, SearchBarSlots};
+use crate::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
 
 pub(crate) struct DocumentToolbar {
     search_bar: Entity<SearchBar>,
@@ -41,7 +41,7 @@ impl DocumentToolbar {
                     supports_replace: true,
                     query_placeholder: "搜索...",
                     replace_placeholder: "替换为...",
-                    dismissible: true,
+                    presentation: SearchBarPresentation::OnDemand,
                 },
                 language_registry,
                 cx,
@@ -54,15 +54,18 @@ impl DocumentToolbar {
         }
     }
 
-    /// 部署搜索条：无论当前状态一律打开并把焦点移到搜索框。
+    /// 活动普通文档可搜索时部署搜索栏，并把焦点移到搜索框。
     pub(super) fn deploy(
         &mut self,
         query_seed: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.search_bar
-            .update(cx, |bar, cx| bar.deploy(query_seed, window, cx));
+        self.search_bar.update(cx, |bar, cx| {
+            if bar.has_target() {
+                bar.deploy(query_seed, window, cx);
+            }
+        });
     }
 }
 
@@ -84,20 +87,18 @@ impl ToolbarItemView for DocumentToolbar {
         });
         self.breadcrumbs
             .update(cx, |breadcrumbs, cx| breadcrumbs.set_item(item, cx));
-        // 搜索栏保存弱目标：目标释放后搜索自然停止，不延长目标生命周期。
-        let target = item
+        // 只有直接打开的 Editor Item 使用这份 Pane 搜索会话。
+        // 组合 Item 即使暴露内层 Editor，也不借用这份 Pane 搜索会话。
+        let editor_item = item.filter(|item| {
+            item.act_as::<Editor>(cx)
+                .is_some_and(|editor| editor.entity_id() == item.item_id())
+        });
+        let target = editor_item
             .and_then(|item| item.as_searchable(cx))
             .map(|handle| handle.downgrade());
         self.search_bar
             .update(cx, |bar, cx| bar.set_target(target, window, cx));
-        // 编辑器通用文档工具栏只服务本身就是编辑器的 Item。
-        // 预览、项目搜索、差异等 Item 只通过 `act_as_type` 暴露内层编辑器，自身不是编辑器实体；
-        // 它们由各自的工具项承担工具区，避免通用文档工具栏与专用工具项重复显示。
-        let is_editor_item = item.is_some_and(|item| {
-            item.act_as::<Editor>(cx)
-                .is_some_and(|editor| editor.entity_id() == item.item_id())
-        });
-        if is_editor_item {
+        if editor_item.is_some() {
             ToolbarItemLocation::Secondary
         } else {
             ToolbarItemLocation::Hidden

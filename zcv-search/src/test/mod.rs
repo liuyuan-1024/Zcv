@@ -172,17 +172,16 @@ fn document_toolbar(cx: &mut TestAppContext) -> gpui::Entity<DocumentToolbar> {
 fn buffer_search_does_not_require_an_active_path(cx: &mut TestAppContext) {
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
-        let item = cx.new(|cx| TestItem {
-            focus: cx.focus_handle(),
-            path: None,
-            exposes_search: true,
-            last_query: None,
+        let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
+        editor.update(cx, |editor, cx| editor.set_text("needle", cx));
+        let location = bar.update(cx, |bar, cx| {
+            let location = bar.set_active_pane_item(Some(&editor as &dyn ItemHandle), window, cx);
+            bar.deploy(Some("needle".into()), window, cx);
+            location
         });
-        bar.update(cx, |bar, cx| {
-            bar.set_active_pane_item(Some(&item as &dyn ItemHandle), window, cx)
-        });
-
-        assert_eq!(item.read(cx).active_path(cx), None);
+        assert_eq!(location, ToolbarItemLocation::Secondary);
+        assert_eq!(editor.read(cx).active_path(cx), None);
+        assert_eq!(editor.read(cx).search_count(cx), (1, Some(0)));
         TestView
     });
 }
@@ -197,9 +196,12 @@ fn buffer_search_does_not_use_a_path_as_search_capability(cx: &mut TestAppContex
             exposes_search: false,
             last_query: None,
         });
-        bar.update(cx, |bar, cx| {
+        let location = bar.update(cx, |bar, cx| {
             bar.set_active_pane_item(Some(&item as &dyn ItemHandle), window, cx)
         });
+        assert_eq!(location, ToolbarItemLocation::Hidden);
+        bar.update(cx, |bar, cx| bar.deploy(Some("needle".into()), window, cx));
+        assert_eq!(item.read(cx).last_query, None);
         TestView
     });
 }
@@ -253,8 +255,41 @@ fn document_toolbar_is_hidden_for_composite_items_that_expose_an_editor(cx: &mut
     });
 }
 
-/// 项目搜索的结果编辑器同样通过 Item 协议暴露为编辑器；
-/// 通用文档工具栏只服务本身就是编辑器的 Item，因此该视图的工具区由自身承担。
+#[gpui::test]
+fn hidden_document_search_does_not_search_a_composite_editor(cx: &mut TestAppContext) {
+    let bar = document_toolbar(cx);
+    cx.add_window_view(|window, cx| {
+        let registry = Arc::new(LanguageRegistry::new());
+        let document = cx.new({
+            let registry = Arc::clone(&registry);
+            move |cx| Editor::single_line(registry, cx)
+        });
+        document.update(cx, |editor, cx| editor.set_text("alpha", cx));
+        bar.update(cx, |bar, cx| {
+            bar.set_active_pane_item(Some(&document as &dyn ItemHandle), window, cx);
+            bar.deploy(Some("alpha".into()), window, cx);
+        });
+
+        let inner_editor = cx.new(move |cx| Editor::single_line(registry, cx));
+        inner_editor.update(cx, |editor, cx| editor.set_text("alpha", cx));
+        let composite = cx.new(|cx| CompositeItem {
+            focus: cx.focus_handle(),
+            inner_editor: inner_editor.clone(),
+        });
+        let location = bar.update(cx, |bar, cx| {
+            bar.set_active_pane_item(Some(&composite as &dyn ItemHandle), window, cx)
+        });
+        assert_eq!(location, ToolbarItemLocation::Hidden);
+        assert_eq!(inner_editor.read(cx).search_count(cx), (0, None));
+        let focus = inner_editor.read(cx).focus_handle();
+        window.focus(&focus, cx);
+        bar.update(cx, |bar, cx| bar.deploy(Some("alpha".into()), window, cx));
+        assert!(focus.is_focused(window));
+        TestView
+    });
+}
+
+/// 项目搜索结果仍走 Editor 管线，但当前 Item 的搜索目标是项目搜索本身。
 #[gpui::test]
 fn project_search_view_acts_as_editor_and_owns_its_toolbar(cx: &mut TestAppContext) {
     let root =
@@ -268,7 +303,13 @@ fn project_search_view_acts_as_editor_and_owns_its_toolbar(cx: &mut TestAppConte
             handle.act_as::<Editor>(cx).is_some(),
             "搜索结果同样是编辑器，应通过 act_as_type 暴露结果编辑器"
         );
-        assert!(handle.as_searchable(cx).is_some());
+        assert_eq!(
+            handle
+                .as_searchable(cx)
+                .expect("项目搜索应可搜索")
+                .item_id(),
+            view.entity_id(),
+        );
         let location = bar.update(cx, |bar, cx| {
             bar.set_active_pane_item(Some(handle), window, cx)
         });
@@ -277,6 +318,14 @@ fn project_search_view_acts_as_editor_and_owns_its_toolbar(cx: &mut TestAppConte
             ToolbarItemLocation::Hidden,
             "项目搜索视图自身不是编辑器实体，通用文档工具栏应隐藏"
         );
+        let focus = handle
+            .act_as::<Editor>(cx)
+            .expect("项目搜索应暴露结果编辑器")
+            .read(cx)
+            .focus_handle();
+        window.focus(&focus, cx);
+        bar.update(cx, |bar, cx| bar.deploy(Some("needle".into()), window, cx));
+        assert!(focus.is_focused(window), "隐藏的文档搜索栏不得抢走焦点");
         TestView
     });
 }
@@ -286,17 +335,13 @@ fn project_search_view_acts_as_editor_and_owns_its_toolbar(cx: &mut TestAppConte
 fn document_toolbar_deploys_search_on_the_active_item(cx: &mut TestAppContext) {
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
-        let item = cx.new(|cx| TestItem {
-            focus: cx.focus_handle(),
-            path: None,
-            exposes_search: true,
-            last_query: None,
-        });
+        let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
+        editor.update(cx, |editor, cx| editor.set_text("needle", cx));
         bar.update(cx, |bar, cx| {
-            bar.set_active_pane_item(Some(&item as &dyn ItemHandle), window, cx);
+            bar.set_active_pane_item(Some(&editor as &dyn ItemHandle), window, cx);
             bar.deploy(Some("needle".into()), window, cx);
         });
-        assert_eq!(item.read(cx).last_query.as_deref(), Some("needle"));
+        assert_eq!(editor.read(cx).search_count(cx), (1, Some(0)));
         TestView
     });
 }

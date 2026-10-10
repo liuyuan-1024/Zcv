@@ -11,8 +11,8 @@ use gpui::{
     Window, div, prelude::*,
 };
 use zcv_actions::{
-    Backtab, ClearSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext, SelectAll, Tab,
-    ToggleCaseSensitive, ToggleRegex, ToggleReplace, ToggleWholeWord,
+    Backtab, ClearSearch, DeployBufferSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext,
+    SelectAll, Tab, ToggleCaseSensitive, ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
 use zcv_editor::{Editor, EditorEvent, LanguageRegistry};
 use zcv_keymap::display_shortcut;
@@ -20,6 +20,13 @@ use zcv_project::SearchQuery;
 use zcv_theme::{color, scale};
 use zcv_ui::{Button, MatchOption, MatchOptions, ReplaceInput, SearchInput};
 use zcv_workspace::{Direction, SearchableItemHandle, WeakSearchableItemHandle};
+
+/// 搜索栏在宿主工具区中的呈现方式。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SearchBarPresentation {
+    OnDemand,
+    Persistent,
+}
 
 /// 搜索栏配置：由宿主构造一次，定义该搜索入口的身份与能力。
 pub struct SearchBarConfig {
@@ -31,11 +38,8 @@ pub struct SearchBarConfig {
     pub supports_replace: bool,
     pub query_placeholder: &'static str,
     pub replace_placeholder: &'static str,
-    /// 是否可关闭。
-    ///
-    /// 可关闭的搜索栏（文件内搜索、项目搜索）初始隐藏，由 deploy/close 控制显隐；
-    /// 常驻搜索栏（差异、提交图）初始可见且不响应关闭，仅清空查询。
-    pub dismissible: bool,
+    /// 按需显示的搜索栏初始隐藏；常驻搜索栏随宿主显示。
+    pub presentation: SearchBarPresentation,
 }
 
 /// SearchBar::render 的宿主插槽。
@@ -83,7 +87,7 @@ impl SearchBar {
             editor.set_placeholder_text(config.replace_placeholder, cx)
         });
         Self {
-            visible: !config.dismissible,
+            visible: config.presentation == SearchBarPresentation::Persistent,
             config,
             show_replace: false,
             options: MatchOptions::default(),
@@ -120,6 +124,10 @@ impl SearchBar {
     /// 升级当前搜索目标；目标已释放时返回 None。
     fn search_target(&self) -> Option<Box<dyn SearchableItemHandle>> {
         self.target.as_ref()?.upgrade()
+    }
+
+    pub(crate) fn has_target(&self) -> bool {
+        self.search_target().is_some()
     }
 
     /// 是否支持替换：宿主配置与目标能力同时成立才启用。
@@ -224,7 +232,7 @@ impl SearchBar {
 
     /// 清空搜索：可关闭搜索栏同时关闭，常驻搜索栏保留可见性。
     pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.config.dismissible {
+        if self.config.presentation == SearchBarPresentation::OnDemand {
             self.close(window, cx);
         } else if let Some(target) = self.search_target() {
             target.clear_search(window, cx);
@@ -465,14 +473,16 @@ impl SearchBar {
             .flex()
             .flex_col()
             .gap(scale::S6)
+            .on_action(cx.listener(Self::handle_deploy))
             .on_action(cx.listener(Self::handle_find_next))
             .on_action(cx.listener(Self::handle_find_previous))
             .on_action(cx.listener(Self::handle_toggle_replace))
             .on_action(cx.listener(Self::handle_replace_next))
             .on_action(cx.listener(Self::handle_replace_all))
-            .when(self.config.dismissible, |this| {
-                this.on_action(cx.listener(Self::handle_clear_search))
-            })
+            .when(
+                self.config.presentation == SearchBarPresentation::OnDemand,
+                |this| this.on_action(cx.listener(Self::handle_clear_search)),
+            )
             .on_action(cx.listener(Self::handle_toggle_case_sensitive))
             .on_action(cx.listener(Self::handle_toggle_whole_word))
             .on_action(cx.listener(Self::handle_toggle_regex))
@@ -487,6 +497,15 @@ impl SearchBar {
 // ═══ SearchBar actions（keymap 搜索上下文绑定）═══
 
 impl SearchBar {
+    fn handle_deploy(
+        &mut self,
+        _: &DeployBufferSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.deploy(None, window, cx);
+    }
+
     /// 视图体聚焦时由宿主转发的匹配导航。
     pub fn find_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.move_active(Direction::Next, window, cx);

@@ -10,7 +10,7 @@ mod search_bar;
 #[cfg(test)]
 mod test;
 
-pub use search_bar::{SearchBar, SearchBarConfig, SearchBarSlots};
+pub use search_bar::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
 
 use gpui::{App, AppContext, Context, Window};
 use zcv_actions::{DeployBufferSearch, DeployProjectSearch};
@@ -46,7 +46,7 @@ pub fn init(cx: &mut App) {
     zcv_workspace::register_serialized_item_provider(ProjectSearchSerializedItemProvider, cx);
 }
 
-/// 把独立的 Buffer/Project 搜索栏及其 action 路由注入一个 Workspace。
+/// 把 Pane 文档搜索栏、项目搜索工具项及其 action 路由注入 Workspace。
 pub fn install(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let pane = workspace.pane().clone();
     let document_toolbar = buffer_search::install(workspace, cx);
@@ -63,6 +63,7 @@ pub fn install(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<
         status_bar.add_left_item(cx.new(|_| ProjectSearchButton::new(workspace_handle)), cx);
     });
 
+    // Item 自持的搜索栏在自身焦点链上接收搜索快捷键；根节点只服务直接打开的 Editor。
     let document_toolbar_for_action = document_toolbar.clone();
     workspace.register_action(move |_workspace, _: &DeployBufferSearch, window, cx| {
         document_toolbar_for_action.update(cx, |toolbar, cx| {

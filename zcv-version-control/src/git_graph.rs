@@ -15,21 +15,22 @@ use gpui::{
 };
 use regex::RegexBuilder;
 use zcv_actions::{
-    Backtab, FindNext, FindPrevious, Tab, ToggleCaseSensitive, ToggleRegex, ToggleWholeWord,
+    Backtab, DeployBufferSearch, FindNext, FindPrevious, Tab, ToggleCaseSensitive, ToggleRegex,
+    ToggleWholeWord,
 };
 use zcv_git::GraphCommit;
 
 use crate::graph::{GraphLayoutState, GraphLine, GraphRowLayout};
 use zcv_project::SearchQuery;
 use zcv_project::{GitStoreEvent, Project};
-use zcv_search::{SearchBar, SearchBarConfig, SearchBarSlots};
+use zcv_search::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
 use zcv_theme::color::{self, ThemeColors};
 use zcv_theme::{fixed, scale, typography};
 use zcv_ui::{ButtonLike, Scrollbar, TooltipSpec};
 use zcv_workspace::{
-    Direction, Item, ItemHandle, SearchEvent, SearchableItem, SerializedItemProvider,
-    SerializedPaneItem, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
-    WeakSearchableItemHandle, Workspace, typography_for_window,
+    Direction, Item, ItemHandle, SearchEvent, SearchableItem, SearchableItemHandle,
+    SerializedItemProvider, SerializedPaneItem, ToolbarItemEvent, ToolbarItemLocation,
+    ToolbarItemView, Workspace, typography_for_window,
 };
 
 // ── 布局常量 ────────────────────────────────
@@ -161,9 +162,9 @@ impl ToolbarItemView for GitGraphToolbar {
         {
             previous.update(cx, |bar, cx| bar.set_target(None, window, cx));
         }
-        // 搜索目标是提交图视图自身；以弱句柄保存，避免与视图持有的搜索栏构成强引用环。
-        let target: Box<dyn WeakSearchableItemHandle> = Box::new(view.downgrade());
-        bar.update(cx, |bar, cx| bar.set_target(Some(target), window, cx));
+        // 搜索目标按 Item 协议解析为提交图自身，弱句柄避免与搜索栏成环。
+        let target = view.as_searchable(cx).map(|handle| handle.downgrade());
+        bar.update(cx, |bar, cx| bar.set_target(target, window, cx));
         ToolbarItemLocation::PrimaryLeft
     }
 }
@@ -196,7 +197,7 @@ impl GitGraphView {
                     supports_replace: false,
                     query_placeholder: "搜索…",
                     replace_placeholder: "替换为…",
-                    dismissible: false,
+                    presentation: SearchBarPresentation::Persistent,
                 },
                 language_registry,
                 cx,
@@ -391,6 +392,14 @@ impl Render for GitGraphView {
             .size_full()
             .track_focus(&self.focus)
             .key_context("GitGraphSearchBar")
+            .on_action({
+                let bar = self.search_bar.downgrade();
+                move |_: &DeployBufferSearch, window, cx| {
+                    if let Some(bar) = bar.upgrade() {
+                        bar.update(cx, |bar, cx| bar.deploy(None, window, cx));
+                    }
+                }
+            })
             .on_action({
                 let bar = self.search_bar.downgrade();
                 move |_: &FindNext, window, cx| {
@@ -651,6 +660,14 @@ impl Item for GitGraphView {
                 "options": self.search_bar.read(cx).options(),
             }),
         })
+    }
+
+    fn as_searchable(
+        &self,
+        self_handle: &Entity<Self>,
+        _cx: &App,
+    ) -> Option<Box<dyn SearchableItemHandle>> {
+        Some(Box::new(self_handle.clone()))
     }
 }
 

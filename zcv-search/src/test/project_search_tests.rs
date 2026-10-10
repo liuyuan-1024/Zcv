@@ -288,6 +288,69 @@ async fn deploying_project_search_focuses_query_input(cx: &mut TestAppContext) {
     assert_query_input_focused(&workspace, cx, "已有标签重新打开后");
 }
 
+#[gpui::test]
+async fn cmd_f_in_project_search_results_reuses_project_query(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    let result_path = root.join("result.txt");
+    cx.update(|cx| init(cx, Arc::new(LanguageRegistry::new())));
+
+    let (workspace, cx) = cx.add_window_view(move |window, cx| test_workspace(root, window, cx));
+    workspace.update_in(cx, |workspace, window, cx| {
+        crate::install(workspace, window, cx);
+        deploy(workspace, Some("alpha".into()), window, cx);
+    });
+    let view = workspace.read_with(cx, project_search_view);
+    let source = cx.new(|cx| {
+        LanguageBuffer::new(
+            Buffer::from_text("alpha beta\n".into(), BufferConfig::default()).unwrap(),
+            Some(result_path),
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+    });
+    view.update_in(cx, |view, window, cx| {
+        view.excerpts.update(cx, |buffer, cx| {
+            buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..1, cx)], cx)
+        });
+        view.results_editor.update(cx, |editor, cx| {
+            SearchableItem::search(
+                editor,
+                &SearchQuery {
+                    query: "alpha".into(),
+                    case_sensitive: false,
+                    whole_word: false,
+                    regex: false,
+                },
+                window,
+                cx,
+            )
+        });
+    });
+    assert!(
+        view.read_with(cx, |view, cx| SearchableItem::search_count(view, cx).0) > 0,
+        "项目查询应先产生可聚焦的结果"
+    );
+    let results_focus = view.read_with(cx, |view, cx| view.results_editor.read(cx).focus_handle());
+    cx.update(|window, cx| window.focus(&results_focus, cx));
+    cx.refresh().unwrap();
+    cx.dispatch_action(DeployBufferSearch);
+
+    let query_focus = view.read_with(cx, |view, cx| {
+        let bar = view.search_bar.read(cx);
+        assert!(bar.visible(), "项目搜索栏应随 Item 常驻");
+        assert_eq!(bar.query_text(cx), "alpha", "Cmd-F 不应覆盖项目查询");
+        bar.query_focus_handle(cx)
+    });
+    cx.update(|window, _| assert!(query_focus.is_focused(window)));
+    cx.dispatch_action(DeployBufferSearch);
+    cx.update(|window, _| assert!(query_focus.is_focused(window)));
+    assert_eq!(
+        view.read_with(cx, |view, cx| view.search_bar.read(cx).query_text(cx)),
+        "alpha",
+    );
+}
+
 fn project_search_view(workspace: &Workspace, cx: &gpui::App) -> gpui::Entity<ProjectSearchView> {
     workspace
         .pane()

@@ -1738,7 +1738,7 @@ impl MultiBuffer {
 
 /// 解析一个文件的当前 hunk 为显示行坐标。
 ///
-/// 使用与视图窗口相同的可见 hunk 查询：暂存中的块保留，正在还原的块临时抑制。
+/// 使用与视图窗口相同的可见 hunk 查询；pending 的保留或抑制由其操作语义决定。
 fn resolve_file_hunks(file: &DiffState, cx: &App) -> Vec<ResolvedHunk> {
     let entity = file.diff.clone();
     let (working_text, base_text, hunks) = {

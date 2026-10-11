@@ -30,7 +30,7 @@ use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Task,
     WeakEntity,
 };
-use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffOperations, PendingHunk};
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkStaging, DiffOperations, PendingHunk};
 use zcv_git::{
     Branch, DiffStat, FileStatus, GitCancellation, GitHunkOperation, GitRepository, GitRevision,
     GraphCommit, HunkEdit, WorkingCopySnapshot, apply_hunk_edits_to_text,
@@ -681,10 +681,29 @@ impl GitStore {
         }
     }
 
+    /// 查找同一工作区文档的完整 HEAD→working diff，用于跨视图发布暂存中的状态。
+    fn uncommitted_diff_for(
+        &self,
+        path: &AbsolutePathBuf,
+        working_id: gpui::EntityId,
+    ) -> Option<Entity<BufferDiff>> {
+        self.shared_diffs
+            .iter()
+            .find_map(|((diff_path, diff_working, _), shared)| {
+                (diff_path == path
+                    && *diff_working == working_id
+                    && shared.base_revision == GitRevision::Head
+                    && shared.index_revision == GitRevision::Index)
+                    .then(|| shared.entity.upgrade())
+                    .flatten()
+            })
+    }
+
     /// 把当前 diff 快照中与操作范围相交的 hunk 转成确定的字节替换并交后台执行。
     ///
     /// 操作范围是 `Anchor`：落后于最新工作区版本的锚点在当前快照上重新定位，不因版本不相等而丢弃。
-    /// Stage/Unstage 的编辑合并进该路径的乐观 index 批次，再派生完整 index 文本写盘；Restore 把编辑应用到捕获的工作区文本。
+    /// 操作视图立即抑制目标 hunk；Stage 另向已打开的完整差异发布暂存中状态。
+    /// Stage/Unstage 编辑合并进该路径的乐观 index 批次，再派生完整 index 文本写盘；Restore 把编辑应用到捕获的工作区文本。
     /// 这里没有"基准分叉就报错让用户刷新"的路径：对当前快照已无相交 hunk 时是静默空操作，由权威刷新收敛投影。
     fn apply_hunk_edits(
         &mut self,
@@ -693,7 +712,7 @@ impl GitStore {
         ranges: Vec<Range<Anchor>>,
         cx: &mut Context<Self>,
     ) {
-        let (path, index_base, edits, pending, working_snapshot) = {
+        let (path, index_base, edits, pending, working_snapshot, working_id, affected_ranges) = {
             let diff_ref = diff.read(cx);
             let working = diff_ref.working().clone();
             let working_text = working.read(cx).text_snapshot();
@@ -722,6 +741,7 @@ impl GitStore {
 
             let mut edits = Vec::new();
             let mut pending = Vec::new();
+            let mut affected_ranges = Vec::with_capacity(hunks.len());
             for hunk in &hunks {
                 let start = hunk
                     .buffer_range
@@ -751,17 +771,8 @@ impl GitStore {
                     }
                 };
                 edits.push(HunkEdit::new(range, Arc::from(replacement)));
-                pending.push(match operation {
-                    GitHunkOperation::Stage => {
-                        PendingHunk::set_staging(hunk, working_text.version(), true)
-                    }
-                    GitHunkOperation::Unstage => {
-                        PendingHunk::set_staging(hunk, working_text.version(), false)
-                    }
-                    GitHunkOperation::Restore => {
-                        PendingHunk::suppress(hunk, working_text.version())
-                    }
-                });
+                pending.push(PendingHunk::suppress(hunk, working_text.version()));
+                affected_ranges.push(hunk.buffer_range.clone());
             }
             let index_base = match operation {
                 GitHunkOperation::Stage => Some(base_text.clone().unwrap_or_else(|| Arc::from(""))),
@@ -784,7 +795,15 @@ impl GitStore {
                 GitHunkOperation::Stage | GitHunkOperation::Unstage => None,
             };
             let path = canonicalize_path(diff_ref.path()).expect("diff 路径必须可归一化");
-            (path, index_base, edits, pending, working_snapshot)
+            (
+                path,
+                index_base,
+                edits,
+                pending,
+                working_snapshot,
+                diff_ref.working().entity_id(),
+                affected_ranges,
+            )
         };
         if edits.is_empty() {
             return;
@@ -802,6 +821,39 @@ impl GitStore {
             None => None,
         };
         let working_snapshot = working_snapshot.map(WorkingCopySnapshot::from_editor_text);
+        if operation == GitHunkOperation::Stage
+            && let Some(uncommitted_diff) = self.uncommitted_diff_for(&path, working_id)
+        {
+            let pending_staging = {
+                let uncommitted = uncommitted_diff.read(cx);
+                let working = uncommitted.working().read(cx).text_snapshot();
+                let mut hunks = Vec::new();
+                for range in &affected_ranges {
+                    let start = range
+                        .start
+                        .resolve_in(&working)
+                        .expect("暂存范围必须能映射到完整差异的工作区快照");
+                    let end = range
+                        .end
+                        .resolve_in(&working)
+                        .expect("暂存范围必须能映射到完整差异的工作区快照");
+                    hunks.extend(
+                        uncommitted
+                            .snapshot()
+                            .hunks_intersecting_working_range(start..end, &working)
+                            .filter(|hunk| hunk.staging != DiffHunkStaging::Staged)
+                            .cloned(),
+                    );
+                }
+                hunks.sort_by_key(|hunk| hunk.buffer_range.start.offset());
+                hunks.dedup_by(|left, right| left.buffer_range.start == right.buffer_range.start);
+                hunks
+                    .iter()
+                    .map(|hunk| PendingHunk::set_staging(hunk, working.version(), true))
+                    .collect::<Vec<_>>()
+            };
+            uncommitted_diff.update(cx, |diff, cx| diff.set_pending_hunks(pending_staging, cx));
+        }
         diff.update(cx, |diff, cx| diff.set_pending_hunks(pending, cx));
         self.schedule_job(
             GitJob::ApplyHunkEdits {

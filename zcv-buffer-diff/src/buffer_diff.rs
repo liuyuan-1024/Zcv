@@ -128,7 +128,7 @@ pub fn diff_line_boundary(text: &Snapshot, offset: ByteOffset) -> usize {
 /// pending 操作希望在 diff 结果中表达的效果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PendingSense {
-    /// 暂存或取消暂存期间保留 hunk，只更新它相对 index 的显示状态。
+    /// 保留 hunk 并覆盖其相对 index 的状态，供完整差异投影显示进行中的暂存操作。
     SetStagingStatus { stage: bool },
     /// 还原工作区内容期间临时抑制将消失的 hunk。
     Suppress,
@@ -275,7 +275,7 @@ impl BufferDiffSnapshot {
             })
     }
 
-    /// 当前 working 快照中的可见 hunks；暂存只叠加状态，还原才抑制。
+    /// 当前 working 快照中的可见 hunks；pending 的保留或抑制由其操作语义决定。
     pub fn visible_hunks(&self, working: &Snapshot) -> Vec<DiffHunk> {
         self.hunks
             .iter()

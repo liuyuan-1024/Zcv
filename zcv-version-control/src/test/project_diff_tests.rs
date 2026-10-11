@@ -1235,6 +1235,16 @@ fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppCont
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx));
         let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
+        assert_eq!(
+            snapshot.resolved_diff_hunks().len(),
+            1,
+            "暂存操作视图应在后台 index 更新前立即隐藏目标 hunk"
+        );
+        assert!(
+            !text.contains("第一个变更块"),
+            "被暂存的 hunk 不应短暂以暂存样式留在操作视图中"
+        );
+        assert!(text.contains("第二个变更块"), "其他 hunk 应继续显示");
         for offset in 0..text.len() {
             if text.is_char_boundary(offset) {
                 snapshot
@@ -1572,22 +1582,6 @@ fn clearing_pending_hunk_restores_projection_without_rebuilding_files(cx: &mut T
     diff.update(cx, |diff, cx| {
         let hunk = diff.snapshot().hunks().next().unwrap().clone();
         let version = diff.working().read(cx).text_snapshot().version();
-        diff.set_pending_hunks(vec![PendingHunk::set_staging(&hunk, version, true)], cx);
-    });
-    cx.run_until_parked();
-    view.update(cx, |view, cx| {
-        let snapshot = view
-            .multi_buffer
-            .update(cx, |buffer, cx| buffer.snapshot(cx));
-        let hunks = snapshot.resolved_diff_hunks();
-        assert_eq!(hunks.len(), 1, "暂存中的块仍须参与组合投影");
-        assert_eq!(hunks[0].1.hunk.staging, DiffHunkStaging::StagingPending);
-        let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
-        assert!(text.contains("原始内容"), "暂存中的旧侧文本必须保留");
-    });
-    diff.update(cx, |diff, cx| {
-        let hunk = diff.snapshot().hunks().next().unwrap().clone();
-        let version = hunk.buffer_range.start.version();
         diff.set_pending_hunks(vec![PendingHunk::suppress(&hunk, version)], cx);
     });
     cx.run_until_parked();
@@ -1595,7 +1589,11 @@ fn clearing_pending_hunk_restores_projection_without_rebuilding_files(cx: &mut T
         let snapshot = view
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx));
-        assert_eq!(snapshot.diff_hunk_count(), 0);
+        assert_eq!(
+            snapshot.diff_hunk_count(),
+            0,
+            "pending suppress 应立即移除 hunk"
+        );
     });
 
     diff.update(cx, |diff, cx| diff.clear_pending_hunks(cx));

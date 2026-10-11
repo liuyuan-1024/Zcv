@@ -1185,7 +1185,9 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
 
 /// 变更块操作：界面线程从 diff 快照生成确定编辑并立即写入 optimistic pending，后台只应用该编辑写入 index。
 #[gpui::test]
-fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::TestAppContext) {
+fn diff_operations_stage_hunk_suppresses_source_and_marks_uncommitted_diff_pending(
+    cx: &mut gpui::TestAppContext,
+) {
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
     // 无关文件用于验证：暂存一个路径不得让其他路径的 index 文本整体失效。
@@ -1201,10 +1203,12 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
     let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
     let native_path = path.clone().into_path_buf();
     let other_path = canonicalize_path(&root.join("other.txt")).expect("测试路径必须可归一化");
-    cx.update_entity(&git_store, |store, cx| {
-        store.load_revision_document(GitRevision::Index, &path, cx)
-    })
-    .detach();
+    for revision in [GitRevision::Head, GitRevision::Index] {
+        cx.update_entity(&git_store, |store, cx| {
+            store.load_revision_document(revision, &path, cx)
+        })
+        .detach();
+    }
     cx.update_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Index, &other_path, cx)
     })
@@ -1222,22 +1226,45 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
             )
         })
     });
-    let operations = git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
-    let diff = cx.update(|cx| {
-        cx.new(|cx| {
-            BufferDiff::new(
-                BufferDiffInput {
-                    working: working.clone(),
-                    path: native_path.clone(),
-                    base_text: Some(Arc::from("第一行\n第二行\n")),
-                    index_text: None,
-                    language_registry: Arc::new(LanguageRegistry::new()),
-                    key: 0,
-                    operations: Some(operations),
-                },
-                cx,
-            )
-        })
+    let (uncommitted_diff, diff) = git_store.update(cx, |store, cx| {
+        let language_registry = store.language_registry();
+        let uncommitted = store.file_diff(
+            &BufferDiffInput {
+                working: working.clone(),
+                path: native_path.clone(),
+                base_text: store
+                    .revision_text(GitRevision::Head, &path, cx)
+                    .map(Arc::from),
+                index_text: store
+                    .revision_text(GitRevision::Index, &path, cx)
+                    .map(Arc::from),
+                language_registry: Arc::clone(&language_registry),
+                key: 0,
+                operations: None,
+            },
+            GitRevision::Head,
+            GitRevision::Index,
+            cx,
+        );
+        let staged = store.file_diff(
+            &BufferDiffInput {
+                working: working.clone(),
+                path: native_path.clone(),
+                base_text: store
+                    .revision_text(GitRevision::Index, &path, cx)
+                    .map(Arc::from),
+                index_text: store
+                    .revision_text(GitRevision::Index, &path, cx)
+                    .map(Arc::from),
+                language_registry,
+                key: 1,
+                operations: Some(store.diff_operations(GitRevision::Index)),
+            },
+            GitRevision::Index,
+            GitRevision::Index,
+            cx,
+        );
+        (uncommitted, staged)
     });
     cx.run_until_parked();
 
@@ -1247,7 +1274,7 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
         hunk.buffer_range.clone()
     });
 
-    // 操作发起后保留该 hunk 并叠加暂存中状态；index 只在权威扫描确认后前进。
+    // 操作所在的未暂存 diff 立即隐藏该 hunk；完整 HEAD→working diff 显示暂存中状态。
     cx.update(|cx| {
         let operations = diff.read(cx).operations().expect("应有操作实现");
         operations.stage(diff.clone(), vec![range], cx);
@@ -1255,7 +1282,13 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
     diff.read_with(cx, |diff, cx| {
         let working = diff.working().read(cx).text_snapshot();
         let hunks = diff.snapshot().visible_hunks(&working);
-        assert_eq!(hunks.len(), 1, "暂存期间仍须保留 hunk");
+        assert!(hunks.is_empty(), "暂存期间操作视图必须立即隐藏 hunk");
+        assert_eq!(diff.snapshot().pending_hunks().len(), 1);
+    });
+    uncommitted_diff.read_with(cx, |diff, cx| {
+        let working = diff.working().read(cx).text_snapshot();
+        let hunks = diff.snapshot().visible_hunks(&working);
+        assert_eq!(hunks.len(), 1, "完整差异应继续显示工作区 hunk");
         assert_eq!(
             hunks[0].staging,
             zcv_buffer_diff::DiffHunkStaging::StagingPending
@@ -1274,7 +1307,16 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
     cx.run_until_parked();
     // 权威扫描就地重读 index 文本；写入结果不提前，也不靠丢弃文档来触发重载。
     diff.read_with(cx, |diff, _| {
-        assert_eq!(diff.snapshot().pending_hunks().len(), 1);
+        assert!(diff.snapshot().pending_hunks().is_empty());
+        assert!(diff.snapshot().hunks().next().is_none());
+    });
+    uncommitted_diff.read_with(cx, |diff, cx| {
+        let working = diff.working().read(cx).text_snapshot();
+        assert!(diff.snapshot().pending_hunks().is_empty());
+        assert_eq!(
+            diff.snapshot().visible_hunks(&working)[0].staging,
+            zcv_buffer_diff::DiffHunkStaging::Staged
+        );
     });
     assert_eq!(
         cx.read_entity(&git_store, |store, cx| store.revision_text(

@@ -573,11 +573,9 @@ impl gpui::Render for ProjectTreePanel {
         if self.name_edit_focus_subscription.is_none() {
             let entry_name_editor_focus = self.entry_name_editor.read(cx).focus_handle();
             self.name_edit_focus_subscription =
-                Some(
-                    cx.on_blur(&entry_name_editor_focus, window, |tree, window, cx| {
-                        tree.finish_edit(window, cx);
-                    }),
-                );
+                Some(cx.on_blur(&entry_name_editor_focus, window, |tree, _, cx| {
+                    tree.clear_edit_state(cx);
+                }));
         }
 
         self.state.borrow_mut().ensure_selected();

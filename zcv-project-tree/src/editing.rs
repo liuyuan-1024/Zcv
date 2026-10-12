@@ -151,7 +151,8 @@ impl ProjectTreePanel {
                     Err(error) => return self.set_edit_error(error, cx),
                 };
                 if destination.as_path() == source.as_path() {
-                    self.finish_edit(window, cx);
+                    self.clear_edit_state(cx);
+                    window.focus(&self.focus, cx);
                     return;
                 }
                 let Some(on_rename) = self.on_rename.clone() else {
@@ -175,6 +176,11 @@ impl ProjectTreePanel {
                 if let Err(error) = on_create(new_entry.path.clone(), new_entry.is_dir, cx) {
                     return self.set_edit_error(error, cx);
                 }
+                let open_created_file = if new_entry.is_dir {
+                    None
+                } else {
+                    self.on_open_file.clone()
+                };
                 let mut state = self.state.borrow_mut();
                 let mut ancestor = new_entry.path.parent();
                 while let Some(directory) = ancestor.filter(|path| path.starts_with(&parent)) {
@@ -193,14 +199,15 @@ impl ProjectTreePanel {
                     AbsolutePathBuf::new(new_entry.path.clone())
                         .expect("新建条目路径必须是绝对路径"),
                 );
-                if !new_entry.is_dir
-                    && let Some(on_open_file) = &self.on_open_file
-                {
+                if let Some(on_open_file) = open_created_file {
+                    self.clear_edit_state(cx);
                     on_open_file(new_entry.path, true, window, cx);
+                    return;
                 }
             }
         }
-        self.finish_edit(window, cx);
+        self.clear_edit_state(cx);
+        window.focus(&self.focus, cx);
     }
 
     pub(super) fn handle_tree_cancel_edit(
@@ -210,7 +217,8 @@ impl ProjectTreePanel {
         cx: &mut Context<Self>,
     ) {
         if self.edit_state.is_some() {
-            self.finish_edit(window, cx);
+            self.clear_edit_state(cx);
+            window.focus(&self.focus, cx);
         }
     }
 
@@ -222,9 +230,9 @@ impl ProjectTreePanel {
         cx.notify();
     }
 
-    pub(super) fn finish_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.edit_state = None;
-        window.focus(&self.focus, cx);
-        cx.notify();
+    pub(super) fn clear_edit_state(&mut self, cx: &mut Context<Self>) {
+        if self.edit_state.take().is_some() {
+            cx.notify();
+        }
     }
 }

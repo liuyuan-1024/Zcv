@@ -24,8 +24,8 @@ use super::transfer::TreeClipboard;
 use std::cell::Cell;
 
 use gpui::{
-    AppContext, KeyBinding, Modifiers, MouseButton, Render, TestAppContext, VisualTestContext,
-    point, px,
+    AppContext, Entity, FocusHandle, KeyBinding, Modifiers, MouseButton, Render, TestAppContext,
+    VisualTestContext, point, px,
 };
 
 use super::*;
@@ -81,6 +81,19 @@ struct TestView;
 impl Render for TestView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
+    }
+}
+
+struct TreeFocusHost {
+    tree: Entity<ProjectTreePanel>,
+    editor_focus: FocusHandle,
+}
+
+impl Render for TreeFocusHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(self.tree.clone())
+            .child(div().track_focus(&self.editor_focus))
     }
 }
 
@@ -509,6 +522,83 @@ fn one_create_action_infers_nested_files_and_directories_from_the_path(cx: &mut 
         assert_eq!(
             tree.state.borrow().selected.as_deref(),
             Some(abs(&folder).as_path())
+        );
+    });
+}
+
+#[gpui::test]
+fn creating_file_leaves_focus_in_the_opened_editor(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = abs(directory.path()).into_path_buf();
+    let file = root.join("new.txt");
+    let project = test_project(root.clone(), cx);
+    let project_tree = cx.new(|cx| ProjectTreePanel::new(project, cx));
+    let editor_focus = Rc::new(RefCell::new(None));
+    let (_host, visual) = cx.add_window_view({
+        let tree = project_tree.clone();
+        let saved_focus = Rc::clone(&editor_focus);
+        move |_, cx| {
+            let editor_focus = cx.focus_handle();
+            *saved_focus.borrow_mut() = Some(editor_focus.clone());
+            tree.update(cx, |tree, _| {
+                tree.set_on_create(Rc::new(|path, is_dir, _| {
+                    assert!(!is_dir);
+                    std::fs::File::create(path)?;
+                    Ok(())
+                }));
+                let editor_focus = editor_focus.clone();
+                tree.set_on_open_file(Rc::new(move |_, focus_opened_item, window, cx| {
+                    assert!(focus_opened_item);
+                    window.focus(&editor_focus, cx);
+                }));
+            });
+            TreeFocusHost {
+                tree: tree.clone(),
+                editor_focus,
+            }
+        }
+    });
+    let editor_focus = editor_focus
+        .borrow()
+        .clone()
+        .expect("测试编辑器应创建焦点句柄");
+    visual.run_until_parked();
+
+    visual.update(|window, cx| {
+        project_tree.update(cx, |tree, cx| {
+            tree.state.borrow_mut().ensure_selected();
+            tree.handle_tree_new_entry(&TreeNewEntry, window, cx);
+        });
+    });
+    visual.run_until_parked();
+    let name_editor_focus = visual.update(|window, cx| {
+        let focus = project_tree
+            .read(cx)
+            .entry_name_editor
+            .read(cx)
+            .focus_handle();
+        assert!(focus.is_focused(window), "新建条目时应先聚焦名称输入框");
+        focus
+    });
+
+    visual.update(|window, cx| {
+        project_tree.update(cx, |tree, cx| {
+            tree.entry_name_editor
+                .update(cx, |editor, cx| editor.set_text("new.txt", cx));
+            tree.handle_tree_confirm_edit(&TreeConfirmEdit, window, cx);
+        });
+    });
+
+    assert!(file.is_file());
+    visual.run_until_parked();
+    visual.update(|window, _| {
+        assert!(
+            !name_editor_focus.is_focused(window),
+            "打开文件后名称输入框应失焦"
+        );
+        assert!(
+            editor_focus.is_focused(window),
+            "新建文件后应保留打开编辑器的焦点"
         );
     });
 }

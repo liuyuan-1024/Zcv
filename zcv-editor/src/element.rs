@@ -205,10 +205,10 @@ impl FragmentedLine {
         x
     }
 
-    /// 行内 x 坐标命中的字形在完整行文本中的起始字节。
+    /// 行内 x 坐标最近的光标边界在完整行文本中的字节位置。
     ///
-    /// 落在元素内部时返回元素起点字节，和 Zed 的 `index_for_x` 一致。
-    fn index_for_x(&self, x: Pixels) -> Option<usize> {
+    /// 折叠占位符内部没有可编辑边界，落在元素内部时吸附到元素起点。
+    fn closest_index_for_x(&self, x: Pixels) -> usize {
         let mut start_x = Pixels::ZERO;
         let mut start = 0usize;
         for fragment in &self.fragments {
@@ -216,7 +216,21 @@ impl FragmentedLine {
                 LineFragment::Text(line) => {
                     let end_x = start_x + line.width;
                     if x < end_x {
-                        return line.index_for_x(x - start_x).map(|index| start + index);
+                        let local_x = x - start_x;
+                        let Some(left) = line.index_for_x(local_x) else {
+                            return start + line.len();
+                        };
+                        let left_x = line.x_for_index(left);
+                        let mut right = left;
+                        for grapheme in self.text[start + left..start + line.len()].graphemes(true)
+                        {
+                            right += grapheme.len();
+                            if line.x_for_index(right) > left_x {
+                                break;
+                            }
+                        }
+                        let midpoint = left_x + (line.x_for_index(right) - left_x) * 0.5;
+                        return start + if local_x < midpoint { left } else { right };
                     }
                     start_x = end_x;
                     start += line.len();
@@ -224,14 +238,14 @@ impl FragmentedLine {
                 LineFragment::Element { len, size, .. } => {
                     let end_x = start_x + size.width;
                     if x < end_x {
-                        return Some(start);
+                        return start;
                     }
                     start_x = end_x;
                     start += len;
                 }
             }
         }
-        None
+        start
     }
 }
 
@@ -626,10 +640,7 @@ impl EditorLayout {
                 .find(|line| position.y < line.origin.y + self.line_height)
                 .unwrap_or(last)
         };
-        let byte_index = line
-            .line
-            .index_for_x(position.x - line.origin.x)
-            .unwrap_or(line.line.len());
+        let byte_index = line.line.closest_index_for_x(position.x - line.origin.x);
         let column = display_column_for_byte(
             &line.line.text,
             line.window_start_column,
@@ -710,10 +721,7 @@ impl EditorInputLayout {
                 .find(|line| point.y < line.origin.y + line_height)
                 .unwrap_or(last)
         };
-        let byte = line
-            .line
-            .index_for_x(point.x - line.origin.x)
-            .unwrap_or(line.line.len());
+        let byte = line.line.closest_index_for_x(point.x - line.origin.x);
         Some(line.global_utf16_start + line.line.text[..byte].encode_utf16().count())
     }
 }

@@ -95,7 +95,7 @@ fn clicking_while_cursor_is_blink_hidden_shows_the_new_caret(cx: &mut TestAppCon
 }
 
 #[gpui::test]
-fn clicking_last_digit_and_closing_quote_uses_glyph_start(cx: &mut TestAppContext) {
+fn clicking_last_digit_and_closing_quote_uses_nearest_caret_boundary(cx: &mut TestAppContext) {
     let text = "version = \"0.9.140\"";
     let zero_start = text.rfind('0').unwrap();
     let quote_start = text.rfind('"').unwrap();
@@ -136,8 +136,8 @@ fn clicking_last_digit_and_closing_quote_uses_glyph_start(cx: &mut TestAppContex
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
             editor.selections(cx).primary().head(),
-            b(zero_start),
-            "点击末尾 0 的右半部分时，光标应停在 0 前"
+            b(quote_start),
+            "点击末尾 0 的右半部分时，光标应停在 0 后"
         );
     });
     cx.simulate_mouse_up(click_zero, MouseButton::Left, Modifiers::default());
@@ -156,6 +156,62 @@ fn clicking_last_digit_and_closing_quote_uses_glyph_start(cx: &mut TestAppContex
             "点击紧邻末尾 0 的右引号时，光标应停在右引号前"
         );
     });
+    cx.simulate_mouse_up(click_quote, MouseButton::Left, Modifiers::default());
+
+    let click_after_quote = point(
+        origin.x + before_quote.x + (after_quote.x - before_quote.x) * 0.75,
+        origin.y + before_quote.y + line_height * 0.5,
+    );
+    cx.simulate_mouse_down(click_after_quote, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.selections(cx).primary().head(),
+            b(quote_start + 1),
+            "点击行末引号的右半部分时，光标应停在引号后"
+        );
+    });
+}
+
+#[gpui::test]
+fn clicking_multibyte_character_uses_visible_caret_boundaries(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "中a");
+    let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx));
+    cx.run_until_parked();
+
+    let caret_at = |offset, cx: &mut TestAppContext| {
+        cx.update_entity(&editor, |editor, cx| {
+            editor.set_selections(SelectionSet::caret(b(offset)), cx);
+            cx.notify();
+        });
+        cx.refresh().expect("测试窗口应可刷新");
+        cx.read_entity(&editor, |editor, _| {
+            editor
+                .pixel_position_of_newest_cursor
+                .expect("光标应有布局位置")
+        })
+    };
+    let before = caret_at(0, cx);
+    let after = caret_at("中".len(), cx);
+    let (origin, line_height) = cx.read_entity(&editor, |editor, _| {
+        (
+            editor.last_bounds.expect("渲染后应有编辑器范围").origin,
+            editor.last_line_height.expect("渲染后应有行高"),
+        )
+    });
+
+    for (fraction, expected) in [(0.25, 0), (0.75, "中".len())] {
+        let click = point(
+            origin.x + before.x + (after.x - before.x) * fraction,
+            origin.y + before.y + line_height * 0.5,
+        );
+        cx.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
+        cx.read_entity(&editor, |editor, cx| {
+            assert_eq!(editor.selections(cx).primary().head(), b(expected));
+        });
+        cx.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    }
 }
 
 #[gpui::test]

@@ -16,10 +16,10 @@ impl ProjectTreePanel {
         &mut self,
         _: &TreeSelectPrev,
         window: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         self.state.borrow_mut().select_up();
-        self.scroll_to_selection();
+        self.scroll_to_selection(cx);
         window.refresh();
     }
 
@@ -27,10 +27,10 @@ impl ProjectTreePanel {
         &mut self,
         _: &TreeSelectNext,
         window: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         self.state.borrow_mut().select_down();
-        self.scroll_to_selection();
+        self.scroll_to_selection(cx);
         window.refresh();
     }
 
@@ -38,10 +38,10 @@ impl ProjectTreePanel {
         &mut self,
         _: &TreeSelectPrevExtend,
         window: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         if self.state.borrow_mut().extend_up() {
-            self.scroll_to_selection();
+            self.scroll_to_selection(cx);
             window.refresh();
         }
     }
@@ -50,10 +50,10 @@ impl ProjectTreePanel {
         &mut self,
         _: &TreeSelectNextExtend,
         window: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         if self.state.borrow_mut().extend_down() {
-            self.scroll_to_selection();
+            self.scroll_to_selection(cx);
             window.refresh();
         }
     }
@@ -68,7 +68,7 @@ impl ProjectTreePanel {
         if rebuild {
             self.rebuild_rows(cx);
         }
-        self.scroll_to_selection();
+        self.scroll_to_selection(cx);
         window.refresh();
     }
 
@@ -82,7 +82,7 @@ impl ProjectTreePanel {
         if rebuild {
             self.rebuild_rows(cx);
         }
-        self.scroll_to_selection();
+        self.scroll_to_selection(cx);
         window.refresh();
     }
 

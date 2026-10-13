@@ -67,6 +67,11 @@ mod project_tree_tests;
 /// EntriesChanged 防抖窗口：批量文件操作的事件风暴合并为一次行模型重建。
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(120);
 
+enum RevealTarget {
+    Path(AbsolutePathBuf),
+    NewEntry,
+}
+
 pub struct ProjectTreePanel {
     pub focus: gpui::FocusHandle,
     /// 当前项目根目录路径；无 worktree 的空工作区为 None（面板显示空态）。
@@ -111,8 +116,8 @@ pub struct ProjectTreePanel {
     status_refresh_generation: u64,
     /// 后台计算当前行模型 Git 状态的任务。
     pending_status_refresh: Option<Task<()>>,
-    /// 待定 reveal：异步行重建期间记录目标路径，行进入行模型后滚动到可见（过期代次由重建代次校验丢弃）。
-    pending_reveal: Option<AbsolutePathBuf>,
+    /// 待定 reveal：目标进入显示行后滚动到可见；异步重建期间保留意图。
+    pending_reveal: Option<RevealTarget>,
     /// 行快照缓存：replace_rows / 行内容变更时重建，渲染每帧只做 Rc 克隆（不深拷贝）。
     row_snapshot: Rc<[ProjectTreeRow]>,
     /// 拖拽多选载荷是选中集按可见行序派生的快照；行模型替换或选中集变化时重建。
@@ -250,24 +255,22 @@ impl ProjectTreePanel {
         self.state.borrow_mut().replace_rows(rows);
         // 行集已全量替换：同步重建行快照，此后每帧渲染只做 Rc 克隆。
         self.row_snapshot = self.state.borrow().rows.clone().into();
-        self.try_scroll_pending_reveal();
+        self.try_scroll_pending_reveal(cx);
         // 行集变化后只按当前行集合查询一次 Git 派生状态；
         // 这样不会使用目录扫描开始前捕获的旧 Git 快照，展开期间也能稳定补齐新出现的行。
         self.refresh_git_statuses(cx);
         cx.notify();
     }
 
-    /// 消费待定 reveal：目标行已进入行模型时滚动到可见并清除标记。
-    fn try_scroll_pending_reveal(&mut self) {
-        let Some(path) = self.pending_reveal.clone() else {
+    /// 消费待定 reveal：按实际显示行定位，包含行内新建占位行。
+    fn try_scroll_pending_reveal(&mut self, cx: &gpui::App) {
+        let Some(target) = self.pending_reveal.as_ref() else {
             return;
         };
-        let index = self
-            .state
-            .borrow()
-            .rows
-            .iter()
-            .position(|row| row.path == path);
+        let index = self.display_rows(cx).iter().position(|row| match target {
+            RevealTarget::Path(path) => !row.is_new && &row.path == path,
+            RevealTarget::NewEntry => row.is_new,
+        });
         if let Some(index) = index {
             self.pending_reveal = None;
             self.scroll_handle
@@ -491,15 +494,20 @@ impl ProjectTreePanel {
             self.active_path = Some(path.clone());
             state.select(path.clone());
         }
-        self.pending_reveal = Some(path);
+        self.pending_reveal = Some(RevealTarget::Path(path));
         self.rebuild_rows(cx);
-        self.try_scroll_pending_reveal();
+        self.try_scroll_pending_reveal(cx);
         cx.notify();
     }
 
     /// 保持键盘选中项可见；仍在视口内时不改变当前滚动位置。
-    fn scroll_to_selection(&self) {
-        if let Some(index) = self.state.borrow().selected_idx() {
+    fn scroll_to_selection(&self, cx: &gpui::App) {
+        let selected = self.state.borrow().selected.clone();
+        if let Some(index) = selected.and_then(|path| {
+            self.display_rows(cx)
+                .iter()
+                .position(|row| !row.is_new && row.path == path)
+        }) {
             self.scroll_handle
                 .scroll_to_item(index, ScrollStrategy::Center);
         }

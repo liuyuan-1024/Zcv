@@ -8,7 +8,7 @@ use zcv_actions::{TreeCancelEdit, TreeConfirmEdit, TreeNewEntry, TreeRename};
 use zcv_path::AbsolutePathBuf;
 use zcv_project::{new_entry_destination, rename_destination};
 
-use super::ProjectTreePanel;
+use super::{ProjectTreePanel, RevealTarget};
 
 #[derive(Clone, Debug)]
 pub(super) struct EditState {
@@ -96,13 +96,12 @@ impl ProjectTreePanel {
         let Some(row) = row else {
             return;
         };
+        let rebuild = row.is_dir;
         let parent = if row.is_dir {
             {
                 let mut state = self.state.borrow_mut();
                 state.expanded.insert(row.path.clone());
             }
-            // 展开父目录产生新行，重建时现查 git 状态。
-            self.rebuild_rows(cx);
             row.path
         } else {
             let Some(parent) = row.path.parent() else {
@@ -111,6 +110,11 @@ impl ProjectTreePanel {
             AbsolutePathBuf::new(parent.to_path_buf()).expect("新建条目父目录必须是绝对路径")
         };
         self.begin_edit(EditOperation::Create { parent }, "", 0..0, window, cx);
+        if rebuild {
+            // 展开父目录后重建行模型；完成时再次按显示行定位输入框。
+            self.pending_reveal = Some(RevealTarget::NewEntry);
+            self.rebuild_rows(cx);
+        }
     }
 
     pub(super) fn begin_edit(
@@ -125,10 +129,16 @@ impl ProjectTreePanel {
             editor.set_text(name, cx);
             editor.select_byte_range(selection, cx);
         });
+        let reveal_target = match &operation {
+            EditOperation::Rename { source, .. } => RevealTarget::Path(source.clone()),
+            EditOperation::Create { .. } => RevealTarget::NewEntry,
+        };
         self.edit_state = Some(EditState {
             operation,
             validation_error: None,
         });
+        self.pending_reveal = Some(reveal_target);
+        self.try_scroll_pending_reveal(cx);
         let focus = self.entry_name_editor.read(cx).focus_handle();
         window.focus(&focus, cx);
         cx.notify();
@@ -232,6 +242,9 @@ impl ProjectTreePanel {
 
     pub(super) fn clear_edit_state(&mut self, cx: &mut Context<Self>) {
         if self.edit_state.take().is_some() {
+            if matches!(self.pending_reveal, Some(RevealTarget::NewEntry)) {
+                self.pending_reveal = None;
+            }
             cx.notify();
         }
     }

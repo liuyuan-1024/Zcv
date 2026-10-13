@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use gpui::{Context, Window, div, prelude::*};
 use zcv_actions::{
-    TreeActivate, TreeCancelConflict, TreeClearClipboard, TreeConfirmEdit, TreeCopy, TreeCut,
-    TreeNewEntry, TreePaste, TreeRename, TreeSelectNextExtend, TreeTrash,
+    TreeActivate, TreeCancelConflict, TreeCancelEdit, TreeClearClipboard, TreeConfirmEdit,
+    TreeCopy, TreeCut, TreeNewEntry, TreePaste, TreeRename, TreeSelectNextExtend, TreeTrash,
 };
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 
@@ -463,6 +463,60 @@ fn rename_actions_edit_and_confirm_the_selected_row(cx: &mut TestAppContext) {
             Some(abs(&new_path).as_path())
         );
     });
+}
+
+#[gpui::test]
+fn creating_entry_reveals_the_name_editor_outside_the_viewport(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = abs(directory.path()).into_path_buf();
+    let parent = root.join("zz-target");
+    for index in 0..80 {
+        std::fs::create_dir(root.join(format!("dir-{index:03}"))).expect("应创建测试目录");
+    }
+    std::fs::create_dir(&parent).expect("应创建目标目录");
+    let project = test_project(root.clone(), cx);
+    let (tree, visual) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
+    visual.run_until_parked();
+
+    for selected in [&parent, &root] {
+        visual.update(|window, cx| {
+            tree.update(cx, |tree, cx| {
+                tree.state.borrow_mut().select(abs(selected));
+                tree.handle_tree_new_entry(&TreeNewEntry, window, cx);
+                let new_row_index = tree
+                    .display_rows(cx)
+                    .iter()
+                    .position(|row| row.is_new)
+                    .expect("新建输入框应有可见行");
+                let pending = tree.scroll_handle.0.borrow().deferred_scroll_to_item;
+                assert_eq!(pending.map(|scroll| scroll.item_index), Some(new_row_index));
+            });
+        });
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            let tree = tree.read(cx);
+            let scroll = tree.scroll_handle.0.borrow();
+            let size = scroll.last_item_size.expect("列表应完成布局");
+            let rows = tree.display_rows(cx);
+            let row_index = rows
+                .iter()
+                .position(|row| row.is_new)
+                .expect("新建输入框应保留在列表中");
+            let row_height = size.contents.height.as_f32() / rows.len() as f32;
+            let scroll_top = -scroll.base_handle.offset().y.as_f32();
+            let row_top = row_index as f32 * row_height;
+            assert!(row_top >= scroll_top, "输入框顶部应在视口内");
+            assert!(
+                row_top + row_height <= scroll_top + size.item.height.as_f32(),
+                "输入框底部应在视口内"
+            );
+        });
+        visual.update(|window, cx| {
+            tree.update(cx, |tree, cx| {
+                tree.handle_tree_cancel_edit(&TreeCancelEdit, window, cx);
+            });
+        });
+    }
 }
 
 #[gpui::test]

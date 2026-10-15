@@ -158,7 +158,11 @@ impl MultiBuffer {
             append_transforms(
                 &mut transforms,
                 SumTree::from_iter(
-                    self.diff_transforms_for_excerpt(excerpt, 0..diff_output_text(excerpt).len, cx),
+                    self.diff_transforms_for_excerpt(
+                        excerpt,
+                        0..excerpt.output_text_summary().len,
+                        cx,
+                    ),
                     (),
                 ),
             );
@@ -202,7 +206,7 @@ impl MultiBuffer {
             }
             while let Some(excerpt) = cursor.item() {
                 let start = cursor.start().text.len;
-                let end = start + diff_output_text(excerpt).len;
+                let end = start + excerpt.output_text_summary().len;
                 if start > edit.new.end.get() || (start == edit.new.end.get() && start != end) {
                     break;
                 }

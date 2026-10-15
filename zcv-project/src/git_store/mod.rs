@@ -248,19 +248,16 @@ fn repository_working_directory(repository: &dyn GitRepository) -> AbsolutePathB
         .expect("Git 仓库工作目录必须是绝对路径")
 }
 
-/// 共享 diff 缓存的键：路径、working 实体、调用方给出的 base/index 修订身份。
+/// 共享 diff 缓存的键：路径、working 实体、调用方给出的差异视图身份。
 type SharedDiffKey = (AbsolutePathBuf, gpui::EntityId, u64);
 
-/// 一个共享 diff 实体及其 base/index 文本来自哪个 Git 修订。
+/// 一个共享 diff 实体及其 base 修订；index 参照固定来自 Git index。
 ///
 /// 修订文本变化时，GitStore 按这里记录的角色把新文本经 set_revisions 整体提交进同一个 BufferDiff，不丢弃实体；
 /// 弱引用保证没有视图持有时缓存随之释放。
 struct SharedDiff {
     entity: WeakEntity<BufferDiff>,
     base_revision: GitRevision,
-    index_revision: GitRevision,
-    /// 已暂存视图的新侧就是 index；缺失修订仍以空文本参与暂存状态判定。
-    index_is_working: bool,
 }
 
 /// 一个路径尚未被权威 index 文本确认的乐观编辑批次。
@@ -606,7 +603,6 @@ impl GitStore {
         &mut self,
         input: &BufferDiffInput,
         base_revision: GitRevision,
-        index_revision: GitRevision,
         cx: &mut Context<Self>,
     ) -> Entity<BufferDiff> {
         let path = canonicalize_path(&input.path).expect("diff 输入路径必须可归一化");
@@ -617,19 +613,11 @@ impl GitStore {
             return entity;
         }
         let entity = cx.new(|cx| BufferDiff::new(input.clone(), cx));
-        let index_is_working = self
-            .revision_documents
-            .get(&(index_revision, key.0.clone()))
-            .and_then(|state| state.document.as_ref())
-            .and_then(RevisionDocument::source)
-            .is_some_and(|source| source.entity_id() == input.working.entity_id());
         self.shared_diffs.insert(
             key,
             SharedDiff {
                 entity: entity.downgrade(),
                 base_revision,
-                index_revision,
-                index_is_working,
             },
         );
         entity
@@ -649,8 +637,7 @@ impl GitStore {
             .shared_diffs
             .iter()
             .filter(|(key, diff)| {
-                &key.0 == path
-                    && (diff.base_revision == revision || diff.index_revision == revision)
+                &key.0 == path && (diff.base_revision == revision || revision == GitRevision::Index)
             })
             .map(|(key, _)| key.clone())
             .collect();
@@ -668,15 +655,7 @@ impl GitStore {
                 self.revision_text(diff.base_revision, path.as_path(), cx)
                     .map(Arc::from)
             };
-            let mut index_text = if diff.index_revision == revision {
-                text.clone()
-            } else {
-                self.revision_text(diff.index_revision, path.as_path(), cx)
-                    .map(Arc::from)
-            };
-            if diff.index_is_working && index_text.is_none() {
-                index_text = Some(Arc::from(""));
-            }
+            let index_text = self.index_reference_text(path.as_path(), cx);
             entity.update(cx, |diff, cx| diff.set_revisions(base_text, index_text, cx));
         }
     }
@@ -692,8 +671,7 @@ impl GitStore {
             .find_map(|((diff_path, diff_working, _), shared)| {
                 (diff_path == path
                     && *diff_working == working_id
-                    && shared.base_revision == GitRevision::Head
-                    && shared.index_revision == GitRevision::Index)
+                    && shared.base_revision == GitRevision::Head)
                     .then(|| shared.entity.upgrade())
                     .flatten()
             })
@@ -1061,6 +1039,21 @@ impl GitStore {
     pub fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
         let path = canonicalize_path(path).ok()?;
         self.status_index.status_for_path(path.as_path())
+    }
+
+    /// 文件是否属于已发现的仓库且未被忽略。
+    /// 干净文件没有 status 条目，因此不能用变更状态决定是否建立修订差异。
+    pub fn has_diff_context_for_path(&self, path: &Path) -> bool {
+        let Ok(path) = canonicalize_path(path) else {
+            return false;
+        };
+        self.status_index
+            .repository_for_path(path.as_path())
+            .is_some()
+            && !self
+                .status_index
+                .status_for_path(path.as_path())
+                .is_some_and(|entry| entry.status.is_ignored())
     }
 
     /// 查找最近一个被忽略的祖先目录条目；自身无条目时用于继承忽略状态。
@@ -1505,6 +1498,18 @@ impl GitStore {
         Some(snapshot_text(&document.read(cx).text_snapshot()))
     }
 
+    /// diff 的 index 参照：确认缺失时以空文本参与暂存判定；尚未加载仍为 None。
+    pub fn index_reference_text(&self, path: &Path, cx: &App) -> Option<Arc<str>> {
+        let key = (GitRevision::Index, canonicalize_path(path).ok()?);
+        match self.revision_documents.get(&key)?.document.as_ref()? {
+            RevisionDocument::Present(document) => {
+                Some(Arc::from(snapshot_text(&document.read(cx).text_snapshot())))
+            }
+            RevisionDocument::Missing { .. } => Some(Arc::from("")),
+            RevisionDocument::Unsupported => None,
+        }
+    }
+
     /// 创建 diff 语言缓冲时复用的语言注册表。
     pub fn language_registry(&self) -> Arc<LanguageRegistry> {
         Arc::clone(&self.language_registry)
@@ -1560,7 +1565,7 @@ impl GitStore {
             self.shared_diffs
                 .iter()
                 .filter(|(key, diff)| {
-                    (diff.base_revision == revision || diff.index_revision == revision)
+                    (diff.base_revision == revision || revision == GitRevision::Index)
                         && paths
                             .iter()
                             .any(|changed| key.0.starts_with(changed.as_path()))
@@ -1584,7 +1589,7 @@ impl GitStore {
             self.shared_diffs
                 .iter()
                 .filter(|(_, diff)| {
-                    diff.base_revision == revision || diff.index_revision == revision
+                    diff.base_revision == revision || revision == GitRevision::Index
                 })
                 .map(|(key, _)| key.0.clone()),
         );

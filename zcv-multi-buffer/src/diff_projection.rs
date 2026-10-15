@@ -19,9 +19,9 @@ use zcv_text::{Anchor, BufferId, ByteOffset, Line, Snapshot, TextChangeBatch, Te
 
 use crate::{
     DeletedHunkRegion, DiffTransform, DiffTransformHunkInfo, DiffTransformHunkSide, Excerpt,
-    ExcerptContext, ExcerptDiffKind, ExcerptRange, ExcerptSummary, MBTextSummary, MultiBuffer,
-    MultiBufferCursor, MultiBufferEvent, MultiBufferSnapshot, OutputRegion, PathKey,
-    SourceIncremental, Sources, diff_output_text, snapshot_range_summary,
+    ExcerptContext, ExcerptDiffKind, ExcerptRange, ExcerptSummary, MBTextSummary, MappingPosition,
+    MultiBuffer, MultiBufferCursor, MultiBufferEvent, MultiBufferSnapshot, OutputRegion, PathKey,
+    SourceIncremental, Sources, snapshot_range_summary,
 };
 use zcv_buffer_diff::{
     BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkKind, DiffHunkStaging, diff_line_boundary,
@@ -329,6 +329,26 @@ impl MultiBufferSnapshot {
 
 type DiffHunkKey = (gpui::EntityId, Option<Anchor>);
 
+/// 将组合输出中的半开文本范围换算为 hunk 所覆盖的行。
+/// 零长度变换仍以边界所在行参与可见查询，供删除 hunk 定位。
+fn hunk_region_rows(start: &MappingPosition, text: MBTextSummary) -> Range<usize> {
+    let end_row = start.lines + text.lines;
+    let end_column = if text.lines == 0 {
+        start.column_chars + text.last_line_chars
+    } else {
+        text.last_line_chars
+    };
+    start.lines..(end_row + usize::from(end_column > 0)).max(start.lines + 1)
+}
+
+fn hunk_intersects_rows(hunk: &Range<usize>, rows: &Range<usize>) -> bool {
+    if hunk.is_empty() {
+        rows.contains(&hunk.start)
+    } else {
+        hunk.start < rows.end && rows.start < hunk.end
+    }
+}
+
 fn resolved_diff_hunks_in_lines(
     excerpts: &SumTree<Excerpt>,
     transforms: &SumTree<DiffTransform>,
@@ -348,12 +368,11 @@ fn resolved_diff_hunks_in_lines(
         cursor.prev();
     }
     while let Some((excerpt, transform)) = cursor.item() {
-        let item_start = cursor.start().lines;
-        if item_start >= lines.end {
+        let at = cursor.start();
+        if at.lines >= lines.end {
             break;
         }
-        let item_end = item_start + transform.transform_summary().output.lines.max(1);
-        if item_end > lines.start {
+        if hunk_region_rows(&at, excerpt.output_text_summary()).end > lines.start {
             for info in transform.hunks() {
                 candidates
                     .entry((excerpt.path.clone(), info.working, info.hunk_start()))
@@ -409,11 +428,7 @@ fn resolved_diff_hunks_in_lines(
                         accum.get_or_insert_with(|| HunkAccum::new(info, excerpt.buffer_id));
                     accum.expanded = info.expanded;
                     let at = cursor.start();
-                    let content_lines = excerpt.text_summary.lines
-                        + usize::from(
-                            excerpt.adds_newline && info.side == DiffTransformHunkSide::Old,
-                        );
-                    let content_range = at.lines..(at.lines + content_lines).max(at.lines + 1);
+                    let content_range = hunk_region_rows(&at, excerpt.text_summary);
                     match info.side {
                         DiffTransformHunkSide::Content => {
                             accum.content_range = Some(match accum.content_range.take() {
@@ -519,6 +534,14 @@ fn resolved_diff_hunks_in_lines(
         else {
             continue;
         };
+        if !hunk_intersects_rows(&range, &lines)
+            && !accum
+                .old_range
+                .as_ref()
+                .is_some_and(|old| hunk_intersects_rows(old, &lines))
+        {
+            continue;
+        }
         let mut word_diffs = accum.old_word_diffs;
         word_diffs.extend(accum.new_word_diffs);
         resolved.push((
@@ -1399,7 +1422,7 @@ impl MultiBuffer {
         let text = &source.text;
         let start = excerpt.source_range.start().get() + range.start.min(excerpt.text_summary.len);
         let end = excerpt.source_range.start().get() + range.end.min(excerpt.text_summary.len);
-        let completes = range.end == diff_output_text(excerpt).len;
+        let completes = range.end == excerpt.output_text_summary().len;
         let content_summary = |start: usize, end: usize| {
             snapshot_range_summary(
                 text,

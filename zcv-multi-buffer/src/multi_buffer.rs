@@ -518,10 +518,9 @@ enum DiffTransform {
     },
 }
 
-/// 输入窗口的完整摘要：源内容与窗口拥有的结构分隔换行。
-fn diff_output_text(excerpt: &Excerpt) -> MBTextSummary {
-    let mut output_text = excerpt.text_summary;
-    if excerpt.adds_newline {
+/// 源内容与结构分隔换行共同构成的输出摘要。
+fn text_with_separator(mut output_text: MBTextSummary, adds_newline: bool) -> MBTextSummary {
+    if adds_newline {
         output_text += MBTextSummary::newline();
     }
     output_text
@@ -530,7 +529,7 @@ fn diff_output_text(excerpt: &Excerpt) -> MBTextSummary {
 impl DiffTransform {
     /// 从输入侧 excerpt 构造内容变换摘要，并接收本节点的 hunk 身份。
     fn from_excerpt(excerpt: &Excerpt, hunks: Vec<DiffTransformHunkInfo>) -> Self {
-        let text = diff_output_text(excerpt);
+        let text = excerpt.output_text_summary();
         Self::BufferContent {
             summary: DiffTransformSummary {
                 input: text,
@@ -543,10 +542,7 @@ impl DiffTransform {
 
     /// 由删除 hunk 的描述构造输出变换：不消费输入坐标，被删文本随节点承载。
     fn deleted_hunk(region: DeletedHunkRegion, hunks: Vec<DiffTransformHunkInfo>) -> Self {
-        let mut text = region.text_summary;
-        if region.adds_newline {
-            text += MBTextSummary::newline();
-        }
+        let text = text_with_separator(region.text_summary, region.adds_newline);
         Self::DeletedHunk {
             summary: DiffTransformSummary {
                 input: MBTextSummary::default(),
@@ -577,10 +573,7 @@ impl DiffTransform {
         completes_excerpt: bool,
         hunks: Vec<DiffTransformHunkInfo>,
     ) -> Self {
-        let mut text = content;
-        if completes_excerpt && excerpt.adds_newline {
-            text += MBTextSummary::newline();
-        }
+        let text = text_with_separator(content, completes_excerpt && excerpt.adds_newline);
         Self::BufferContent {
             summary: DiffTransformSummary {
                 input: text,
@@ -593,22 +586,25 @@ impl DiffTransform {
 }
 
 impl OutputRegion {
+    fn output_text_summary(&self) -> MBTextSummary {
+        text_with_separator(self.text_summary, self.adds_newline)
+    }
+
     /// 在给定输出坐标起点上派生对外片段快照；快照只是树的只读视图，不反向写回。
     fn to_snapshot(&self, at: MappingPosition) -> ExcerptSnapshot {
-        let separator = self.adds_newline as usize;
-        let len = self.text_summary.len + separator;
+        let output = self.output_text_summary();
         ExcerptSnapshot {
             path: self.path.clone(),
             display_path: self.display_path.clone(),
             buffer_id: self.buffer_id,
             output_range: MultiBufferRange::new(
                 MultiBufferOffset::new(at.bytes),
-                MultiBufferOffset::new(at.bytes + len),
+                MultiBufferOffset::new(at.bytes + output.len),
             )
             .expect("组合片段输出范围必须正序"),
             source_range: self.source_range.range(),
             output_start_line: at.lines,
-            output_end_line: at.lines + self.text_summary.lines + separator,
+            output_end_line: at.lines + output.lines,
             source_start_line: self.source_start_line,
             source_index: self.source_index,
             editable: self.editable,
@@ -618,14 +614,13 @@ impl OutputRegion {
 
     /// 在给定游标位置（输出字节 + 输出行起点）上构造派生视图。
     fn to_mapping(&self, at: MappingPosition) -> ExcerptMapping {
-        let separator = self.adds_newline as usize;
-        let len = self.text_summary.len + separator;
+        let output = self.output_text_summary();
         ExcerptMapping {
             entry: self.clone(),
             excerpt_index: at.input_item_index,
             output_range: MultiBufferRange::new(
                 MultiBufferOffset::new(at.bytes),
-                MultiBufferOffset::new(at.bytes + len),
+                MultiBufferOffset::new(at.bytes + output.len),
             )
             .expect("组合片段输出范围必须正序"),
         }
@@ -633,6 +628,10 @@ impl OutputRegion {
 }
 
 impl Excerpt {
+    fn output_text_summary(&self) -> MBTextSummary {
+        text_with_separator(self.text_summary, self.adds_newline)
+    }
+
     fn output_region(&self) -> OutputRegion {
         OutputRegion {
             path: self.path.clone(),
@@ -790,7 +789,7 @@ impl Item for Excerpt {
     /// 输入摘要包含源内容和稳定的结构分隔换行；内容变换原样传递完整输入。
     fn summary(&self, _cx: ()) -> Self::Summary {
         ExcerptSummary {
-            text: diff_output_text(self),
+            text: self.output_text_summary(),
             count: 1,
             path_key: self.path.clone(),
             max_anchor: Some((self.source_id, self.source_range.end)),
@@ -1454,7 +1453,7 @@ impl<'a> MultiBufferCursor<'a> {
         if let (Some(logical), Some(DiffTransform::BufferContent { summary, .. })) =
             (self.excerpts.item(), self.diff_transforms.item())
         {
-            let logical_end = self.excerpts.start().text.len + diff_output_text(logical).len;
+            let logical_end = self.excerpts.start().text.len + logical.output_text_summary().len;
             let transform_end = self.diff_transforms.start().input_offset.get() + summary.input.len;
             if logical_end < transform_end {
                 self.excerpts.next();
@@ -1509,7 +1508,7 @@ impl<'a> MultiBufferCursor<'a> {
                 let at = self.diff_transforms.start();
                 let logical_start = self.excerpts.start().text;
                 let mut logical_end = logical_start;
-                logical_end += diff_output_text(logical);
+                logical_end += logical.output_text_summary();
                 let mut transform_end = at.input_text;
                 transform_end += summary.input;
                 let start_summary = if logical_start.len > at.input_text.len {
@@ -2017,7 +2016,7 @@ fn input_range_summary<S: SourceTexts + ?Sized>(
             break;
         }
         let from = excerpt_start.max(start.get());
-        let to = (excerpt_start + diff_output_text(excerpt).len).min(end.get());
+        let to = (excerpt_start + excerpt.output_text_summary().len).min(end.get());
         if from < to {
             let content_end = excerpt_start + excerpt.text_summary.len;
             let content_to = to.min(content_end);
@@ -3432,7 +3431,7 @@ impl MultiBufferSnapshot {
         let start = start_cursor.start().bytes
             + input_start.saturating_sub(start_cursor.start().input_offset.get());
         let end = if excerpt.adds_newline {
-            let input_end = input_start + diff_output_text(excerpt).len;
+            let input_end = input_start + excerpt.output_text_summary().len;
             let mut end_cursor = self.diff_transforms.cursor::<MappingPosition>(());
             end_cursor.seek(&ExcerptOffset::new(input_end), Bias::Left);
             end_cursor.start().bytes
@@ -5389,8 +5388,8 @@ impl MultiBuffer {
                         source_range: entry.source_range.range(),
                     });
                 }
-                old_input += diff_output_text(original).len;
-                new_input += diff_output_text(&entry).len;
+                old_input += original.output_text_summary().len;
+                new_input += entry.output_text_summary().len;
                 entry
             })
             .collect::<Vec<_>>();

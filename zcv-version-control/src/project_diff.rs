@@ -842,9 +842,7 @@ impl DiffView {
         };
         // GitStore 预创建并按 (working, base, index) 共享；同一文件跨视图复用 diff 实体。
         let base_revision = self.kind.base_revision();
-        let diff = git_store.update(cx, |store, cx| {
-            store.file_diff(&input, base_revision, GitRevision::Index, cx)
-        });
+        let diff = git_store.update(cx, |store, cx| store.file_diff(&input, base_revision, cx));
         self.subscribe_to_diff_ranges(&diff, cx);
         let excerpt_ranges = project_diff_excerpt_ranges(&diff, DIFF_CONTEXT_LINES, cx);
         Some(DiffFile {

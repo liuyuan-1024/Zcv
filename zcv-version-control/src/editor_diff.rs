@@ -92,14 +92,6 @@ pub fn sync_editor_conflict_hunks(
     editor.update(cx, |editor, cx| editor.set_editor_hunks(hunks, cx));
 }
 
-/// 普通编辑器是否应注入 HEAD 差异。
-///
-/// 只有 index/HEAD 中的已跟踪文件可能有 HEAD 差异；
-/// 未跟踪、被忽略或干净文件没有 HEAD 文本，把“缺失”当成空 base 注入会把整份工作区文本投影成新增（绿色背景）。
-fn editor_diff_applies(status: Option<FileStatus>) -> bool {
-    status.is_some_and(|status| matches!(status, FileStatus::Tracked { .. }))
-}
-
 /// 把单个普通编辑器的工作区源与 HEAD/index 全文统一注入。
 ///
 /// GitStore 提供 HEAD 与 index 全文；
@@ -111,11 +103,7 @@ pub fn inject_editor_diff(
     cx: &mut App,
 ) {
     let store = project.read(cx).git_store();
-    let status = store
-        .read(cx)
-        .status_for_path(path)
-        .map(|entry| entry.status);
-    if !editor_diff_applies(status) {
+    if !store.read(cx).has_diff_context_for_path(path) {
         editor.update(cx, |editor, cx| {
             editor.clear_diffs(cx);
         });
@@ -159,10 +147,7 @@ pub fn inject_editor_diff(
         .revision_text(GitRevision::Head, path, cx)
         .map(Arc::from);
     // index 参照：未提交视图（HEAD↔工作区）用它逐 hunk 判定已暂存 / 未暂存。
-    let index_text = store
-        .read(cx)
-        .revision_text(GitRevision::Index, path, cx)
-        .map(Arc::from);
+    let index_text = store.read(cx).index_reference_text(path, cx);
     let Some(working) = editor.read(cx).multi_buffer().read(cx).singleton_source() else {
         return;
     };
@@ -178,7 +163,7 @@ pub fn inject_editor_diff(
     };
     // GitStore 预创建并按 (working, base, index) 共享同一 diff 实体。
     let diff = store.update(cx, |store, cx| {
-        store.file_diff(&input, GitRevision::Head, GitRevision::Index, cx)
+        store.file_diff(&input, GitRevision::Head, cx)
     });
     let file = DiffFile {
         diff,

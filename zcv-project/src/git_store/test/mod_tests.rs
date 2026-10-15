@@ -1146,11 +1146,11 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
     };
     let first = git_store.update(cx, |store, cx| {
         let input = spec(store, cx);
-        store.file_diff(&input, GitRevision::Head, GitRevision::Index, cx)
+        store.file_diff(&input, GitRevision::Head, cx)
     });
     let second = git_store.update(cx, |store, cx| {
         let input = spec(store, cx);
-        store.file_diff(&input, GitRevision::Head, GitRevision::Index, cx)
+        store.file_diff(&input, GitRevision::Head, cx)
     });
     assert_eq!(
         first.entity_id(),
@@ -1166,7 +1166,7 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
     cx.run_until_parked();
     let third = git_store.update(cx, |store, cx| {
         let input = spec(store, cx);
-        store.file_diff(&input, GitRevision::Head, GitRevision::Index, cx)
+        store.file_diff(&input, GitRevision::Head, cx)
     });
     assert_eq!(
         first.entity_id(),
@@ -1243,7 +1243,6 @@ fn diff_operations_stage_hunk_suppresses_source_and_marks_uncommitted_diff_pendi
                 operations: None,
             },
             GitRevision::Head,
-            GitRevision::Index,
             cx,
         );
         let staged = store.file_diff(
@@ -1260,7 +1259,6 @@ fn diff_operations_stage_hunk_suppresses_source_and_marks_uncommitted_diff_pendi
                 key: 1,
                 operations: Some(store.diff_operations(GitRevision::Index)),
             },
-            GitRevision::Index,
             GitRevision::Index,
             cx,
         );

@@ -13,8 +13,8 @@ impl Render for EditorInWindow {
         self.0.clone()
     }
 }
-use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
-use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
+use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer};
 use zcv_text::{Line, LogicalColumn, Position};
 
 use super::common::focus_editor;
@@ -51,6 +51,72 @@ fn composite_document_refreshes_scrollbar_markers(cx: &mut TestAppContext) {
             .is_some()),
         "组合文档应安装慢标记结果，而不是清空缓存"
     );
+}
+
+#[gpui::test]
+fn new_file_diff_reaches_the_git_scrollbar_marker(cx: &mut TestAppContext) {
+    let source = test_buffer(cx, "你好啊\n\n我啊地方\n先试试");
+    let path = std::path::PathBuf::from("new.txt");
+    source.update(cx, |source, cx| source.set_file_path(path.clone(), cx));
+    let editor = cx.new(|cx| Editor::for_language_buffer(source.clone(), cx));
+    let language_registry = source.read_with(cx, |source, _| source.language_registry());
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            BufferDiffInput {
+                working: source,
+                path: path.clone(),
+                base_text: None,
+                index_text: Some(std::sync::Arc::from("")),
+                language_registry,
+                key: 0,
+                operations: None,
+            },
+            cx,
+        )
+    });
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_files(
+            vec![DiffFile {
+                diff,
+                display_path: path,
+                excerpt_ranges: DiffExcerptRanges::FullFile,
+            }],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let multi_buffer = editor.read_with(cx, |editor, _| editor.multi_buffer());
+    assert_eq!(
+        multi_buffer.update(cx, |buffer, cx| buffer
+            .snapshot(cx)
+            .diff_hunks_in_lines(3..4)
+            .len()),
+        1,
+        "只查询最后一行时也应找到新增 hunk"
+    );
+    assert_eq!(
+        editor.read_with(cx, |editor, cx| editor.diff_hunks(cx)[0].range.clone()),
+        0..4,
+        "没有末尾换行时，整文件新增应覆盖最后一行"
+    );
+
+    let track = Bounds::new(point(px(0.), px(0.)), gpui::size(px(15.), px(200.)));
+    editor.update(cx, |editor, cx| {
+        let snapshot = editor.display_snapshot(cx);
+        editor.refresh_scrollbar_markers(snapshot, track, 0., px(20.), cx);
+    });
+    cx.run_until_parked();
+    assert!(editor.read_with(cx, |editor, _| {
+        editor.scrollbar_marker_groups()[0]
+            .as_ref()
+            .is_some_and(|markers| {
+                markers.iter().any(|marker| {
+                    marker.kind
+                        == ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(DiffHunkKind::Added))
+                        && marker.y_range == (px(0.)..px(80.))
+                })
+            })
+    }));
 }
 
 #[gpui::test]

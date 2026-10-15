@@ -3707,6 +3707,20 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
             &[true, true],
             "展开状态必须与物化后的显示 hunk 同序，不能遗漏整文件新增块"
         );
+        assert_eq!(
+            snapshot.diff_hunks_in_lines(0..1).len(),
+            1,
+            "实际新增行必须能查询到 hunk"
+        );
+        assert!(
+            snapshot.diff_hunks_in_lines(1..2).is_empty(),
+            "文件之间的结构分隔空行不属于前一个文件的 hunk"
+        );
+        assert_eq!(
+            snapshot.diff_hunks_in_lines(3..4)[0].1.hunk.kind,
+            DiffHunkKind::Modified,
+            "展开的旧侧行仍应找到所属修改 hunk"
+        );
         assert!(
             snapshot.resolved_diff_hunks()[0].1.source.range.is_none(),
             "整文件新增块不应伪造源 hunk"
@@ -3715,6 +3729,70 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
             snapshot.resolved_diff_hunks()[1].1.source.range.is_some(),
             "修改 hunk 应有可重解析的源范围"
         );
+    });
+}
+
+#[gpui::test]
+fn new_file_diff_excludes_the_empty_editor_row_after_terminal_newline(cx: &mut TestAppContext) {
+    let source = singleton("new.txt", "first\nsecond\n", cx);
+    let diff = test_diff_entity(source, "new.txt", None, None, cx);
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        buffer.set_diff_files(
+            vec![DiffFile {
+                diff,
+                display_path: PathBuf::from("new.txt"),
+                excerpt_ranges: DiffExcerptRanges::FullFile,
+            }],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    combined.update(cx, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(snapshot.line_count(), 3);
+        assert_eq!(buffer.diff_hunks()[0].range, 0..2);
+        assert_eq!(snapshot.diff_hunks_in_lines(1..2).len(), 1);
+        assert!(snapshot.diff_hunks_in_lines(2..3).is_empty());
+    });
+}
+
+#[gpui::test]
+fn visible_diff_hunks_stop_at_their_materialized_file_boundary(cx: &mut TestAppContext) {
+    let created = singleton("created.txt", "a\nb\nc\n", cx);
+    let unchanged = singleton("unchanged.txt", "tail\n", cx);
+    let created_diff = test_diff_entity(created, "created.txt", None, None, cx);
+    let unchanged_diff = test_diff_entity(unchanged, "unchanged.txt", Some("tail\n"), None, cx);
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        buffer.set_diff_files(
+            vec![
+                DiffFile {
+                    diff: created_diff,
+                    display_path: PathBuf::from("created.txt"),
+                    excerpt_ranges: DiffExcerptRanges::Windows(vec![0..1, 2..3]),
+                },
+                DiffFile {
+                    diff: unchanged_diff,
+                    display_path: PathBuf::from("unchanged.txt"),
+                    excerpt_ranges: DiffExcerptRanges::FullFile,
+                },
+            ],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    combined.update(cx, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(
+            String::from_utf8(snapshot.text_bytes()).unwrap(),
+            "a\n\nc\n\ntail\n"
+        );
+        assert_eq!(buffer.diff_hunks()[0].range, 0..3);
+        assert_eq!(snapshot.diff_hunks_in_lines(2..3).len(), 1);
+        assert!(snapshot.diff_hunks_in_lines(4..5).is_empty());
     });
 }
 

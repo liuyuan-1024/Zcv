@@ -43,6 +43,13 @@ enum ReloadStep {
     WaitForFile,
 }
 
+/// 保存时如何处理文档已知的磁盘冲突。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileSaveConflictPolicy {
+    Reject,
+    Overwrite,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileWatcherOperation {
     Add,
@@ -337,7 +344,11 @@ impl Project {
                 cx,
             )
         })?;
-        self.save_file_buffers(vec![(language_buffer, path.to_path_buf())], cx)?;
+        self.save_file_buffers(
+            vec![(language_buffer, path.to_path_buf())],
+            FileSaveConflictPolicy::Reject,
+            cx,
+        )?;
         Ok(())
     }
 
@@ -568,8 +579,16 @@ impl Project {
     pub fn save_file_buffers(
         &mut self,
         buffers: Vec<(Entity<LanguageBuffer>, PathBuf)>,
+        conflict_policy: FileSaveConflictPolicy,
         cx: &mut Context<Self>,
     ) -> Result<(), BufferSaveError> {
+        if conflict_policy == FileSaveConflictPolicy::Reject
+            && let Some((_, path)) = buffers
+                .iter()
+                .find(|(buffer, _)| buffer.read(cx).has_disk_conflict())
+        {
+            return Err(BufferSaveError::Conflict(path.clone()));
+        }
         let mut saved_paths = Vec::with_capacity(buffers.len());
         let mut resolved_conflict_paths: Vec<AbsolutePathBuf> = Vec::new();
         for (language_buffer, path) in buffers {
@@ -611,6 +630,59 @@ impl Project {
             });
         }
         Ok(())
+    }
+
+    /// 用户选择磁盘版本后，后台读取冲突文件，并在文档版本未变化时整体替换源文本。
+    pub fn reload_conflicted_file_buffers(
+        &mut self,
+        buffers: Vec<(Entity<LanguageBuffer>, PathBuf)>,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        let sources = buffers
+            .into_iter()
+            .map(|(buffer, path)| {
+                let version = buffer.read(cx).version();
+                (buffer, path, version)
+            })
+            .collect::<Vec<_>>();
+        let paths = sources
+            .iter()
+            .map(|(_, path, _)| path.clone())
+            .collect::<Vec<_>>();
+        let read_task = cx.background_executor().spawn(async move {
+            paths
+                .into_iter()
+                .map(|path| {
+                    let file = File::open(&path)
+                        .with_context(|| format!("无法读取磁盘文件：{}", path.display()))?;
+                    decode_to_string(file)
+                        .with_context(|| format!("无法解码磁盘文件：{}", path.display()))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()
+        });
+        cx.spawn(move |this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
+            let mut cx = asynccx.clone();
+            async move {
+                let texts = read_task.await?;
+                this.update(&mut cx, |project, cx| {
+                    for (buffer, path, version) in &sources {
+                        let indexed_path = normalize_for_comparison(path)?;
+                        anyhow::ensure!(
+                            project.buffer_store.path_for_buffer(buffer).as_ref()
+                                == Some(&indexed_path)
+                                && buffer.read(cx).version() == *version
+                                && buffer.read(cx).has_disk_conflict(),
+                            "还原期间文档已变化：{}",
+                            path.display()
+                        );
+                    }
+                    for ((buffer, _, _), text) in sources.into_iter().zip(texts) {
+                        buffer.update(cx, |buffer, cx| buffer.replace_text(text, cx))?;
+                    }
+                    Ok(())
+                })?
+            }
+        })
     }
 
     /// 在同一父目录内重命名文件或目录，并迁移项目持有的路径状态。

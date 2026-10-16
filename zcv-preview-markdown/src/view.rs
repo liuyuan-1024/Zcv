@@ -1439,13 +1439,28 @@ impl Item for MarkdownPreviewView {
         self.source_item.can_save(cx)
     }
 
+    fn conflicted_file_paths(&self, cx: &App) -> Vec<PathBuf> {
+        self.source_item.conflicted_file_paths(cx)
+    }
+
     fn save(
+        &mut self,
+        project: Entity<Project>,
+        conflict_policy: zcv_project::FileSaveConflictPolicy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Task<anyhow::Result<()>> {
+        self.source_item.save(project, conflict_policy, window, cx)
+    }
+
+    fn reload_conflicted_files(
         &mut self,
         project: Entity<Project>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Task<anyhow::Result<()>> {
-        self.source_item.save(project, window, cx)
+        self.source_item
+            .reload_conflicted_files(project, window, cx)
     }
 
     fn act_as_type(

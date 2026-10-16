@@ -66,6 +66,33 @@ fn parsing_finishes_without_blocking_buffer_edits(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn disk_conflict_survives_brief_return_to_saved_text(cx: &mut TestAppContext) {
+    let buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            test_buffer("磁盘旧内容"),
+            Some(PathBuf::from("open.txt")),
+            test_registry(),
+            cx,
+        )
+    });
+    buffer.update(cx, |buffer, cx| {
+        buffer
+            .edit(
+                [Edit::insert(buffer.len_bytes(), " 本地编辑").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+        buffer.file_changed_on_disk(cx);
+        assert!(buffer.has_disk_conflict());
+        buffer.undo(cx).unwrap();
+        assert!(!buffer.has_disk_conflict());
+        buffer.redo(cx).unwrap();
+        assert!(buffer.has_disk_conflict());
+    });
+}
+
+#[gpui::test]
 fn language_name_and_syntax_follow_first_line_changes(cx: &mut TestAppContext) {
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(

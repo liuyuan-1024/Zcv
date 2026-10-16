@@ -77,6 +77,7 @@ impl BufferLoadError {
 pub enum BufferSaveError {
     Io(io::Error),
     Text(TextError),
+    Conflict(std::path::PathBuf),
 }
 
 impl From<io::Error> for BufferSaveError {
@@ -96,6 +97,7 @@ impl std::fmt::Display for BufferSaveError {
         match self {
             Self::Io(error) => write!(f, "文件保存 IO 失败：{error}"),
             Self::Text(error) => write!(f, "文件保存校验失败：{error}"),
+            Self::Conflict(path) => write!(f, "文件在磁盘上已改动：{}", path.display()),
         }
     }
 }
@@ -105,6 +107,7 @@ impl std::error::Error for BufferSaveError {
         match self {
             Self::Io(error) => Some(error),
             Self::Text(error) => Some(error),
+            Self::Conflict(_) => None,
         }
     }
 }

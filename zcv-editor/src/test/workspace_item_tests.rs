@@ -113,7 +113,9 @@ fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
     });
     let window = cx.add_window(|_, _| Empty);
     let _save = window
-        .update(cx, |_, window, cx| item.save(project, window, cx))
+        .update(cx, |_, window, cx| {
+            item.save(project, FileSaveConflictPolicy::Reject, window, cx)
+        })
         .expect("测试窗口应保持可用");
 
     assert_eq!(
@@ -121,6 +123,58 @@ fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
         "新内容\n"
     );
     cx.update(|cx| assert!(!item.is_dirty(cx)));
+}
+
+#[gpui::test]
+fn editor_item_exposes_conflict_and_restores_the_same_source_document(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = directory.path().canonicalize().expect("临时目录应可规范化");
+    let path = root.join("source.txt");
+    fs::write(&path, "原内容").expect("应创建源文件");
+    let project_root = AbsolutePathBuf::new(root).expect("项目根目录应为绝对路径");
+    let project = cx.new(|cx| Project::new(project_root, Arc::new(LanguageRegistry::new()), cx));
+    let source = project
+        .update(cx, |project, cx| project.open_buffer(&path, cx))
+        .expect("应打开源文件");
+    let editor = cx.new(|cx| {
+        let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+        Editor::for_multi_buffer(combined, cx)
+    });
+    editor.update(cx, |editor, cx| editor.set_text("本地编辑", cx));
+    fs::write(&path, "磁盘改动").expect("应外部修改文件");
+    source.update(cx, |source, cx| source.file_changed_on_disk(cx));
+
+    let item: Box<dyn ItemHandle> = Box::new(editor);
+    cx.update(|cx| assert_eq!(item.conflicted_file_paths(cx), vec![path.clone()]));
+    let window = cx.add_window(|_, _| Empty);
+    let blocked = window
+        .update(cx, |_, window, cx| {
+            item.save(project.clone(), FileSaveConflictPolicy::Reject, window, cx)
+        })
+        .expect("测试窗口应保持可用");
+    assert!(cx.foreground_executor().block_test(blocked).is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "磁盘改动");
+
+    let reload = window
+        .update(cx, |_, window, cx| {
+            item.reload_conflicted_files(project.clone(), window, cx)
+        })
+        .expect("测试窗口应保持可用");
+    cx.foreground_executor()
+        .block_test(reload)
+        .expect("还原应成功");
+    let snapshot = cx.read_entity(&source, |source, _| source.text_snapshot());
+    assert_eq!(
+        snapshot
+            .slice_byte_range(zcv_text::ByteOffset::ZERO, snapshot.len_bytes())
+            .unwrap()
+            .as_str(),
+        "磁盘改动"
+    );
+    cx.update(|cx| {
+        assert!(item.conflicted_file_paths(cx).is_empty());
+        assert!(!item.is_dirty(cx));
+    });
 }
 
 /// 复现「重命名后保存失败」：重命名必须同步 Editor 的路径，否则保存会落到旧路径（旧路径已不存在 → IO 失败）。
@@ -169,7 +223,9 @@ fn rename_then_save_writes_to_new_path(cx: &mut TestAppContext) {
         editor.multi_buffer().read(cx).file_buffers(cx)
     });
     project
-        .update(cx, |project, cx| project.save_file_buffers(buffers, cx))
+        .update(cx, |project, cx| {
+            project.save_file_buffers(buffers, FileSaveConflictPolicy::Reject, cx)
+        })
         .expect("保存应成功");
     assert_eq!(
         fs::read_to_string(&new_path).expect("新路径应有保存内容"),

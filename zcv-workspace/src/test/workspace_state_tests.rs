@@ -1,3 +1,6 @@
+use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
@@ -5,13 +8,137 @@ use gpui::{
 };
 
 use super::{DockPosition, LAYOUT_SAVE_THROTTLE, Workspace};
+use crate::Item;
 use crate::dock::DockData;
 use crate::panel::PanelEvent;
 use crate::{Panel, layout_state};
 use gpui::EventEmitter;
-use zcv_actions::FocusOrHidePanel;
+use zcv_actions::{FocusOrHidePanel, Save};
 use zcv_language::LanguageRegistry;
+use zcv_project::{FileSaveConflictPolicy, Project};
 use zcv_theme::typography;
+
+struct ConflictItem {
+    focus: FocusHandle,
+    path: PathBuf,
+    conflicted: Rc<Cell<bool>>,
+    saves: Rc<RefCell<Vec<FileSaveConflictPolicy>>>,
+    restores: Rc<Cell<usize>>,
+}
+
+impl EventEmitter<()> for ConflictItem {}
+
+impl gpui::Focusable for ConflictItem {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for ConflictItem {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+impl Item for ConflictItem {
+    type Event = ();
+
+    fn tab_content_text(&self, _cx: &App) -> gpui::SharedString {
+        "冲突文件".into()
+    }
+
+    fn item_path(&self, _cx: &App) -> Option<PathBuf> {
+        Some(self.path.clone())
+    }
+
+    fn can_save(&self, _cx: &App) -> bool {
+        true
+    }
+
+    fn conflicted_file_paths(&self, _cx: &App) -> Vec<PathBuf> {
+        self.conflicted
+            .get()
+            .then(|| self.path.clone())
+            .into_iter()
+            .collect()
+    }
+
+    fn save(
+        &mut self,
+        _project: gpui::Entity<Project>,
+        conflict_policy: FileSaveConflictPolicy,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> gpui::Task<anyhow::Result<()>> {
+        self.saves.borrow_mut().push(conflict_policy);
+        self.conflicted.set(false);
+        gpui::Task::ready(Ok(()))
+    }
+
+    fn reload_conflicted_files(
+        &mut self,
+        _project: gpui::Entity<Project>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> gpui::Task<anyhow::Result<()>> {
+        self.restores.set(self.restores.get() + 1);
+        self.conflicted.set(false);
+        gpui::Task::ready(Ok(()))
+    }
+}
+
+#[gpui::test]
+fn saving_a_conflicted_item_shows_one_persistent_choice_toast(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let path = directory.path().join("conflict-item.txt");
+    let (workspace, cx) =
+        cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    let conflicted = Rc::new(Cell::new(true));
+    let saves = Rc::new(RefCell::new(Vec::new()));
+    let restores = Rc::new(Cell::new(0));
+    let item = cx.new(|cx| ConflictItem {
+        focus: cx.focus_handle(),
+        path,
+        conflicted: conflicted.clone(),
+        saves: saves.clone(),
+        restores: restores.clone(),
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.pane.update(cx, |pane, cx| {
+            pane.open_item(Box::new(item), false, window, cx);
+        });
+        workspace.handle_save(&Save, window, cx);
+        workspace.handle_save(&Save, window, cx);
+    });
+    cx.read_entity(&workspace, |workspace, cx| {
+        assert_eq!(workspace.conflict_toasts.len(), 1);
+        let id = *workspace.conflict_toasts.values().next().unwrap();
+        assert!(workspace.toast_layer.read(cx).contains(id));
+    });
+    assert!(saves.borrow().is_empty());
+    let overwrite = cx.debug_bounds("toast-action-0-0").expect("覆盖按钮应显示");
+    let restore = cx.debug_bounds("toast-action-0-1").expect("还原按钮应显示");
+    assert!(overwrite.left() < restore.left());
+    cx.simulate_click(overwrite.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(*saves.borrow(), vec![FileSaveConflictPolicy::Overwrite]);
+    assert_eq!(restores.get(), 0);
+    assert!(!conflicted.get());
+
+    conflicted.set(true);
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.handle_save(&Save, window, cx);
+    });
+    let restore = cx
+        .debug_bounds("toast-action-1-1")
+        .expect("还原按钮应再次显示");
+    cx.simulate_click(restore.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(restores.get(), 1);
+    assert!(!conflicted.get());
+    assert_eq!(*saves.borrow(), vec![FileSaveConflictPolicy::Overwrite]);
+}
 
 /// 测试用语言注册表；生产装配层创建应用级唯一实例，测试各自提供一份。
 fn test_languages() -> Arc<LanguageRegistry> {

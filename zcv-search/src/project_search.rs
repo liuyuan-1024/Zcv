@@ -14,8 +14,7 @@ use gpui::{
 use zcv_actions::{DeployBufferSearch, DeployProjectSearch};
 use zcv_editor::{Editor, EditorEvent};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
-use zcv_project::Project;
-use zcv_project::SearchQuery;
+use zcv_project::{FileSaveConflictPolicy, Project, SearchQuery};
 use zcv_theme::color;
 use zcv_ui::{Button, MatchOptions};
 use zcv_workspace::{
@@ -492,14 +491,30 @@ impl Item for ProjectSearchView {
         self.results_editor.read(cx).is_dirty(cx)
     }
 
+    fn conflicted_file_paths(&self, cx: &App) -> Vec<PathBuf> {
+        <Editor as Item>::conflicted_file_paths(self.results_editor.read(cx), cx)
+    }
+
     fn save(
+        &mut self,
+        project: Entity<Project>,
+        conflict_policy: FileSaveConflictPolicy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        self.results_editor.update(cx, |editor, cx| {
+            <Editor as Item>::save(editor, project, conflict_policy, window, cx)
+        })
+    }
+
+    fn reload_conflicted_files(
         &mut self,
         project: Entity<Project>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
         self.results_editor.update(cx, |editor, cx| {
-            <Editor as Item>::save(editor, project, window, cx)
+            <Editor as Item>::reload_conflicted_files(editor, project, window, cx)
         })
     }
 

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use gpui::{App, Context, Entity, SharedString, Task, Window};
 use zcv_multi_buffer::MultiBuffer;
 use zcv_path::simplify_native;
-use zcv_project::Project;
+use zcv_project::{FileSaveConflictPolicy, Project};
 use zcv_workspace::{Item, ItemEvent, SearchableItemHandle};
 
 use crate::view::NAVIGATION_TOP_OFFSET;
@@ -34,6 +34,15 @@ impl Item for Editor {
 
     fn can_save(&self, cx: &App) -> bool {
         !self.multi_buffer().read(cx).file_buffers(cx).is_empty()
+    }
+
+    fn conflicted_file_paths(&self, cx: &App) -> Vec<PathBuf> {
+        self.multi_buffer()
+            .read(cx)
+            .file_buffers(cx)
+            .into_iter()
+            .filter_map(|(buffer, path)| buffer.read(cx).has_disk_conflict().then_some(path))
+            .collect()
     }
 
     fn is_dirty(&self, cx: &App) -> bool {
@@ -113,6 +122,7 @@ impl Item for Editor {
     fn save(
         &mut self,
         project: Entity<Project>,
+        conflict_policy: FileSaveConflictPolicy,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
@@ -123,8 +133,28 @@ impl Item for Editor {
             .into_iter()
             .filter(|(buffer, _)| buffer.read(cx).is_dirty())
             .collect::<Vec<_>>();
-        let result = project.update(cx, |project, cx| project.save_file_buffers(buffers, cx));
-        Task::ready(result.map_err(|error| anyhow::anyhow!("{error}")))
+        let result = project.update(cx, |project, cx| {
+            project.save_file_buffers(buffers, conflict_policy, cx)
+        });
+        Task::ready(result.map_err(anyhow::Error::from))
+    }
+
+    fn reload_conflicted_files(
+        &mut self,
+        project: Entity<Project>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        let buffers = self
+            .multi_buffer()
+            .read(cx)
+            .file_buffers(cx)
+            .into_iter()
+            .filter(|(buffer, _)| buffer.read(cx).has_disk_conflict())
+            .collect();
+        project.update(cx, |project, cx| {
+            project.reload_conflicted_file_buffers(buffers, cx)
+        })
     }
 
     fn as_searchable(

@@ -926,6 +926,198 @@ fn external_change_waits_for_unsaved_edits_to_be_undone(cx: &mut gpui::TestAppCo
 }
 
 #[gpui::test]
+fn external_change_requires_explicit_choice_before_saving(cx: &mut gpui::TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let file = directory.path().join("open.txt");
+    fs::write(&file, "磁盘旧内容").expect("应创建文件");
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应打开文件");
+    buffer
+        .update(cx, |buffer, cx| {
+            buffer.edit(
+                [Edit::insert(buffer.len_bytes(), " 本地编辑").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+        })
+        .expect("编辑应成功");
+
+    fs::write(&file, "磁盘新内容").expect("应外部修改文件");
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(file.clone(), Some(PathEventKind::Changed)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert!(cx.read_entity(&buffer, |buffer, _| buffer.has_disk_conflict()));
+
+    let result = project.update(cx, |project, cx| {
+        project.save_file_buffers(
+            vec![(buffer.clone(), file.clone())],
+            FileSaveConflictPolicy::Reject,
+            cx,
+        )
+    });
+    assert!(matches!(result, Err(BufferSaveError::Conflict(path)) if path == file));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "磁盘新内容");
+    assert!(cx.read_entity(&buffer, |buffer, _| buffer.is_dirty()));
+
+    project
+        .update(cx, |project, cx| {
+            project.save_file_buffers(
+                vec![(buffer.clone(), file.clone())],
+                FileSaveConflictPolicy::Overwrite,
+                cx,
+            )
+        })
+        .expect("显式覆盖应成功");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "磁盘旧内容 本地编辑");
+    assert!(!cx.read_entity(&buffer, |buffer, _| buffer.has_disk_conflict()));
+    assert!(!cx.read_entity(&buffer, |buffer, _| buffer.is_dirty()));
+}
+
+#[gpui::test]
+fn restore_conflicted_file_reads_disk_without_replacing_the_document_entity(
+    cx: &mut gpui::TestAppContext,
+) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let file = directory.path().join("open.txt");
+    fs::write(&file, "磁盘旧内容").expect("应创建文件");
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应打开文件");
+    buffer
+        .update(cx, |buffer, cx| {
+            buffer.edit(
+                [Edit::insert(buffer.len_bytes(), " 本地编辑").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+        })
+        .expect("编辑应成功");
+    fs::write(&file, "磁盘新内容").expect("应外部修改文件");
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(file.clone(), Some(PathEventKind::Changed)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let task = project.update(cx, |project, cx| {
+        project.reload_conflicted_file_buffers(vec![(buffer.clone(), file.clone())], cx)
+    });
+    let result = cx.foreground_executor().block_test(task);
+    result.expect("还原应成功");
+    let reopened = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应复用文档实体");
+    assert_eq!(reopened, buffer);
+    let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.text_snapshot());
+    assert_eq!(
+        snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+            .unwrap()
+            .as_str(),
+        "磁盘新内容"
+    );
+    assert!(!cx.read_entity(&buffer, |buffer, _| buffer.is_dirty()));
+    assert!(!cx.read_entity(&buffer, |buffer, _| buffer.has_disk_conflict()));
+}
+
+#[gpui::test]
+fn conflict_in_a_later_source_prevents_partial_multi_file_save(cx: &mut gpui::TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let first = directory.path().join("first.txt");
+    let second = directory.path().join("second.txt");
+    fs::write(&first, "第一份原内容").unwrap();
+    fs::write(&second, "第二份原内容").unwrap();
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let first_buffer = project
+        .update(cx, |project, cx| project.open_buffer(&first, cx))
+        .unwrap();
+    let second_buffer = project
+        .update(cx, |project, cx| project.open_buffer(&second, cx))
+        .unwrap();
+    for buffer in [&first_buffer, &second_buffer] {
+        buffer
+            .update(cx, |buffer, cx| {
+                buffer.edit(
+                    [Edit::insert(buffer.len_bytes(), " 本地编辑").unwrap()],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+            })
+            .unwrap();
+    }
+    fs::write(&second, "第二份磁盘改动").unwrap();
+    second_buffer.update(cx, |buffer, cx| buffer.file_changed_on_disk(cx));
+
+    let result = project.update(cx, |project, cx| {
+        project.save_file_buffers(
+            vec![
+                (first_buffer, first.clone()),
+                (second_buffer, second.clone()),
+            ],
+            FileSaveConflictPolicy::Reject,
+            cx,
+        )
+    });
+    assert!(matches!(result, Err(BufferSaveError::Conflict(path)) if path == second));
+    assert_eq!(fs::read_to_string(&first).unwrap(), "第一份原内容");
+    assert_eq!(fs::read_to_string(&second).unwrap(), "第二份磁盘改动");
+}
+
+#[gpui::test]
+fn restore_does_not_discard_edits_made_after_the_choice(cx: &mut gpui::TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("open.txt");
+    fs::write(&file, "磁盘旧内容").unwrap();
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .unwrap();
+    buffer
+        .update(cx, |buffer, cx| {
+            buffer.edit(
+                [Edit::insert(buffer.len_bytes(), " 本地编辑").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+        })
+        .unwrap();
+    fs::write(&file, "磁盘新内容").unwrap();
+    buffer.update(cx, |buffer, cx| buffer.file_changed_on_disk(cx));
+    let task = project.update(cx, |project, cx| {
+        project.reload_conflicted_file_buffers(vec![(buffer.clone(), file.clone())], cx)
+    });
+    buffer
+        .update(cx, |buffer, cx| {
+            buffer.edit(
+                [Edit::insert(buffer.len_bytes(), " 后续编辑").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+        })
+        .unwrap();
+
+    assert!(cx.foreground_executor().block_test(task).is_err());
+    let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.text_snapshot());
+    assert_eq!(
+        snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+            .unwrap()
+            .as_str(),
+        "磁盘旧内容 本地编辑 后续编辑"
+    );
+    assert!(cx.read_entity(&buffer, |buffer, _| buffer.has_disk_conflict()));
+}
+
+#[gpui::test]
 fn fs_removal_events_trigger_full_rescan(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     let project = test_project(root.clone(), cx);
@@ -1119,7 +1311,11 @@ fn saving_buffer_refreshes_git_status(cx: &mut gpui::TestAppContext) {
     // 保存后 git 状态应变为已修改。
     project
         .update(cx, |project, cx| {
-            project.save_file_buffers(vec![(buffer.clone(), file.clone())], cx)
+            project.save_file_buffers(
+                vec![(buffer.clone(), file.clone())],
+                FileSaveConflictPolicy::Reject,
+                cx,
+            )
         })
         .expect("保存应成功");
     cx.run_until_parked();
@@ -1151,7 +1347,11 @@ fn save_events_preserve_undo_history(cx: &mut gpui::TestAppContext) {
 
     project
         .update(cx, |project, cx| {
-            project.save_file_buffers(vec![(language_buffer.clone(), file.clone())], cx)
+            project.save_file_buffers(
+                vec![(language_buffer.clone(), file.clone())],
+                FileSaveConflictPolicy::Reject,
+                cx,
+            )
         })
         .expect("保存应成功");
     project.update(cx, |project, cx| {

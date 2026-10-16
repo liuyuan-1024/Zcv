@@ -6,7 +6,7 @@ mod git_store;
 mod project_store;
 mod search;
 mod text_file;
-pub use text_file::BufferLoadError;
+pub use text_file::{BufferLoadError, BufferSaveError};
 
 #[cfg(test)]
 #[path = "test/test_support.rs"]
@@ -18,7 +18,9 @@ pub use git_store::{
     GitJobPhase, GitJobStatus, GitOperationKind, GitOperationOutcome, GitStore, GitStoreEvent,
     RemoteOperationState, RepositorySnapshot, RevisionLoadResult, StatusEntry,
 };
-pub use project_store::{FileWatcherError, FileWatcherOperation, Project, ProjectEvent};
+pub use project_store::{
+    FileSaveConflictPolicy, FileWatcherError, FileWatcherOperation, Project, ProjectEvent,
+};
 pub use search::{
     RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult, regex_replacement_for_match,
     regex_replacements_in_text,

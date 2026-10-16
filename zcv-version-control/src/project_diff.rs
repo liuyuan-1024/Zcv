@@ -26,7 +26,7 @@ use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, DiffHunkSource};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_path::{AbsolutePathBuf, compare_tree_entries};
-use zcv_project::{GitStoreEvent, Project};
+use zcv_project::{FileSaveConflictPolicy, GitStoreEvent, Project};
 use zcv_search::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
 use zcv_text::{BufferId, ByteOffset, Snapshot, TextRange};
 use zcv_theme::{color, scale};
@@ -1261,14 +1261,34 @@ impl Item for DiffView {
         self.kind != ProjectDiffKind::Staged && self.editor.read(cx).is_dirty(cx)
     }
 
+    fn conflicted_file_paths(&self, cx: &App) -> Vec<PathBuf> {
+        if self.kind == ProjectDiffKind::Staged {
+            Vec::new()
+        } else {
+            <Editor as Item>::conflicted_file_paths(self.editor.read(cx), cx)
+        }
+    }
+
     fn save(
+        &mut self,
+        project: Entity<Project>,
+        conflict_policy: FileSaveConflictPolicy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        self.editor.update(cx, |editor, cx| {
+            <Editor as Item>::save(editor, project, conflict_policy, window, cx)
+        })
+    }
+
+    fn reload_conflicted_files(
         &mut self,
         project: Entity<Project>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
         self.editor.update(cx, |editor, cx| {
-            <Editor as Item>::save(editor, project, window, cx)
+            <Editor as Item>::reload_conflicted_files(editor, project, window, cx)
         })
     }
 

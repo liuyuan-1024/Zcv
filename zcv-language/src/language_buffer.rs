@@ -224,6 +224,11 @@ impl LanguageBuffer {
         self.has_unsaved_edits()
     }
 
+    /// 当前文档的未保存编辑与磁盘上的外部修改发生冲突。
+    pub fn has_disk_conflict(&self) -> bool {
+        self.disk_changed_while_dirty && self.is_dirty()
+    }
+
     /// 当前历史节点的事务身份；无历史时为 None。
     pub fn current_history_transaction_id(&self) -> Option<TransactionId> {
         self.buffer.current_history_transaction_id()
@@ -546,7 +551,6 @@ impl LanguageBuffer {
         }
         cx.emit(LanguageBufferEvent::TextChanged);
         if self.disk_changed_while_dirty && !self.is_dirty() {
-            self.disk_changed_while_dirty = false;
             cx.emit(LanguageBufferEvent::ReloadNeeded);
         }
         self.start_reparse(true, cx);

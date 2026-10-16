@@ -14,7 +14,7 @@ use gpui::{
     Render, SharedString, Subscription, Task, Window,
 };
 use zcv_multi_buffer::MultiBuffer;
-use zcv_project::Project;
+use zcv_project::{FileSaveConflictPolicy, Project};
 
 use crate::SerializedPaneItem;
 use crate::preview::PreviewItemHandle;
@@ -131,13 +131,29 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         false
     }
 
+    /// 返回当前 Item 中需要用户决定保存版本的源文件路径。
+    fn conflicted_file_paths(&self, _cx: &App) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
     fn save(
+        &mut self,
+        _project: Entity<Project>,
+        _conflict_policy: FileSaveConflictPolicy,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        Task::ready(Ok(()))
+    }
+
+    /// 用磁盘内容还原发生冲突的源文件。
+    fn reload_conflicted_files(
         &mut self,
         _project: Entity<Project>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
-        Task::ready(Ok(()))
+        Task::ready(Err(anyhow::anyhow!("该标签页不支持还原冲突文件")))
     }
 
     fn act_as_type(
@@ -172,7 +188,15 @@ pub trait ItemHandle: Send + 'static {
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>>;
     fn as_searchable(&self, cx: &App) -> Option<Box<dyn SearchableItemHandle>>;
     fn can_save(&self, cx: &App) -> bool;
+    fn conflicted_file_paths(&self, cx: &App) -> Vec<PathBuf>;
     fn save(
+        &self,
+        project: Entity<Project>,
+        conflict_policy: FileSaveConflictPolicy,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Task<anyhow::Result<()>>;
+    fn reload_conflicted_files(
         &self,
         project: Entity<Project>,
         window: &mut Window,
@@ -278,13 +302,31 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.read(cx).can_save(cx)
     }
 
+    fn conflicted_file_paths(&self, cx: &App) -> Vec<PathBuf> {
+        self.read(cx).conflicted_file_paths(cx)
+    }
+
     fn save(
+        &self,
+        project: Entity<Project>,
+        conflict_policy: FileSaveConflictPolicy,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Task<anyhow::Result<()>> {
+        self.update(cx, |item, cx| {
+            item.save(project, conflict_policy, window, cx)
+        })
+    }
+
+    fn reload_conflicted_files(
         &self,
         project: Entity<Project>,
         window: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<()>> {
-        self.update(cx, |item, cx| item.save(project, window, cx))
+        self.update(cx, |item, cx| {
+            item.reload_conflicted_files(project, window, cx)
+        })
     }
 
     fn act_as_type(&self, type_id: TypeId, cx: &App) -> Option<AnyEntity> {

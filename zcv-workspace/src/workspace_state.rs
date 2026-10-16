@@ -3,6 +3,7 @@
 //! Workspace 管理工作区的根状态、布局和工作区级命令；
 //! 面板、顶栏、状态项与项目相关订阅由应用装配层注入。
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -19,7 +20,7 @@ use zcv_actions::{
 };
 use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
-use zcv_project::Project;
+use zcv_project::{FileSaveConflictPolicy, Project};
 use zcv_settings::SettingsStore;
 use zcv_theme::{color, typography, typography::Typography};
 
@@ -54,6 +55,7 @@ pub struct Workspace {
     pane: Entity<Pane>,
     status_bar: Entity<StatusBar>,
     toast_layer: Entity<ToastLayer>,
+    conflict_toasts: HashMap<gpui::EntityId, ToastId>,
     project: Entity<Project>,
     left_dock: Entity<Dock>,
     right_dock: Entity<Dock>,
@@ -144,6 +146,11 @@ impl Workspace {
         let pane_for_layout = pane.clone();
         let layout_subscription =
             cx.subscribe_in(&pane_for_layout, window, |this, _, event, window, cx| {
+                if let PaneEvent::RemovedItem { item_id } = event
+                    && let Some(id) = this.conflict_toasts.remove(item_id)
+                {
+                    this.dismiss_toast(id, cx);
+                }
                 if matches!(
                     event,
                     PaneEvent::AddItem { .. }
@@ -222,6 +229,7 @@ impl Workspace {
             pane,
             status_bar,
             toast_layer,
+            conflict_toasts: HashMap::new(),
             project,
             left_dock,
             right_dock,
@@ -974,15 +982,117 @@ impl Workspace {
 
     fn handle_save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
         let pane = self.pane.clone();
-        let Some(item) = pane.read(cx).active_item() else {
+        let Some(item) = pane.read(cx).active_item().map(ItemHandle::boxed_clone) else {
             return;
         };
         if !item.can_save(cx) {
             return;
         }
-        let project = self.project.clone();
-        let task = item.boxed_clone().save(project, window, cx);
-        cx.spawn(|this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
+        let conflicted_paths = item.conflicted_file_paths(cx);
+        if !conflicted_paths.is_empty() {
+            if let Some(id) = self.conflict_toasts.get(&item.item_id()).copied()
+                && self.toast_layer.read(cx).contains(id)
+            {
+                return;
+            }
+            let message = if conflicted_paths.len() == 1 {
+                format!(
+                    "文件已在磁盘上改动：{}。覆盖将保存编辑器内容；还原将放弃未保存编辑。",
+                    conflicted_paths[0].display()
+                )
+            } else {
+                format!(
+                    "有 {} 个文件已在磁盘上改动。覆盖将保存编辑器内容；还原将放弃这些文件的未保存编辑。",
+                    conflicted_paths.len()
+                )
+            };
+            let workspace = cx.entity().downgrade();
+            let overwrite_item = item.boxed_clone();
+            let overwrite = ToastAction::new("覆盖", move |window, cx| {
+                if let Some(workspace) = workspace.upgrade() {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.save_item(
+                            overwrite_item.boxed_clone(),
+                            FileSaveConflictPolicy::Overwrite,
+                            window,
+                            cx,
+                        );
+                    });
+                }
+            });
+            let workspace = cx.entity().downgrade();
+            let restore_item = item.boxed_clone();
+            let restore = ToastAction::new("还原", move |window, cx| {
+                if let Some(workspace) = workspace.upgrade() {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.restore_item(restore_item.boxed_clone(), window, cx);
+                    });
+                }
+            });
+            let id = self.show_toast(
+                ToastKind::Error,
+                message,
+                vec![overwrite, restore],
+                None,
+                cx,
+            );
+            self.conflict_toasts.insert(item.item_id(), id);
+            return;
+        }
+        self.save_item(
+            item.boxed_clone(),
+            FileSaveConflictPolicy::Reject,
+            window,
+            cx,
+        );
+    }
+
+    fn save_item(
+        &mut self,
+        item: Box<dyn ItemHandle>,
+        conflict_policy: FileSaveConflictPolicy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .pane
+            .read(cx)
+            .tabs()
+            .iter()
+            .any(|tab| tab.item_id() == item.item_id())
+        {
+            return;
+        }
+        let task = item.save(self.project.clone(), conflict_policy, window, cx);
+        self.report_file_task(task, "保存文件失败", cx);
+    }
+
+    fn restore_item(
+        &mut self,
+        item: Box<dyn ItemHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .pane
+            .read(cx)
+            .tabs()
+            .iter()
+            .any(|tab| tab.item_id() == item.item_id())
+        {
+            return;
+        }
+        let task = item.reload_conflicted_files(self.project.clone(), window, cx);
+        self.report_file_task(task, "还原文件失败", cx);
+    }
+
+    fn report_file_task(
+        &mut self,
+        task: Task<anyhow::Result<()>>,
+        title: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(move |this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
             let mut cx = asynccx.clone();
             async move {
                 if let Err(error) = task.await
@@ -991,7 +1101,7 @@ impl Workspace {
                     this.update(&mut cx, |workspace, cx| {
                         workspace.show_toast(
                             ToastKind::Error,
-                            format!("保存文件失败：{error:#}"),
+                            format!("{title}：{error:#}"),
                             vec![],
                             Some(Duration::from_secs(5)),
                             cx,

@@ -337,6 +337,10 @@ impl ToastLayer {
         }
     }
 
+    pub(crate) fn contains(&self, id: ToastId) -> bool {
+        self.toasts.iter().any(|toast| toast.id == id)
+    }
+
     /// 标记指定提示已复制：图标短暂切换为对勾，之后自动恢复。
     fn mark_copied(&mut self, id: ToastId, cx: &mut Context<Self>) {
         let Some(toast) = self.toasts.iter_mut().find(|toast| toast.id == id) else {

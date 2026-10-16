@@ -1181,6 +1181,59 @@ fn matching_projection_text(
     }
 }
 
+/// 判断一次局部变换重算是否真的改变了组合文本，而不把 hunk 元数据变化当作编辑。
+fn projection_text_equal_in_ranges(
+    before: &ProjectionTrees,
+    after: &ProjectionTrees,
+    sources: Sources<'_>,
+    old_range: TextRange,
+    new_range: TextRange,
+) -> bool {
+    if old_range.len() != new_range.len() {
+        return false;
+    }
+    let mut old_cursor = MultiBufferCursor::new(&before.0, &before.1, sources);
+    let mut new_cursor = MultiBufferCursor::new(&after.0, &after.1, sources);
+    old_cursor.seek(old_range.start(), Bias::Right);
+    new_cursor.seek(new_range.start(), Bias::Right);
+    let mut old_offset = old_range
+        .start()
+        .get()
+        .saturating_sub(old_cursor.start().bytes);
+    let mut new_offset = new_range
+        .start()
+        .get()
+        .saturating_sub(new_cursor.start().bytes);
+    let mut remaining = old_range.len();
+    while remaining > 0 {
+        let Some((old, _)) = old_cursor.item_counts() else {
+            return false;
+        };
+        let Some((new, _)) = new_cursor.item_counts() else {
+            return false;
+        };
+        if old_offset == old.text_summary.len + usize::from(old.adds_newline) {
+            old_cursor.next();
+            old_offset = 0;
+            continue;
+        }
+        if new_offset == new.text_summary.len + usize::from(new.adds_newline) {
+            new_cursor.next();
+            new_offset = 0;
+            continue;
+        }
+        let matched =
+            matching_projection_text(&old, old_offset, &new, new_offset, false).min(remaining);
+        if matched == 0 {
+            return false;
+        }
+        remaining -= matched;
+        old_offset += matched;
+        new_offset += matched;
+    }
+    true
+}
+
 /// 沿变换树比较同版本源片段的公共文本前后缀，不物化全文。
 /// 源内部编辑由 TextChangeBatch 投影；结构同步只发布实际插入／移除的文本。
 fn projection_changed_ranges(
@@ -2126,6 +2179,8 @@ struct ProjectionSync {
     changed: bool,
     /// 只更新了快照可见的显示元数据，没有组合文本 edit。
     snapshot_changed: bool,
+    /// 差异结果已安装；帧提交时再通知显示层，避免消费者读取未完成的投影。
+    diff_changed: bool,
     waiting_for_diff_sources: HashSet<gpui::EntityId>,
 }
 
@@ -2503,6 +2558,8 @@ pub enum MultiBufferEvent {
     ProjectionChanged,
     Reparsed(gpui::EntityId),
     MetadataChanged,
+    /// 差异状态或显示输入变化；组合文本可能保持不变。
+    DiffChanged,
     /// diff 展开/折叠状态变化；输出变换已同步，逻辑窗口保持不变。
     DiffExpansionChanged,
 }
@@ -4905,6 +4962,7 @@ impl MultiBuffer {
                 changes: TextChangeBatch::default(),
                 changed: false,
                 snapshot_changed: false,
+                diff_changed: false,
                 waiting_for_diff_sources: HashSet::new(),
             });
         }
@@ -4927,12 +4985,16 @@ impl MultiBuffer {
             if sync.snapshot_changed {
                 cx.notify();
             }
-            return;
+        } else {
+            self.publish_projection_change_now(SourceIncremental {
+                batch: sync.changes,
+            });
+            self.emit_projection_changed(cx);
         }
-        self.publish_projection_change_now(SourceIncremental {
-            batch: sync.changes,
-        });
-        self.emit_projection_changed(cx);
+        if sync.diff_changed {
+            cx.emit(MultiBufferEvent::DiffChanged);
+            cx.notify();
+        }
     }
 
     pub(crate) fn emit_text_changed(&mut self, cx: &mut Context<Self>) {

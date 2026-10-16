@@ -1704,6 +1704,7 @@ impl Editor {
                     | MultiBufferEvent::MetadataChanged => {
                         cx.emit(EditorEvent::DocumentChanged);
                     }
+                    MultiBufferEvent::DiffChanged => {}
                 }
                 cx.notify();
             },

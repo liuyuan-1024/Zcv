@@ -914,6 +914,67 @@ fn unchanged_diff_display_does_not_advance_metadata_or_display_version(cx: &mut 
     );
 }
 
+/// 即使差异更新没有改变组合文本，消费者也必须收到差异状态事件。
+#[gpui::test]
+fn diff_state_change_notifies_snapshot_consumers(cx: &mut TestAppContext) {
+    struct EventProbe {
+        _subscription: gpui::Subscription,
+    }
+
+    let source = singleton("src/a.rs", "a\nc\n", cx);
+    let diff = test_diff_entity(
+        source,
+        "src/a.rs",
+        Some("a\nold\nc\n"),
+        Some("a\nold\nc\n"),
+        cx,
+    );
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_diff_files(
+            vec![DiffFile {
+                diff: diff.clone(),
+                display_path: PathBuf::from("src/a.rs"),
+                excerpt_ranges: DiffExcerptRanges::FullFile,
+            }],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _probe = cx.new(|cx| {
+        let received = Arc::clone(&events);
+        let subscription = cx.subscribe(&combined, move |_, _, event: &MultiBufferEvent, _| {
+            received.lock().unwrap().push(*event);
+        });
+        EventProbe {
+            _subscription: subscription,
+        }
+    });
+    let before_version = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx).version());
+
+    cx.update_entity(&diff, |diff, cx| {
+        diff.set_revisions(
+            Some(Arc::from("a\nold\nc\n")),
+            Some(Arc::from("a\nc\n")),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let after_version = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx).version());
+    assert_eq!(
+        after_version, before_version,
+        "仅暂存状态变化不得伪造组合文本编辑"
+    );
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&MultiBufferEvent::DiffChanged),
+        "差异状态变化必须明确通知显示快照消费者"
+    );
+}
+
 /// 回归：展开状态改变只推进 diff 显示版本，不能污染语法／设置元数据版本。
 #[gpui::test]
 fn diff_display_change_uses_its_own_version(cx: &mut TestAppContext) {

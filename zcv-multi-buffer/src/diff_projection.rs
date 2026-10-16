@@ -21,7 +21,7 @@ use crate::{
     DeletedHunkRegion, DiffTransform, DiffTransformHunkInfo, DiffTransformHunkSide, Excerpt,
     ExcerptContext, ExcerptDiffKind, ExcerptRange, ExcerptSummary, MBTextSummary, MappingPosition,
     MultiBuffer, MultiBufferCursor, MultiBufferEvent, MultiBufferSnapshot, OutputRegion, PathKey,
-    SourceIncremental, Sources, snapshot_range_summary,
+    SourceIncremental, Sources, projection_text_equal_in_ranges, snapshot_range_summary,
 };
 use zcv_buffer_diff::{
     BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkKind, DiffHunkStaging, diff_line_boundary,
@@ -1211,7 +1211,13 @@ impl MultiBuffer {
         // 再更新 diff transform，最后只发布一次组合投影版本。
         self.begin_projection_sync();
         self.sync_pending_sources(cx);
-        self.diff_changed_inner(diff_id, changed_range, cx);
+        let changed = self.diff_changed_inner(diff_id, changed_range, cx);
+        if changed {
+            self.projection_sync
+                .as_mut()
+                .expect("差异结果必须在组合同步帧内安装")
+                .diff_changed = true;
+        }
         self.finish_projection_sync(cx);
     }
 
@@ -1220,21 +1226,21 @@ impl MultiBuffer {
         diff_id: gpui::EntityId,
         changed_range: Option<Range<Anchor>>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(index) = self
             .diffs
             .iter()
             .position(|file| file.diff.entity_id() == diff_id)
         else {
-            return;
+            return false;
         };
         let diff = self.diffs[index].diff.clone();
         if !diff.read(cx).is_current_version_calculated(cx) {
-            return;
+            return false;
         }
         let revision = diff.read(cx).revision();
         if self.diffs[index].revision == Some(revision) {
-            return;
+            return false;
         }
 
         if self.diffs[index].pending_expansion_state.is_some() {
@@ -1259,7 +1265,7 @@ impl MultiBuffer {
 
         if self.diffs[index].revision.is_none() {
             self.replace_materialized_file(index, cx);
-            return;
+            return true;
         }
 
         if let Some(changed_range) = changed_range {
@@ -1294,6 +1300,7 @@ impl MultiBuffer {
         // 缺少范围时只接受 BufferDiff 状态，不同步 diff 投影，也不触发整文件重建。
         // 记录已处理版本，使源文档同步可以完成。
         self.diffs[index].revision = Some(revision);
+        true
     }
 
     /// 显式替换 diff 实体或可见窗口时，重建该路径的逻辑 excerpts。
@@ -1366,6 +1373,19 @@ impl MultiBuffer {
         let before = self.projection_trees();
         let old_version = self.state.projection_version;
         let output = self.sync_diff_transforms(&before, edits, None, cx);
+        let after = self.projection_trees();
+        let output = output
+            .into_iter()
+            .filter(|(old, new)| {
+                !projection_text_equal_in_ranges(
+                    &before,
+                    &after,
+                    Sources::Workspace(self.state.sources.as_slice()),
+                    *old,
+                    *new,
+                )
+            })
+            .collect::<Vec<_>>();
         if !output.is_empty() {
             self.publish_projection_change(SourceIncremental {
                 batch: TextChangeBatch::from_edits(old_version, old_version, output),

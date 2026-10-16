@@ -5,7 +5,7 @@ use zcv_multi_buffer::{
 
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
-use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging, PendingHunk};
 use zcv_language::LanguageRegistry;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
 
@@ -221,6 +221,172 @@ fn diff_decorations_are_cached_and_consumed_by_viewport(cx: &mut TestAppContext)
         1,
         "视口内的 diff 行应从派生快照切片得到"
     );
+}
+
+#[gpui::test]
+fn index_only_diff_change_updates_editor_decorations(cx: &mut TestAppContext) {
+    let source = test_buffer(cx, "a\nc\n");
+    source.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let base: Arc<str> = Arc::from("a\nold\nc\n");
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            BufferDiffInput {
+                operations: None,
+                working: source,
+                base_text: Some(base.clone()),
+                index_text: Some(base.clone()),
+                path: PathBuf::from("src/a.rs"),
+                language_registry: Arc::new(LanguageRegistry::new()),
+                key: 0,
+            },
+            cx,
+        )
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |combined, cx| {
+        combined.set_diff_hunks_expanded_by_default(true, cx);
+        combined.set_diff_files(
+            vec![DiffFile {
+                diff: diff.clone(),
+                display_path: PathBuf::from("src/a.rs"),
+                excerpt_ranges: DiffExcerptRanges::FullFile,
+            }],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
+    let staging = |editor: &Editor, cx: &App| {
+        let display = editor.display_snapshot(cx);
+        display
+            .diff_decorations()
+            .rendering_for_viewport(0..display.line_count())
+            .strips[0]
+            .2
+    };
+    let before = cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx));
+    assert_eq!(cx.read_entity(&editor, staging), DiffHunkStaging::Unstaged);
+
+    diff.update(cx, |diff, cx| {
+        diff.set_revisions(Some(base), Some(Arc::from("a\nc\n")), cx)
+    });
+    cx.run_until_parked();
+    let after = cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx));
+    assert_eq!(
+        after.buffer_snapshot().version(),
+        before.buffer_snapshot().version()
+    );
+    assert!(after.version() > before.version());
+    assert_eq!(
+        cx.read_entity(&editor, staging),
+        DiffHunkStaging::Staged,
+        "仅 index 改变时，编辑器必须消费新的差异显示输入"
+    );
+}
+
+#[gpui::test]
+fn staging_one_hunk_preserves_the_remaining_hunk_decoration(cx: &mut TestAppContext) {
+    let original = (0..30)
+        .map(|line| format!("line{line}\n"))
+        .collect::<String>();
+    let working = original
+        .replace("line3\n", "first change\n")
+        .replace("line25\n", "last change\n");
+    let staged = original.replace("line3\n", "first change\n");
+    let source = test_buffer(cx, &working);
+    source.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let base: Arc<str> = Arc::from(original);
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            BufferDiffInput {
+                operations: None,
+                working: source,
+                base_text: Some(base.clone()),
+                index_text: Some(base.clone()),
+                path: PathBuf::from("src/a.rs"),
+                language_registry: Arc::new(LanguageRegistry::new()),
+                key: 0,
+            },
+            cx,
+        )
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |combined, cx| {
+        combined.set_diff_files(
+            vec![DiffFile {
+                diff: diff.clone(),
+                display_path: PathBuf::from("src/a.rs"),
+                excerpt_ranges: DiffExcerptRanges::Windows(vec![0..8, 20..30]),
+            }],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
+    let remaining_strips = |editor: &Editor, cx: &App| {
+        let display = editor.display_snapshot(cx);
+        let viewport = display.line_count().saturating_sub(8)..display.line_count();
+        display
+            .diff_decorations_for_viewport(viewport.clone())
+            .rendering_for_viewport(viewport)
+            .strips
+    };
+    let assert_viewport_projection = |editor: &Editor, cx: &App| {
+        let display = editor.display_snapshot(cx);
+        let complete = display.diff_decorations();
+        for start in 0..display.line_count() {
+            for end in start + 1..=display.line_count() {
+                let viewport = start..end;
+                let expected = complete.rendering_for_viewport(viewport.clone()).strips;
+                let actual = display
+                    .diff_decorations_for_viewport(viewport.clone())
+                    .rendering_for_viewport(viewport.clone())
+                    .strips;
+                assert_eq!(actual, expected, "显示视口 {viewport:?} 遗失差异色带");
+            }
+        }
+    };
+    assert_eq!(cx.read_entity(&editor, remaining_strips).len(), 1);
+    cx.read_entity(&editor, assert_viewport_projection);
+
+    let first_range = diff.update(cx, |diff, cx| {
+        let working = diff.working().read(cx).text_snapshot();
+        let first = diff
+            .snapshot()
+            .hunks()
+            .next()
+            .expect("应有首个变更块")
+            .clone();
+        diff.set_pending_hunks(vec![PendingHunk::suppress(&first, working.version())], cx);
+        first.buffer_range
+    });
+    editor.update(cx, |editor, cx| {
+        editor.update_diff_excerpt_ranges(
+            PathBuf::from("src/a.rs").as_path(),
+            DiffExcerptRanges::Windows(std::iter::once(20..30).collect()),
+            first_range,
+            cx,
+        );
+    });
+    assert_eq!(
+        cx.read_entity(&editor, remaining_strips).len(),
+        1,
+        "暂存按钮乐观隐藏首块后，其余变更块仍应绘制 Git 色带"
+    );
+    cx.read_entity(&editor, assert_viewport_projection);
+
+    diff.update(cx, |diff, cx| {
+        diff.set_revisions(Some(Arc::from(staged.clone())), Some(Arc::from(staged)), cx);
+    });
+    cx.run_until_parked();
+    let strips = cx.read_entity(&editor, remaining_strips);
+    assert_eq!(strips.len(), 1, "index 更新后，其余变更块仍应绘制 Git 色带");
+    assert_eq!(strips[0].2, DiffHunkStaging::Unstaged);
+    cx.read_entity(&editor, assert_viewport_projection);
 }
 
 /// 回归：同一行内编辑且 diff 几何未变化时，显示链只替换文本快照，

@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::PickerHost;
+use crate::{PickerHost, PickerLayer};
 use gpui::{
     AppContext, Entity, FocusHandle, KeyBinding, ScrollDelta, ScrollWheelEvent, TestAppContext,
     actions, anchored, deferred, point, px, size,
@@ -470,12 +470,87 @@ struct HostPopoverWrapper {
 
 impl Render for HostPopoverWrapper {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.host.is_open(cx) {
+        if self.host.is_open() {
             div().child(self.host.overlay(window, cx, &self.picker))
         } else {
             div()
         }
     }
+}
+
+struct FocusPickerHost {
+    first: PickerHost,
+    first_picker: Entity<Picker<ScrollDelegate>>,
+    second: PickerHost,
+    second_picker: Entity<Picker<ScrollDelegate>>,
+    previous: FocusHandle,
+    other: FocusHandle,
+}
+
+impl Render for FocusPickerHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(div().track_focus(&self.previous))
+            .child(div().track_focus(&self.other))
+            .child(div().track_focus(&self.first.focus_handle()))
+            .child(div().track_focus(&self.second.focus_handle()))
+            .when(self.first.is_open(), |el| {
+                el.child(self.first.overlay(window, cx, &self.first_picker))
+            })
+            .when(self.second.is_open(), |el| {
+                el.child(self.second.overlay(window, cx, &self.second_picker))
+            })
+    }
+}
+
+#[gpui::test]
+fn picker_restores_the_original_focus_without_overwriting_a_new_target(cx: &mut TestAppContext) {
+    init(cx);
+    let (host, cx) = cx.add_window_view(|window, cx| {
+        let layer = PickerLayer::default();
+        let mut new_picker = |cx: &mut Context<FocusPickerHost>| {
+            cx.new(|cx| {
+                Picker::new(
+                    ScrollDelegate {
+                        selected_index: Rc::new(Cell::new(0)),
+                    },
+                    px(300.0),
+                    window,
+                    cx,
+                )
+            })
+        };
+        FocusPickerHost {
+            first: PickerHost::new(cx.focus_handle(), layer.clone()),
+            first_picker: new_picker(cx),
+            second: PickerHost::new(cx.focus_handle(), layer),
+            second_picker: new_picker(cx),
+            previous: cx.focus_handle(),
+            other: cx.focus_handle(),
+        }
+    });
+    let (previous, other) =
+        cx.read_entity(&host, |host, _| (host.previous.clone(), host.other.clone()));
+
+    cx.update(|window, cx| window.focus(&previous, cx));
+    host.update_in(cx, |host, window, cx| {
+        host.first.toggle(&host.first_picker, window, cx);
+    });
+    cx.run_until_parked();
+    host.update_in(cx, |host, window, cx| {
+        host.second.toggle(&host.second_picker, window, cx);
+    });
+    cx.run_until_parked();
+    host.update_in(cx, |host, window, cx| host.second.dismiss(window, cx));
+    cx.update(|window, _| assert!(previous.is_focused(window)));
+
+    host.update_in(cx, |host, window, cx| {
+        host.first.toggle(&host.first_picker, window, cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.focus(&other, cx));
+    host.update_in(cx, |host, window, cx| host.first.dismiss(window, cx));
+    cx.update(|window, _| assert!(other.is_focused(window)));
 }
 
 #[gpui::test]
@@ -492,7 +567,7 @@ fn picker_list_scrolls_inside_host_overlay(cx: &mut TestAppContext) {
                 cx,
             )
         });
-        let mut host = PickerHost::new(cx.focus_handle());
+        let mut host = PickerHost::new(cx.focus_handle(), PickerLayer::default());
         host.toggle(&picker, window, cx);
         HostPopoverWrapper { host, picker }
     });

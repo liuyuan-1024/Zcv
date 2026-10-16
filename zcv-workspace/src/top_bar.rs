@@ -7,6 +7,7 @@ use gpui::{
     div, prelude::*,
 };
 use zcv_actions::OpenSettings;
+use zcv_picker::PickerLayer;
 use zcv_project::{
     GitJobPhase, GitOperationKind, GitStore, GitStoreEvent, Project, RemoteOperationState,
 };
@@ -56,11 +57,19 @@ impl TopBar {
         cx: &mut gpui::Context<Self>,
     ) -> Self {
         let git_store = project.read(cx).git_store();
+        let picker_layer = PickerLayer::default();
         let project_picker = cx.new(|cx| {
-            ProjectPicker::new(on_selected, project.clone(), workspace.clone(), window, cx)
+            ProjectPicker::new(
+                on_selected,
+                project.clone(),
+                workspace.clone(),
+                picker_layer.clone(),
+                window,
+                cx,
+            )
         });
         let branch_picker =
-            cx.new(|cx| BranchPicker::new(git_store.clone(), on_branch, window, cx));
+            cx.new(|cx| BranchPicker::new(git_store.clone(), on_branch, picker_layer, window, cx));
         let global_search = cx.new(|cx| GlobalSearch::new(project, workspace.clone(), window, cx));
         let git_subscription = cx.subscribe(&git_store, |_, _, _: &GitStoreEvent, cx| cx.notify());
         Self {

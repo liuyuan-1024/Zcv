@@ -231,6 +231,7 @@ fn reopening_selects_current_project_and_clears_previous_search(cx: &mut TestApp
             Rc::new(|_, _, _| {}),
             project,
             workspace.downgrade(),
+            PickerLayer::default(),
             window,
             cx,
         )

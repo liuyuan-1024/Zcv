@@ -218,16 +218,12 @@ impl Dock {
         if let Some(panel) = self.active_panel().cloned() {
             panel.set_active(open, window, cx);
         }
-        // 折叠时若焦点在 Dock 内（面板或面板内 item），回落到 Dock 自身句柄（根容器始终挂载，焦点链与 Dock 快捷键保持有效）。
-        if !open && self.has_focus(window, cx) {
-            window.focus(&self.focus, cx);
-        }
         cx.emit(DockEvent::OpenChanged);
         cx.notify();
     }
 
     /// Dock 自身或其激活面板是否持有焦点（决定折叠时是否归还焦点）。
-    fn has_focus(&self, window: &Window, cx: &App) -> bool {
+    pub(crate) fn has_focus(&self, window: &Window, cx: &App) -> bool {
         self.focus.is_focused(window)
             || self
                 .active_panel()

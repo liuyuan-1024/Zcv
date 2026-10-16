@@ -2,7 +2,8 @@ use super::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{Bounds, Context, Pixels, TestAppContext, canvas};
+use gpui::{Bounds, Context, FocusHandle, Pixels, TestAppContext, canvas, point};
+use zcv_language::LanguageRegistry;
 
 struct TestView;
 
@@ -10,6 +11,90 @@ impl Render for TestView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
     }
+}
+
+struct FocusHost {
+    search: gpui::Entity<GlobalSearch>,
+    previous: FocusHandle,
+    other: FocusHandle,
+}
+
+impl Render for FocusHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(div().track_focus(&self.previous))
+            .child(div().track_focus(&self.other))
+            .child(self.search.clone())
+    }
+}
+
+#[gpui::test]
+fn escape_restores_the_focus_before_global_search(cx: &mut TestAppContext) {
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages.clone()));
+    let (host, cx) = cx.add_window_view(|window, cx| {
+        let workspace = cx.new(|cx| Workspace::new_empty(languages, window, cx));
+        let project = workspace.read(cx).project().clone();
+        let search = cx.new(|cx| GlobalSearch::new(project, workspace.downgrade(), window, cx));
+        FocusHost {
+            search,
+            previous: cx.focus_handle(),
+            other: cx.focus_handle(),
+        }
+    });
+    let (search, previous, other) = cx.read_entity(&host, |host, _| {
+        (
+            host.search.clone(),
+            host.previous.clone(),
+            host.other.clone(),
+        )
+    });
+
+    cx.update(|window, cx| window.focus(&previous, cx));
+    search.update_in(cx, |search, window, cx| search.focus(window, cx));
+    let input_focus = cx.read_entity(&search, |search, cx| search.input.focus_handle(cx));
+    cx.update(|window, _| assert!(input_focus.is_focused(window)));
+
+    search.update_in(cx, |search, window, cx| search.focus(window, cx));
+    search.update_in(cx, |search, window, cx| {
+        search.cancel(&PickerCancel, window, cx)
+    });
+    cx.update(|window, _| assert!(previous.is_focused(window)));
+
+    search.update_in(cx, |search, window, cx| search.focus(window, cx));
+    cx.update(|window, cx| window.focus(&other, cx));
+    search.update_in(cx, |search, window, cx| {
+        search.cancel(&PickerCancel, window, cx)
+    });
+    cx.update(|window, _| assert!(other.is_focused(window)));
+}
+
+#[gpui::test]
+fn clicking_global_search_records_the_focus_before_the_input_takes_it(cx: &mut TestAppContext) {
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages.clone()));
+    let (host, cx) = cx.add_window_view(|window, cx| {
+        let workspace = cx.new(|cx| Workspace::new_empty(languages, window, cx));
+        let project = workspace.read(cx).project().clone();
+        FocusHost {
+            search: cx.new(|cx| GlobalSearch::new(project, workspace.downgrade(), window, cx)),
+            previous: cx.focus_handle(),
+            other: cx.focus_handle(),
+        }
+    });
+    let (search, previous) = cx.read_entity(&host, |host, _| {
+        (host.search.clone(), host.previous.clone())
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.focus(&previous, cx));
+    cx.simulate_click(point(px(10.0), px(10.0)), gpui::Modifiers::default());
+    cx.run_until_parked();
+    let input_focus = cx.read_entity(&search, |search, cx| search.input.focus_handle(cx));
+    cx.update(|window, _| assert!(input_focus.is_focused(window)));
+    search.update_in(cx, |search, window, cx| {
+        search.cancel(&PickerCancel, window, cx)
+    });
+    cx.update(|window, _| assert!(previous.is_focused(window)));
 }
 
 struct ResultsLayoutView {

@@ -137,6 +137,10 @@ impl<D: PickerDelegate> Picker<D> {
         &self.search_input
     }
 
+    pub(crate) fn focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+
     /// 同步设置查询、重建匹配结果并定位选中项；打开浮层时也使用此入口。
     pub fn set_query(&mut self, query: &str, cx: &mut Context<Self>) {
         self.search_input.set_text(query, cx);

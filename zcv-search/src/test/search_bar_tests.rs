@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use gpui::{AppContext, Context, Render, TestAppContext, VisualTestContext, Window, prelude::*};
+use gpui::{
+    AppContext, Context, FocusHandle, Render, TestAppContext, VisualTestContext, Window, div,
+    prelude::*,
+};
 use zcv_actions::DeployBufferSearch;
 use zcv_workspace::{Item, SearchableItem};
 
@@ -16,6 +19,66 @@ impl Render for SearchBarHost {
             bar.render(SearchBarSlots::default(), window, cx)
         })
     }
+}
+
+struct FocusSearchBarHost {
+    bar: Entity<SearchBar>,
+    editor: Entity<Editor>,
+    other: FocusHandle,
+}
+
+impl Render for FocusSearchBarHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(self.bar.update(cx, |bar, cx| {
+                bar.render(SearchBarSlots::default(), window, cx)
+            }))
+            .child(self.editor.clone())
+            .child(div().track_focus(&self.other))
+    }
+}
+
+#[gpui::test]
+fn closing_document_search_only_returns_focus_when_search_owns_it(cx: &mut TestAppContext) {
+    let registry = Arc::new(LanguageRegistry::new());
+    let (host, cx) = cx.add_window_view(|window, cx| {
+        let editor = cx.new(|cx| Editor::single_line(registry.clone(), cx));
+        let bar = cx.new(|cx| {
+            SearchBar::new(
+                SearchBarConfig {
+                    id_prefix: "test-search-focus",
+                    key_context: "BufferSearchBar",
+                    supports_replace: false,
+                    query_placeholder: "搜索...",
+                    replace_placeholder: "替换为...",
+                    presentation: SearchBarPresentation::OnDemand,
+                },
+                registry,
+                cx,
+            )
+        });
+        bar.update(cx, |bar, cx| {
+            bar.set_target(Some(Box::new(editor.downgrade())), window, cx);
+        });
+        FocusSearchBarHost {
+            bar,
+            editor,
+            other: cx.focus_handle(),
+        }
+    });
+    let (bar, editor, other) = cx.read_entity(&host, |host, _| {
+        (host.bar.clone(), host.editor.clone(), host.other.clone())
+    });
+    let editor_focus = cx.read_entity(&editor, |editor, _| editor.focus_handle());
+
+    bar.update_in(cx, |bar, window, cx| bar.deploy(None, window, cx));
+    bar.update_in(cx, |bar, window, cx| bar.close(window, cx));
+    cx.update(|window, _| assert!(editor_focus.is_focused(window)));
+
+    bar.update_in(cx, |bar, window, cx| bar.deploy(None, window, cx));
+    cx.update(|window, cx| window.focus(&other, cx));
+    bar.update_in(cx, |bar, window, cx| bar.close(window, cx));
+    cx.update(|window, _| assert!(other.is_focused(window)));
 }
 
 #[gpui::test]

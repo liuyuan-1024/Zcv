@@ -88,6 +88,45 @@ impl Item for ConflictItem {
 }
 
 #[gpui::test]
+fn lost_window_focus_returns_to_the_active_pane(cx: &mut TestAppContext) {
+    struct FocusLossHost {
+        workspace: gpui::Entity<Workspace>,
+        temporary: FocusHandle,
+        show_temporary: bool,
+    }
+
+    impl Render for FocusLossHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(self.workspace.clone())
+                .when(self.show_temporary, |root| {
+                    root.child(div().track_focus(&self.temporary))
+                })
+        }
+    }
+
+    let (host, cx) = cx.add_window_view(|window, cx| FocusLossHost {
+        workspace: cx.new(|cx| Workspace::new_empty(test_languages(), window, cx)),
+        temporary: cx.focus_handle(),
+        show_temporary: true,
+    });
+    let (workspace, temporary) = cx.read_entity(&host, |host, _| {
+        (host.workspace.clone(), host.temporary.clone())
+    });
+    let pane_focus = cx.read_entity(&workspace, |workspace, cx| {
+        workspace.pane.read(cx).focus_handle()
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.focus(&temporary, cx));
+    host.update_in(cx, |host, _, cx| {
+        host.show_temporary = false;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    cx.update(|window, _| assert!(pane_focus.is_focused(window)));
+}
+
+#[gpui::test]
 fn saving_a_conflicted_item_shows_one_persistent_choice_toast(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let path = directory.path().join("conflict-item.txt");
@@ -404,6 +443,16 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
     assert!(!cx.read_entity(&workspace, |workspace, cx| {
         workspace.left_dock.read(cx).is_open()
     }));
+    cx.update(|window, _| assert!(center_focus.is_focused(window)));
+
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.toggle_panel_visibility_from_button(DockPosition::Left, 0, window, cx);
+    });
+    cx.update(|window, cx| window.focus(&focus, cx));
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.toggle_panel_visibility_from_button(DockPosition::Left, 0, window, cx);
+    });
+    cx.update(|window, _| assert!(focus.is_focused(window)));
 
     cx.dispatch_action(FocusOrHidePanel::new("test-panel"));
     assert!(cx.read_entity(&workspace, |workspace, cx| {

@@ -17,7 +17,7 @@ use gpui::{
 use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
 use zcv_fuzzy::Matcher;
 use zcv_keymap::{KeyBindings, display_shortcut};
-use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, picker_divider};
+use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, PickerLayer, picker_divider};
 use zcv_project::Project;
 use zcv_theme::{color, scale};
 use zcv_ui::{Button, ListItem, SvgIcon};
@@ -285,6 +285,7 @@ impl ProjectPicker {
         on_selected: OnProjectSelected,
         project: Entity<Project>,
         workspace: WeakEntity<Workspace>,
+        picker_layer: PickerLayer,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -323,7 +324,7 @@ impl ProjectPicker {
         );
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
-        let host = PickerHost::new(cx.focus_handle());
+        let host = PickerHost::new(cx.focus_handle(), picker_layer);
         picker.update(cx, |picker, _| {
             picker.set_on_dismiss(host.on_dismiss_handler())
         });
@@ -339,7 +340,7 @@ impl ProjectPicker {
 
     /// 外部切换（快捷键/按钮等）。
     pub fn toggle(&mut self, window: &mut Window, cx: &mut App) {
-        if !self.host.is_open(cx) {
+        if !self.host.is_open() {
             // 打开时从磁盘重新加载最近项目列表
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload_projects(cx);
@@ -426,19 +427,14 @@ impl ProjectPicker {
 
 impl Render for ProjectPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 检查是否需要关闭（Escape / 点击外部）
-        if self.host.consume_dismiss(cx) {
-            self.host.close_and_refocus(window, cx);
-        }
-
         // 处理异步「打开本地项目」返回的路径
         if let Some(path) = self.pending_path.borrow_mut().take() {
-            self.host.close_and_refocus(window, cx);
+            self.host.dismiss(window, cx);
             let cb = self.on_selected.clone();
             window.defer(cx, move |window, cx| cb(path, window, cx));
         }
 
-        let color_value = if self.host.is_open(cx) {
+        let color_value = if self.host.is_open() {
             color::current(cx).icon_accent
         } else {
             color::current(cx).text
@@ -472,7 +468,7 @@ impl Render for ProjectPicker {
             .child(button);
 
         // 浮层
-        if self.host.is_open(cx) {
+        if self.host.is_open() {
             root = root.child(self.host.overlay(window, cx, &self.picker));
         }
 

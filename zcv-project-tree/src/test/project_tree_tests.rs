@@ -466,6 +466,32 @@ fn rename_actions_edit_and_confirm_the_selected_row(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn canceling_tree_edit_keeps_focus_that_already_moved_elsewhere(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = abs(directory.path()).into_path_buf();
+    let path = root.join("entry.txt");
+    std::fs::write(&path, "content").expect("应创建测试文件");
+    let project = test_project(root, cx);
+    let tree = cx.new(|cx| ProjectTreePanel::new(project, cx));
+    tree.update(cx, |tree, _| tree.state.borrow_mut().select(abs(path)));
+    let (host, visual) = cx.add_window_view(|_, cx| TreeFocusHost {
+        tree: tree.clone(),
+        editor_focus: cx.focus_handle(),
+    });
+    visual.run_until_parked();
+    let external = host.read_with(visual, |host, _| host.editor_focus.clone());
+
+    visual.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.handle_tree_rename(&TreeRename, window, cx);
+            window.focus(&external, cx);
+            tree.handle_tree_cancel_edit(&TreeCancelEdit, window, cx);
+        });
+        assert!(external.is_focused(window));
+    });
+}
+
+#[gpui::test]
 fn creating_entry_reveals_the_name_editor_outside_the_viewport(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();

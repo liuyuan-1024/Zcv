@@ -162,7 +162,14 @@ impl ProjectTreePanel {
                 };
                 if destination.as_path() == source.as_path() {
                     self.clear_edit_state(cx);
-                    window.focus(&self.focus, cx);
+                    if self
+                        .entry_name_editor
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window)
+                    {
+                        window.focus(&self.focus, cx);
+                    }
                     return;
                 }
                 let Some(on_rename) = self.on_rename.clone() else {
@@ -217,7 +224,14 @@ impl ProjectTreePanel {
             }
         }
         self.clear_edit_state(cx);
-        window.focus(&self.focus, cx);
+        if self
+            .entry_name_editor
+            .read(cx)
+            .focus_handle()
+            .is_focused(window)
+        {
+            window.focus(&self.focus, cx);
+        }
     }
 
     pub(super) fn handle_tree_cancel_edit(
@@ -227,8 +241,15 @@ impl ProjectTreePanel {
         cx: &mut Context<Self>,
     ) {
         if self.edit_state.is_some() {
+            let input_focused = self
+                .entry_name_editor
+                .read(cx)
+                .focus_handle()
+                .is_focused(window);
             self.clear_edit_state(cx);
-            window.focus(&self.focus, cx);
+            if input_focused {
+                window.focus(&self.focus, cx);
+            }
         }
     }
 

@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use gpui::{
     App, Context, ListAlignment, ListOffset, ListSizingBehavior, ListState, MouseButton, Pixels,
-    Render, Subscription, Task, WeakEntity, Window, deferred, div, list, prelude::*, px,
+    Render, Subscription, Task, WeakEntity, WeakFocusHandle, Window, deferred, div, list,
+    prelude::*, px,
 };
 use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
@@ -165,6 +166,8 @@ pub(crate) struct GlobalSearch {
     state: FileSearchState,
     list_state: ListState,
     active: bool,
+    previous_focus: Option<WeakFocusHandle>,
+    workspace: WeakEntity<Workspace>,
     project: gpui::Entity<Project>,
     _focus_subscription: Subscription,
     _blur_subscription: Subscription,
@@ -180,8 +183,9 @@ impl GlobalSearch {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let workspace_for_open = workspace.clone();
         let on_open: OnFileOpen = Box::new(move |path, window, cx| {
-            workspace
+            workspace_for_open
                 .update(cx, |workspace, cx| {
                     workspace.open_path(path, true, window, cx)
                 })
@@ -200,6 +204,7 @@ impl GlobalSearch {
         });
         let blur_subscription = cx.on_blur(&input_focus, window, |search, _, cx| {
             search.active = false;
+            search.previous_focus = None;
             cx.notify();
         });
         let weak = cx.weak_entity();
@@ -229,6 +234,8 @@ impl GlobalSearch {
             state: FileSearchState::new(on_open),
             list_state: ListState::new(0, ListAlignment::Top, px(100.0)),
             active: false,
+            previous_focus: None,
+            workspace,
             project,
             _focus_subscription: focus_subscription,
             _blur_subscription: blur_subscription,
@@ -239,7 +246,15 @@ impl GlobalSearch {
     }
 
     pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.remember_previous_focus(window, cx);
         window.focus(&self.input.focus_handle(cx), cx);
+    }
+
+    fn remember_previous_focus(&mut self, window: &Window, cx: &App) {
+        if self.input.focus_handle(cx).is_focused(window) {
+            return;
+        }
+        self.previous_focus = window.focused(cx).map(|focus| focus.downgrade());
     }
 
     fn refresh_files(&mut self, cx: &mut Context<Self>) {
@@ -306,9 +321,15 @@ impl GlobalSearch {
     }
 
     fn cancel(&mut self, _: &PickerCancel, window: &mut Window, cx: &mut Context<Self>) {
-        window.blur(cx);
-        self.active = false;
-        cx.notify();
+        if !self.input.focus_handle(cx).is_focused(window) {
+            return;
+        }
+        let previous = self.previous_focus.take().and_then(|focus| focus.upgrade());
+        if let Some(previous) = previous {
+            window.focus(&previous, cx);
+        } else if let Some(workspace) = self.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| workspace.focus_center_pane(window, cx));
+        }
     }
 
     fn results(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -393,6 +414,9 @@ impl Render for GlobalSearch {
             .on_action(cx.listener(Self::editor_move_up))
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
+            .capture_any_mouse_down(cx.listener(|search, _, window, cx| {
+                search.remember_previous_focus(window, cx);
+            }))
             .on_click(cx.listener(|search, _, window, cx| search.focus(window, cx)))
             .child(
                 SvgIcon::new("icons/magnifying_glass.svg")

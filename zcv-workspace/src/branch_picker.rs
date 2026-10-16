@@ -13,7 +13,7 @@ use zcv_actions::{DeleteGitBranch, SelectGitBranch};
 use zcv_fuzzy::Matcher;
 use zcv_git::Branch;
 use zcv_keymap::display_shortcut;
-use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost};
+use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, PickerLayer};
 use zcv_project::{GitStore, GitStoreEvent};
 use zcv_theme::color;
 use zcv_ui::ListItem;
@@ -207,20 +207,21 @@ impl BranchPicker {
     pub fn new(
         git_store: Entity<GitStore>,
         on_select: OnBranchSelected,
+        picker_layer: PickerLayer,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let delegate = BranchPickerDelegate::new(Vec::new(), on_select);
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
-        let host = PickerHost::new(cx.focus_handle());
+        let host = PickerHost::new(cx.focus_handle(), picker_layer);
         picker.update(cx, |picker, _| {
             picker.set_on_dismiss(host.on_dismiss_handler())
         });
 
         let git_subscription =
             cx.subscribe(&git_store, |picker, store, _event: &GitStoreEvent, cx| {
-                if picker.host.is_open(cx) {
+                if picker.host.is_open() {
                     let branches = store
                         .read(cx)
                         .active_branch_list()
@@ -256,7 +257,7 @@ impl BranchPicker {
 
     /// 外部切换（快捷键/点击等）。
     pub fn toggle(&mut self, window: &mut Window, cx: &mut App) {
-        if !self.host.is_open(cx) {
+        if !self.host.is_open() {
             // 打开时用 GitStore 最新快照重建列表，清空搜索框。
             let branches = self
                 .git_store
@@ -295,12 +296,7 @@ impl BranchPicker {
 
 impl Render for BranchPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 检查是否需要关闭（Escape / 点击外部）。
-        if self.host.consume_dismiss(cx) {
-            self.host.close_and_refocus(window, cx);
-        }
-
-        let color_value = if self.host.is_open(cx) {
+        let color_value = if self.host.is_open() {
             color::current(cx).icon_accent
         } else {
             color::current(cx).text
@@ -326,7 +322,7 @@ impl Render for BranchPicker {
             .child(button);
 
         // 浮层
-        if self.host.is_open(cx) {
+        if self.host.is_open() {
             root = root.child(self.host.overlay(window, cx, &self.picker));
         }
 

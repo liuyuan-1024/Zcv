@@ -6,7 +6,7 @@
 mod picker_host;
 mod picker_view;
 
-pub use picker_host::PickerHost;
+pub use picker_host::{PickerHost, PickerLayer};
 pub use picker_view::{Picker, PickerDelegate, picker_divider};
 
 /// 浮层默认宽度，宿主不指定时统一取此值。

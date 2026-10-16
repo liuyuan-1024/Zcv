@@ -222,10 +222,18 @@ impl SearchBar {
 
     /// 关闭搜索条：清空搜索状态并把焦点还给目标。
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let search_input_focused = self.query_input.read(cx).focus_handle().is_focused(window)
+            || self
+                .replace_input
+                .read(cx)
+                .focus_handle()
+                .is_focused(window);
         self.visible = false;
         if let Some(target) = self.search_target() {
             target.clear_search(window, cx);
-            window.focus(&target.item_focus_handle(cx), cx);
+            if search_input_focused {
+                window.focus(&target.item_focus_handle(cx), cx);
+            }
         }
         cx.notify();
     }

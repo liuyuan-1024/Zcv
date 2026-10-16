@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::translate_path;
-use gpui::{App, AppContext, Entity, WeakEntity};
+use gpui::{App, AppContext, Entity, EntityId, WeakEntity};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_text::Snapshot;
@@ -112,32 +112,29 @@ impl BufferStore {
             .collect()
     }
 
-    /// 如果路径对应某个干净的已打开 Buffer，从磁盘重新加载其内容。
-    /// 脏 Buffer 由用户编辑拥有，文件事件不能覆盖它。
-    pub(crate) fn reload_buffer_for_path(&mut self, path: &Path, cx: &mut App) {
-        let Ok(canonical) = index_path(path) else {
-            return;
-        };
-        let Some(language_buffer) = self
-            .opened_buffers
-            .get(&canonical)
-            .and_then(WeakEntity::upgrade)
-        else {
-            return;
-        };
-        let Ok(file) = File::open(canonical.as_path()) else {
-            return;
-        };
-        let Ok(text) = decode_to_string(file) else {
-            return;
-        };
-        language_buffer.update(cx, |language_buffer, cx| {
-            // 脏 Buffer 的文本由用户编辑拥有；文件事件不能用磁盘内容覆盖它。
-            // 保存产生的延迟事件也可能在用户已经继续编辑或撤销后到达。
-            if language_buffer.is_dirty() {
-                return;
-            }
-            let _ = language_buffer.replace_text(text, cx);
+    /// 文件事件可能只报告目录或 Rescan 根；只返回受该路径覆盖的存活文档。
+    pub(crate) fn buffers_under_path(&self, path: &Path) -> Vec<Entity<LanguageBuffer>> {
+        self.opened_buffers
+            .iter()
+            .filter(|(opened_path, _)| opened_path.starts_with(path))
+            .filter_map(|(_, buffer)| buffer.upgrade())
+            .collect()
+    }
+
+    pub(crate) fn path_for_buffer(
+        &self,
+        buffer: &Entity<LanguageBuffer>,
+    ) -> Option<AbsolutePathBuf> {
+        self.opened_buffers.iter().find_map(|(path, opened)| {
+            (opened.upgrade().as_ref() == Some(buffer)).then(|| path.clone())
+        })
+    }
+
+    pub(crate) fn release_buffer(&mut self, id: EntityId) {
+        self.opened_buffers.retain(|_, opened| {
+            opened
+                .upgrade()
+                .is_some_and(|buffer| buffer.entity_id() != id)
         });
     }
 
@@ -151,15 +148,6 @@ impl BufferStore {
                 Some((path, buffer))
             })
             .collect();
-    }
-
-    /// 移除被删除文件或目录对应的路径索引；目录删除时连同其中已打开的 Buffer 一起移除。
-    pub(crate) fn remove_path(&mut self, path: &Path) {
-        let Ok(path) = normalize_for_comparison(path) else {
-            return;
-        };
-        self.opened_buffers
-            .retain(|indexed, _| indexed.strip_prefix(&path).is_err());
     }
 }
 

@@ -4,7 +4,7 @@
 //!
 //! 1. `notify` crate —— 底层 OS 文件系统事件（FSEvents / inotify / ReadDirectoryChanges）
 //! 2. `GlobalWatcher` 单例 —— 管理原生和轮询两个后端，专用线程批量调度事件
-//! 3. `FsWatcher` 实例 —— 每项目根一个实例，包装 GlobalWatcher，提供 `Watcher` trait
+//! 3. `FsWatcher` 实例 —— 每个 Project 一个实例，包装 GlobalWatcher，提供 `Watcher` trait
 //! 4. Watcher::watch 返回按 latency 合并的事件批次流，调用方 await 并触发界面刷新
 
 use std::collections::HashMap;
@@ -67,6 +67,7 @@ pub type FsEventStream = Pin<Box<dyn Stream<Item = Vec<PathEvent>> + Send>>;
 /// 注册（add/remove）与订阅（watch）分离：
 /// 路径注册的错误由调用方负责上报，事件流只负责在延迟窗口内合并事件并交付批次。
 pub trait Watcher: Send + Sync {
+    /// 注册路径；目录注册覆盖其全部后代，包括以后创建的子目录。
     fn add(&self, path: &Path) -> anyhow::Result<()>;
     fn remove(&self, path: &Path) -> anyhow::Result<()>;
     /// 订阅防抖事件批次流；latency 是事件合并窗口，Duration::ZERO 表示不合并。
@@ -189,15 +190,17 @@ type DispatchEvent = (WatcherMode, notify::Result<notify::Event>);
 struct WatcherRegistrationState {
     callback: Arc<dyn Fn(&notify::Event) + Send + Sync>,
     key: WatchKey,
-    path: Arc<Path>,
     mode: WatcherMode,
 }
 
 /// 同一路径上的多个注册（多个 `FsWatcher` 实例可监听同一路径）。
 struct PathRegistrationState {
     watcher_ids: Vec<WatcherRegistrationId>,
-    /// 是否真正向 OS 注册了监听（还是被父目录的递归注册覆盖）。
-    has_os_watcher: bool,
+    path: Arc<Path>,
+    /// 实际 OS 监听所在的注册路径；后代注册借用祖先的递归监听。
+    os_watch_owner: WatchKey,
+    /// 只在 OS 监听拥有者上计数，覆盖自身及所有借用该监听的后代注册。
+    os_watch_users: usize,
 }
 
 /// 按 WatchKey 索引的路径注册表。
@@ -224,21 +227,16 @@ impl WatchPaths {
         self.0.remove(key);
     }
 
-    /// 检查是否有祖先的递归注册已覆盖该路径。
-    ///
-    /// 轮询（PollWatcher）总是递归的；macOS 原生 watcher 同样按递归注册处理。
-    fn covered_by_recursive_ancestor(&self, path: &Path, mode: WatcherMode) -> bool {
-        if !platform::recursive_registration_covers(mode == WatcherMode::Poll) {
-            return false;
-        }
+    /// 查找覆盖路径的祖先 OS 监听。两种后端都递归监听目录。
+    fn os_watch_owner_of_ancestor(&self, path: &Path) -> Option<WatchKey> {
         for ancestor in path.ancestors().skip(1) {
-            if self.0.contains_key(&WatchKey::for_path(ancestor, false))
-                || self.0.contains_key(&WatchKey::for_path(ancestor, true))
-            {
-                return true;
+            for key in [WatchKey::exact(ancestor), WatchKey::folded(ancestor)] {
+                if let Some(registration) = self.0.get(&key) {
+                    return Some(registration.os_watch_owner.clone());
+                }
             }
         }
-        false
+        None
     }
 
     /// 收集覆盖给定路径的所有注册的 watcher ID。
@@ -271,24 +269,32 @@ impl WatcherState {
         }
     }
 
-    /// 移除一次注册。如果该路径上再无活跃注册且之前向 OS 注册过，则返回路径。
+    /// 移除一次注册；最后一个借用者退出时才撤销实际 OS 监听。
     fn remove_registration(
         &mut self,
         id: WatcherRegistrationId,
     ) -> Option<(Arc<Path>, WatcherMode)> {
         let registration = self.watchers.remove(&id)?;
         let path_registrations = self.path_registrations(registration.mode);
-        if let Some(path_state) = path_registrations.get_mut(&registration.key) {
-            path_state.watcher_ids.retain(|&existing| existing != id);
-            if path_state.watcher_ids.is_empty() {
-                let was_watched = path_state.has_os_watcher;
-                path_registrations.remove(&registration.key);
-                if was_watched {
-                    return Some((registration.path, registration.mode));
-                }
-            }
+        let path_state = path_registrations
+            .get_mut(&registration.key)
+            .expect("活跃监听注册必须有路径状态");
+        path_state.watcher_ids.retain(|&existing| existing != id);
+        let owner = path_state.os_watch_owner.clone();
+        if path_state.watcher_ids.is_empty() && registration.key != owner {
+            path_registrations.remove(&registration.key);
         }
-        None
+        let owner_state = path_registrations
+            .get_mut(&owner)
+            .expect("递归监听借用者必须有 OS 监听拥有者");
+        owner_state.os_watch_users -= 1;
+        if owner_state.os_watch_users == 0 {
+            let path = owner_state.path.clone();
+            path_registrations.remove(&owner);
+            Some((path, registration.mode))
+        } else {
+            None
+        }
     }
 }
 
@@ -320,19 +326,22 @@ impl GlobalWatcher {
         let key = WatchKey::for_path(&path, case_insensitive);
         let mut state = self.state.lock().unwrap();
 
-        let (path_already_covered, path_already_registered) = {
+        let (os_watch_owner, path_already_registered) = {
             let regs = state.path_registrations(mode);
             (
-                regs.covered_by_recursive_ancestor(&path, mode),
+                regs.0
+                    .get(&key)
+                    .map(|registration| registration.os_watch_owner.clone())
+                    .or_else(|| regs.os_watch_owner_of_ancestor(&path))
+                    .unwrap_or_else(|| key.clone()),
                 regs.contains(&key),
             )
         };
 
-        if !path_already_covered && !path_already_registered {
-            // 需要在 OS 级别注册此路径
-            drop(state);
+        if os_watch_owner == key && !path_already_registered {
+            // 注册表与后端监听必须在同一临界区提交；并发项目不能同时
+            // 为同一路径创建两个 OS 监听，再让后一个覆盖前一个。
             self.watch_inner(&path, mode)?;
-            state = self.state.lock().unwrap();
         }
 
         let id = state.last_registration;
@@ -343,19 +352,25 @@ impl GlobalWatcher {
             WatcherRegistrationState {
                 callback: Arc::new(cb),
                 key: key.clone(),
-                path: path.clone(),
                 mode,
             },
         );
 
-        state
-            .path_registrations(mode)
+        let registrations = state.path_registrations(mode);
+        registrations
             .entry(key)
-            .and_modify(|r| r.watcher_ids.push(id))
             .or_insert_with(|| PathRegistrationState {
-                watcher_ids: vec![id],
-                has_os_watcher: !path_already_covered,
-            });
+                watcher_ids: Vec::new(),
+                path,
+                os_watch_owner: os_watch_owner.clone(),
+                os_watch_users: 0,
+            })
+            .watcher_ids
+            .push(id);
+        registrations
+            .get_mut(&os_watch_owner)
+            .expect("OS 监听拥有者必须已注册")
+            .os_watch_users += 1;
 
         Ok(id)
     }
@@ -364,7 +379,7 @@ impl GlobalWatcher {
     pub(crate) fn remove(&self, id: WatcherRegistrationId) {
         let mut state = self.state.lock().unwrap();
         if let Some((path, mode)) = state.remove_registration(id) {
-            drop(state);
+            // 与 add 的 OS 注册共用临界区，避免移除旧监听时撤销刚注册的新监听。
             self.unwatch_inner(&path, mode).ok();
         }
     }
@@ -391,7 +406,8 @@ impl GlobalWatcher {
         first: DispatchEvent,
         rx: &crossbeam_channel::Receiver<DispatchEvent>,
     ) {
-        // 每个模式在一次 batch 中只调度一次 Rescan
+        // 同一后端的无路径 Rescan 覆盖全部注册，批次内只需调度一次；
+        // 指向具体子树的 Rescan 各自保留。
         let mut native_rescan = false;
         let mut poll_rescan = false;
 
@@ -402,7 +418,9 @@ impl GlobalWatcher {
                 WatcherMode::Poll => &mut poll_rescan,
             };
 
-            let is_rescan = event.as_ref().is_ok_and(|e| e.need_rescan());
+            let is_rescan = event
+                .as_ref()
+                .is_ok_and(|e| e.need_rescan() && e.paths.is_empty());
             if is_rescan {
                 if *rescan_flag {
                     continue;
@@ -597,7 +615,6 @@ pub struct FsWatcher {
 #[derive(Clone, Copy)]
 struct FsWatcherRegistration {
     id: WatcherRegistrationId,
-    mode: WatcherMode,
 }
 
 #[derive(Default)]
@@ -710,19 +727,19 @@ impl FsWatcher {
                         };
                         let key = WatchKey::for_path(&poll_path, !semantics.case_sensitive);
 
-                        if registrations.lock().unwrap().contains_key(&key) {
+                        let mut regs = registrations.lock().unwrap();
+                        if regs.contains_key(&key) {
                             pending_regs.lock().unwrap().remove(&poll_path);
                             continue;
                         }
 
-                        // 路径已创建，尝试注册到 GlobalWatcher
+                        // 与前台 add 共用注册表锁，避免两边同时注册后遗失其中一份句柄。
                         if let Ok(reg) = register_existing_path(
                             poll_path.clone(),
                             semantics,
                             signal_tx.clone(),
                             pending_events.clone(),
                         ) {
-                            let mut regs = registrations.lock().unwrap();
                             if pending_regs.lock().unwrap().remove(&poll_path).is_none() {
                                 global_watcher().remove(reg.id);
                                 continue;
@@ -764,14 +781,6 @@ impl Watcher for FsWatcher {
     fn add(&self, path: &Path) -> anyhow::Result<()> {
         let path: Arc<Path> = canonical_watch_path(path).into();
 
-        // 检查是否已被已有递归注册覆盖
-        {
-            let regs = self.registrations.lock().unwrap();
-            if path_covered_by_recursive_registration(&regs, &path) {
-                return Ok(());
-            }
-        }
-
         // 路径尚不存在——交给后台轮询
         if !path.exists() {
             self.add_pending_path(path);
@@ -781,11 +790,9 @@ impl Watcher for FsWatcher {
         let semantics = platform::path_semantics(&path)?;
         let key = WatchKey::for_path(&path, !semantics.case_sensitive);
 
-        {
-            let regs = self.registrations.lock().unwrap();
-            if regs.contains_key(&key) {
-                return Ok(());
-            }
+        let mut regs = self.registrations.lock().unwrap();
+        if regs.contains_key(&key) {
+            return Ok(());
         }
 
         let reg = register_existing_path(
@@ -794,7 +801,7 @@ impl Watcher for FsWatcher {
             self.signal_tx.clone(),
             self.pending_path_events.clone(),
         )?;
-        self.registrations.lock().unwrap().insert(key, reg);
+        regs.insert(key, reg);
 
         Ok(())
     }
@@ -893,27 +900,7 @@ fn register_existing_path(
         },
     )?;
 
-    Ok(FsWatcherRegistration { id, mode })
-}
-
-/// 判断某路径是否被当前注册的递归监听覆盖。
-fn path_covered_by_recursive_registration(
-    registrations: &HashMap<WatchKey, FsWatcherRegistration>,
-    path: &Path,
-) -> bool {
-    for ancestor in path.ancestors().skip(1) {
-        if let Some(reg) = registrations.get(&WatchKey::for_path(ancestor, false))
-            && platform::recursive_registration_covers(reg.mode == WatcherMode::Poll)
-        {
-            return true;
-        }
-        if let Some(reg) = registrations.get(&WatchKey::for_path(ancestor, true))
-            && platform::recursive_registration_covers(reg.mode == WatcherMode::Poll)
-        {
-            return true;
-        }
-    }
-    false
+    Ok(FsWatcherRegistration { id })
 }
 
 /// 将 notify 事件转换为 PathEvent 并入队。
@@ -947,13 +934,18 @@ fn push_notify_event(
         })
         .collect();
 
-    // Rescan 标记：监听丢失同步，消费方应全量刷新
+    // 有路径的 Rescan 只覆盖相应子树；无路径才表示整条注册根失步。
     if event.need_rescan() {
-        path_events.retain(|pe| pe.path.as_path() != watched_root);
-        path_events.push(PathEvent {
-            path: absolute_event_path(watched_root.to_path_buf()),
-            kind: Some(PathEventKind::Rescan),
-        });
+        if path_events.is_empty() {
+            path_events.push(PathEvent {
+                path: absolute_event_path(watched_root.to_path_buf()),
+                kind: Some(PathEventKind::Rescan),
+            });
+        } else {
+            for event in &mut path_events {
+                event.kind = Some(PathEventKind::Rescan);
+            }
+        }
     }
 
     if !path_events.is_empty() {

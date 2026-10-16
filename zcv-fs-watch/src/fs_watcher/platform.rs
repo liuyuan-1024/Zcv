@@ -19,19 +19,7 @@ pub(super) fn path_semantics(path: &Path) -> Result<FileSystemSemantics> {
 }
 
 pub(super) fn native_recursive_mode() -> RecursiveMode {
-    if native_watcher_is_recursive() {
-        RecursiveMode::Recursive
-    } else {
-        RecursiveMode::NonRecursive
-    }
-}
-
-pub(super) fn recursive_registration_covers(mode_is_poll: bool) -> bool {
-    mode_is_poll || native_watcher_is_recursive()
-}
-
-fn native_watcher_is_recursive() -> bool {
-    cfg!(any(target_os = "macos", target_os = "windows"))
+    RecursiveMode::Recursive
 }
 
 pub(super) fn requires_poll_watcher(path: &Path) -> bool {

@@ -78,6 +78,30 @@ fn test_case_insensitive_event_path_uses_watched_root_spelling() {
 }
 
 #[test]
+fn rescan_event_keeps_affected_subtree_and_pathless_rescans_cover_root() {
+    let root = test_absolute_path("/watch-root");
+    let subtree = root.join("nested");
+    let (signal_tx, _) = async_channel::unbounded();
+    let pending = Arc::new(Mutex::new(Vec::new()));
+
+    let scoped = notify::Event::new(EventKind::Other)
+        .add_path(subtree.clone())
+        .set_flag(notify::event::Flag::Rescan);
+    push_notify_event(&signal_tx, &pending, &root, false, &scoped);
+    assert_eq!(
+        std::mem::take(&mut *pending.lock().unwrap()),
+        vec![rescan("/watch-root/nested")]
+    );
+
+    let pathless = notify::Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan);
+    push_notify_event(&signal_tx, &pending, &root, false, &pathless);
+    assert_eq!(
+        std::mem::take(&mut *pending.lock().unwrap()),
+        vec![rescan("/watch-root")]
+    );
+}
+
+#[test]
 fn test_coalesce_rescans() {
     // 子路径 Rescan 被 pending 中的祖先覆盖
     let mut pending = vec![rescan("/root")];
@@ -156,6 +180,160 @@ fn test_fs_watcher_basic_lifecycle() {
     // add/remove 一个存在的目录
     assert!(watcher.add(temp.path()).is_ok());
     assert!(watcher.remove(temp.path()).is_ok());
+}
+
+#[test]
+fn child_registration_survives_removal_of_parent_in_same_watcher() {
+    let temp = tempfile::tempdir().unwrap();
+    let child = temp.path().join("child");
+    std::fs::create_dir(&child).unwrap();
+    let watcher = FsWatcher::new();
+
+    watcher.add(temp.path()).unwrap();
+    watcher.add(&child).unwrap();
+    assert_eq!(watcher.registrations.lock().unwrap().len(), 2);
+    watcher.remove(temp.path()).unwrap();
+    assert_eq!(watcher.registrations.lock().unwrap().len(), 1);
+
+    let canonical_parent = canonical_watch_path(temp.path());
+    let semantics = platform::path_semantics(&canonical_parent).unwrap();
+    let owner_key = WatchKey::for_path(&canonical_parent, !semantics.case_sensitive);
+    let mut state = global_watcher().state.lock().unwrap();
+    let mode = if semantics.requires_poll_watcher {
+        WatcherMode::Poll
+    } else {
+        WatcherMode::Native
+    };
+    assert_eq!(
+        state
+            .path_registrations(mode)
+            .0
+            .get(&owner_key)
+            .map(|registration| registration.os_watch_users),
+        Some(1),
+        "子路径的逻辑注册必须保留父目录的 OS 监听"
+    );
+}
+
+#[test]
+fn concurrent_add_of_same_path_keeps_one_registration() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().to_path_buf();
+    let watcher = Arc::new(FsWatcher::new());
+    let start = Arc::new(std::sync::Barrier::new(8));
+    let threads = (0..8)
+        .map(|_| {
+            let watcher = watcher.clone();
+            let root = root.clone();
+            let start = start.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                watcher.add(&root).unwrap();
+            })
+        })
+        .collect::<Vec<_>>();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+
+    assert_eq!(watcher.registrations.lock().unwrap().len(), 1);
+    let registered_path = canonical_watch_path(&root);
+    let registrations = global_watcher().state.lock().unwrap();
+    assert_eq!(
+        registrations
+            .watchers
+            .values()
+            .filter(|registration| {
+                registration.key == WatchKey::exact(&registered_path)
+                    || registration.key == WatchKey::folded(&registered_path)
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn overlapping_watchers_keep_parent_os_watch_until_last_child_closes() {
+    let temp = tempfile::tempdir().unwrap();
+    let child = temp.path().join("child");
+    std::fs::create_dir(&child).unwrap();
+    let parent_watcher = FsWatcher::new();
+    let child_watcher = FsWatcher::new();
+    parent_watcher.add(temp.path()).unwrap();
+    child_watcher.add(&child).unwrap();
+
+    let canonical_parent = canonical_watch_path(temp.path());
+    let semantics = platform::path_semantics(&canonical_parent).unwrap();
+    let owner_key = WatchKey::for_path(&canonical_parent, !semantics.case_sensitive);
+    let mode = if semantics.requires_poll_watcher {
+        WatcherMode::Poll
+    } else {
+        WatcherMode::Native
+    };
+    let users = || {
+        let mut state = global_watcher().state.lock().unwrap();
+        state
+            .path_registrations(mode)
+            .0
+            .get(&owner_key)
+            .map(|registration| registration.os_watch_users)
+    };
+    assert_eq!(users(), Some(2));
+
+    drop(parent_watcher);
+    assert_eq!(users(), Some(1), "子项目仍借用父目录的 OS 监听");
+
+    drop(child_watcher);
+    assert_eq!(users(), None, "最后一个订阅释放后撤销 OS 监听");
+}
+
+// 真实 OS 事件依赖宿主权限与调度；单独运行以验证交叠项目的监听生命周期。
+#[test]
+#[ignore]
+fn child_watcher_receives_changes_after_parent_watcher_closes() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let child = root.join("child");
+    std::fs::create_dir(&child).unwrap();
+    let parent_watcher = FsWatcher::new();
+    let child_watcher = FsWatcher::new();
+    let mut events = child_watcher.watch(Duration::ZERO);
+    parent_watcher.add(&root).unwrap();
+    child_watcher.add(&child).unwrap();
+    drop(parent_watcher);
+    std::thread::sleep(Duration::from_millis(500));
+
+    let file = child.join("changed.txt");
+    std::fs::write(&file, "外部写入").unwrap();
+    let batch = smol::block_on(smol::future::or(events.next(), async {
+        smol::Timer::after(Duration::from_secs(5)).await;
+        None
+    }))
+    .expect("父项目关闭后子项目仍应收到系统事件");
+    assert!(batch.iter().any(|event| event.path.as_path() == file));
+}
+
+// 真实 OS 事件受宿主调度影响；单独运行以核对原生后端到 PathEvent 流的链路。
+#[test]
+#[ignore]
+fn real_file_change_reaches_registered_watcher() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let nested = root.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let watcher = FsWatcher::new();
+    let mut events = watcher.watch(Duration::ZERO);
+    watcher.add(&root).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+
+    let file = nested.join("changed.txt");
+    std::fs::write(&file, "外部写入").unwrap();
+    let batch = smol::block_on(smol::future::or(events.next(), async {
+        smol::Timer::after(Duration::from_secs(5)).await;
+        None
+    }))
+    .expect("文件变化应触发系统事件");
+    assert!(batch.iter().any(|event| event.path.starts_with(&nested)));
 }
 
 #[test]

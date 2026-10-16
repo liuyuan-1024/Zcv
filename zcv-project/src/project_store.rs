@@ -11,10 +11,13 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use futures::StreamExt as _;
-use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
+use gpui::{
+    App, AppContext, AsyncApp, Context, Entity, EntityId, EventEmitter, Subscription, Task,
+    WeakEntity,
+};
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::{ConflictChoice, FileStatus, parse_conflict_regions, resolve_conflict};
-use zcv_language::{LanguageBuffer, LanguageRegistry};
+use zcv_language::{LanguageBuffer, LanguageBufferEvent, LanguageRegistry};
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_text::{ByteOffset, Edit, Snapshot, TextRange, TransactionMetadata};
 
@@ -25,11 +28,20 @@ mod platform;
 use super::buffer_store::{BufferStore, load_buffer};
 use super::git_store::{GitStatusSnapshot, GitStore};
 use super::search::{self, SearchResults};
-use super::text_file::{BufferLoadError, BufferSaveError, write_buffer_to};
+use super::text_file::{BufferLoadError, BufferSaveError, decode_to_string, write_buffer_to};
 use super::worktree::{Worktree, WorktreeEntry, collect_visible_entries};
 
 /// 项目文件监听的合并窗口；对齐 Zed worktree 的 FS_WATCH_LATENCY。
 const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
+/// 外部写入期间文件暂时不可读时，重载任务保持存活并逐步退避。
+const RELOAD_RETRY_INITIAL: Duration = Duration::from_millis(100);
+const RELOAD_RETRY_MAX: Duration = Duration::from_secs(2);
+
+enum ReloadStep {
+    Done,
+    ReadAgain,
+    WaitForFile,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileWatcherOperation {
@@ -57,6 +69,13 @@ pub struct Project {
     /// git store 属于 Project 而非 worktree，无 worktree 时以无根状态存在（仓库查询与 git job 为空操作）。
     git_store: Entity<GitStore>,
     buffer_store: BufferStore,
+    fs_watcher: Arc<dyn Watcher>,
+    _fs_task: Task<()>,
+    external_watch_counts: HashMap<AbsolutePathBuf, usize>,
+    external_buffer_watches: HashMap<EntityId, AbsolutePathBuf>,
+    buffer_subscriptions: HashMap<EntityId, (Subscription, Subscription)>,
+    reload_tasks: HashMap<EntityId, (u64, Task<()>)>,
+    next_reload_id: u64,
     /// 应用装配层创建并注入的唯一语言注册表；项目内所有语言 Buffer 与 diff 源共享同一份，避免多处独立加载。
     language_registry: Arc<LanguageRegistry>,
     /// 项目创建阶段尚未建立工作区订阅时产生的监听错误。
@@ -66,8 +85,6 @@ pub struct Project {
 struct ProjectWorktree {
     root: AbsolutePathBuf,
     snapshot: Worktree,
-    fs_watcher: Arc<dyn Watcher>,
-    _fs_task: Task<()>,
 }
 
 impl Project {
@@ -106,7 +123,7 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Self {
         // ProjectWorktree、文件监听器和 GitStore 共用装配入口提供的绝对根路径。
-        let mut fs_events = fs_watcher.watch(FS_WATCH_LATENCY);
+        let fs_task = Self::spawn_fs_task(&fs_watcher, cx);
 
         let pending_file_watcher_errors = match fs_watcher.add(root.as_path()) {
             Ok(()) => Vec::new(),
@@ -116,17 +133,6 @@ impl Project {
                 error: format!("{error:#}"),
             }],
         };
-
-        let fs_task = cx.spawn(|project: WeakEntity<Project>, asynccx: &mut AsyncApp| {
-            let mut cx = asynccx.clone();
-            async move {
-                while let Some(events) = fs_events.next().await {
-                    let _ = project.update(&mut cx, |project, cx| {
-                        project.process_fs_events(events, cx);
-                    });
-                }
-            }
-        });
 
         let git_store = cx.new(|cx| {
             GitStore::new(
@@ -141,11 +147,16 @@ impl Project {
             worktree: Some(ProjectWorktree {
                 root: root.clone(),
                 snapshot: Worktree::new(root.clone()),
-                fs_watcher,
-                _fs_task: fs_task,
             }),
             git_store,
             buffer_store: BufferStore::new(Arc::clone(&languages)),
+            fs_watcher,
+            _fs_task: fs_task,
+            external_watch_counts: HashMap::new(),
+            external_buffer_watches: HashMap::new(),
+            buffer_subscriptions: HashMap::new(),
+            reload_tasks: HashMap::new(),
+            next_reload_id: 0,
             language_registry: languages,
             pending_file_watcher_errors,
         }
@@ -155,14 +166,44 @@ impl Project {
     ///
     /// 语言注册表同样由应用装配层注入。
     pub fn empty(languages: Arc<LanguageRegistry>, cx: &mut Context<Self>) -> Self {
+        Self::empty_with_watcher(languages, Arc::new(FsWatcher::new()), cx)
+    }
+
+    fn empty_with_watcher(
+        languages: Arc<LanguageRegistry>,
+        fs_watcher: Arc<dyn Watcher>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let git_store = cx.new(|cx| GitStore::new(None, Arc::clone(&languages), cx));
+        let fs_task = Self::spawn_fs_task(&fs_watcher, cx);
         Self {
             worktree: None,
             git_store,
             buffer_store: BufferStore::new(Arc::clone(&languages)),
+            fs_watcher,
+            _fs_task: fs_task,
+            external_watch_counts: HashMap::new(),
+            external_buffer_watches: HashMap::new(),
+            buffer_subscriptions: HashMap::new(),
+            reload_tasks: HashMap::new(),
+            next_reload_id: 0,
             language_registry: languages,
             pending_file_watcher_errors: Vec::new(),
         }
+    }
+
+    fn spawn_fs_task(fs_watcher: &Arc<dyn Watcher>, cx: &mut Context<Self>) -> Task<()> {
+        let mut fs_events = fs_watcher.watch(FS_WATCH_LATENCY);
+        cx.spawn(|project: WeakEntity<Self>, asynccx: &mut AsyncApp| {
+            let mut cx = asynccx.clone();
+            async move {
+                while let Some(events) = fs_events.next().await {
+                    let _ = project.update(&mut cx, |project, cx| {
+                        project.process_fs_events(events, cx);
+                    });
+                }
+            }
+        })
     }
 
     /// 项目唯一的语言注册表。
@@ -239,7 +280,9 @@ impl Project {
         path: &Path,
         cx: &mut Context<Self>,
     ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
-        self.buffer_store.open_buffer(path, cx)
+        let buffer = self.buffer_store.open_buffer(path, cx)?;
+        self.subscribe_to_buffer(&buffer, cx);
+        Ok(buffer)
     }
 
     /// 在后台检查磁盘内容并读取文件，在 Project 的文档索引中安装或复用源文档。
@@ -256,9 +299,11 @@ impl Project {
         cx.spawn(async move |this, cx| {
             let buffer = loaded.await?;
             this.update(cx, |project, cx| {
-                project
+                let buffer = project
                     .buffer_store
-                    .install_loaded_buffer(&path, buffer, cx)
+                    .install_loaded_buffer(&path, buffer, cx)?;
+                project.subscribe_to_buffer(&buffer, cx);
+                Ok(buffer)
             })
             .expect("文件加载任务运行期间 Project 必须存活")
         })
@@ -305,7 +350,176 @@ impl Project {
         path: &Path,
         cx: &mut Context<Self>,
     ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
-        self.buffer_store.open_deleted_buffer(path, cx)
+        let buffer = self.buffer_store.open_deleted_buffer(path, cx)?;
+        self.subscribe_to_buffer(&buffer, cx);
+        Ok(buffer)
+    }
+
+    fn subscribe_to_buffer(&mut self, buffer: &Entity<LanguageBuffer>, cx: &mut Context<Self>) {
+        let id = buffer.entity_id();
+        self.watch_external_buffer(id, buffer, cx);
+        if self.buffer_subscriptions.contains_key(&id) {
+            return;
+        }
+        let subscription = cx.subscribe(buffer, |project, buffer, event, cx| {
+            if *event == LanguageBufferEvent::ReloadNeeded
+                && let Some(path) = project.buffer_store.path_for_buffer(&buffer)
+            {
+                project.schedule_buffer_reload(path, buffer.clone(), cx);
+            }
+        });
+        let release = cx.observe_release(buffer, move |project, _, cx| {
+            project.release_external_watch(id, cx);
+            project.buffer_store.release_buffer(id);
+            project.buffer_subscriptions.remove(&id);
+            project.reload_tasks.remove(&id);
+        });
+        self.buffer_subscriptions
+            .insert(id, (subscription, release));
+    }
+
+    fn watch_external_buffer(
+        &mut self,
+        id: EntityId,
+        buffer: &Entity<LanguageBuffer>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.external_buffer_watches.contains_key(&id) {
+            return;
+        }
+        let Some(path) = self.buffer_store.path_for_buffer(buffer) else {
+            return;
+        };
+        if self.root().is_some_and(|root| path.starts_with(root)) {
+            return;
+        }
+        let parent = AbsolutePathBuf::new(
+            path.parent()
+                .expect("绝对文件路径必须有父目录")
+                .to_path_buf(),
+        )
+        .expect("文件索引的父目录必须是绝对路径");
+        if !self.external_watch_counts.contains_key(&parent)
+            && let Err(error) = self.fs_watcher.add(parent.as_path())
+        {
+            cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
+                operation: FileWatcherOperation::Add,
+                path: parent.as_path().to_path_buf(),
+                error: format!("{error:#}"),
+            }));
+            return;
+        }
+        *self
+            .external_watch_counts
+            .entry(parent.clone())
+            .or_default() += 1;
+        self.external_buffer_watches.insert(id, parent);
+    }
+
+    fn release_external_watch(&mut self, id: EntityId, cx: &mut Context<Self>) {
+        let Some(parent) = self.external_buffer_watches.remove(&id) else {
+            return;
+        };
+        let count = self
+            .external_watch_counts
+            .get_mut(&parent)
+            .expect("外部文档的目录监听引用计数必须存在");
+        *count -= 1;
+        if *count == 0 {
+            self.external_watch_counts.remove(&parent);
+            if let Err(error) = self.fs_watcher.remove(parent.as_path()) {
+                cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
+                    operation: FileWatcherOperation::Remove,
+                    path: parent.as_path().to_path_buf(),
+                    error: format!("{error:#}"),
+                }));
+            }
+        }
+    }
+
+    fn schedule_buffer_reload(
+        &mut self,
+        path: AbsolutePathBuf,
+        buffer: Entity<LanguageBuffer>,
+        cx: &mut Context<Self>,
+    ) {
+        let id = buffer.entity_id();
+        let weak_buffer = buffer.downgrade();
+        self.next_reload_id += 1;
+        let reload_id = self.next_reload_id;
+        let task = cx.spawn(move |project: WeakEntity<Self>, asynccx: &mut AsyncApp| {
+            let mut cx = asynccx.clone();
+            async move {
+                let mut retry_delay = RELOAD_RETRY_INITIAL;
+                loop {
+                    let Ok(Some(version)) = project.update(&mut cx, |project, cx| {
+                        let buffer = weak_buffer.upgrade()?;
+                        if project.buffer_store.path_for_buffer(&buffer).as_ref() != Some(&path) {
+                            return None;
+                        }
+                        let version = buffer.read(cx).version();
+                        Some(version)
+                    }) else {
+                        break;
+                    };
+
+                    let load_path = path.clone();
+                    let loaded = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let file = File::open(load_path.as_path())?;
+                            decode_to_string(file)
+                        })
+                        .await;
+                    let Ok(step) = project.update(&mut cx, |project, cx| {
+                        let Some(buffer) = weak_buffer.upgrade() else {
+                            return ReloadStep::Done;
+                        };
+                        if project.buffer_store.path_for_buffer(&buffer).as_ref() != Some(&path) {
+                            return ReloadStep::Done;
+                        }
+                        buffer.update(cx, |buffer, cx| {
+                            if buffer.is_dirty() {
+                                buffer.file_changed_on_disk(cx);
+                                return ReloadStep::Done;
+                            }
+                            if buffer.version() != version {
+                                return ReloadStep::ReadAgain;
+                            }
+                            match loaded {
+                                Ok(text) => {
+                                    let _ = buffer.replace_text(text, cx);
+                                    ReloadStep::Done
+                                }
+                                Err(BufferLoadError::Io(_)) => ReloadStep::WaitForFile,
+                                Err(_) => ReloadStep::Done,
+                            }
+                        })
+                    }) else {
+                        break;
+                    };
+                    match step {
+                        ReloadStep::Done => break,
+                        ReloadStep::ReadAgain => continue,
+                        ReloadStep::WaitForFile => {
+                            cx.background_executor().timer(retry_delay).await;
+                            retry_delay = (retry_delay * 2).min(RELOAD_RETRY_MAX);
+                        }
+                    }
+                }
+                let _ = project.update(&mut cx, |project, _| {
+                    if project
+                        .reload_tasks
+                        .get(&id)
+                        .is_some_and(|(current_id, _)| *current_id == reload_id)
+                        && let Some((_, task)) = project.reload_tasks.remove(&id)
+                    {
+                        task.detach();
+                    }
+                });
+            }
+        });
+        self.reload_tasks.insert(id, (reload_id, task));
     }
 
     /// 在后台逐文件扫描 worktree 并匹配文本。
@@ -436,14 +650,14 @@ impl Project {
 
         if from.as_path() == worktree.root.as_path() {
             let new_root = AbsolutePathBuf::canonicalize(&to)?;
-            if let Err(error) = worktree.fs_watcher.add(&to) {
+            if let Err(error) = self.fs_watcher.add(&to) {
                 cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
                     operation: FileWatcherOperation::Add,
                     path: to.as_path().to_path_buf(),
                     error: format!("{error:#}"),
                 }));
             }
-            if let Err(error) = worktree.fs_watcher.remove(&from) {
+            if let Err(error) = self.fs_watcher.remove(&from) {
                 cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
                     operation: FileWatcherOperation::Remove,
                     path: from.as_path().to_path_buf(),
@@ -495,7 +709,7 @@ impl Project {
         Ok(())
     }
 
-    /// 将文件或目录移到系统废纸篓（可恢复），并清掉项目持有的路径状态。
+    /// 将文件或目录移到系统废纸篓（可恢复）。
     pub fn trash_path(&mut self, path: &Path, cx: &mut Context<Self>) -> anyhow::Result<()> {
         let path = normalize_for_comparison(path)?;
         let root = self
@@ -504,7 +718,6 @@ impl Project {
         anyhow::ensure!(path.as_path() != root, "不能删除项目根目录");
         anyhow::ensure!(path.starts_with(root), "条目不在当前项目中");
         trash::delete(&path)?;
-        self.buffer_store.remove_path(&path);
         cx.emit(ProjectEvent::EntriesChanged);
         Ok(())
     }
@@ -631,9 +844,6 @@ impl Project {
     }
 
     fn process_fs_events(&mut self, events: Vec<PathEvent>, cx: &mut Context<Self>) {
-        let Some(worktree) = &self.worktree else {
-            return;
-        };
         let events: Vec<_> = events
             .into_iter()
             .map(|mut event| {
@@ -643,37 +853,38 @@ impl Project {
                 event.path = path;
                 event
             })
-            .filter(|event| event.path.starts_with(&worktree.root))
+            .filter(|event| {
+                self.root().is_some_and(|root| event.path.starts_with(root))
+                    || !self.buffer_store.buffers_under_path(&event.path).is_empty()
+            })
             .collect();
         if events.is_empty() {
             return;
         }
 
+        let mut notified_buffers = HashSet::new();
         for event in &events {
-            match event.kind {
-                Some(PathEventKind::Changed | PathEventKind::Created) => {
-                    self.buffer_store.reload_buffer_for_path(&event.path, cx);
+            for buffer in self.buffer_store.buffers_under_path(&event.path) {
+                if notified_buffers.insert(buffer.entity_id()) {
+                    buffer.update(cx, |buffer, cx| buffer.file_changed_on_disk(cx));
                 }
-                // 源文件消失：路径索引必须失效，后续 open_buffer 不得复用已删除内容。
-                // 原子替换会以 Removed + Created 到达；路径已重建时保留存活文档，交由 Created 重载。
-                Some(PathEventKind::Removed) if !event.path.exists() => {
-                    self.buffer_store.remove_path(&event.path);
-                }
-                // Removed 但路径已重建，或 Rescan：索引保持不变；Created 分支负责重载内容。
-                Some(PathEventKind::Removed | PathEventKind::Rescan) | None => {}
             }
         }
 
         // git 状态刷新：删除/失步走全量扫描（涉及条目消失），文件变化走增量。
         // `.git/` 内只放行影响 git 状态的路径（HEAD/refs/index/packed-refs）：
         // 保住外部 checkout 兜底（HEAD/refs 变化触发 head 重读），砍掉 git 操作期间的对象/日志噪声风暴。
-        let structural = events.iter().any(|event| {
+        let worktree_events: Vec<_> = events
+            .iter()
+            .filter(|event| self.root().is_some_and(|root| event.path.starts_with(root)))
+            .collect();
+        let structural = worktree_events.iter().any(|event| {
             matches!(
                 event.kind,
                 Some(PathEventKind::Removed | PathEventKind::Rescan)
             )
         });
-        let changed: Vec<PathBuf> = events
+        let changed: Vec<PathBuf> = worktree_events
             .iter()
             .filter(|event| {
                 matches!(
@@ -684,15 +895,16 @@ impl Project {
             .map(|event| event.path.clone().into_path_buf())
             .filter(|path| keep_git_state_event(path))
             .collect();
-        self.git_store.update(cx, |store, cx| {
-            if structural {
-                store.schedule_scan(cx);
-            } else if !changed.is_empty() {
-                store.refresh_statuses_for_paths(&changed, cx);
-            }
-        });
-
-        cx.emit(ProjectEvent::EntriesChanged);
+        if !worktree_events.is_empty() {
+            self.git_store.update(cx, |store, cx| {
+                if structural {
+                    store.schedule_scan(cx);
+                } else if !changed.is_empty() {
+                    store.refresh_statuses_for_paths(&changed, cx);
+                }
+            });
+            cx.emit(ProjectEvent::EntriesChanged);
+        }
     }
 }
 

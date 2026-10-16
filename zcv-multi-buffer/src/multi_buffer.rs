@@ -5060,6 +5060,7 @@ impl MultiBuffer {
                 cx.emit(MultiBufferEvent::MetadataChanged);
                 cx.notify();
             }
+            LanguageBufferEvent::ReloadNeeded => {}
         });
         let text = track_text.then(|| source.read(cx).subscribe());
         SourceSubscription {

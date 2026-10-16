@@ -9,7 +9,7 @@ use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
 use super::*;
 use crate::git_store::StatusEntry;
-use crate::test_support::{test_git_repo, test_languages, test_project};
+use crate::test_support::{TestWatcher, test_git_repo, test_languages, test_project};
 
 fn git_status_for_path(project: &Project, path: &Path, cx: &App) -> Option<StatusEntry> {
     project.git_store.read(cx).status_for_path(path).cloned()
@@ -65,6 +65,37 @@ async fn background_file_load_installs_one_shared_document(cx: &mut TestAppConte
         .update(cx, |project, cx| project.open_buffer(&second_path, cx))
         .expect("同步打开应成功");
     assert_eq!(loading.await.expect("后台打开应复用已存在文档"), opened);
+}
+
+#[gpui::test]
+fn released_document_drops_project_subscription_and_path_index(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let file = directory.path().join("open.txt");
+    fs::write(&file, "内容").expect("应创建文件");
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应打开文件");
+    let indexed_file = normalize_for_comparison(&file).expect("文件路径应可规范化");
+    project.read_with(cx, |project, _| {
+        assert_eq!(project.buffer_subscriptions.len(), 1);
+        assert_eq!(
+            project.buffer_store.buffers_under_path(&indexed_file),
+            vec![buffer.clone()]
+        );
+    });
+
+    drop(buffer);
+    cx.run_until_parked();
+    project.read_with(cx, |project, _| {
+        assert!(project.buffer_subscriptions.is_empty());
+        assert!(
+            project
+                .buffer_store
+                .buffers_under_path(&indexed_file)
+                .is_empty()
+        );
+    });
 }
 
 struct FailingWatcher {
@@ -638,6 +669,263 @@ fn fs_events_trigger_incremental_git_status_refresh(cx: &mut gpui::TestAppContex
 }
 
 #[gpui::test]
+fn directory_and_rescan_events_reload_open_document(cx: &mut gpui::TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = directory.path();
+    let folder = root.join("nested");
+    fs::create_dir(&folder).expect("应创建子目录");
+    let file = folder.join("open.txt");
+    fs::write(&file, "初始内容").expect("应创建文件");
+    let project = test_project(root.to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应打开文件");
+
+    for (event_path, kind, expected) in [
+        (folder.clone(), Some(PathEventKind::Changed), "目录事件"),
+        (root.to_path_buf(), Some(PathEventKind::Rescan), "重新扫描"),
+        (file.clone(), None, "未知事件"),
+    ] {
+        fs::write(&file, expected).expect("应修改文件");
+        project.update(cx, |project, cx| {
+            project.process_fs_events(vec![PathEvent::new(event_path, kind).unwrap()], cx);
+        });
+        cx.run_until_parked();
+        let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.text_snapshot());
+        assert_eq!(
+            snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+                .unwrap()
+                .as_str(),
+            expected
+        );
+        assert!(!cx.read_entity(&buffer, |buffer, _| buffer.is_dirty()));
+    }
+}
+
+#[gpui::test]
+fn reload_waits_for_file_recreated_after_transient_read_failure(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let file = directory.path().join("open.txt");
+    fs::write(&file, "旧内容").expect("应创建文件");
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应打开文件");
+
+    fs::remove_file(&file).expect("模拟写入期间文件暂时消失");
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(file.clone(), Some(PathEventKind::Removed)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&buffer, |buffer, _| {
+            let snapshot = buffer.text_snapshot();
+            snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+                .unwrap()
+                .as_str()
+                .to_owned()
+        }),
+        "旧内容"
+    );
+
+    fs::write(&file, "重建内容").expect("文件应恢复");
+    cx.executor().advance_clock(RELOAD_RETRY_INITIAL);
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&buffer, |buffer, _| {
+            let snapshot = buffer.text_snapshot();
+            snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+                .unwrap()
+                .as_str()
+                .to_owned()
+        }),
+        "重建内容",
+        "没有第二条文件事件时，待完成的重载也应收敛"
+    );
+}
+
+#[gpui::test]
+fn empty_project_watches_its_open_file(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let file = directory.path().join("standalone.txt");
+    fs::write(&file, "初始内容").expect("应创建文件");
+    let project = cx
+        .new(|cx| Project::empty_with_watcher(test_languages(), Arc::new(TestWatcher::new()), cx));
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("空工作区应能打开文件");
+    project.read_with(cx, |project, _| {
+        assert_eq!(project.external_watch_counts.len(), 1)
+    });
+
+    fs::write(&file, "外部更新").expect("应修改文件");
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(file.clone(), Some(PathEventKind::Changed)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.text_snapshot());
+    assert_eq!(
+        snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+            .unwrap()
+            .as_str(),
+        "外部更新"
+    );
+
+    drop(snapshot);
+    drop(buffer);
+    cx.update(|_| {});
+    cx.run_until_parked();
+    project.read_with(cx, |project, _| {
+        assert!(
+            project.external_watch_counts.is_empty(),
+            "外部监听 {}，重载任务 {}，订阅 {}",
+            project.external_watch_counts.len(),
+            project.reload_tasks.len(),
+            project.buffer_subscriptions.len()
+        );
+    });
+}
+
+#[gpui::test]
+fn project_watches_open_file_outside_its_root(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().expect("应创建项目目录");
+    let external = tempfile::tempdir().expect("应创建外部目录");
+    let file = external.path().join("outside.txt");
+    fs::write(&file, "初始内容").expect("应创建文件");
+    let project = test_project(root.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应打开项目外文件");
+    project.read_with(cx, |project, _| {
+        assert_eq!(project.external_watch_counts.len(), 1)
+    });
+
+    fs::write(&file, "外部更新").expect("应修改文件");
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(file.clone(), Some(PathEventKind::Changed)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.text_snapshot());
+    assert_eq!(
+        snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+            .unwrap()
+            .as_str(),
+        "外部更新"
+    );
+}
+
+#[gpui::test]
+fn external_files_share_parent_watch_until_last_document_closes(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let first_path = directory.path().join("first.txt");
+    let second_path = directory.path().join("second.txt");
+    fs::write(&first_path, "第一份").expect("应创建文件");
+    fs::write(&second_path, "第二份").expect("应创建文件");
+    let project = cx
+        .new(|cx| Project::empty_with_watcher(test_languages(), Arc::new(TestWatcher::new()), cx));
+    let first = project
+        .update(cx, |project, cx| project.open_buffer(&first_path, cx))
+        .expect("应打开第一份文件");
+    let second = project
+        .update(cx, |project, cx| project.open_buffer(&second_path, cx))
+        .expect("应打开第二份文件");
+    project.read_with(cx, |project, _| {
+        assert_eq!(
+            project
+                .external_watch_counts
+                .values()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+    });
+
+    drop(first);
+    cx.update(|_| {});
+    project.read_with(cx, |project, _| {
+        assert_eq!(
+            project
+                .external_watch_counts
+                .values()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+    });
+    drop(second);
+    cx.update(|_| {});
+    project.read_with(cx, |project, _| {
+        assert!(project.external_watch_counts.is_empty())
+    });
+}
+
+#[gpui::test]
+fn external_change_waits_for_unsaved_edits_to_be_undone(cx: &mut gpui::TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let file = directory.path().join("open.txt");
+    fs::write(&file, "磁盘旧内容").expect("应创建文件");
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应打开文件");
+    buffer
+        .update(cx, |buffer, cx| {
+            buffer.edit(
+                [Edit::insert(buffer.len_bytes(), " 本地编辑").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+        })
+        .expect("应编辑文档");
+
+    fs::write(&file, "磁盘新内容").expect("应外部修改文件");
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(file.clone(), Some(PathEventKind::Changed)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.text_snapshot());
+    assert_eq!(
+        snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+            .unwrap()
+            .as_str(),
+        "磁盘旧内容 本地编辑"
+    );
+
+    buffer
+        .update(cx, |buffer, cx| buffer.undo(cx))
+        .expect("撤销应成功")
+        .expect("应撤销本地编辑");
+    cx.run_until_parked();
+    let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.text_snapshot());
+    assert_eq!(
+        snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+            .unwrap()
+            .as_str(),
+        "磁盘新内容"
+    );
+    assert!(!cx.read_entity(&buffer, |buffer, _| buffer.is_dirty()));
+}
+
+#[gpui::test]
 fn fs_removal_events_trigger_full_rescan(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     let project = test_project(root.clone(), cx);
@@ -682,7 +970,7 @@ fn fs_removal_events_trigger_full_rescan(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn external_removal_event_invalidates_open_buffer_index(cx: &mut gpui::TestAppContext) {
+fn external_removal_keeps_live_document_for_recreated_file(cx: &mut gpui::TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let root = directory.path().to_path_buf();
     let project = test_project(root.clone(), cx);
@@ -698,7 +986,7 @@ fn external_removal_event_invalidates_open_buffer_index(cx: &mut gpui::TestAppCo
         assert_eq!(snapshot.slice_text(range).unwrap().as_str(), "打开内容\n");
     });
 
-    // 外部删除文件 → Removed 事件：BufferStore 路径索引必须失效。
+    // 文件暂时消失时仍保留存活文档的路径身份；重建后更新同一实体。
     fs::remove_file(&file).expect("应删除文件");
     project.update(cx, |project, cx| {
         project.process_fs_events(
@@ -711,11 +999,59 @@ fn external_removal_event_invalidates_open_buffer_index(cx: &mut gpui::TestAppCo
     });
     cx.run_until_parked();
 
-    let reopened = project.update(cx, |project, cx| project.open_buffer(&file, cx));
-    assert!(
-        reopened.is_err(),
-        "外部删除事件后，再次 open_buffer 不得复用已删除文件的旧内容"
+    fs::write(&file, "重建内容\n").expect("应重建文件");
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(file.clone(), Some(PathEventKind::Created)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let reopened = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应复用文档");
+    assert_eq!(opened, reopened);
+    let snapshot = cx.read_entity(&opened, |buffer, _| buffer.text_snapshot());
+    assert_eq!(
+        snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+            .unwrap()
+            .as_str(),
+        "重建内容\n"
     );
+}
+
+#[gpui::test]
+fn removal_event_after_atomic_replacement_reloads_live_document(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let file = directory.path().join("open.txt");
+    fs::write(&file, "旧内容").expect("应创建文件");
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应打开文件");
+
+    fs::write(&file, "新内容").expect("替换事件交付时文件应已存在");
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(file.clone(), Some(PathEventKind::Removed)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.text_snapshot());
+    assert_eq!(
+        snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+            .unwrap()
+            .as_str(),
+        "新内容"
+    );
+    let reopened = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应复用原文档");
+    assert_eq!(buffer, reopened);
 }
 
 #[gpui::test]
@@ -750,43 +1086,6 @@ fn fs_rescan_events_discover_unreported_file(cx: &mut gpui::TestAppContext) {
             .is_some(),
         "Rescan 后应发现监听器未报告的新文件"
     );
-}
-
-// 依赖真实 FSEvents 事件：并行测试下系统会合并/延迟事件导致偶发超时，
-// 串行（--test-threads=1）或单独运行时稳定。用 `cargo test -- --ignored` 显式验证。
-#[gpui::test]
-#[ignore]
-fn real_fs_watcher_triggers_git_refresh(cx: &mut gpui::TestAppContext) {
-    // 模拟生产的 Project root：生产路径经 canonicalize 归一化（macOS 上
-    // /var → /private/var），否则 FSEvents 返回的实际路径与注册路径
-    // 前缀不匹配，事件会被 fs_watcher 过滤掉。
-    let (root, _temp) = test_git_repo();
-    let root = root.canonicalize().expect("应可 canonicalize");
-    let project_root = AbsolutePathBuf::new(root.clone()).expect("测试项目根目录应为绝对路径");
-    let project = cx.new(|cx| Project::new(project_root, test_languages(), cx));
-    cx.run_until_parked();
-
-    // 等 notify 在后台线程建立 watch，避免写入事件丢失。
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    // 真实写文件 → notify 监听 → process_fs_events → git 增量刷新。
-    fs::write(root.join("tracked.txt"), "外部修改\n").expect("应写入文件");
-    let file = root.join("tracked.txt");
-    // FSEvents 事件在并行测试负载下可能延迟数秒，放宽超时。
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    loop {
-        cx.run_until_parked();
-        if project
-            .update(cx, |project, cx| git_status_for_path(project, &file, cx))
-            .is_some()
-        {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "等待 fs 事件驱动的 git 刷新超时"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
 }
 
 #[gpui::test]

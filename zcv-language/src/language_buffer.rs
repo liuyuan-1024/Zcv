@@ -25,6 +25,8 @@ pub enum LanguageBufferEvent {
     TextChanged,
     Reparsed,
     MetadataChanged,
+    /// 文件边界需要在当前文档仍存活时从磁盘重载。
+    ReloadNeeded,
 }
 
 impl EventEmitter<LanguageBufferEvent> for LanguageBuffer {}
@@ -96,6 +98,8 @@ pub struct LanguageBuffer {
     saved_version: BufferVersion,
     /// 记忆化 `has_edits_since(saved_version)`：内容为 (版本, 是否有未保存编辑)。
     has_unsaved_edits: Cell<(BufferVersion, bool)>,
+    /// 磁盘事件到达时文档有未保存编辑；恢复干净后再请求重载。
+    disk_changed_while_dirty: bool,
 }
 
 impl LanguageBuffer {
@@ -133,6 +137,7 @@ impl LanguageBuffer {
             parse_task: None,
             saved_version: BufferVersion::INITIAL,
             has_unsaved_edits: Cell::new((BufferVersion::INITIAL, false)),
+            disk_changed_while_dirty: false,
         };
         this.start_reparse(false, cx);
         this
@@ -314,6 +319,15 @@ impl LanguageBuffer {
         Ok(())
     }
 
+    /// 文件边界发现磁盘变化时通知文档；未保存编辑不会被自动覆盖。
+    pub fn file_changed_on_disk(&mut self, cx: &mut Context<Self>) {
+        if self.is_dirty() {
+            self.disk_changed_while_dirty = true;
+        } else {
+            cx.emit(LanguageBufferEvent::ReloadNeeded);
+        }
+    }
+
     /// 在只读基线上派生文本与语法快照：文本在主线程规划，语法在后台插值并解析。
     ///
     /// 规划不推进主文档；安装由 [`LanguageBuffer::fast_forward`] 在版本校验后完成。
@@ -489,6 +503,7 @@ impl LanguageBuffer {
     pub fn did_save(&mut self, version: BufferVersion, cx: &mut Context<Self>) {
         self.saved_version = version;
         self.has_unsaved_edits.set((version, false));
+        self.disk_changed_while_dirty = false;
         cx.emit(LanguageBufferEvent::MetadataChanged);
         cx.notify();
     }
@@ -530,6 +545,10 @@ impl LanguageBuffer {
             }
         }
         cx.emit(LanguageBufferEvent::TextChanged);
+        if self.disk_changed_while_dirty && !self.is_dirty() {
+            self.disk_changed_while_dirty = false;
+            cx.emit(LanguageBufferEvent::ReloadNeeded);
+        }
         self.start_reparse(true, cx);
         cx.notify();
     }

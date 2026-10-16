@@ -68,7 +68,7 @@ fn separate_project_buffer_stores_do_not_share_buffers(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
-fn remove_path_drops_matching_indexes_and_keeps_others(cx: &mut TestAppContext) {
+fn directory_events_find_only_live_buffers_in_the_subtree(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let directory = directory.path().canonicalize().expect("临时目录应可规范化");
     let file = directory.join("file.txt");
@@ -88,23 +88,12 @@ fn remove_path_drops_matching_indexes_and_keeps_others(cx: &mut TestAppContext) 
         )
     });
 
-    // 精确文件删除只移除该文件的索引；目录删除连同其中已打开的 Buffer 一起移除。
-    store.remove_path(&file);
-    store.remove_path(&directory.join("sub"));
-
-    let (reloaded_file, reloaded_nested, kept_sibling) = cx.update(|cx| {
-        (
-            store.open_buffer(&file, cx).expect("应重新加载测试文件"),
-            store.open_buffer(&nested, cx).expect("应重新加载测试文件"),
-            store.open_buffer(&sibling, cx).expect("应重新打开测试文件"),
-        )
-    });
-    assert_ne!(file_buffer, reloaded_file, "被删文件的索引应被移除");
-    assert_ne!(
-        nested_buffer, reloaded_nested,
-        "被删目录内 Buffer 的索引应被移除"
+    assert_eq!(store.buffers_under_path(&file), vec![file_buffer]);
+    assert_eq!(
+        store.buffers_under_path(&directory.join("sub")),
+        vec![nested_buffer]
     );
-    assert_eq!(sibling_buffer, kept_sibling, "未匹配的索引应保留并复用");
+    assert_eq!(store.buffers_under_path(&sibling), vec![sibling_buffer]);
     fs::remove_file(file).expect("测试文件应可删除");
     fs::remove_file(nested).expect("测试文件应可删除");
     fs::remove_file(sibling).expect("测试文件应可删除");
@@ -164,19 +153,18 @@ fn reopening_live_buffer_does_not_load_changed_disk_contents(cx: &mut TestAppCon
 }
 
 #[gpui::test]
-fn removed_index_is_not_reused_when_the_source_file_is_gone(cx: &mut TestAppContext) {
+fn live_buffer_identity_survives_external_file_removal(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let path = directory.path().join("removed.txt");
     fs::write(&path, "旧内容").expect("应写入文件");
     let mut store = BufferStore::new(Arc::new(LanguageRegistry::new()));
     let first = cx.update(|cx| store.open_buffer(&path, cx).expect("首次打开应成功"));
 
-    // 外部删除事件在 Project 层经 remove_path 清索引。
-    // 即使旧文档仍被强引用持有，索引失效后也不得复用旧内容。
     fs::remove_file(&path).expect("应删除磁盘文件");
-    store.remove_path(&path);
-    let reopened = cx.update(|cx| store.open_buffer(&path, cx));
-    assert!(reopened.is_err(), "已删除文件的索引失效后不得复用旧文档");
+    let reopened = cx
+        .update(|cx| store.open_buffer(&path, cx))
+        .expect("应复用存活文档");
+    assert_eq!(first, reopened);
     cx.read_entity(&first, |language_buffer, _| {
         let snapshot = language_buffer.text_snapshot();
         let range = zcv_text::TextRange::new(ByteOffset::ZERO, snapshot.len_bytes())

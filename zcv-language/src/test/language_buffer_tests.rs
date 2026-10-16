@@ -123,6 +123,7 @@ fn distinguishes_text_parse_and_metadata_events(cx: &mut TestAppContext) {
                 LanguageBufferEvent::TextChanged => "text",
                 LanguageBufferEvent::Reparsed => "reparsed",
                 LanguageBufferEvent::MetadataChanged => "metadata",
+                LanguageBufferEvent::ReloadNeeded => "reload",
             });
         })
     });
@@ -219,6 +220,7 @@ fn rapid_edits_install_only_the_latest_parse(cx: &mut TestAppContext) {
                 LanguageBufferEvent::TextChanged => "text",
                 LanguageBufferEvent::Reparsed => "reparsed",
                 LanguageBufferEvent::MetadataChanged => "metadata",
+                LanguageBufferEvent::ReloadNeeded => "reload",
             });
         })
     });

@@ -91,6 +91,18 @@ impl BranchPickerDelegate {
             self.selected_index = self.branches.iter().position(|b| b.is_head).unwrap_or(0);
         }
     }
+
+    fn delete_selected(&self, window: &mut Window, cx: &mut App) {
+        let Some(&branch_ix) = self.filtered.get(self.selected_index) else {
+            return;
+        };
+        let cb = self.on_select.clone();
+        cb(
+            GitBranchAction::Delete(self.branches[branch_ix].name.clone()),
+            window,
+            cx,
+        );
+    }
 }
 
 impl PickerDelegate for BranchPickerDelegate {
@@ -159,17 +171,19 @@ impl PickerDelegate for BranchPickerDelegate {
                     .label("分支"),
             )
         };
-        let branch_name = branch.name.clone();
-        let on_delete = self.on_select.clone();
-        row.end_slot(
-            Button::icon(("delete-branch", index), "icons/trash.svg")
-                .color(color::current(cx).icon_muted)
-                .label("删除分支")
-                .shortcut(display_shortcut(&DeleteGitBranch, cx))
-                .on_click(move |_, window, cx| {
-                    on_delete(GitBranchAction::Delete(branch_name.clone()), window, cx);
-                }),
-        )
+        row.when(!branch.is_head, |row| {
+            let branch_name = branch.name.clone();
+            let on_delete = self.on_select.clone();
+            row.end_slot(
+                Button::icon(("delete-branch", index), "icons/trash.svg")
+                    .color(color::current(cx).icon_muted)
+                    .label("删除分支")
+                    .shortcut(display_shortcut(&DeleteGitBranch, cx))
+                    .on_click(move |_, window, cx| {
+                        on_delete(GitBranchAction::Delete(branch_name.clone()), window, cx);
+                    }),
+            )
+        })
         .into_any_element()
     }
 
@@ -280,16 +294,7 @@ impl BranchPicker {
         cx: &mut Context<Self>,
     ) {
         self.picker.update(cx, |picker, cx| {
-            let delegate = picker.delegate();
-            if delegate.selected_index >= delegate.filtered.len() {
-                return;
-            }
-            let branch = &delegate.branches[delegate.filtered[delegate.selected_index]];
-            if branch.is_head {
-                return;
-            }
-            let cb = delegate.on_select.clone();
-            cb(GitBranchAction::Delete(branch.name.clone()), window, cx);
+            picker.delegate().delete_selected(window, cx);
         });
     }
 }

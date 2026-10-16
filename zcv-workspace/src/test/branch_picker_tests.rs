@@ -64,6 +64,56 @@ fn empty_query_selects_current_branch() {
     assert!(!delegate.create_row_visible());
 }
 
+#[gpui::test]
+fn delete_shortcut_reports_selected_branch_to_workspace(cx: &mut gpui::TestAppContext) {
+    let requested = Rc::new(Cell::new(None::<GitBranchAction>));
+    let on_select: OnBranchSelected = {
+        let requested = requested.clone();
+        Rc::new(move |action, _, _| requested.set(Some(action)))
+    };
+    let mut delegate = BranchPickerDelegate::new(
+        vec![
+            Branch {
+                name: "other".into(),
+                is_head: false,
+            },
+            Branch {
+                name: "current".into(),
+                is_head: true,
+            },
+        ],
+        on_select,
+    );
+    let window = cx.add_window(|_, _| TestView);
+
+    delegate.update_matches("current".into());
+    assert_eq!(delegate.filtered, vec![1]);
+    window
+        .update(cx, |_, window, cx| delegate.delete_selected(window, cx))
+        .expect("测试窗口应可更新");
+    assert!(matches!(
+        requested.take(),
+        Some(GitBranchAction::Delete(name)) if name == "current"
+    ));
+
+    delegate.update_matches(String::new());
+    delegate.set_selected_index(0);
+    window
+        .update(cx, |_, window, cx| delegate.delete_selected(window, cx))
+        .expect("测试窗口应可更新");
+    assert!(matches!(
+        requested.take(),
+        Some(GitBranchAction::Delete(name)) if name == "other"
+    ));
+
+    delegate.update_matches("new-branch".into());
+    assert!(delegate.filtered.is_empty());
+    window
+        .update(cx, |_, window, cx| delegate.delete_selected(window, cx))
+        .expect("测试窗口应可更新");
+    assert!(requested.take().is_none(), "创建分支行不能触发删除");
+}
+
 #[test]
 fn query_ranks_fuzzy_matches_and_keeps_create_action() {
     let mut delegate = test_delegate();

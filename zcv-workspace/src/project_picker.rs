@@ -100,6 +100,10 @@ impl ProjectPickerDelegate {
             .unwrap_or(0);
     }
 
+    fn is_current_project(&self, entry: &ProjectEntry, cx: &App) -> bool {
+        self.project.read(cx).root() == Some(Path::new(&entry.path))
+    }
+
     fn do_filter(&mut self) {
         if let Some(mut matcher) = Matcher::new(&self.query) {
             let mut ranked: Vec<_> = self
@@ -122,13 +126,17 @@ impl ProjectPickerDelegate {
             .min(self.filtered.len().saturating_sub(1));
     }
 
-    /// 删除 filtered 索引对应的最近项目（落盘 + 内存）；落盘失败时不改动内存列表，由调用方上报。
-    fn remove_project(&mut self, ix: usize) -> anyhow::Result<()> {
+    /// 移除 filtered 索引对应的最近项目；当前项目提示后保留，落盘失败时不改动内存列表。
+    fn remove_project(&mut self, ix: usize, cx: &mut App) -> anyhow::Result<bool> {
         let project_ix = self.filtered[ix];
+        if self.is_current_project(&self.projects[project_ix], cx) {
+            (self.on_error)("不允许删除当前项目".into(), cx);
+            return Ok(false);
+        }
         let path = self.projects[project_ix].path.clone();
         recent_projects::remove_from_recent(&path)?;
         self.remove_project_in_memory(project_ix);
-        Ok(())
+        Ok(true)
     }
 
     /// 从内存列表移除一个项目，并重算过滤结果与选中项。
@@ -184,14 +192,14 @@ impl PickerDelegate for ProjectPickerDelegate {
         cx: &mut Context<Picker<Self>>,
     ) -> gpui::AnyElement {
         let entry = &self.projects[self.filtered[index]];
-        let is_current = self.project.read(cx).root() == Some(Path::new(&entry.path));
+        let is_current = self.is_current_project(entry, cx);
         let icon_color = color::current(cx).icon_muted;
         let on_error = self.on_error.clone();
         let remove = cx.listener(move |this, _: &ClickEvent, window, cx| {
-            if let Err(error) = this.delegate_mut().remove_project(index) {
-                on_error(format!("删除最近项目失败：{error:#}"), cx);
-            } else {
-                this.matches_updated(cx);
+            match this.delegate_mut().remove_project(index, cx) {
+                Ok(true) => this.matches_updated(cx),
+                Ok(false) => {}
+                Err(error) => on_error(format!("删除最近项目失败：{error:#}"), cx),
             }
             window.refresh();
         });
@@ -222,13 +230,15 @@ impl PickerDelegate for ProjectPickerDelegate {
                     }),
             )
             .subtitle(entry.path.clone())
-            .end_slot(
-                Button::icon(("delete-project", index), "icons/trash.svg")
-                    .color(icon_color)
-                    .label("移除")
-                    .shortcut(display_shortcut(&DeleteRecentProject, cx))
-                    .on_click(remove),
-            )
+            .when(!is_current, |row| {
+                row.end_slot(
+                    Button::icon(("delete-project", index), "icons/trash.svg")
+                        .color(icon_color)
+                        .label("移除")
+                        .shortcut(display_shortcut(&DeleteRecentProject, cx))
+                        .on_click(remove),
+                )
+            })
             .into_any_element()
     }
 
@@ -359,11 +369,11 @@ impl ProjectPicker {
     ) {
         let result = self.picker.update(cx, |picker, cx| {
             if picker.delegate().match_count() == 0 {
-                return Ok(());
+                return Ok(false);
             }
             let ix = picker.delegate().selected_index();
-            let result = picker.delegate_mut().remove_project(ix);
-            if result.is_ok() {
+            let result = picker.delegate_mut().remove_project(ix, cx);
+            if matches!(result, Ok(true)) {
                 picker.matches_updated(cx);
             }
             result

@@ -143,6 +143,62 @@ fn remove_last_project_clamps_selection(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn current_project_cannot_be_removed_from_recent_projects(cx: &mut TestAppContext) {
+    let current_dir = tempfile::tempdir().expect("应创建当前项目目录");
+    let other_dir = tempfile::tempdir().expect("应创建其他项目目录");
+    let languages = Arc::new(LanguageRegistry::new());
+    let reported = Rc::new(Cell::new(None::<String>));
+    let (mut delegate, current) = cx.update(|cx| {
+        let project = test_project(current_dir.path().to_path_buf(), languages, cx);
+        let current = project
+            .read(cx)
+            .root()
+            .expect("当前项目有根目录")
+            .to_string_lossy()
+            .into_owned();
+        let delegate = ProjectPickerDelegate::new(
+            project,
+            vec![
+                ProjectEntry {
+                    path: other_dir.path().to_string_lossy().into_owned(),
+                },
+                ProjectEntry {
+                    path: current.clone(),
+                },
+            ],
+            Rc::new(|_, _, _| {}),
+            Rc::new(|_, _| {}),
+            {
+                let reported = reported.clone();
+                Rc::new(move |message, _| reported.set(Some(message)))
+            },
+            cx,
+        );
+        (delegate, current)
+    });
+
+    assert!(
+        !cx.update(|cx| delegate.remove_project(1, cx))
+            .expect("移除当前项目应被忽略")
+    );
+    assert_eq!(delegate.projects.len(), 2);
+    assert_eq!(delegate.selected_index, 1);
+    assert_eq!(delegate.projects[1].path, current);
+    assert_eq!(reported.take().as_deref(), Some("不允许删除当前项目"));
+
+    assert!(
+        cx.update(|cx| delegate.remove_project(0, cx))
+            .expect("其他项目应可移除")
+    );
+    assert_eq!(delegate.projects.len(), 1);
+    assert_eq!(delegate.projects[0].path, current);
+    assert!(
+        reported.take().is_none(),
+        "移除其他项目不应提示当前项目错误"
+    );
+}
+
+#[gpui::test]
 fn current_project_is_selected_by_path_and_check_stays_after_its_name(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建当前项目目录");
     let languages = Arc::new(LanguageRegistry::new());

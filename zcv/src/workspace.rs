@@ -566,7 +566,7 @@ fn initialize_workspace(
                         if is_current {
                             workspace.show_toast(
                                 ToastKind::Error,
-                                "无法删除当前分支",
+                                "不允许删除当前分支",
                                 vec![],
                                 Some(Duration::from_secs(5)),
                                 cx,

@@ -57,7 +57,7 @@ pub use searchable::{
 };
 pub use status_bar::StatusItemView;
 pub use status_color::git_status_color;
-pub use toast::{ToastAction, ToastKind};
+pub use toast::{ToastAction, ToastId, ToastKind};
 pub use toolbar::{Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 pub use top_bar::{TopBar, TopBarCallbacks};
 pub use window_bounds::{load_window_bounds, save_window_bounds};

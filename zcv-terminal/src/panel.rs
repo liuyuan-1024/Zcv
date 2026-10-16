@@ -111,7 +111,7 @@ impl TerminalPanel {
                     workspace.show_toast(
                         ToastKind::Error,
                         message,
-                        None,
+                        vec![],
                         Some(Duration::from_secs(5)),
                         cx,
                     );

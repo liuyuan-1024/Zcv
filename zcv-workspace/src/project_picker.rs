@@ -305,7 +305,7 @@ impl ProjectPicker {
                         workspace.show_toast(
                             ToastKind::Error,
                             message,
-                            None,
+                            vec![],
                             Some(Duration::from_secs(5)),
                             cx,
                         );
@@ -411,7 +411,7 @@ impl ProjectPicker {
                             workspace.show_toast(
                                 ToastKind::Error,
                                 format!("选择项目目录失败：{error:#}"),
-                                None,
+                                vec![],
                                 Some(Duration::from_secs(5)),
                                 cx,
                             );

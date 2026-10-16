@@ -98,7 +98,7 @@ fn switch_project_callback(languages: Arc<LanguageRegistry>) -> OnProjectSelecte
                     workspace.show_toast(
                         ToastKind::Error,
                         format!("打开项目失败（{path}）：路径无效"),
-                        None,
+                        vec![],
                         Some(Duration::from_secs(5)),
                         cx,
                     );
@@ -130,7 +130,7 @@ fn switch_project_callback(languages: Arc<LanguageRegistry>) -> OnProjectSelecte
                 workspace.show_toast(
                     ToastKind::Error,
                     message,
-                    None,
+                    vec![],
                     Some(Duration::from_secs(5)),
                     cx,
                 );
@@ -214,7 +214,7 @@ fn open_workspace_window(
                     workspace.show_toast(
                         ToastKind::Error,
                         message,
-                        None,
+                        vec![],
                         Some(Duration::from_secs(8)),
                         cx,
                     );
@@ -326,7 +326,7 @@ fn initialize_common_workspace(
             workspace.show_toast(
                 ToastKind::Error,
                 format!("无法开始更新：{error:#}"),
-                None,
+                vec![],
                 Some(Duration::from_secs(8)),
                 cx,
             );
@@ -449,37 +449,37 @@ fn run_git_operation(
                 (
                     ToastKind::Error,
                     format!("{name}失败：{error}"),
-                    Some(ToastAction::new("重试", move |_window, cx| {
+                    vec![ToastAction::new("重试", move |_window, cx| {
                         if let Some(workspace) = weak.upgrade() {
                             // App 上下文的 Entity::update 直接返回闭包结果（实体经 upgrade 已确认存在），无 Result 包装。
                             workspace.update(cx, |workspace, cx| {
                                 run_git_operation(workspace, operation, cx);
                             });
                         }
-                    })),
+                    })],
                 )
             };
-            let (kind, message, action) = match result {
+            let (kind, message, actions) = match result {
                 Ok(GitOperationOutcome::Completed) => {
-                    (ToastKind::Success, format!("{name}完成"), None)
+                    (ToastKind::Success, format!("{name}完成"), vec![])
                 }
                 Ok(GitOperationOutcome::Cancelled) => {
-                    (ToastKind::Info, format!("{name}已取消"), None)
+                    (ToastKind::Info, format!("{name}已取消"), vec![])
                 }
                 Ok(GitOperationOutcome::CompletedBeforeCancellation) => {
-                    (ToastKind::Success, format!("{name}已在取消前完成"), None)
+                    (ToastKind::Success, format!("{name}已在取消前完成"), vec![])
                 }
                 Ok(GitOperationOutcome::CancellationUnconfirmed(detail)) => (
                     ToastKind::Error,
                     format!("{name}已停止，但暂时无法确认远端状态：{detail}"),
-                    None,
+                    vec![],
                 ),
                 Ok(GitOperationOutcome::Failed(error)) => failed(error),
                 Err(error) => failed(format!("{error:#}")),
             };
             if let Some(this) = this.upgrade() {
                 this.update(&mut cx, |workspace, cx| {
-                    workspace.show_toast(kind, message, action, Some(Duration::from_secs(5)), cx);
+                    workspace.show_toast(kind, message, actions, Some(Duration::from_secs(5)), cx);
                 });
             }
         }
@@ -503,7 +503,7 @@ fn show_file_watcher_error(
             error.path.display(),
             error.error
         ),
-        None,
+        vec![],
         Some(Duration::from_secs(8)),
         cx,
     );
@@ -544,7 +544,7 @@ fn initialize_workspace(
                                             workspace.show_toast(
                                                 ToastKind::Error,
                                                 format!("切换分支失败：{error:#}"),
-                                                None,
+                                                vec![],
                                                 Some(Duration::from_secs(5)),
                                                 cx,
                                             );
@@ -567,7 +567,7 @@ fn initialize_workspace(
                             workspace.show_toast(
                                 ToastKind::Error,
                                 "无法删除当前分支",
-                                None,
+                                vec![],
                                 Some(Duration::from_secs(5)),
                                 cx,
                             );
@@ -729,7 +729,7 @@ fn initialize_workspace(
             workspace.show_toast(
                 ToastKind::Error,
                 error,
-                None,
+                vec![],
                 Some(Duration::from_secs(5)),
                 cx,
             );
@@ -753,7 +753,7 @@ fn initialize_workspace(
             workspace.show_toast(
                 ToastKind::Error,
                 message.clone(),
-                None,
+                vec![],
                 Some(Duration::from_secs(5)),
                 cx,
             );
@@ -839,7 +839,7 @@ fn initialize_workspace(
         workspace.show_toast(
             ToastKind::Error,
             event.0.clone(),
-            None,
+            vec![],
             Some(Duration::from_secs(8)),
             cx,
         );
@@ -848,7 +848,7 @@ fn initialize_workspace(
         workspace.show_toast(
             ToastKind::Error,
             error,
-            None,
+            vec![],
             Some(Duration::from_secs(8)),
             cx,
         );

@@ -529,7 +529,7 @@ fn show_failure_toast(workspace: &WeakEntity<Workspace>, message: Arc<str>, cx: 
                 workspace.show_toast(
                     ToastKind::Error,
                     message.to_string(),
-                    None,
+                    vec![],
                     Some(Duration::from_secs(8)),
                     cx,
                 );

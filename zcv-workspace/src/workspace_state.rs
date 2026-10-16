@@ -30,7 +30,7 @@ use crate::pane::{Pane, PaneEvent};
 use crate::panel::{Panel, PanelEvent, PanelHandle};
 use crate::preview::{PreviewDocument, standalone_provider_for};
 use crate::status_bar::StatusBar;
-use crate::toast::{ToastAction, ToastKind, ToastLayer};
+use crate::toast::{ToastAction, ToastId, ToastKind, ToastLayer};
 use crate::window_bounds;
 use crate::{ItemHandle, OpenPathCallback};
 
@@ -242,19 +242,24 @@ impl Workspace {
         }
     }
 
-    /// 展示一条全局提示（成功/错误）；`action` 提供可点击的操作按钮（如"重试"）。
+    /// 展示一条工作区提示；调用方提供所需的操作按钮和消失时长。
     /// 宿主（装配层）经它呈现 Git 操作等工作区反馈。
     pub fn show_toast(
         &self,
         kind: ToastKind,
         message: impl Into<SharedString>,
-        action: Option<ToastAction>,
+        actions: Vec<ToastAction>,
         dismiss_after: Option<Duration>,
         cx: &mut App,
-    ) {
+    ) -> ToastId {
         self.toast_layer.update(cx, |toast, cx| {
-            toast.show(kind, message, action, dismiss_after, cx)
-        });
+            toast.show(kind, message, actions, dismiss_after, cx)
+        })
+    }
+
+    /// 关闭指定提示，不影响同一工作区中的其他提示。
+    pub fn dismiss_toast(&self, id: ToastId, cx: &mut App) {
+        self.toast_layer.update(cx, |toast, cx| toast.hide(id, cx));
     }
 
     // ═══ 访问器与宿主注入 ═════════════════════════════════════════
@@ -711,7 +716,7 @@ impl Workspace {
                 self.show_toast(
                     ToastKind::Error,
                     format!("打开文件失败：{}：{error:#}", path.display()),
-                    None,
+                    vec![],
                     Some(Duration::from_secs(5)),
                     cx,
                 );
@@ -733,7 +738,7 @@ impl Workspace {
             self.show_toast(
                 ToastKind::Error,
                 format!("打开文件失败：{}：没有支持该类型", path.display()),
-                None,
+                vec![],
                 Some(Duration::from_secs(5)),
                 cx,
             );
@@ -751,7 +756,7 @@ impl Workspace {
                             workspace.show_toast(
                                 ToastKind::Error,
                                 format!("打开文件失败：{}：{error:#}", path.display()),
-                                None,
+                                vec![],
                                 Some(Duration::from_secs(5)),
                                 cx,
                             );
@@ -987,7 +992,7 @@ impl Workspace {
                         workspace.show_toast(
                             ToastKind::Error,
                             format!("保存文件失败：{error:#}"),
-                            None,
+                            vec![],
                             Some(Duration::from_secs(5)),
                             cx,
                         );
@@ -1004,13 +1009,15 @@ impl Workspace {
         };
         match provider(cx) {
             Ok(path) => self.open_path(path, true, window, cx),
-            Err(error) => self.show_toast(
-                ToastKind::Error,
-                format!("打开设置失败：{error:#}"),
-                None,
-                Some(Duration::from_secs(8)),
-                cx,
-            ),
+            Err(error) => {
+                self.show_toast(
+                    ToastKind::Error,
+                    format!("打开设置失败：{error:#}"),
+                    vec![],
+                    Some(Duration::from_secs(8)),
+                    cx,
+                );
+            }
         }
     }
 

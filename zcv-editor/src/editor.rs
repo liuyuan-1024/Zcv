@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use gpui::{AnyElement, App, AppContext, Entity, IntoElement, Subscription, Window};
+use zcv_language::LanguageRegistry;
 use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
 
 mod blink_manager;
@@ -24,7 +25,6 @@ pub use status_items::install_status_items;
 pub use view::{
     DiffHunkDelegate, Editor, EditorEvent, OutlineEntry, OutlineSource, OutlineVersion,
 };
-pub use zcv_language::LanguageRegistry;
 
 /// 应用启动时由装配层注入唯一的语言注册表，编辑器的内嵌输入控件共享同一份。
 pub fn init(cx: &mut App, language_registry: Arc<LanguageRegistry>) {

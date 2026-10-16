@@ -12,7 +12,7 @@ pub(super) struct InputEdit {
 }
 
 impl InputEdit {
-    pub fn new(old: Range<usize>, new: Range<usize>) -> Self {
+    pub(crate) fn new(old: Range<usize>, new: Range<usize>) -> Self {
         Self {
             old: ExcerptOffset::new(old.start)..ExcerptOffset::new(old.end),
             new: ExcerptOffset::new(new.start)..ExcerptOffset::new(new.end),

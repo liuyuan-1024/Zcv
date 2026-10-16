@@ -24,4 +24,4 @@ pub enum SearchError {
 }
 
 /// 搜索能力域 Result 类型。
-pub type SearchTextResult<T> = Result<T, SearchError>;
+pub(super) type SearchTextResult<T> = Result<T, SearchError>;

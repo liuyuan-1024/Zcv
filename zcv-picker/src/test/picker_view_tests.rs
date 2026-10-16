@@ -9,10 +9,11 @@ use gpui::{
 
 use super::*;
 use zcv_actions::Newline;
+use zcv_language::LanguageRegistry;
 use zcv_ui::{Button, ListItem};
 
 fn init(cx: &mut TestAppContext) {
-    let languages = std::sync::Arc::new(zcv_editor::LanguageRegistry::new());
+    let languages = std::sync::Arc::new(LanguageRegistry::new());
     cx.update(move |cx| zcv_editor::init(cx, languages));
 }
 

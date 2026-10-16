@@ -3,8 +3,6 @@
 //! 输入法组合的 marked text 从第一次 preedit 起就走普通文本事务（与键盘输入同管线），组合区域只在语法样式之上叠加下划线；
 //! 这里只维护组合会话身份与候选框定位数据。
 
-use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
-
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -12,7 +10,9 @@ use gpui::{
     App, Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window, px, size,
 };
 use zcv_language::InputScope;
-use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_multi_buffer::{
+    MultiBufferAnchor, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
+};
 use zcv_text::{Affinity, TransactionId, Utf16Offset};
 
 use super::*;

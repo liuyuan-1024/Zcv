@@ -8,8 +8,6 @@
 //! 变换树在装配时保持规范形：相邻同构段必须归并，由 `push_isomorphic` 与 `append_canonical` 统一维护并在 `check_invariants` 中校验。
 //! 折叠与换行是正交的两层变换：折叠先塌缩文本，换行再按像素宽度切分。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
-
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::mem;
@@ -23,7 +21,10 @@ use gpui::{
 };
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferLineCursor, MultiBufferSnapshot};
+use zcv_multi_buffer::{
+    ExcerptSnapshot, MultiBufferLineCursor, MultiBufferOffset, MultiBufferRange,
+    MultiBufferSnapshot,
+};
 use zcv_text::{CoordinateError, Line, LogicalColumn};
 
 use super::chunk::{Chunk, ChunkText, FoldChunks, HighlightStyles, StyledChunks};
@@ -1174,13 +1175,13 @@ pub(crate) struct WrapPointCursor<'a> {
 }
 
 impl WrapPointCursor<'_> {
-    pub fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         self.cursor.reset();
         self.tab_row = None;
         self.line_text = None;
     }
 
-    pub fn map(&mut self, point: TabPointMapping) -> DisplayMapResult<WrapPoint> {
+    pub(super) fn map(&mut self, point: TabPointMapping) -> DisplayMapResult<WrapPoint> {
         let tab_point = point.point();
         if self.cursor.did_seek() && tab_point >= self.cursor.start().0 {
             self.cursor.seek_forward(&tab_point, Bias::Right);

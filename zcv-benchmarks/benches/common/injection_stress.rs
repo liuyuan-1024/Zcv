@@ -18,7 +18,7 @@ fn injection_stress_document(target_bytes: usize) -> String {
 }
 
 /// 返回指定大小的固定注入压力语料（缓存策略与 `cached_rust_document` 一致）。
-pub fn cached_injection_stress_document(target_bytes: usize) -> Arc<str> {
+pub(crate) fn cached_injection_stress_document(target_bytes: usize) -> Arc<str> {
     static DOCUMENTS: OnceLock<Mutex<HashMap<usize, Arc<str>>>> = OnceLock::new();
 
     let documents = DOCUMENTS.get_or_init(|| Mutex::new(HashMap::new()));

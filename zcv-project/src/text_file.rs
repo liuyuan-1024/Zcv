@@ -115,7 +115,7 @@ impl std::error::Error for BufferSaveError {
 /// 流式解码 `reader` 为 UTF-8 文本，按 `config` 应用 BOM / 非法 UTF-8 策略。
 ///
 /// 不完整 UTF-8 codepoint（最多 3 字节）保留在读缓冲首端，下一轮拼接。
-pub fn decode_to_string<R: io::Read>(mut reader: R) -> Result<String, BufferLoadError> {
+pub(crate) fn decode_to_string<R: io::Read>(mut reader: R) -> Result<String, BufferLoadError> {
     let mut output = String::new();
     let mut buffer = vec![0u8; READ_BUFFER_SIZE];
     let mut fill_idx = 0usize;
@@ -198,7 +198,7 @@ pub fn decode_to_string<R: io::Read>(mut reader: R) -> Result<String, BufferLoad
 /// 把文本快照写入 `writer`（换行统一为 LF），先校验调用方持有的版本仍然新鲜。
 ///
 /// 只消费只读快照；宿主完成真实写盘后由文档实体标记保存点。
-pub fn write_buffer_to<W: Write>(
+pub(crate) fn write_buffer_to<W: Write>(
     snapshot: &Snapshot,
     expected_version: BufferVersion,
     writer: &mut W,

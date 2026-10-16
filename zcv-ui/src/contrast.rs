@@ -53,7 +53,7 @@ fn srgb_to_y(color: Hsla, constants: &ApcaConstants) -> f32 {
 }
 
 /// 返回 APCA 亮度对比度；正值为浅底深字，负值为深底浅字。
-pub fn apca_contrast(foreground: Hsla, background: Hsla) -> f32 {
+pub(crate) fn apca_contrast(foreground: Hsla, background: Hsla) -> f32 {
     let constants = ApcaConstants::default();
     let text_y = srgb_to_y(foreground, &constants);
     let background_y = srgb_to_y(background, &constants);

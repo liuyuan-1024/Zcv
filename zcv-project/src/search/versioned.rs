@@ -13,22 +13,22 @@ pub(crate) struct VersionedResult<T> {
 
 impl<T> VersionedResult<T> {
     /// 绑定结果到 `BufferVersion`，用于消费侧校验版本一致性。
-    pub const fn new(version: BufferVersion, value: T) -> Self {
+    pub(super) const fn new(version: BufferVersion, value: T) -> Self {
         Self { version, value }
     }
 
     /// 结果绑定的 BufferVersion。
-    pub fn version(&self) -> BufferVersion {
+    pub(super) fn version(&self) -> BufferVersion {
         self.version
     }
 
     /// 只读 payload。
-    pub fn value(&self) -> &T {
+    pub(super) fn value(&self) -> &T {
         &self.value
     }
 
     /// 当前结果是否相对 `current` 版本已过期。
-    pub fn is_stale(&self, current: BufferVersion) -> bool {
+    pub(super) fn is_stale(&self, current: BufferVersion) -> bool {
         self.version != current
     }
 }

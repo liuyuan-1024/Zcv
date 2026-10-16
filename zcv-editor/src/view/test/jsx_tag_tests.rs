@@ -2,14 +2,12 @@
 //!
 //! 每个样例同时校验输入后的文本与光标；撤销、重做、重复触发与手动闭合另列专测。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
-
 use std::path::PathBuf;
 
 use gpui::{AppContext, EntityInputHandler, TestAppContext, VisualTestContext};
 use zcv_actions::Backspace;
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
+use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferOffset, MultiBufferRange};
 use zcv_text::{Buffer, BufferConfig};
 
 use super::Editor;
@@ -57,7 +55,7 @@ pub(super) fn editor_with_state<'a>(
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from(path)),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -99,11 +97,8 @@ pub(super) fn state_text(editor: &gpui::Entity<Editor>, cx: &VisualTestContext) 
         }
         let text = snapshot
             .text_for_range(
-                zcv_multi_buffer::MultiBufferRange::new(
-                    MultiBufferOffset::ZERO,
-                    snapshot.len_bytes(),
-                )
-                .expect("全文范围必须合法"),
+                MultiBufferRange::new(MultiBufferOffset::ZERO, snapshot.len_bytes())
+                    .expect("全文范围必须合法"),
             )
             .expect("全文文本应可读取");
         let mut marked = String::new();

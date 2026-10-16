@@ -1,12 +1,12 @@
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{
+    DiffExcerptRanges, DiffFile, DisplayHunk, ExcerptRange, MultiBuffer, MultiBufferOffset,
+    MultiBufferRange, ResolvedDiffHunk,
+};
 
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
 use zcv_language::LanguageRegistry;
-use zcv_multi_buffer::{
-    DiffExcerptRanges, DiffFile, DisplayHunk, ExcerptRange, MultiBuffer, ResolvedDiffHunk,
-};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
 
 use super::common::{buffer_text, focus_editor, inject_editor_diff, inject_file_diff, test_buffer};

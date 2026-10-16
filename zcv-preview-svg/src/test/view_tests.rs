@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use gpui::{AppContext as _, TestAppContext, px, size};
-use zcv_editor::{Editor, LanguageRegistry};
+use zcv_editor::Editor;
+use zcv_language::LanguageRegistry;
 
 use super::*;
 

@@ -3,14 +3,13 @@
 //! Tree-sitter 绑定解析由 `zcv-language` 提供；
 //! 本模块拥有重命名会话、事务入口和输入框定位，让语法查询、编辑状态与界面绘制保持各自的职责边界。
 
-use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferSnapshot};
-
 use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{App, AppContext, Context, Entity, Focusable, Pixels, Point, point, px};
 use zcv_actions::{CancelLocalRename, ConfirmLocalRename, RenameLocal};
 use zcv_language::LocalBinding;
+use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferSnapshot};
 use zcv_text::Affinity;
 
 use super::{Editor, EditorEvent, EditorMode, edit_metadata};

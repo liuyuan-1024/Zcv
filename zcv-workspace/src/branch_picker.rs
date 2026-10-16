@@ -16,8 +16,7 @@ use zcv_keymap::display_shortcut;
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, PickerLayer};
 use zcv_project::{GitStore, GitStoreEvent};
 use zcv_theme::color;
-use zcv_ui::ListItem;
-use zcv_ui::{Button, SvgIcon};
+use zcv_ui::{Button, ListItem, SvgIcon};
 
 // ═══ 回调 ════════════════════════════════════════════════════════
 

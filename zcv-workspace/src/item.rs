@@ -166,7 +166,7 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
     }
 }
 
-pub type ItemEventHandler = Box<dyn Fn(ItemEvent, &mut App) + Send>;
+pub(crate) type ItemEventHandler = Box<dyn Fn(ItemEvent, &mut App) + Send>;
 
 pub trait ItemHandle: Send + 'static {
     fn item_id(&self) -> EntityId;

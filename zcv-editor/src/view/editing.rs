@@ -2,14 +2,12 @@
 //!
 //! 所有文本修改统一经 `Editor::change` 族提交编辑事务，handler 仅做参数翻译。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::{App, ClipboardItem, Context, Window};
 use zcv_language::InputScope;
-use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
 use zcv_settings::AutoIndentMode;
 use zcv_text::{Line, MovementDirection, MovementUnit, TextError, TextResult};
 

@@ -14,8 +14,9 @@ use zcv_actions::{
     Backtab, ClearSearch, DeployBufferSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext,
     SelectAll, Tab, ToggleCaseSensitive, ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
-use zcv_editor::{Editor, EditorEvent, LanguageRegistry};
+use zcv_editor::{Editor, EditorEvent};
 use zcv_keymap::display_shortcut;
+use zcv_language::LanguageRegistry;
 use zcv_project::SearchQuery;
 use zcv_theme::{color, scale};
 use zcv_ui::{Button, MatchOption, MatchOptions, ReplaceInput, SearchInput};

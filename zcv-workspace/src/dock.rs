@@ -48,7 +48,7 @@ pub struct DockData {
 
 /// 工作区三个 Dock 的持久化快照。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DockStructure {
+pub(crate) struct DockStructure {
     pub left: DockData,
     pub right: DockData,
     pub bottom: DockData,

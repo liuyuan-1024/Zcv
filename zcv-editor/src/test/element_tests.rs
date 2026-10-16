@@ -1,5 +1,4 @@
 use crate::display_map::{DiffDecorationSnapshot, FoldPlaceholder, SearchDecorationInput};
-use zcv_multi_buffer::{ResolvedDiffHunk, WordDiffs};
 
 use super::*;
 
@@ -308,7 +307,7 @@ use gpui::{AppContext, Empty, TestAppContext};
 use std::path::{Path, PathBuf};
 use zcv_buffer_diff::DiffHunkStaging;
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::{DisplayHunk, ExcerptRange, MultiBuffer};
+use zcv_multi_buffer::{DisplayHunk, ExcerptRange, MultiBuffer, ResolvedDiffHunk, WordDiffs};
 use zcv_text::{Affinity, Buffer, BufferConfig, ByteOffset, Line, TextRange};
 use zcv_theme::{ThemeChoice, typography};
 

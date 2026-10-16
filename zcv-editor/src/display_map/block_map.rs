@@ -3,13 +3,12 @@
 //! 本层位于 WrapMap 之上：文本换行坐标保持不变，文件标题和同文件片段分隔线作为不属于文本的虚拟显示块插入。
 //! 这样搜索、diff、诊断等宿主只负责提供 excerpts，滚动、命中测试、选区和通用文件标题都由 Editor 复用同一条管线。
 
-use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
-
 use std::collections::{BTreeSet, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
+use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
 use zcv_text::{Affinity, BufferId, CoordinateError, Line};
 
 use super::error::DisplayMapResult;
@@ -878,11 +877,11 @@ pub(crate) struct BlockPointCursor<'a> {
 }
 
 impl BlockPointCursor<'_> {
-    pub fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         self.cursor.reset();
     }
 
-    pub fn map(&mut self, point: WrapPoint) -> DisplayPoint {
+    pub(super) fn map(&mut self, point: WrapPoint) -> DisplayPoint {
         let input_row = point.row().get();
         if self.cursor.did_seek() && input_row >= self.cursor.start().0.0 {
             self.cursor.seek_forward(&InputRows(input_row), Bias::Right);

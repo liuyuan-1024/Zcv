@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 use gpui::{Context, Entity, EventEmitter, ParentElement, Render, Styled, Window, div, prelude::*};
 use zcv_actions::{ClearSearch, DeployBufferSearch};
-use zcv_editor::{Editor, LanguageRegistry};
+use zcv_editor::Editor;
 use zcv_keymap::display_shortcut;
+use zcv_language::LanguageRegistry;
 use zcv_theme::{color, scale};
 use zcv_ui::Button;
 use zcv_workspace::{

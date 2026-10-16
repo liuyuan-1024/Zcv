@@ -10,9 +10,9 @@ use gpui::{
 use zcv_editor::Editor;
 use zcv_path::AbsolutePathBuf;
 use zcv_theme::color;
-use zcv_ui::Scrollbar;
 use zcv_ui::{
-    RowClickAction, TreeNodeRow, TreeState, row_click_action, selection_border, tree_row_label,
+    RowClickAction, Scrollbar, TreeNodeRow, TreeState, row_click_action, selection_border,
+    tree_row_label,
 };
 use zcv_workspace::git_status_color;
 

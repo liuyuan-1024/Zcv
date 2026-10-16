@@ -3,12 +3,11 @@
 //! 主路径通过显示点驱动 Editor 的 begin/update/end selection；
 //! 偏移辅助函数只负责构造稳定的测试坐标，另有两个事件级冒烟测试验证 element.rs 的事件接线。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
-
 use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, point, px};
 use std::path::PathBuf;
 use std::time::Duration;
 use zcv_language::LanguageBuffer;
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 use zcv_text::{Buffer, BufferConfig};
 
 use super::common::{buffer_text, focus_editor, scrolling_text, test_buffer};

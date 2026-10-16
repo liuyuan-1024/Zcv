@@ -62,7 +62,7 @@ pub(crate) struct TerminalBounds {
 }
 
 impl TerminalBounds {
-    pub fn new(cell_width: Pixels, cell_height: Pixels, size: Size<Pixels>) -> Self {
+    pub(crate) fn new(cell_width: Pixels, cell_height: Pixels, size: Size<Pixels>) -> Self {
         TerminalBounds {
             size,
             cell_width,
@@ -71,22 +71,22 @@ impl TerminalBounds {
     }
 
     /// 可见行数；容忍浮点精度，避免少算一行。
-    pub fn num_lines(&self) -> usize {
+    pub(crate) fn num_lines(&self) -> usize {
         let raw = f32::from(self.size.height) / f32::from(self.cell_height);
         raw.next_up().floor().max(1.) as usize
     }
 
     /// 可见列数；同样容忍浮点精度。
-    pub fn num_columns(&self) -> usize {
+    pub(crate) fn num_columns(&self) -> usize {
         let raw = f32::from(self.size.width) / f32::from(self.cell_width);
         raw.next_up().floor().max(2.) as usize
     }
 
-    pub fn cell_width(&self) -> Pixels {
+    pub(crate) fn cell_width(&self) -> Pixels {
         self.cell_width
     }
 
-    pub fn line_height(&self) -> Pixels {
+    pub(crate) fn line_height(&self) -> Pixels {
         self.cell_height
     }
 }
@@ -152,52 +152,52 @@ impl Cell {
         Cell { cell }
     }
 
-    pub fn character(&self) -> char {
+    pub(crate) fn character(&self) -> char {
         self.cell.c
     }
 
-    pub fn foreground(&self) -> Color {
+    pub(crate) fn foreground(&self) -> Color {
         self.cell.fg
     }
 
-    pub fn background(&self) -> Color {
+    pub(crate) fn background(&self) -> Color {
         self.cell.bg
     }
 
-    pub fn is_inverse(&self) -> bool {
+    pub(crate) fn is_inverse(&self) -> bool {
         self.cell.flags.contains(Flags::INVERSE)
     }
 
-    pub fn is_wide_char_spacer(&self) -> bool {
+    pub(crate) fn is_wide_char_spacer(&self) -> bool {
         self.cell.flags.contains(Flags::WIDE_CHAR_SPACER)
             || self.cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
     }
 
-    pub fn is_wide_char(&self) -> bool {
+    pub(crate) fn is_wide_char(&self) -> bool {
         self.cell.flags.contains(Flags::WIDE_CHAR)
     }
 
-    pub fn is_dim(&self) -> bool {
+    pub(crate) fn is_dim(&self) -> bool {
         self.cell.flags.contains(Flags::DIM)
     }
 
-    pub fn is_bold(&self) -> bool {
+    pub(crate) fn is_bold(&self) -> bool {
         self.cell.flags.contains(Flags::BOLD)
     }
 
-    pub fn is_italic(&self) -> bool {
+    pub(crate) fn is_italic(&self) -> bool {
         self.cell.flags.contains(Flags::ITALIC)
     }
 
-    pub fn has_underline(&self) -> bool {
+    pub(crate) fn has_underline(&self) -> bool {
         self.cell.flags.contains(Flags::ALL_UNDERLINES)
     }
 
-    pub fn has_strikeout(&self) -> bool {
+    pub(crate) fn has_strikeout(&self) -> bool {
         self.cell.flags.contains(Flags::STRIKEOUT)
     }
 
-    pub fn zerowidth(&self) -> Option<&[char]> {
+    pub(crate) fn zerowidth(&self) -> Option<&[char]> {
         self.cell.zerowidth()
     }
 }
@@ -214,34 +214,34 @@ pub(crate) struct Cursor {
 pub(crate) struct Modes(u32);
 
 impl Modes {
-    pub const SHOW_CURSOR: Modes = Modes(1 << 0);
-    pub const APP_CURSOR: Modes = Modes(1 << 1);
-    pub const APP_KEYPAD: Modes = Modes(1 << 2);
-    pub const MOUSE_REPORT_CLICK: Modes = Modes(1 << 3);
-    pub const MOUSE_MOTION: Modes = Modes(1 << 4);
-    pub const MOUSE_DRAG: Modes = Modes(1 << 5);
-    pub const SGR_MOUSE: Modes = Modes(1 << 6);
-    pub const UTF8_MOUSE: Modes = Modes(1 << 7);
-    pub const LINE_WRAP: Modes = Modes(1 << 8);
-    pub const INSERT: Modes = Modes(1 << 9);
-    pub const ALT_SCREEN: Modes = Modes(1 << 10);
-    pub const ALTERNATE_SCROLL: Modes = Modes(1 << 11);
-    pub const BRACKETED_PASTE: Modes = Modes(1 << 12);
-    pub const FOCUS_IN_OUT: Modes = Modes(1 << 13);
-    pub const MOUSE_MODE: Modes =
+    pub(crate) const SHOW_CURSOR: Modes = Modes(1 << 0);
+    pub(crate) const APP_CURSOR: Modes = Modes(1 << 1);
+    pub(crate) const APP_KEYPAD: Modes = Modes(1 << 2);
+    pub(crate) const MOUSE_REPORT_CLICK: Modes = Modes(1 << 3);
+    pub(crate) const MOUSE_MOTION: Modes = Modes(1 << 4);
+    pub(crate) const MOUSE_DRAG: Modes = Modes(1 << 5);
+    pub(crate) const SGR_MOUSE: Modes = Modes(1 << 6);
+    pub(crate) const UTF8_MOUSE: Modes = Modes(1 << 7);
+    pub(crate) const LINE_WRAP: Modes = Modes(1 << 8);
+    pub(crate) const INSERT: Modes = Modes(1 << 9);
+    pub(crate) const ALT_SCREEN: Modes = Modes(1 << 10);
+    pub(crate) const ALTERNATE_SCROLL: Modes = Modes(1 << 11);
+    pub(crate) const BRACKETED_PASTE: Modes = Modes(1 << 12);
+    pub(crate) const FOCUS_IN_OUT: Modes = Modes(1 << 13);
+    pub(crate) const MOUSE_MODE: Modes =
         Modes(Self::MOUSE_REPORT_CLICK.0 | Self::MOUSE_MOTION.0 | Self::MOUSE_DRAG.0);
-    pub const NONE: Modes = Modes(0);
+    pub(crate) const NONE: Modes = Modes(0);
 
-    pub fn empty() -> Modes {
+    pub(crate) fn empty() -> Modes {
         Modes::NONE
     }
 
-    pub fn contains(&self, other: Modes) -> bool {
+    pub(crate) fn contains(&self, other: Modes) -> bool {
         self.0 & other.0 == other.0
     }
 
     /// 与任一标志有交集（MOUSE_MODE 等合集判断用）。
-    pub fn intersects(&self, other: Modes) -> bool {
+    pub(crate) fn intersects(&self, other: Modes) -> bool {
         self.0 & other.0 != 0
     }
 }
@@ -336,7 +336,7 @@ pub(crate) struct SelectionRange {
 }
 
 impl SelectionRange {
-    pub fn contains(&self, point: Point) -> bool {
+    pub(crate) fn contains(&self, point: Point) -> bool {
         point >= self.start && point <= self.end
     }
 }
@@ -447,7 +447,10 @@ pub(crate) struct TerminalSettings {
 }
 
 impl TerminalSettings {
-    pub fn from_user_settings(settings: &UserSettings, font_size_override: Option<f32>) -> Self {
+    pub(crate) fn from_user_settings(
+        settings: &UserSettings,
+        font_size_override: Option<f32>,
+    ) -> Self {
         TerminalSettings {
             font_size: font_size_override.unwrap_or(settings.terminal_font_size),
             line_height: settings.terminal_line_height,
@@ -464,7 +467,7 @@ impl TerminalSettings {
         }
     }
 
-    pub fn load(cx: &App, font_size_override: Option<f32>) -> Self {
+    pub(crate) fn load(cx: &App, font_size_override: Option<f32>) -> Self {
         let settings = SettingsStore::try_get(cx).unwrap_or_default();
         Self::from_user_settings(&settings, font_size_override)
     }
@@ -484,16 +487,16 @@ impl Default for TerminalBuilder {
 }
 
 impl TerminalBuilder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         TerminalBuilder { cwd: None }
     }
 
-    pub fn set_cwd(mut self, cwd: Option<PathBuf>) -> Self {
+    pub(crate) fn set_cwd(mut self, cwd: Option<PathBuf>) -> Self {
         self.cwd = cwd;
         self
     }
 
-    pub fn build(&self, cx: &App) -> Result<PreparedTerminal> {
+    pub(crate) fn build(&self, cx: &App) -> Result<PreparedTerminal> {
         if let Some(cwd) = &self.cwd {
             // Alacritty 的 Unix 后端会忽略子进程切换工作目录时的错误。
             let metadata = std::fs::metadata(cwd)
@@ -709,7 +712,7 @@ impl Terminal {
     }
 
     /// 视图每帧调用：通知尺寸变化（行列或格宽变化才入队，合并连续 resize）。
-    pub fn set_size(&mut self, bounds: TerminalBounds, cx: &mut Context<Self>) {
+    pub(crate) fn set_size(&mut self, bounds: TerminalBounds, cx: &mut Context<Self>) {
         let old_bounds = self.last_content.terminal_bounds;
         self.last_content.terminal_bounds = bounds;
 
@@ -735,7 +738,7 @@ impl Terminal {
     }
 
     /// 视图每帧调用：排空事件队列并刷新渲染快照。
-    pub fn sync(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sync(&mut self, cx: &mut Context<Self>) {
         self.process_terminal_events(cx);
         self.last_content = alacritty::make_content(&self.term.lock(), Some(&self.last_content));
     }
@@ -811,12 +814,12 @@ impl Terminal {
     // ── 输入 ──
 
     /// 把输入字节写入 PTY（不附带 UI 状态变更）。
-    pub fn write_to_pty(&self, bytes: Vec<u8>) {
+    pub(crate) fn write_to_pty(&self, bytes: Vec<u8>) {
         self.pty_resources.notify(bytes);
     }
 
     /// 用户输入：先滚到底部并清除选择，再写入 PTY。
-    pub fn write_input(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
+    pub(crate) fn write_input(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
         self.events.push_back(InternalEvent::Scroll(Scroll::Bottom));
         self.events.push_back(InternalEvent::SetSelection(None));
         self.pty_resources.notify(bytes);
@@ -825,7 +828,7 @@ impl Terminal {
 
     // ── 滚动 ──
 
-    pub fn scroll_lines(&mut self, lines: i32, cx: &mut Context<Self>) {
+    pub(crate) fn scroll_lines(&mut self, lines: i32, cx: &mut Context<Self>) {
         self.events
             .push_back(InternalEvent::Scroll(Scroll::Delta(lines)));
         cx.notify();
@@ -833,7 +836,7 @@ impl Terminal {
 
     /// 像素滚动：触控板手势按 touch phase 处理——Started 重置累积、Moved 累积并滚动整行、Ended/Cancelled 忽略。
     /// 慢滚时每次增量小，累积跨事件进行，保证手感连续。
-    pub fn scroll_px(
+    pub(crate) fn scroll_px(
         &mut self,
         phase: gpui::TouchPhase,
         delta: Pixels,
@@ -860,7 +863,7 @@ impl Terminal {
 
     // ── 选择 ──
 
-    pub fn select_range(
+    pub(crate) fn select_range(
         &mut self,
         ty: SelectionType,
         start: SelectionPoint,
@@ -877,7 +880,7 @@ impl Terminal {
         cx.notify();
     }
 
-    pub fn update_selection(&mut self, point: SelectionPoint, cx: &mut Context<Self>) {
+    pub(crate) fn update_selection(&mut self, point: SelectionPoint, cx: &mut Context<Self>) {
         self.events.push_back(InternalEvent::UpdateSelection(point));
         cx.notify();
     }
@@ -1032,21 +1035,21 @@ impl Terminal {
     }
 
     /// 当前选择文本（来自最新渲染快照）。
-    pub fn selection_text(&self) -> Option<String> {
+    pub(crate) fn selection_text(&self) -> Option<String> {
         self.last_content.selection_text.clone()
     }
 
     // ── 动作 ──
 
     /// 把选择复制到系统剪贴板。
-    pub fn copy(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn copy(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self.selection_text() {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
         }
     }
 
     /// 把剪贴板内容粘贴进终端（bracketed paste 时加包裹）。
-    pub fn paste(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn paste(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             let bytes = if self.last_content.mode.contains(Modes::BRACKETED_PASTE) {
                 format!("\x1b[200~{text}\x1b[201~").into_bytes()
@@ -1058,12 +1061,12 @@ impl Terminal {
     }
 
     /// 清空屏幕与滚动回看。
-    pub fn clear(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
         alacritty::clear(&mut self.term.lock());
         cx.notify();
     }
 
-    pub fn tab_title(&self) -> String {
+    pub(crate) fn tab_title(&self) -> String {
         let directory_name = self
             .cwd
             .as_deref()
@@ -1073,16 +1076,16 @@ impl Terminal {
     }
 
     /// 当前工作目录。
-    pub fn working_directory(&self) -> Option<&Path> {
+    pub(crate) fn working_directory(&self) -> Option<&Path> {
         self.cwd.as_deref()
     }
 
-    pub fn last_content(&self) -> &Content {
+    pub(crate) fn last_content(&self) -> &Content {
         &self.last_content
     }
 
     /// 更新聚焦状态，向终端报告 focus in/out（focus reporting 模式）。
-    pub fn focus_terminal(&mut self, focused: bool, cx: &mut Context<Self>) {
+    pub(crate) fn focus_terminal(&mut self, focused: bool, cx: &mut Context<Self>) {
         let term = &mut *self.term.lock();
         if term.is_focused == focused {
             return;

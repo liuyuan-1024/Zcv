@@ -21,17 +21,17 @@ pub(crate) enum PathOrder {
 
 /// excerpt 与 diff 文件在组合文档中的路径身份。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct PathKey {
+pub(crate) struct PathKey {
     order: Option<PathOrder>,
     path: Arc<Path>,
 }
 
 impl PathKey {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(path: impl Into<PathBuf>) -> Self {
         Self::with_order(path, PathOrder::Natural)
     }
 
-    pub fn with_order(path: impl Into<PathBuf>, order: PathOrder) -> Self {
+    pub(crate) fn with_order(path: impl Into<PathBuf>, order: PathOrder) -> Self {
         Self {
             order: Some(order),
             path: Arc::from(path.into()),
@@ -42,7 +42,7 @@ impl PathKey {
     ///
     /// 有路径的修订/工作区来源共享文件路径；
     /// 没有文件路径时用 buffer_id 作路径标识，使匿名 Buffer 保持独立的 excerpt、锚点与实体 header 身份。
-    pub fn for_buffer(path: Option<PathBuf>, buffer_id: BufferId, order: PathOrder) -> Self {
+    pub(crate) fn for_buffer(path: Option<PathBuf>, buffer_id: BufferId, order: PathOrder) -> Self {
         match path {
             Some(path) => Self::with_order(path, order),
             None => Self::with_order(buffer_id.to_string(), order),
@@ -50,14 +50,14 @@ impl PathKey {
     }
 
     /// 全序中的最小路径；用作游标零元与空路径占位。
-    pub fn min() -> Self {
+    pub(crate) fn min() -> Self {
         Self {
             order: None,
             path: Arc::from(Path::new("")),
         }
     }
 
-    pub fn as_path(&self) -> &Path {
+    pub(crate) fn as_path(&self) -> &Path {
         &self.path
     }
 }
@@ -85,14 +85,14 @@ impl PartialOrd for PathKey {
 ///
 /// 索引一经分配不再变化；锚点用它做紧凑身份与整数比较，避免携带 PathBuf。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PathKeyIndex(u64);
+pub(crate) struct PathKeyIndex(u64);
 
 impl PathKeyIndex {
-    pub const fn new(index: u64) -> Self {
+    pub(crate) const fn new(index: u64) -> Self {
         Self(index)
     }
 
-    pub const fn get(self) -> u64 {
+    pub(crate) const fn get(self) -> u64 {
         self.0
     }
 }

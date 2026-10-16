@@ -3,12 +3,11 @@
 //! 展示快照把源文本快照与输入法标记、重命名淡化范围组合起来，供布局层消费；
 //! 它不拥有文档内容或任何编辑会话状态。
 
-use zcv_multi_buffer::MultiBufferRange;
+use zcv_multi_buffer::{MultiBufferRange, MultiBufferSnapshot};
 
 use std::ops::Range;
 use std::sync::Arc;
 
-use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::Utf16Offset;
 
 use super::input::EditorComposition;

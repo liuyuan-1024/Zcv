@@ -1,10 +1,9 @@
 //! Editor 的文件内搜索：持有搜索结果（绑定 BufferVersion），编辑后自动重搜。
 
-use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferRange, MultiBufferSnapshot};
-
 use std::ops::Range;
 use std::sync::Arc;
 
+use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferRange, MultiBufferSnapshot};
 use zcv_project::{RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult};
 use zcv_text::{Affinity, BufferVersion};
 use zcv_workspace::{Direction, SearchEvent, SearchableItem};

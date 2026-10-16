@@ -1,9 +1,8 @@
 use zcv_language::LanguageRegistry;
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferOffset, MultiBufferRange};
 
 use gpui::{TestAppContext, point, px, size};
 use zcv_actions::{ConfirmLocalRename, RenameLocal};
-use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Edit, TransactionId, TransactionMetadata};
 
 use super::common::{buffer_text, focus_editor, inject_file_diff, test_buffer};

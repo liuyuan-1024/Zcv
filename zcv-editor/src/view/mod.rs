@@ -1,7 +1,5 @@
 //! Editor View 的跨帧状态与交互。
 
-use zcv_multi_buffer::{DiffExcerptRanges, MultiBufferOffset, MultiBufferRange};
-
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use std::ops::Range;
@@ -24,8 +22,9 @@ use zcv_actions::{
 };
 use zcv_language::{AutoClosePair, BracketPair, LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{
-    DiffFile, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer,
-    MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, WordDiffs,
+    DiffExcerptRanges, DiffFile, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
+    MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferOffset, MultiBufferRange,
+    MultiBufferSnapshot, WordDiffs,
 };
 use zcv_settings::{CursorShape, SettingsStore, SoftWrapMode, TabConfig};
 use zcv_text::{

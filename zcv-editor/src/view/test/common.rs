@@ -1,10 +1,9 @@
 use zcv_language::LanguageRegistry;
-use zcv_multi_buffer::MultiBufferOffset;
+use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, DisplayHunk, MultiBufferOffset};
 
 use super::*;
 use gpui::{Bounds, Pixels, TestAppContext, VisualTestContext, point, size};
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
-use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, DisplayHunk};
 use zcv_text::{Buffer, BufferConfig};
 
 use crate::scrollbar::{SCROLLBAR_WIDTH, thumb_geometry};

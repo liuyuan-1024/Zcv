@@ -5,12 +5,12 @@
 //! 锚点按当前 MultiBufferSnapshot 解析，选区自动跟随；
 //! Selection/SelectionSet 是编辑算法与历史快照共用的 Editor 领域原语。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferSnapshot};
+use zcv_multi_buffer::{
+    MultiBufferAnchor, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
+};
 use zcv_project::{RegexSearchResult, SearchResult, regex_replacement_for_match};
 use zcv_text::{
     ByteOffset, CoordinateError, Edit, PositionMap, TextError, TextRead, TextResult, TransactionId,

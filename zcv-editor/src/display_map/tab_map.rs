@@ -222,12 +222,12 @@ pub(crate) struct TabPointCursor<'a> {
 }
 
 impl TabPointCursor<'_> {
-    pub fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         self.row = None;
         self.line_text = None;
     }
 
-    pub fn map(&mut self, point: ProjectedPoint) -> TabPointMapping {
+    pub(super) fn map(&mut self, point: ProjectedPoint) -> TabPointMapping {
         let row = point.line().get();
         if point.column().get() == 0 {
             return TabPointMapping {

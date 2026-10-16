@@ -24,9 +24,10 @@ mod buffer_search;
 mod error;
 mod versioned;
 
+pub(crate) use buffer_search::PreparedSearchQuery;
 pub use buffer_search::{
-    PreparedSearchQuery, RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult,
-    regex_replacement_for_match, regex_replacements_in_text,
+    RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult, regex_replacement_for_match,
+    regex_replacements_in_text,
 };
 
 const CONTEXT_LINES: usize = 2;

@@ -10,7 +10,7 @@ use zcv_git::GraphCommit;
 ///
 /// 以行中央的圆点为界：`MergeIn` 位于上半行、`ForkOut` 位于下半行、`Pass` 贯穿整行。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GraphLine {
+pub(crate) enum GraphLine {
     /// 竖直贯穿整行（行顶到行底）：一条与本提交无关、仍在等待其父出现的边。
     Pass { lane: usize, color: usize },
     /// 上半行汇入：从行顶的 `from_lane` 连到中央圆点（`from_lane == dot_lane` 时为竖直上半）。
@@ -21,7 +21,7 @@ pub enum GraphLine {
 
 /// 单个提交的逐行布局结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GraphRowLayout {
+pub(crate) struct GraphRowLayout {
     /// 圆点所在 lane。
     pub dot_lane: usize,
     /// 圆点及其第一父边的配色索引（视图侧对配色板长度取模）。
@@ -44,13 +44,13 @@ struct LaneState {
 /// 按 `git log` 输出顺序逐个 [`push`](Self::push) 提交，得到每行的绘制指令；
 /// 分批加载时复用同一实例，第二批首提交即可匹配第一批末尾留下的等待边。
 #[derive(Clone, Debug, Default)]
-pub struct GraphLayoutState {
+pub(crate) struct GraphLayoutState {
     lanes: Vec<LaneState>,
     next_color: usize,
 }
 
 impl GraphLayoutState {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -75,7 +75,7 @@ impl GraphLayoutState {
     }
 
     /// 处理一个提交，返回其所在行的绘制指令，并推进 lane 状态到下一行。
-    pub fn push(&mut self, commit: &GraphCommit) -> GraphRowLayout {
+    pub(crate) fn push(&mut self, commit: &GraphCommit) -> GraphRowLayout {
         // 等待本提交出现的 lane：即把本提交列为父、已画出但尚未落地的边。
         let incoming: Vec<usize> = self
             .lanes

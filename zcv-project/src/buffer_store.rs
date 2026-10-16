@@ -11,8 +11,7 @@ use crate::translate_path;
 use gpui::{App, AppContext, Entity, EntityId, WeakEntity};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
-use zcv_text::Snapshot;
-use zcv_text::{Buffer, BufferConfig};
+use zcv_text::{Buffer, BufferConfig, Snapshot};
 
 use crate::text_file::{BufferLoadError, decode_to_string};
 

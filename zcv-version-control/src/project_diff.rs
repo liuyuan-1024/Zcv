@@ -23,8 +23,9 @@ use zcv_git::{
     ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode, parse_conflict_regions,
 };
 use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, DiffHunkSource};
-use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
+use zcv_multi_buffer::{
+    DiffExcerptRanges, DiffFile, DiffHunkSource, ExcerptLocation, ExcerptRange, MultiBuffer,
+};
 use zcv_path::{AbsolutePathBuf, compare_tree_entries};
 use zcv_project::{FileSaveConflictPolicy, GitStoreEvent, Project};
 use zcv_search::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};

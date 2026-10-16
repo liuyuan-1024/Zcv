@@ -1,13 +1,11 @@
 //! 自动闭合配对行为测试：自动补全闭合符、跳过已存在闭合符、包裹选区、退格删除整对与撤销回放。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
-
 use std::path::PathBuf;
 
 use gpui::{AppContext, BorrowAppContext, EntityInputHandler, TestAppContext, VisualTestContext};
 use zcv_actions::Backspace;
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
+use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferOffset, MultiBufferRange};
 use zcv_text::{Buffer, BufferConfig};
 
 use super::Editor;

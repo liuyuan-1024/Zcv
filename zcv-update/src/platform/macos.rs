@@ -13,11 +13,11 @@ use smol::process::Command;
 use super::{ApplyBackend, StagedUpdate, UpdateInstallation};
 use crate::UpdateTransaction;
 
-pub const APP_DIRECTORY_NAME: &str = "Zcv.app";
-pub const APP_EXECUTABLE_RELATIVE_PATH: &str = "Contents/MacOS/Zcv";
-pub const HELPER_RELATIVE_PATH: &str = "Contents/Helpers/zcv-update-helper";
+pub(crate) const APP_DIRECTORY_NAME: &str = "Zcv.app";
+pub(super) const APP_EXECUTABLE_RELATIVE_PATH: &str = "Contents/MacOS/Zcv";
+pub(super) const HELPER_RELATIVE_PATH: &str = "Contents/Helpers/zcv-update-helper";
 
-pub fn from_process_path(process_path: &Path) -> Result<UpdateInstallation> {
+pub(super) fn from_process_path(process_path: &Path) -> Result<UpdateInstallation> {
     ensure!(
         process_path.file_name().and_then(|name| name.to_str()) == Some(APP_DIRECTORY_NAME),
         "当前 app bundle 不是 Zcv.app"
@@ -32,7 +32,7 @@ pub fn from_process_path(process_path: &Path) -> Result<UpdateInstallation> {
     })
 }
 
-pub fn archive_entry_is_allowed(name: &str) -> bool {
+pub(crate) fn archive_entry_is_allowed(name: &str) -> bool {
     name == APP_DIRECTORY_NAME
         || name.starts_with(&format!("{APP_DIRECTORY_NAME}/"))
         || name == "__MACOSX"
@@ -41,7 +41,7 @@ pub fn archive_entry_is_allowed(name: &str) -> bool {
         || name.starts_with("__MACOSX/Zcv.app/")
 }
 
-pub fn validate_extracted_app(app: &Path) -> Result<()> {
+pub(crate) fn validate_extracted_app(app: &Path) -> Result<()> {
     ensure!(
         app.join(APP_EXECUTABLE_RELATIVE_PATH).is_file(),
         "更新包缺少应用可执行文件"
@@ -66,7 +66,7 @@ pub fn prepare_helper(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
     fs::rename(temporary, destination)
         .with_context(|| format!("无法提交文件 {}", destination.display()))?;
     Ok(())
@@ -101,7 +101,11 @@ pub fn verify_app(app: &Path, expected_version: &Version) -> Result<()> {
     Ok(())
 }
 
-pub async fn extract_archive(archive: &Path, destination: &Path, _bytes: Vec<u8>) -> Result<()> {
+pub(crate) async fn extract_archive(
+    archive: &Path,
+    destination: &Path,
+    _bytes: Vec<u8>,
+) -> Result<()> {
     let output = Command::new("/usr/bin/ditto")
         .args([OsStr::new("-x"), OsStr::new("-k")])
         .arg(archive)

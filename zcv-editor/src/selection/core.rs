@@ -14,7 +14,7 @@ use zcv_text::{Affinity, TextResult};
 /// 两端相等时表示 caret。
 /// 垂直移动时持久保留的目标像素横坐标：短行可钳制光标，但下一次垂直移动仍沿原横坐标定位。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Selection<T = MultiBufferOffset> {
+pub(crate) struct Selection<T = MultiBufferOffset> {
     start: T,
     end: T,
     reversed: bool,
@@ -23,7 +23,7 @@ pub struct Selection<T = MultiBufferOffset> {
 
 impl<T: Copy> Selection<T> {
     /// 由固定端（tail）与活动端（head）构造，方向由两者次序决定。
-    pub fn new(tail: T, head: T) -> Self
+    pub(crate) fn new(tail: T, head: T) -> Self
     where
         T: Ord,
     {
@@ -35,7 +35,7 @@ impl<T: Copy> Selection<T> {
     }
 
     /// 零宽 caret。
-    pub const fn caret(offset: T) -> Self {
+    pub(crate) const fn caret(offset: T) -> Self {
         Self::from_parts(offset, offset, false, None)
     }
 
@@ -49,29 +49,29 @@ impl<T: Copy> Selection<T> {
         }
     }
 
-    pub const fn start(self) -> T {
+    pub(crate) const fn start(self) -> T {
         self.start
     }
 
-    pub const fn end(self) -> T {
+    pub(crate) const fn end(self) -> T {
         self.end
     }
 
-    pub const fn reversed(self) -> bool {
+    pub(crate) const fn reversed(self) -> bool {
         self.reversed
     }
 
     /// 活动端：reversed 时为 start，否则为 end。
-    pub fn head(self) -> T {
+    pub(crate) fn head(self) -> T {
         if self.reversed { self.start } else { self.end }
     }
 
     /// 固定端：reversed 时为 end，否则为 start。
-    pub fn tail(self) -> T {
+    pub(crate) fn tail(self) -> T {
         if self.reversed { self.end } else { self.start }
     }
 
-    pub fn is_caret(self) -> bool
+    pub(crate) fn is_caret(self) -> bool
     where
         T: PartialEq,
     {
@@ -79,27 +79,27 @@ impl<T: Copy> Selection<T> {
     }
 
     /// 设置垂直移动持久保留的目标像素横坐标；None 表示从当前位置推导。
-    pub const fn with_goal(mut self, goal: Option<f64>) -> Self {
+    pub(crate) const fn with_goal(mut self, goal: Option<f64>) -> Self {
         self.goal = goal;
         self
     }
 
     /// 垂直移动持久保留的目标像素横坐标；None 表示未设置。
-    pub const fn goal(self) -> Option<f64> {
+    pub(crate) const fn goal(self) -> Option<f64> {
         self.goal
     }
 }
 
 impl<T: Copy + Ord> Selection<T> {
     /// 移动活动端到新位置，固定端不变，方向随之更新。
-    pub fn with_head(self, head: T) -> Self {
+    pub(crate) fn with_head(self, head: T) -> Self {
         let tail = self.tail();
         Self::new(tail, head).with_goal(self.goal)
     }
 }
 
 impl Selection<MultiBufferOffset> {
-    pub fn range(self) -> MultiBufferRange {
+    pub(crate) fn range(self) -> MultiBufferRange {
         MultiBufferRange::new(self.start, self.end)
             .expect("Selection 的 start 和 end 由有序端点构造，必须满足 start <= end")
     }

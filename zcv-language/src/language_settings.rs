@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use gpui::App;
-pub use zcv_settings::{AutoIndentMode, IndentGuideSettings};
-use zcv_settings::{SettingsStore, TabConfig, UserSettings};
+pub use zcv_settings::IndentGuideSettings;
+use zcv_settings::{AutoIndentMode, SettingsStore, TabConfig, UserSettings};
 
 /// 一门语言解析后的编辑器设置。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

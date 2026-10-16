@@ -9,10 +9,6 @@
 //! 每一层都持有自己的 Map 和不可变 Snapshot；
 //! 上一层 Snapshot 固化下一层 Snapshot，从而让一次渲染只能看到一条内部一致的显示状态。
 
-use zcv_multi_buffer::{
-    MultiBufferAnchor, MultiBufferOffset, MultiBufferPositionCursor, MultiBufferRange,
-};
-
 mod block_map;
 mod chunk;
 mod decorations;
@@ -41,13 +37,14 @@ pub(crate) use chunk::{
 };
 #[cfg(test)]
 pub(crate) use chunk::{ChunkSource, ChunkText, WrapChunks};
+pub(crate) use decorations::EditorHunkMarkerKind;
 #[cfg(test)]
 pub(crate) use decorations::hunk_rendering;
 pub(crate) use decorations::{
     DiffDecorationSnapshot, DisplayDecorations, SearchDecorationInput, SearchDecorationSnapshot,
     diff_row_for_row, is_hollow_hunk,
 };
-pub use decorations::{EditorHunk, EditorHunkMarkerKind, EditorHunkPart, HunkControlTarget};
+pub use decorations::{EditorHunk, EditorHunkPart, HunkControlTarget};
 pub(crate) use display_width::DisplayColumn;
 use edit::ProjectionEdit;
 use error::DisplayMapResult;
@@ -64,7 +61,8 @@ pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 use wrap_map::{WrapEdit, WrapMap, WrapPointCursor, WrapSnapshot};
 use zcv_language::HighlightSpan;
 use zcv_multi_buffer::{
-    DiffDisplaySnapshot, ExcerptSnapshot, MultiBuffer, MultiBufferSnapshot, MultiBufferSource,
+    DiffDisplaySnapshot, ExcerptSnapshot, MultiBuffer, MultiBufferAnchor, MultiBufferOffset,
+    MultiBufferPositionCursor, MultiBufferRange, MultiBufferSnapshot, MultiBufferSource,
     MultiBufferSubscription,
 };
 use zcv_text::{
@@ -920,7 +918,7 @@ impl<'a> DisplayPointConverter<'a> {
         }
     }
 
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.buffer.reset();
         self.fold.reset();
         self.tab.reset();
@@ -929,7 +927,10 @@ impl<'a> DisplayPointConverter<'a> {
         self.previous_end = None;
     }
 
-    pub fn map(&mut self, range: MultiBufferRange) -> DisplayMapResult<Option<DisplayRange>> {
+    pub(crate) fn map(
+        &mut self,
+        range: MultiBufferRange,
+    ) -> DisplayMapResult<Option<DisplayRange>> {
         if self
             .previous_end
             .is_some_and(|previous_end| range.start() < previous_end)

@@ -72,19 +72,19 @@ impl EditEvent {
         }
     }
 
-    pub fn transaction_id(&self) -> TransactionId {
+    pub(crate) fn transaction_id(&self) -> TransactionId {
         self.transaction_id
     }
 
-    pub fn old_version(&self) -> BufferVersion {
+    pub(crate) fn old_version(&self) -> BufferVersion {
         self.operation.old_version()
     }
 
-    pub fn new_version(&self) -> BufferVersion {
+    pub(crate) fn new_version(&self) -> BufferVersion {
         self.operation.new_version()
     }
 
-    pub fn operation(&self) -> &EditOperation {
+    pub(crate) fn operation(&self) -> &EditOperation {
         &self.operation
     }
 }

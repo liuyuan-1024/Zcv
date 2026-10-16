@@ -14,7 +14,7 @@ use super::Selection;
 
 /// 归一化后的多选区 / 多光标集合。
 #[derive(Debug, Clone, PartialEq)]
-pub struct SelectionSet<T = MultiBufferOffset> {
+pub(crate) struct SelectionSet<T = MultiBufferOffset> {
     selections: Arc<[Selection<T>]>,
     primary_index: usize,
 }
@@ -30,41 +30,41 @@ impl<T: Copy> SelectionSet<T> {
         }
     }
 
-    pub fn caret(offset: T) -> Self {
+    pub(crate) fn caret(offset: T) -> Self {
         Self {
             selections: Arc::from(vec![Selection::caret(offset)]),
             primary_index: 0,
         }
     }
 
-    pub fn as_slice(&self) -> &[Selection<T>] {
+    pub(crate) fn as_slice(&self) -> &[Selection<T>] {
         &self.selections
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.selections.len()
     }
 
-    pub fn primary_index(&self) -> usize {
+    pub(crate) fn primary_index(&self) -> usize {
         self.primary_index
     }
 
-    pub fn primary(&self) -> &Selection<T> {
+    pub(crate) fn primary(&self) -> &Selection<T> {
         &self.selections[self.primary_index]
     }
 }
 
 impl<T: Copy + Ord + Default> SelectionSet<T> {
     /// 空集合会被规范化为文首单 caret。
-    pub fn new(selections: Vec<Selection<T>>) -> Self {
+    pub(crate) fn new(selections: Vec<Selection<T>>) -> Self {
         Self::new_with_primary(selections, 0)
     }
 
-    pub fn new_with_primary(selections: Vec<Selection<T>>, primary_index: usize) -> Self {
+    pub(crate) fn new_with_primary(selections: Vec<Selection<T>>, primary_index: usize) -> Self {
         normalize_selections(selections, primary_index)
     }
 
-    pub fn normalized(&self) -> Self {
+    pub(crate) fn normalized(&self) -> Self {
         // 归一化是纯函数；如果当前已经归一化，复制 Arc 即可（外部观察一致）。
         Self::new_with_primary(
             self.selections.iter().copied().collect(),
@@ -74,7 +74,7 @@ impl<T: Copy + Ord + Default> SelectionSet<T> {
 }
 
 impl SelectionSet<MultiBufferOffset> {
-    pub fn map_through_position_map(&self, position_map: &PositionMap) -> Self {
+    pub(crate) fn map_through_position_map(&self, position_map: &PositionMap) -> Self {
         // 批量映射：收集全部端点排序后单遍推进，替代逐 selection 各自线性扫描，映射成本从 O(A×E) 降为 O(A log A + E)。
         let selection_count = self.selections.len();
         let mut points: Vec<(MultiBufferOffset, usize, bool)> =

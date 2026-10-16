@@ -1,4 +1,4 @@
-use zcv_multi_buffer::MultiBufferOffset;
+use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer, MultiBufferOffset};
 
 use gpui::{
     Context, Entity, IntoElement, Modifiers, MouseButton, Pixels, Render, ScrollDelta,
@@ -14,7 +14,6 @@ impl Render for EditorInWindow {
     }
 }
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
-use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer};
 use zcv_text::{Line, LogicalColumn, Position};
 
 use super::common::focus_editor;

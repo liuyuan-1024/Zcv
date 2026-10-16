@@ -1,7 +1,5 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
-use zcv_multi_buffer::{IndentGuide, MultiBufferOffset, MultiBufferRange};
-
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -21,7 +19,7 @@ use zcv_actions::OpenExcerpts;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_keymap::display_shortcut;
 use zcv_language::BracketPair;
-use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_multi_buffer::{IndentGuide, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
 use zcv_settings::{CursorShape, IndentGuideSettings, SettingsStore, UserSettings};
 use zcv_text::Line;
 use zcv_theme::{color, fixed, scale};

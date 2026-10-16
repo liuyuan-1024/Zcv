@@ -21,8 +21,7 @@ use zcv_actions::{
 use zcv_git::GraphCommit;
 
 use crate::graph::{GraphLayoutState, GraphLine, GraphRowLayout};
-use zcv_project::SearchQuery;
-use zcv_project::{GitStoreEvent, Project};
+use zcv_project::{GitStoreEvent, Project, SearchQuery};
 use zcv_search::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
 use zcv_theme::color::{self, ThemeColors};
 use zcv_theme::{fixed, scale, typography};

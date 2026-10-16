@@ -15,9 +15,9 @@ zcv-language::LanguageBuffer（直接持有 zcv-text::Buffer）
         ↓
 zcv-multi-buffer::MultiBuffer
         ↓
-zcv-editor::Editor
-        ↓
 DisplayMap
+        ↓
+zcv-editor::Editor
         ↓
 EditorElement
 ```

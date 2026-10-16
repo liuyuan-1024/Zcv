@@ -23,7 +23,7 @@ mod window_controls;
 
 use window_controls::render as render_window_controls;
 
-pub type TopBarCallback = Rc<dyn Fn(&mut Window, &mut App)>;
+pub(crate) type TopBarCallback = Rc<dyn Fn(&mut Window, &mut App)>;
 
 #[derive(Clone)]
 pub struct TopBarCallbacks {

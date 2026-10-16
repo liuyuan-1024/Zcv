@@ -1,12 +1,10 @@
 //! Editor 选区编辑行为测试。
 
-use zcv_multi_buffer::MultiBufferOffset;
-
 use std::path::PathBuf;
 
 use gpui::{AppContext, TestAppContext};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
+use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferOffset};
 use zcv_text::{Buffer, BufferConfig};
 
 use super::Editor;

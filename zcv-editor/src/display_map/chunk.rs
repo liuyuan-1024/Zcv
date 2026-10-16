@@ -10,8 +10,6 @@
 //! 基础文本 chunk 经样式与 tab 变换，产出带样式与 is_tab 标记的渲染 chunk；
 //! 渲染端逐 chunk 生成 TextRun 后统一 shape。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
-
 use std::borrow::Cow;
 use std::ops::Range;
 
@@ -19,7 +17,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use gpui::{HighlightStyle, UnderlineStyle, px};
 use zcv_language::HighlightSpan;
-use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
 use zcv_text::Line;
 
 use super::block_map::{BlockRow, BlockRows, DisplayBlock};
@@ -27,7 +25,6 @@ use super::fold_map::{ChunkRenderer, FoldRowSegment, FoldRowSegmentKind, Project
 use super::tab_map::advance_display_column;
 use super::wrap_map::WrapRowKind;
 use super::{DisplayRow, DisplaySnapshot};
-use zcv_multi_buffer::ExcerptSnapshot;
 
 /// chunk 文本字节上限。
 pub(crate) const CHUNK_SIZE: usize = 128;

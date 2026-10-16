@@ -7,8 +7,6 @@
 //! 折叠段不再产生投影行，合并行由输出变换自然给出（anchor 文本 + 占位符 + 闭合行尾段）。
 //! 折叠编辑按旧/新变换树映射到精确的输出字节区间，不依赖全局行数守恒锚点。
 
-use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
-
 use std::any::TypeId;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -21,8 +19,9 @@ use gpui::{AnyElement, App, Pixels, div};
 use sum_tree::{
     Bias as TreeBias, ContextLessSummary, Cursor, Dimension, Dimensions, Item, SumTree,
 };
-use zcv_multi_buffer::MBTextSummary;
-use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_multi_buffer::{
+    MBTextSummary, MultiBufferAnchor, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
+};
 use zcv_text::{Affinity, CoordinateError, Line, LineRange, LogicalColumn, Position};
 
 use super::edit::ProjectionEdit;
@@ -1072,11 +1071,15 @@ pub(crate) struct FoldPointCursor<'a> {
 }
 
 impl FoldPointCursor<'_> {
-    pub fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         self.cursor.reset();
     }
 
-    pub fn map(&mut self, point: LogicalPoint, bias: FoldBias) -> DisplayMapResult<ProjectedPoint> {
+    pub(super) fn map(
+        &mut self,
+        point: LogicalPoint,
+        bias: FoldBias,
+    ) -> DisplayMapResult<ProjectedPoint> {
         let input_row = point.line.get();
         if self.cursor.did_seek() {
             self.cursor

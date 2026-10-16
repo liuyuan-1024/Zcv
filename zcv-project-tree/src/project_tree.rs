@@ -20,9 +20,7 @@ use zcv_editor::Editor;
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_project::{Project, WorktreeEntry, translate_path};
 use zcv_theme::{color, fixed, scale};
-use zcv_ui::ConfirmOverlay;
-use zcv_ui::Scrollbar;
-use zcv_ui::{RowClickAction, TreeState, drag_autoscroll_delta};
+use zcv_ui::{ConfirmOverlay, RowClickAction, Scrollbar, TreeState, drag_autoscroll_delta};
 use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace, typography_for_window};
 
 use zcv_settings::SettingsStore;

@@ -4730,7 +4730,7 @@ pub(crate) enum Capability {
 }
 
 impl Capability {
-    pub fn is_read_only(self) -> bool {
+    pub(crate) fn is_read_only(self) -> bool {
         matches!(self, Capability::ReadOnly)
     }
 }

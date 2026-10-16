@@ -8,14 +8,14 @@
 //! DisplayMap 在同一显示版本上把输入投影为显示行坐标并随快照保存；
 //! EditorElement 只从 DisplaySnapshot 按视口消费，不持有显示坐标副本。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
-
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 use gpui::SharedString;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
-use zcv_multi_buffer::{DiffHunkSource, ResolvedDiffHunk, WordDiffs};
+use zcv_multi_buffer::{
+    DiffHunkSource, MultiBufferOffset, MultiBufferRange, ResolvedDiffHunk, WordDiffs,
+};
 use zcv_text::{ByteOffset, Line, TextRange};
 
 use crate::scrollbar::ScrollbarMarkerKind;

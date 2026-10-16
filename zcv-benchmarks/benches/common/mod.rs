@@ -32,7 +32,7 @@ fn rust_document(target_bytes: usize) -> String {
 /// 返回指定大小的固定代表性 Rust 语料。
 ///
 /// 同一基准进程内每种大小只生成一次；缓存只在进程存续期间存在，且不属于计时区间。
-pub fn cached_rust_document(target_bytes: usize) -> Arc<str> {
+pub(crate) fn cached_rust_document(target_bytes: usize) -> Arc<str> {
     static DOCUMENTS: OnceLock<Mutex<HashMap<usize, Arc<str>>>> = OnceLock::new();
 
     let documents = DOCUMENTS.get_or_init(|| Mutex::new(HashMap::new()));

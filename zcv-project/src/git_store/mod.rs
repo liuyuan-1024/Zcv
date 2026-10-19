@@ -677,12 +677,12 @@ impl GitStore {
             })
     }
 
-    /// 把当前 diff 快照中与操作范围相交的 hunk 转成确定的字节替换并交后台执行。
+    /// 按当前 diff 快照中精确匹配的 hunk 源范围生成确定编辑并交后台执行。
     ///
     /// 操作范围是 `Anchor`：落后于最新工作区版本的锚点在当前快照上重新定位，不因版本不相等而丢弃。
     /// 操作视图立即抑制目标 hunk；Stage 另向已打开的完整差异发布暂存中状态。
     /// Stage/Unstage 编辑合并进该路径的乐观 index 批次，再派生完整 index 文本写盘；Restore 把编辑应用到捕获的工作区文本。
-    /// 这里没有"基准分叉就报错让用户刷新"的路径：对当前快照已无相交 hunk 时是静默空操作，由权威刷新收敛投影。
+    /// 这里没有"基准分叉就报错让用户刷新"的路径：对当前快照已无匹配 hunk 时是静默空操作，由权威刷新收敛投影。
     fn apply_hunk_edits(
         &mut self,
         operation: GitHunkOperation,
@@ -697,7 +697,7 @@ impl GitStore {
             let base_text = diff_ref
                 .base_source()
                 .map(|base| Arc::<str>::from(snapshot_text(&base.read(cx).text_snapshot())));
-            // 传入范围与候选 hunk 都在当前工作区快照上解析；
+            // 按完整源范围精确匹配 hunk，避免闭区间相交把终点上的删除块一并操作；
             // 使用未过滤 pending 的原始 hunk，重复暂存同一块仍能找到它。
             let mut hunks = Vec::new();
             for range in &ranges {
@@ -709,13 +709,24 @@ impl GitStore {
                 };
                 for hunk in diff_ref
                     .snapshot()
-                    .hunks_intersecting_working_range(start..end, &working_text)
+                    .hunks_matching_working_range(start..end, &working_text)
                 {
                     hunks.push(hunk.clone());
                 }
             }
-            hunks.sort_by_key(|hunk| hunk.buffer_range.start.offset());
-            hunks.dedup_by(|a, b| a.buffer_range.start.offset() == b.buffer_range.start.offset());
+            hunks.sort_by_key(|hunk| {
+                (
+                    hunk.buffer_range.start.offset(),
+                    hunk.buffer_range.end.offset(),
+                    hunk.diff_base_byte_range.start,
+                    hunk.diff_base_byte_range.end,
+                )
+            });
+            hunks.dedup_by(|a, b| {
+                a.buffer_range.start.offset() == b.buffer_range.start.offset()
+                    && a.buffer_range.end.offset() == b.buffer_range.end.offset()
+                    && a.diff_base_byte_range == b.diff_base_byte_range
+            });
 
             let mut edits = Vec::new();
             let mut pending = Vec::new();
@@ -818,13 +829,24 @@ impl GitStore {
                     hunks.extend(
                         uncommitted
                             .snapshot()
-                            .hunks_intersecting_working_range(start..end, &working)
+                            .hunks_overlapping_working_range(start..end, &working)
                             .filter(|hunk| hunk.staging != DiffHunkStaging::Staged)
                             .cloned(),
                     );
                 }
-                hunks.sort_by_key(|hunk| hunk.buffer_range.start.offset());
-                hunks.dedup_by(|left, right| left.buffer_range.start == right.buffer_range.start);
+                hunks.sort_by_key(|hunk| {
+                    (
+                        hunk.buffer_range.start.offset(),
+                        hunk.buffer_range.end.offset(),
+                        hunk.diff_base_byte_range.start,
+                        hunk.diff_base_byte_range.end,
+                    )
+                });
+                hunks.dedup_by(|left, right| {
+                    left.buffer_range.start.offset() == right.buffer_range.start.offset()
+                        && left.buffer_range.end.offset() == right.buffer_range.end.offset()
+                        && left.diff_base_byte_range == right.diff_base_byte_range
+                });
                 hunks
                     .iter()
                     .map(|hunk| PendingHunk::set_staging(hunk, working.version(), true))

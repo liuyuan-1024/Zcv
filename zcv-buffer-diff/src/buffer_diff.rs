@@ -80,11 +80,11 @@ pub trait DiffOperations: Send + Sync {
     fn supports_unstaging(&self) -> bool;
     /// 是否支持用 index 内容还原工作区变更块（unstaged diff）。
     fn supports_restore(&self) -> bool;
-    /// 暂存工作区变更块（unstaged diff：base=index，working=工作区）。
+    /// 暂存工作区变更块（unstaged diff：base=index，working=工作区）。每个范围必须是对应 hunk 的完整源范围。
     fn stage(&self, diff: Entity<BufferDiff>, ranges: Vec<Range<Anchor>>, cx: &mut App);
-    /// 取消暂存已暂存变更块（staged diff：base=HEAD，working=index）。
+    /// 取消暂存已暂存变更块（staged diff：base=HEAD，working=index）。每个范围必须是对应 hunk 的完整源范围。
     fn unstage(&self, diff: Entity<BufferDiff>, ranges: Vec<Range<Anchor>>, cx: &mut App);
-    /// 用 index 内容还原工作区变更块（unstaged diff）。
+    /// 用 index 内容还原工作区变更块（unstaged diff）。每个范围必须是对应 hunk 的完整源范围。
     fn restore(&self, diff: Entity<BufferDiff>, ranges: Vec<Range<Anchor>>, cx: &mut App);
 }
 
@@ -272,6 +272,51 @@ impl BufferDiffSnapshot {
                     return true;
                 };
                 summary_start <= range.end && summary_end >= range.start
+            })
+    }
+
+    /// 查询实际覆盖 working 字节范围的 hunks；相邻边界不算相交。
+    ///
+    /// 空范围表示一个具体位置，只匹配该位置上的空 hunk 或包含该位置的非空 hunk。
+    pub fn hunks_overlapping_working_range<'a>(
+        &'a self,
+        range: Range<ByteOffset>,
+        working: &'a Snapshot,
+    ) -> impl 'a + Iterator<Item = &'a DiffHunk> {
+        self.hunks_intersecting_working_range(range.clone(), working)
+            .filter(move |hunk| {
+                let (Ok(start), Ok(end)) = (
+                    hunk.buffer_range.start.resolve_in(working),
+                    hunk.buffer_range.end.resolve_in(working),
+                ) else {
+                    return false;
+                };
+                if range.is_empty() {
+                    if start == end {
+                        start == range.start
+                    } else {
+                        start <= range.start && range.start < end
+                    }
+                } else if start == end {
+                    range.start <= start && start < range.end
+                } else {
+                    start < range.end && range.start < end
+                }
+            })
+    }
+
+    /// 精确匹配 working 快照中的 hunk 源范围。
+    ///
+    /// Git hunk 按钮传入完整 hunk 范围；闭区间相交查询会额外命中终点上的零长度删除 hunk。
+    pub fn hunks_matching_working_range<'a>(
+        &'a self,
+        range: Range<ByteOffset>,
+        working: &'a Snapshot,
+    ) -> impl 'a + Iterator<Item = &'a DiffHunk> {
+        self.hunks_intersecting_working_range(range.clone(), working)
+            .filter(move |hunk| {
+                hunk.buffer_range.start.resolve_in(working).ok() == Some(range.start)
+                    && hunk.buffer_range.end.resolve_in(working).ok() == Some(range.end)
             })
     }
 

@@ -113,6 +113,25 @@ async fn ime_cursor_bounds(cx: &mut TestAppContext) {
     assert!(f32::from(bounds.origin.y) >= 0.);
 }
 
+/// 焦点先于首次挂载到达视图时，首次注册监听仍要同步到终端状态机。
+#[gpui::test]
+async fn focus_before_first_render_is_synchronized_to_terminal(cx: &mut TestAppContext) {
+    let terminal = build_terminal(cx);
+    let terminal_for_view = terminal.clone();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let view = TerminalView::new(terminal_for_view, cx);
+        let focus = view.focus_handle();
+        window.focus(&focus, cx);
+        view
+    });
+    cx.run_until_parked();
+
+    assert!(
+        cx.read_entity(&terminal, |terminal, _| terminal.term.lock().is_focused),
+        "终端状态机应从首次挂载时的权威焦点句柄同步聚焦状态"
+    );
+}
+
 /// 光标与焦点绑定：失焦隐藏；聚焦时（终端未表态）默认闪烁可见。
 #[gpui::test]
 async fn cursor_focus_binding(cx: &mut TestAppContext) {

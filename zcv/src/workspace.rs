@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use gpui::{
-    App, AsyncApp, Context, Entity, Focusable, PromptLevel, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowOptions, point, prelude::*, px, size,
+    App, AsyncApp, Context, Entity, PromptLevel, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    WindowOptions, point, prelude::*, px, size,
 };
 use zcv_actions::{
     DecreaseContentFontSize, DecreaseUiFontSize, FocusGlobalSearch, GitFetch, GitPull, GitPush,
@@ -27,7 +27,7 @@ use zcv_project::{
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_theme::{ThemeChoice, typography};
 use zcv_workspace::{
-    ActivityIndicator, Dock, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
+    ActivityIndicator, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
     PaneEvent, PanelButtons, PreviewToolbar, ToastAction, ToastKind, TopBar, TopBarCallbacks,
     Workspace, add_to_recent, load_window_bounds, save_window_bounds,
 };
@@ -283,22 +283,13 @@ fn initialize_common_workspace(
     workspace.register_panel(outline.clone(), DockPosition::Left, window, cx);
     workspace.register_panel(terminal, DockPosition::Bottom, window, cx);
 
-    // 新建终端：先创建再确保面板可见，避免面板激活时的懒创建重复生成终端。
+    // 新建终端：先创建再打开面板，避免面板激活时的懒创建重复生成终端。
     workspace.register_action(move |workspace, _: &NewTerminal, window, cx| {
         let created = terminal_for_new.update(cx, |panel, cx| panel.new_terminal(window, cx));
         if !created {
             return;
         }
-        let bottom_dock = workspace.dock(DockPosition::Bottom).clone();
-        bottom_dock.update(cx, |dock, cx| {
-            let Some(index) = dock.panel_index_for_persistent_name("terminal") else {
-                return;
-            };
-            if !dock.is_panel_active(index) {
-                dock.activate_panel(index, window, cx);
-                dock.set_open(true, window, cx);
-            }
-        });
+        workspace.open_panel("terminal", window, cx);
     });
 
     workspace.register_action(|workspace, _: &RestartToUpdate, window, cx| {
@@ -400,26 +391,6 @@ fn initialize_common_workspace(
             toolbar.add_item(preview_toolbar, window, cx);
         });
     });
-
-    for dock in [
-        workspace.dock(DockPosition::Left).clone(),
-        workspace.dock(DockPosition::Right).clone(),
-        workspace.dock(DockPosition::Bottom).clone(),
-    ] {
-        dock.update(cx, |dock: &mut Dock, cx: &mut Context<Dock>| {
-            let focus = dock.focus_handle(cx);
-            let sub = cx.on_focus(
-                &focus,
-                window,
-                |dock: &mut Dock, window: &mut Window, cx: &mut Context<Dock>| {
-                    if let Some(panel) = dock.visible_panel() {
-                        window.focus(&panel.focus_handle(cx), cx);
-                    }
-                },
-            );
-            dock.add_subscription(sub);
-        });
-    }
 }
 
 /// 装配 Workspace：顶栏注入、面板/状态项注册、订阅接线。

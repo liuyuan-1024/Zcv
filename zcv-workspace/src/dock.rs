@@ -97,8 +97,7 @@ pub struct Dock {
     focus: FocusHandle,
     /// 左右 dock 互为 sibling，拖拽时协调尺寸。
     sibling: Option<WeakEntity<Dock>>,
-    /// 生命周期相关订阅。
-    subscriptions: Vec<Subscription>,
+    _focus_subscription: Subscription,
 }
 
 impl Dock {
@@ -108,9 +107,16 @@ impl Dock {
         panels: Vec<Arc<dyn PanelHandle>>,
         initial_size: Pixels,
         serialized_dock: Option<DockData>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let active_panel_index = if panels.is_empty() { None } else { Some(0) };
+        let focus = cx.focus_handle();
+        let focus_subscription = cx.on_focus(&focus, window, |dock, window, cx| {
+            if let Some(panel) = dock.visible_panel() {
+                window.focus(&panel.activation_focus_handle(cx), cx);
+            }
+        });
         Self {
             position,
             is_open: false,
@@ -118,9 +124,9 @@ impl Dock {
             active_panel_index,
             panels,
             serialized_dock,
-            focus: cx.focus_handle(),
+            focus,
             sibling: None,
-            subscriptions: Vec::new(),
+            _focus_subscription: focus_subscription,
         }
     }
 
@@ -142,11 +148,6 @@ impl Dock {
         self.panels.push(handle);
         self.restore_state(window, cx);
         cx.notify();
-    }
-
-    /// 登记生命周期订阅（宿主装配层使用）。
-    pub fn add_subscription(&mut self, sub: Subscription) {
-        self.subscriptions.push(sub);
     }
 
     // ── 状态查询 ─────────────────────────────────────────────────
@@ -174,6 +175,17 @@ impl Dock {
         self.panels
             .get(panel_index)
             .map(|panel| panel.focus_handle(cx))
+    }
+
+    /// 指定面板激活时应接收焦点的目标。
+    pub fn panel_activation_focus_handle(
+        &self,
+        panel_index: usize,
+        cx: &App,
+    ) -> Option<FocusHandle> {
+        self.panels
+            .get(panel_index)
+            .map(|panel| panel.activation_focus_handle(cx))
     }
 
     /// 全部面板（只读）。
@@ -305,26 +317,6 @@ impl Dock {
     }
 
     // ── 面板切换 ─────────────────────────────────────────────────
-
-    /// 切换面板的展开/折叠，并在切换前后通知面板的 `set_active`。
-    pub fn toggle_panel_visibility(
-        &mut self,
-        panel_index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if panel_index >= self.panels.len() {
-            return;
-        }
-        let is_active = self.is_open && Some(panel_index) == self.active_panel_index;
-
-        if is_active {
-            self.set_open(false, window, cx);
-        } else {
-            self.activate_panel(panel_index, window, cx);
-            self.set_open(true, window, cx);
-        }
-    }
 
     // ── 拖拽调整大小 ─────────────────────────────────────────────
 

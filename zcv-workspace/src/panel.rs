@@ -29,8 +29,13 @@ pub trait Panel: Render + Sized + EventEmitter<PanelEvent> {
     /// 跨版本持久化使用的稳定标识；不得使用本地化文案或注册顺序。
     fn persistent_name() -> &'static str;
 
-    /// 面板的 FocusHandle。
+    /// 面板焦点根；渲染根必须挂载它，以标识整棵面板焦点子树。
     fn focus_handle(&self, cx: &App) -> FocusHandle;
+
+    /// 面板激活时接收焦点的目标，必须位于焦点根的子树内。
+    fn activation_focus_handle(&self, cx: &App) -> FocusHandle {
+        self.focus_handle(cx)
+    }
 
     /// 激活/停用回调。
     fn set_active(&mut self, _active: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
@@ -58,6 +63,7 @@ pub trait PanelHandle: Send + Sync {
     fn label(&self) -> &'static str;
     fn persistent_name(&self) -> &'static str;
     fn focus_handle(&self, cx: &App) -> FocusHandle;
+    fn activation_focus_handle(&self, cx: &App) -> FocusHandle;
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App);
     /// 面板自持状态的序列化；None 表示无状态可持久化。
     fn serialized_state(&self, cx: &App) -> Option<serde_json::Value>;
@@ -83,6 +89,10 @@ impl<T: Panel + 'static> PanelHandle for Entity<T> {
 
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.read(cx).focus_handle(cx)
+    }
+
+    fn activation_focus_handle(&self, cx: &App) -> FocusHandle {
+        self.read(cx).activation_focus_handle(cx)
     }
 
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App) {

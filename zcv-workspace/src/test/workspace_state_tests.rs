@@ -186,6 +186,7 @@ fn test_languages() -> Arc<LanguageRegistry> {
 
 struct TestPanel {
     focus: FocusHandle,
+    activation_focus: FocusHandle,
 }
 
 impl EventEmitter<PanelEvent> for TestPanel {}
@@ -206,11 +207,17 @@ impl Panel for TestPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
+
+    fn activation_focus_handle(&self, _: &App) -> FocusHandle {
+        self.activation_focus.clone()
+    }
 }
 
 impl Render for TestPanel {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().track_focus(&self.focus)
+        div()
+            .track_focus(&self.focus)
+            .child(div().track_focus(&self.activation_focus))
     }
 }
 
@@ -285,6 +292,7 @@ fn workspace_restores_visible_dock(cx: &mut TestAppContext) {
         });
         let panel = cx.new(|cx| TestPanel {
             focus: cx.focus_handle(),
+            activation_focus: cx.focus_handle(),
         });
         workspace.register_panel(panel, DockPosition::Bottom, window, cx);
         workspace
@@ -308,6 +316,7 @@ fn dock_open_change_saves_layout(cx: &mut TestAppContext) {
         let mut workspace = Workspace::new_empty(test_languages(), window, cx);
         let panel = cx.new(|cx| TestPanel {
             focus: cx.focus_handle(),
+            activation_focus: cx.focus_handle(),
         });
         workspace.register_panel(panel, DockPosition::Bottom, window, cx);
         workspace
@@ -338,6 +347,7 @@ fn dock_resize_and_reset_save_layout(cx: &mut TestAppContext) {
         let mut workspace = Workspace::new_empty(test_languages(), window, cx);
         let panel = cx.new(|cx| TestPanel {
             focus: cx.focus_handle(),
+            activation_focus: cx.focus_handle(),
         });
         workspace.register_panel(panel, DockPosition::Bottom, window, cx);
         workspace
@@ -388,6 +398,7 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
         let mut workspace = Workspace::new_empty(test_languages(), window, cx);
         let panel = cx.new(|cx| TestPanel {
             focus: cx.focus_handle(),
+            activation_focus: cx.focus_handle(),
         });
         workspace.register_panel(panel, DockPosition::Left, window, cx);
         workspace
@@ -399,18 +410,19 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
     cx.update(|window, cx| window.focus(&focus, cx));
 
     cx.dispatch_action(FocusOrHidePanel::new("test-panel"));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.read_entity(&workspace, |workspace, cx| {
         workspace.left_dock.read(cx).is_open()
     }));
     cx.update(|window, cx| {
-        let panel_focus = workspace
+        let activation_focus = workspace
             .read(cx)
             .left_dock
             .read(cx)
             .active_panel()
             .unwrap()
-            .focus_handle(cx);
-        assert!(panel_focus.contains_focused(window, cx));
+            .activation_focus_handle(cx);
+        assert!(activation_focus.is_focused(window));
     });
 
     // 快捷键：panel 可见但未聚焦时，只聚焦，不隐藏。
@@ -419,6 +431,7 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
     });
     cx.update(|window, cx| window.focus(&center_focus, cx));
     cx.dispatch_action(FocusOrHidePanel::new("test-panel"));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.read_entity(&workspace, |workspace, cx| {
         workspace.left_dock.read(cx).is_open()
     }));
@@ -433,9 +446,20 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
     workspace.update_in(cx, |workspace, window, cx| {
         workspace.toggle_panel_visibility_from_button(DockPosition::Left, 0, window, cx);
     });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.read_entity(&workspace, |workspace, cx| {
         workspace.left_dock.read(cx).is_open()
     }));
+    cx.update(|window, cx| {
+        let activation_focus = workspace
+            .read(cx)
+            .left_dock
+            .read(cx)
+            .active_panel()
+            .unwrap()
+            .activation_focus_handle(cx);
+        assert!(activation_focus.is_focused(window));
+    });
 
     workspace.update_in(cx, |workspace, window, cx| {
         workspace.toggle_panel_visibility_from_button(DockPosition::Left, 0, window, cx);
@@ -455,6 +479,7 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
     cx.update(|window, _| assert!(focus.is_focused(window)));
 
     cx.dispatch_action(FocusOrHidePanel::new("test-panel"));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.read_entity(&workspace, |workspace, cx| {
         workspace.left_dock.read(cx).is_open()
     }));
@@ -464,4 +489,90 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
     let saved = layout_state::load(&layout_path).expect("应保存布局快照");
     assert!(saved.docks.left.visible);
     assert_eq!(saved.docks.left.active_panel.as_deref(), Some("test-panel"));
+}
+
+#[gpui::test]
+fn later_workspace_navigation_keeps_the_latest_focus(cx: &mut TestAppContext) {
+    let (workspace, cx) = cx.add_window_view(|window, cx| {
+        let mut workspace = Workspace::new_empty(test_languages(), window, cx);
+        let panel = cx.new(|cx| TestPanel {
+            focus: cx.focus_handle(),
+            activation_focus: cx.focus_handle(),
+        });
+        workspace.register_panel(panel, DockPosition::Bottom, window, cx);
+        workspace
+    });
+    let center_focus = cx.read_entity(&workspace, |workspace, cx| {
+        workspace.pane.read(cx).focus_handle()
+    });
+
+    workspace.update_in(cx, |workspace, window, cx| {
+        assert!(workspace.open_panel("test-panel", window, cx));
+        workspace.focus_center_pane(window, cx);
+    });
+    cx.update(|window, _| assert!(center_focus.is_focused(window)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|window, _| assert!(center_focus.is_focused(window)));
+}
+
+#[gpui::test]
+fn closing_focused_panel_returns_focus_to_the_center_pane(cx: &mut TestAppContext) {
+    let panel = cx.new(|cx| TestPanel {
+        focus: cx.focus_handle(),
+        activation_focus: cx.focus_handle(),
+    });
+    let panel_for_registration = panel.clone();
+    let (workspace, cx) = cx.add_window_view(move |window, cx| {
+        let mut workspace = Workspace::new_empty(test_languages(), window, cx);
+        workspace.register_panel(panel_for_registration, DockPosition::Bottom, window, cx);
+        workspace
+    });
+    let center_focus = cx.read_entity(&workspace, |workspace, cx| {
+        workspace.pane.read(cx).focus_handle()
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        assert!(workspace.open_panel("test-panel", window, cx));
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    panel.update(cx, |_, cx| cx.emit(PanelEvent::Close));
+    cx.run_until_parked();
+
+    assert!(!cx.read_entity(&workspace, |workspace, cx| {
+        workspace.bottom_dock.read(cx).is_open()
+    }));
+    cx.update(|window, _| assert!(center_focus.is_focused(window)));
+}
+
+#[gpui::test]
+fn closing_inactive_panel_preserves_active_panel_focus(cx: &mut TestAppContext) {
+    let inactive = cx.new(|cx| TestPanel {
+        focus: cx.focus_handle(),
+        activation_focus: cx.focus_handle(),
+    });
+    let active = cx.new(|cx| TestPanel {
+        focus: cx.focus_handle(),
+        activation_focus: cx.focus_handle(),
+    });
+    let active_focus = cx.read_entity(&active, |panel, _| panel.activation_focus.clone());
+    let inactive_for_registration = inactive.clone();
+    let (workspace, cx) = cx.add_window_view(move |window, cx| {
+        let mut workspace = Workspace::new_empty(test_languages(), window, cx);
+        workspace.register_panel(inactive_for_registration, DockPosition::Bottom, window, cx);
+        workspace.register_panel(active, DockPosition::Bottom, window, cx);
+        workspace
+    });
+
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.toggle_panel_visibility_from_button(DockPosition::Bottom, 1, window, cx);
+    });
+    cx.update(|window, _| assert!(active_focus.is_focused(window)));
+
+    inactive.update(cx, |_, cx| cx.emit(PanelEvent::Close));
+    cx.run_until_parked();
+
+    assert!(cx.read_entity(&workspace, |workspace, cx| {
+        workspace.bottom_dock.read(cx).is_panel_active(1)
+    }));
+    cx.update(|window, _| assert!(active_focus.is_focused(window)));
 }

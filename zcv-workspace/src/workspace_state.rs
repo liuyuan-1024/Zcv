@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    Action, AnyView, App, AsyncApp, Context, Div, DragMoveEvent, Entity, FocusHandle, Focusable,
-    Render, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*,
+    Action, AnyView, App, AsyncApp, Context, Div, DragMoveEvent, Entity, FocusHandle, Render,
+    SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*,
 };
 use zcv_actions::{
     FocusOrHidePanel, MinimizeWindow, OpenSettings, QuitWindow, Save, ToggleBottomDock,
@@ -184,6 +184,7 @@ impl Workspace {
                 Vec::new(),
                 DockPosition::Left.default_size(),
                 Some(restored_layout.docks.left.clone()),
+                window,
                 cx,
             )
         });
@@ -193,6 +194,7 @@ impl Workspace {
                 Vec::new(),
                 DockPosition::Right.default_size(),
                 Some(restored_layout.docks.right.clone()),
+                window,
                 cx,
             )
         });
@@ -202,6 +204,7 @@ impl Workspace {
                 Vec::new(),
                 DockPosition::Bottom.default_size(),
                 Some(restored_layout.docks.bottom.clone()),
+                window,
                 cx,
             )
         });
@@ -441,33 +444,23 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let dock = self.dock(position).clone();
-        let workspace_for_events = cx.weak_entity();
+        let panel_index = dock.read(cx).panel_count();
         let handle: Arc<dyn PanelHandle> = Arc::new(entity.clone());
-        dock.update(cx, |dock, cx| {
-            let subscription = cx.subscribe_in(
-                &entity,
-                window,
-                move |dock, _, event: &PanelEvent, window, cx| match event {
-                    PanelEvent::Close => {
-                        let had_focus = dock.has_focus(window, cx);
-                        dock.set_open(false, window, cx);
-                        if had_focus && let Some(workspace) = workspace_for_events.upgrade() {
-                            let target = workspace.read(cx).center_pane_focus_handle(cx);
-                            window.focus(&target, cx);
-                        }
+        let subscription = cx.subscribe_in(
+            &entity,
+            window,
+            move |workspace, _, event: &PanelEvent, window, cx| match event {
+                PanelEvent::Close => {
+                    let dock = workspace.dock(position).clone();
+                    if dock.read(cx).is_panel_active(panel_index) {
+                        workspace.hide_dock(dock, window, cx);
                     }
-                    PanelEvent::StateChanged => {
-                        if let Some(workspace) = workspace_for_events.upgrade() {
-                            workspace.update(cx, |workspace, cx| {
-                                workspace.schedule_layout_save(window, cx);
-                            });
-                        }
-                    }
-                },
-            );
-            dock.add_subscription(subscription);
-            dock.add_panel(handle, window, cx);
-        });
+                }
+                PanelEvent::StateChanged => workspace.schedule_layout_save(window, cx),
+            },
+        );
+        self._subscriptions.push(subscription);
+        dock.update(cx, |dock, cx| dock.add_panel(handle, window, cx));
         cx.notify();
     }
 
@@ -884,7 +877,45 @@ impl Workspace {
     }
 
     pub(crate) fn focus_center_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.center_pane_focus_handle(cx), cx);
+        let focus = self.center_pane_focus_handle(cx);
+        window.focus(&focus, cx);
+    }
+
+    fn find_panel(&self, persistent_name: &str, cx: &App) -> Option<(Entity<Dock>, usize)> {
+        [&self.left_dock, &self.bottom_dock, &self.right_dock]
+            .into_iter()
+            .find_map(|dock| {
+                dock.read(cx)
+                    .panel_index_for_persistent_name(persistent_name)
+                    .map(|panel_index| (dock.clone(), panel_index))
+            })
+    }
+
+    fn show_panel(
+        &mut self,
+        dock: Entity<Dock>,
+        panel_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        dock.update(cx, |dock, cx| {
+            dock.activate_panel(panel_index, window, cx);
+            dock.set_open(true, window, cx);
+            let focus = dock
+                .panel_activation_focus_handle(panel_index, cx)
+                .expect("活动面板必须提供激活焦点目标");
+            window.focus(&focus, cx);
+        });
+        window.refresh();
+    }
+
+    fn hide_dock(&mut self, dock: Entity<Dock>, window: &mut Window, cx: &mut Context<Self>) {
+        let had_focus = dock.read(cx).has_focus(window, cx);
+        dock.update(cx, |dock, cx| dock.set_open(false, window, cx));
+        if had_focus {
+            self.focus_center_pane(window, cx);
+        }
+        window.refresh();
     }
 
     /// Panel 键盘命令：已聚焦时关闭；可见未聚焦时聚焦；隐藏时显示并聚焦。
@@ -894,28 +925,19 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let target = [&self.left_dock, &self.bottom_dock, &self.right_dock]
-            .into_iter()
-            .find_map(|dock| {
-                dock.read(cx)
-                    .panel_index_for_persistent_name(&action.panel)
-                    .map(|panel_index| (dock.clone(), panel_index))
-            });
-        let Some((dock, panel_idx)) = target else {
+        let Some((dock, panel_index)) = self.find_panel(&action.panel, cx) else {
             return;
         };
-        let focus = dock.read(cx).panel_focus_handle(panel_idx, cx).unwrap();
+        let focus = dock
+            .read(cx)
+            .panel_focus_handle(panel_index, cx)
+            .expect("已注册面板必须提供焦点根");
 
         if focus.contains_focused(window, cx) {
-            dock.update(cx, |d, cx| d.toggle_panel_visibility(panel_idx, window, cx));
-            self.focus_center_pane(window, cx);
+            self.hide_dock(dock, window, cx);
         } else {
-            if !dock.read(cx).is_panel_active(panel_idx) {
-                dock.update(cx, |d, cx| d.toggle_panel_visibility(panel_idx, window, cx));
-            }
-            window.focus(&focus, cx);
+            self.show_panel(dock, panel_index, window, cx);
         }
-        window.refresh();
     }
 
     /// 处理面板按钮的鼠标意图：只切换指定 Panel 的可见性。
@@ -931,22 +953,25 @@ impl Workspace {
             DockPosition::Bottom => self.bottom_dock.clone(),
             DockPosition::Right => self.right_dock.clone(),
         };
-        let was_visible = dock.read(cx).is_panel_active(panel_index);
-        let had_focus = dock.read(cx).has_focus(window, cx);
-        let panel_focus = dock.read(cx).panel_focus_handle(panel_index, cx);
-        if panel_focus.is_none() {
-            return;
+        if dock.read(cx).is_panel_active(panel_index) {
+            self.hide_dock(dock, window, cx);
+        } else {
+            self.show_panel(dock, panel_index, window, cx);
         }
+    }
 
-        dock.update(cx, |dock, cx| {
-            dock.toggle_panel_visibility(panel_index, window, cx)
-        });
-        if was_visible && had_focus {
-            self.focus_center_pane(window, cx);
-        } else if !was_visible && let Some(panel_focus) = panel_focus {
-            window.focus(&panel_focus, cx);
-        }
-        window.refresh();
+    /// 打开指定面板并聚焦其激活目标。
+    pub fn open_panel(
+        &mut self,
+        persistent_name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((dock, panel_index)) = self.find_panel(persistent_name, cx) else {
+            return false;
+        };
+        self.show_panel(dock, panel_index, window, cx);
+        true
     }
 
     fn toggle_dock(&mut self, position: DockPosition, window: &mut Window, cx: &mut Context<Self>) {
@@ -955,24 +980,11 @@ impl Workspace {
             DockPosition::Bottom => self.bottom_dock.clone(),
             DockPosition::Right => self.right_dock.clone(),
         };
-        let was_open = dock.read(cx).is_open();
-        let panel_focus = dock
-            .read(cx)
-            .active_panel()
-            .map(|panel| panel.focus_handle(cx));
-        let focus_center = was_open
-            && (dock.read(cx).focus_handle(cx).contains_focused(window, cx)
-                || panel_focus
-                    .as_ref()
-                    .is_some_and(|focus| focus.contains_focused(window, cx)));
-
-        dock.update(cx, |dock, cx| dock.set_open(!was_open, window, cx));
-        if focus_center {
-            self.focus_center_pane(window, cx);
-        } else if !was_open && let Some(focus) = panel_focus {
-            window.focus(&focus, cx);
+        if dock.read(cx).is_open() {
+            self.hide_dock(dock, window, cx);
+        } else if let Some(panel_index) = dock.read(cx).active_panel_index() {
+            self.show_panel(dock, panel_index, window, cx);
         }
-        window.refresh();
     }
 
     pub(crate) fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {

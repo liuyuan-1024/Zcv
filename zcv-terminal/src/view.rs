@@ -25,7 +25,6 @@ use zcv_workspace::{Item, ItemEvent};
 pub(crate) struct TerminalView {
     pub(crate) terminal: Entity<Terminal>,
     focus: FocusHandle,
-    pub(crate) focused: bool,
     /// 输入法合成中的 marked 文本。
     ime_marked_text: Option<String>,
     /// 光标格的像素 bounds（元素相对坐标），IME 候选窗定位用。
@@ -45,7 +44,6 @@ impl TerminalView {
         let mut view = TerminalView {
             terminal,
             focus,
-            focused: false,
             ime_marked_text: None,
             last_cursor_bounds: None,
             scrollbar: Scrollbar::vertical(scroll_handle.clone()),
@@ -106,7 +104,6 @@ impl TerminalView {
     }
 
     fn set_focused(&mut self, focused: bool, _window: &mut Window, cx: &mut Context<Self>) {
-        self.focused = focused;
         self.terminal
             .update(cx, |terminal, cx| terminal.focus_terminal(focused, cx));
         cx.notify();
@@ -375,6 +372,7 @@ impl Render for TerminalView {
         // 首次渲染时注册焦点事件（构造函数中没有 Window）。
         if !self.initialized {
             let focus = self.focus.clone();
+            let focused = focus.is_focused(window);
             cx.on_focus(&focus, window, |view, window, cx| {
                 view.set_focused(true, window, cx);
             })
@@ -389,6 +387,7 @@ impl Render for TerminalView {
             })
             .detach();
             self.initialized = true;
+            self.set_focused(focused, window, cx);
         }
 
         let content = Some(self.terminal.read(cx).last_content().clone());

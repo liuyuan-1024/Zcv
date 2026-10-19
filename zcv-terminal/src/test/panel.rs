@@ -9,6 +9,8 @@ use zcv_project::Project;
 use zcv_workspace::Workspace;
 
 use super::{TerminalPanel, project_terminal_cwd};
+use crate::{TerminalBuilder, TerminalView, test::support::display_only_terminal};
+use zcv_workspace::DockPosition;
 
 /// 测试项目不注册真实文件系统监听，避免 OS 监听线程向 GPUI 测试调度器投递事件。
 struct PassiveWatcher(FsWatcher);
@@ -81,4 +83,49 @@ fn terminal_creation_failure_keeps_panel_empty(cx: &mut TestAppContext) {
         assert!(!panel.update(cx, |panel, cx| panel.new_terminal(window, cx)));
         assert!(panel.read(cx).pane.read(cx).tabs().is_empty());
     });
+}
+
+#[gpui::test]
+fn opening_hidden_terminal_panel_focuses_the_active_terminal(cx: &mut TestAppContext) {
+    let temporary_directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let project = cx.new(|cx| {
+        Project::new_with_watcher(
+            temporary_directory.path().to_path_buf(),
+            Arc::new(PassiveWatcher::new()),
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+        .expect("测试项目根目录应可规范化")
+    });
+    let (workspace, cx) = cx.add_window_view({
+        let project = project.clone();
+        move |window, cx| Workspace::new_with_project(project, window, cx)
+    });
+    let panel = cx.new(|cx| {
+        let workspace_handle = workspace.downgrade();
+        TerminalPanel::new(project, workspace_handle, cx)
+    });
+    let terminal = cx.new(|cx| display_only_terminal(&TerminalBuilder::new(), cx));
+    let view = cx.new(|cx| TerminalView::new(terminal.clone(), cx));
+    let terminal_focus = cx.update(|_, cx| view.read(cx).focus_handle());
+
+    workspace.update_in(cx, |workspace, window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.pane.update(cx, |pane, cx| {
+                pane.open_item(Box::new(view), false, window, cx)
+            });
+        });
+        workspace.register_panel(panel, DockPosition::Bottom, window, cx);
+        assert!(workspace.open_panel("terminal", window, cx));
+    });
+
+    cx.update(|window, _| assert!(terminal_focus.is_focused(window)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|window, _| {
+        assert!(
+            terminal_focus.is_focused(window),
+            "隐藏面板重新显示后应聚焦当前终端"
+        );
+    });
+    assert!(cx.read_entity(&terminal, |terminal, _| terminal.term.lock().is_focused));
 }

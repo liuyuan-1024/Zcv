@@ -27,6 +27,7 @@ pub struct TerminalPanel {
     project: Entity<Project>,
     workspace: WeakEntity<Workspace>,
     pane: Entity<Pane>,
+    focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
     /// 首次渲染时注册带 window 的订阅（构造函数中没有 Window）。
     initialized: bool,
@@ -43,19 +44,26 @@ impl TerminalPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let pane = cx.new(Pane::new);
+        let focus = cx.focus_handle();
         let weak = cx.weak_entity();
+        let workspace_for_button = workspace.clone();
         let pane_for_button = pane.clone();
         pane.update(cx, |pane, _| {
             pane.set_tab_bar_trailing(move |_cx: &App| {
                 let weak_for_click = weak.clone();
+                let workspace_for_click = workspace_for_button.clone();
                 Button::icon(("terminal-new-terminal", 0usize), "icons/plus.svg")
                     .label("新建终端")
                     .shortcut(zcv_keymap::display_shortcut(&NewTerminal, _cx))
                     .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                         if let Some(panel) = weak_for_click.upgrade() {
-                            panel.update(cx, |panel, cx| {
-                                panel.new_terminal(window, cx);
-                            });
+                            let created =
+                                panel.update(cx, |panel, cx| panel.new_terminal(window, cx));
+                            if created && let Some(workspace) = workspace_for_click.upgrade() {
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.open_panel("terminal", window, cx);
+                                });
+                            }
                         }
                     })
                     .into_any_element()
@@ -65,6 +73,7 @@ impl TerminalPanel {
             project,
             workspace,
             pane: pane_for_button,
+            focus,
             _subscriptions: Vec::new(),
             initialized: false,
             restoring: false,
@@ -94,11 +103,9 @@ impl TerminalPanel {
         let terminal = TerminalBuilder::new().set_cwd(cwd).build(cx)?;
         let terminal = cx.new(|cx| terminal.activate(cx));
         let view = cx.new(|cx| TerminalView::new(terminal, cx));
-        // 终端作为 Item 打开进 Pane，焦点直接落在终端视图上。
-        let focus = self.pane.update(cx, |pane, cx| {
+        self.pane.update(cx, |pane, cx| {
             pane.open_item(Box::new(view), false, window, cx)
         });
-        window.focus(&focus, cx);
         Ok(())
     }
 
@@ -142,8 +149,11 @@ impl Panel for TerminalPanel {
         "terminal"
     }
 
-    fn focus_handle(&self, cx: &App) -> FocusHandle {
-        // 优先聚焦当前终端；无终端时回退到 Pane 自身句柄，保证 FocusOrHidePanel 的聚焦路径始终有效。
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+
+    fn activation_focus_handle(&self, cx: &App) -> FocusHandle {
         self.pane
             .read(cx)
             .active_item()
@@ -152,14 +162,8 @@ impl Panel for TerminalPanel {
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if active {
-            if self.pane.read(cx).active_item().is_some() {
-                // Dock 只聚焦面板句柄，这里补聚焦到当前终端。
-                let focus = self.focus_handle(cx);
-                window.focus(&focus, cx);
-            } else {
-                self.new_terminal(window, cx);
-            }
+        if active && self.pane.read(cx).active_item().is_none() {
+            self.new_terminal(window, cx);
         }
     }
 
@@ -257,7 +261,10 @@ impl Render for TerminalPanel {
             );
             self._subscriptions.push(subscription);
         }
-        div().size_full().child(self.pane.clone())
+        div()
+            .track_focus(&self.focus)
+            .size_full()
+            .child(self.pane.clone())
     }
 }
 

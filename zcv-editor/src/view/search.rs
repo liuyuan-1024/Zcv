@@ -3,7 +3,10 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferRange, MultiBufferSnapshot};
+use zcv_multi_buffer::{
+    AppendedExcerpts, MultiBufferAnchor, MultiBufferCoordinateCursor, MultiBufferRange,
+    MultiBufferSnapshot,
+};
 use zcv_project::{RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult};
 use zcv_text::{Affinity, BufferVersion};
 use zcv_workspace::{Direction, SearchEvent, SearchableItem};
@@ -36,6 +39,16 @@ impl SearchMatchAnchor {
         }
     }
 
+    fn from_range_with_cursor(
+        cursor: &mut MultiBufferCoordinateCursor<'_>,
+        range: MultiBufferRange,
+    ) -> Self {
+        Self {
+            range: cursor.anchor_at(range.start(), Affinity::After)
+                ..cursor.anchor_at(range.end(), Affinity::Before),
+        }
+    }
+
     /// 在当前快照上解析匹配范围；锚点已退出投影或版本无法映射时显式失败。
     fn resolve(&self, snapshot: &MultiBufferSnapshot) -> Option<MultiBufferRange> {
         MultiBufferRange::new(
@@ -64,6 +77,10 @@ pub(crate) struct EditorSearch {
 }
 
 impl EditorSearch {
+    pub(super) fn is_external(&self) -> bool {
+        matches!(self.result, Some(SearchResultKind::External { .. }))
+    }
+
     fn matches(&self) -> &[SearchMatchAnchor] {
         &self.matches
     }
@@ -363,19 +380,23 @@ impl Editor {
     pub fn append_search_ranges(
         &mut self,
         query: SearchQuery,
-        ranges: Vec<MultiBufferRange>,
+        appended: AppendedExcerpts,
         cx: &mut gpui::Context<Self>,
     ) {
         let snapshot = self
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx));
         let version = snapshot.version();
+        assert_eq!(
+            version, appended.version,
+            "追加的搜索范围必须属于当前组合快照"
+        );
         let can_append = self.search.as_ref().is_some_and(|search| {
             search.query == query
                 && matches!(search.result, Some(SearchResultKind::External { .. }))
         });
         if !can_append {
-            self.set_search_ranges(query, ranges, cx);
+            self.set_search_ranges(query, appended.match_ranges, cx);
             return;
         }
 
@@ -383,14 +404,28 @@ impl Editor {
             .search
             .as_mut()
             .expect("可追加搜索结果时必须存在搜索状态");
-        // 已有匹配是源锚点：组合文档追加片段后按当前快照重新解析，不需要按偏移重绑。
+        let previous_version = match search.result {
+            Some(SearchResultKind::External { version }) => version,
+            _ => unreachable!("可追加搜索结果必须是外部结果"),
+        };
         search.result = Some(SearchResultKind::External { version });
+        let mut anchors = MultiBufferCoordinateCursor::new(&snapshot);
         search.matches.extend(
-            ranges
-                .into_iter()
-                .map(|range| SearchMatchAnchor::from_range(&snapshot, range)),
+            appended
+                .match_ranges
+                .iter()
+                .copied()
+                .map(|range| SearchMatchAnchor::from_range_with_cursor(&mut anchors, range)),
         );
-        search.rebuild_ranges(&snapshot);
+        if previous_version == appended.base_version {
+            let mut ranges = Vec::with_capacity(search.ranges.len() + appended.match_ranges.len());
+            ranges.extend(search.ranges.iter().copied());
+            ranges.extend(appended.match_ranges);
+            search.ranges = ranges.into();
+        } else {
+            // 源文件在两批之间发生编辑时，旧锚点必须按当前组合快照重新解析。
+            search.rebuild_ranges(&snapshot);
+        }
         self.advance_snapshots(cx);
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);

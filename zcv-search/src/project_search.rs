@@ -273,7 +273,7 @@ impl ProjectSearchView {
         let results_editor = self.results_editor.clone();
         self.pending_search = Some(cx.spawn_in(window, async move |this, cx| {
             let _search_task = search_task;
-            // 每个文件是一个路径批次：按 Zed 的设计逐路径插入，插入顺序不影响文档的路径序。
+            // 项目按自然路径序发送文件；组合文档以同序批量追加。
             let mut batched = Vec::<Vec<ExcerptRange>>::new();
             let mut batched_excerpt_count = 0usize;
             loop {
@@ -290,13 +290,19 @@ impl ProjectSearchView {
                     // 通道关闭：后台扫描结束，装配剩余批次。
                     Err(_) => break,
                 };
-                // 权威文档始终由 Project 文件边界按路径打开并复用；
-                // Project 已释放或打开失败时跳过该文件。
-                let Ok(source) =
-                    project.update(cx, |project, cx| project.open_buffer(&item.path, cx))
-                else {
+                // 文件读取和文本构建留在后台；Project 仍按路径安装或复用唯一文档。
+                let loading = project.update(cx, |project, cx| {
+                    project.open_buffer_async(item.path.clone(), cx)
+                });
+                let Ok(source) = loading.await else {
                     continue;
                 };
+                if this
+                    .update_in(cx, |this, _, _| this.search_generation != generation)
+                    .unwrap_or(true)
+                {
+                    break;
+                }
                 let excerpts = item
                     .excerpts
                     .into_iter()
@@ -319,6 +325,9 @@ impl ProjectSearchView {
                 cx.background_executor().timer(SEARCH_BATCH_YIELD).await;
             }
             this.update_in(cx, |this, _window, cx| {
+                if this.search_generation != generation {
+                    return;
+                }
                 if !batched.is_empty() {
                     this.append_search_batch(batched, &results_editor, query, cx);
                 }
@@ -331,7 +340,7 @@ impl ProjectSearchView {
         }));
     }
 
-    /// 将新增片段追加到组合文档，并更新匹配高亮。
+    /// 将新增片段追加到组合文档，并按最终投影一次更新该批匹配高亮。
     fn append_search_batch(
         &mut self,
         batches: Vec<Vec<ExcerptRange>>,
@@ -339,24 +348,12 @@ impl ProjectSearchView {
         query: SearchQuery,
         cx: &mut Context<Self>,
     ) {
-        for excerpts in batches {
-            if excerpts.is_empty() {
-                continue;
-            }
-            let match_ranges = self
-                .excerpts
-                .update(cx, |buffer, cx| buffer.set_excerpts_for_path(excerpts, cx));
-            if match_ranges.is_empty() {
-                continue;
-            }
-            results_editor.update(cx, |editor, cx| {
-                editor.append_search_ranges(
-                    query.clone(),
-                    match_ranges.into_iter().map(Into::into).collect(),
-                    cx,
-                )
-            });
-        }
+        let appended = self.excerpts.update(cx, |buffer, cx| {
+            buffer.append_excerpts_for_paths(batches, cx)
+        });
+        results_editor.update(cx, |editor, cx| {
+            editor.append_search_ranges(query, appended, cx)
+        });
         cx.emit(SearchEvent::MatchesInvalidated);
         cx.notify();
     }

@@ -120,6 +120,37 @@ fn project_search_folds_all_files_in_one_display_update(cx: &mut TestAppContext)
     });
 }
 
+#[gpui::test]
+async fn project_search_installs_background_loaded_results(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    std::fs::write(root.join("result.txt"), "needle\n").expect("应创建命中文件");
+    cx.update(|cx| init(cx, Arc::new(LanguageRegistry::new())));
+
+    let (workspace, cx) = cx.add_window_view(move |window, cx| test_workspace(root, window, cx));
+    workspace.update_in(cx, |workspace, window, cx| {
+        deploy(workspace, None, window, cx)
+    });
+    let view = workspace.read_with(cx, project_search_view);
+    view.update_in(cx, |view, window, cx| {
+        view.run_search(
+            SearchQuery {
+                query: "needle".into(),
+                ..Default::default()
+            },
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, cx| SearchableItem::search_count(view, cx).0),
+        1,
+        "后台加载的命中文档应经唯一 Editor 管线展示"
+    );
+}
+
 /// 回归：布局恢复出的项目搜索标签必须与 deploy 新建的一样接上工作区的打开订阅。
 ///
 /// 漏接时点击「打开文件」与 alt-enter 都只发出事件而无人处理，表现为搜索结果无法打开文件。

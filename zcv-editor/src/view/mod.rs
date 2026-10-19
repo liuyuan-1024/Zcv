@@ -1685,7 +1685,10 @@ impl Editor {
         cx.subscribe(
             &multi_buffer,
             |editor, _: Entity<MultiBuffer>, event: &MultiBufferEvent, cx| {
-                editor.advance_snapshots(cx);
+                editor.advance_snapshots_for_change(
+                    matches!(event, MultiBufferEvent::ProjectionAppended),
+                    cx,
+                );
                 let dirty = editor.is_dirty(cx);
                 if editor.last_dirty != dirty {
                     editor.last_dirty = dirty;
@@ -1700,6 +1703,7 @@ impl Editor {
                     }
                     MultiBufferEvent::TextChanged
                     | MultiBufferEvent::ProjectionChanged
+                    | MultiBufferEvent::ProjectionAppended
                     | MultiBufferEvent::Reparsed(_)
                     | MultiBufferEvent::MetadataChanged => {
                         cx.emit(EditorEvent::DocumentChanged);
@@ -2312,6 +2316,10 @@ impl Editor {
     /// 模型事件、编辑提交与结构重建都只经此入口；
     /// 选区以源锚点保存，解析时直接读 DisplayMap 持有的快照，不需要逐状态重映射。
     fn advance_snapshots(&mut self, cx: &mut Context<Self>) {
+        self.advance_snapshots_for_change(false, cx);
+    }
+
+    fn advance_snapshots_for_change(&mut self, projection_appended: bool, cx: &mut Context<Self>) {
         // 单文件用该语言的 tab_size，组合文档用全局 tab_size；与 Zed 的显示投影一致。
         self.display_map.update(cx, |map, cx| {
             let snapshot = map.snapshot(cx);
@@ -2320,7 +2328,10 @@ impl Editor {
         });
         let snapshot = self.display_snapshot(cx);
         if snapshot.version() != self.processed_display_version {
-            self.research_after_edit(cx);
+            if !projection_appended || !self.search.as_ref().is_some_and(EditorSearch::is_external)
+            {
+                self.research_after_edit(cx);
+            }
             self.scrollbar_marker_state.invalidate();
             let snapshot = self.display_snapshot(cx);
             self.scroll_manager.refresh(&snapshot);

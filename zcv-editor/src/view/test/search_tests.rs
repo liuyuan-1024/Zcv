@@ -1,11 +1,13 @@
 //! 文件内搜索：SearchableItem 实现（搜索/跳转/替换/编辑后自动重搜）。
 
-use zcv_multi_buffer::{ExcerptRange, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
+use zcv_multi_buffer::{
+    ExcerptRange, MultiBuffer, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
+};
 
 use gpui::{AppContext, TestAppContext, VisualTestContext};
-use zcv_language::LanguageRegistry;
+use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_project::SearchQuery;
-use zcv_text::Buffer;
+use zcv_text::{Buffer, BufferConfig, ByteOffset, TextRange};
 use zcv_theme::color;
 use zcv_workspace::{Direction, SearchableItem};
 
@@ -75,30 +77,58 @@ fn search_finds_all_matches_and_reports_count(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn external_search_ranges_append_without_resetting_active_match(cx: &mut TestAppContext) {
-    let (editor, cx) = editor_with_text(cx, "abc xyz abc");
+    let source = |path: &str, cx: &mut TestAppContext| {
+        cx.new(|cx| {
+            LanguageBuffer::new(
+                Buffer::from_text("abc\n".into(), BufferConfig::default()).unwrap(),
+                Some(path.into()),
+                std::sync::Arc::new(LanguageRegistry::new()),
+                cx,
+            )
+        })
+    };
+    let first = source("a.txt", cx);
+    let second = source("b.txt", cx);
+    let multi_buffer = cx.new(MultiBuffer::empty);
+    let (editor, cx) = cx.add_window_view({
+        let multi_buffer = multi_buffer.clone();
+        move |_, cx| Editor::for_multi_buffer(multi_buffer, cx)
+    });
+    let source_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(4)).unwrap();
+    let matched = TextRange::new(ByteOffset::ZERO, ByteOffset::new(3)).unwrap();
+    let first_append = multi_buffer.update(cx, |buffer, cx| {
+        buffer.append_excerpts_for_paths(
+            vec![vec![ExcerptRange::new(first, source_range, vec![matched])]],
+            cx,
+        )
+    });
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
-            editor.append_search_ranges(
-                query("abc"),
-                vec![
-                    MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(3))
-                        .unwrap(),
-                ],
-                cx,
-            );
+            editor.append_search_ranges(query("abc"), first_append, cx);
             assert_eq!(editor.search_count(cx), (1, Some(0)));
-            editor.append_search_ranges(
-                query("abc"),
-                vec![
-                    MultiBufferRange::new(MultiBufferOffset::new(8), MultiBufferOffset::new(11))
-                        .unwrap(),
-                ],
-                cx,
-            );
-            assert_eq!(editor.search_count(cx), (2, Some(0)));
             editor.activate_match_in_direction(Direction::Next, 1, window, cx);
-            editor.append_search_ranges(query("abc"), Vec::new(), cx);
-            assert_eq!(editor.search_count(cx), (2, Some(1)));
+        });
+    });
+    let second_append = multi_buffer.update(cx, |buffer, cx| {
+        buffer.append_excerpts_for_paths(
+            vec![vec![ExcerptRange::new(second, source_range, vec![matched])]],
+            cx,
+        )
+    });
+    cx.update(|_, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.append_search_ranges(query("abc"), second_append, cx);
+            assert_eq!(editor.search_count(cx), (2, Some(0)));
+            assert_eq!(
+                editor
+                    .search_highlights()
+                    .unwrap()
+                    .0
+                    .iter()
+                    .map(|range| range.start().get())
+                    .collect::<Vec<_>>(),
+                vec![0, 5]
+            );
         });
     });
 }

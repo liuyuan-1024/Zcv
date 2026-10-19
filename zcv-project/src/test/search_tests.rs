@@ -85,6 +85,33 @@ async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+async fn search_results_follow_natural_project_path_order(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    std::fs::write(root.join("file10.txt"), "needle\n").expect("应创建文件");
+    std::fs::write(root.join("file2.txt"), "needle\n").expect("应创建文件");
+    let project = test_project(root, cx);
+
+    let results = collect_search(
+        &project,
+        SearchQuery {
+            query: "needle".to_string(),
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+    assert_eq!(
+        results
+            .iter()
+            .map(|file| file.display_path.clone())
+            .collect::<Vec<_>>(),
+        vec![PathBuf::from("file2.txt"), PathBuf::from("file10.txt")],
+        "搜索流须与组合文档的自然路径顺序一致"
+    );
+}
+
+#[gpui::test]
 async fn honors_exclusions_and_reports_invalid_regex(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");

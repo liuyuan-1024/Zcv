@@ -75,6 +75,13 @@ pub struct ExcerptRange {
     editable: bool,
 }
 
+/// 一次尾部片段追加产生的匹配范围及其组合文档版本。
+pub struct AppendedExcerpts {
+    pub base_version: BufferVersion,
+    pub version: BufferVersion,
+    pub match_ranges: Vec<MultiBufferRange>,
+}
+
 /// 组合投影片段在统一 diff 中承担的文本侧别。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExcerptDiffKind {
@@ -1701,14 +1708,14 @@ impl<'a> MultiBufferCursor<'a> {
     }
 }
 
-/// 按非递减组合字节偏移转换逻辑位置，并复用 excerpt 与 diff 变换树游标。
-pub struct MultiBufferPositionCursor<'a> {
+/// 按非递减组合字节偏移读取逻辑位置与源锚点，并复用 excerpt 与 diff 变换树游标。
+pub struct MultiBufferCoordinateCursor<'a> {
     snapshot: &'a MultiBufferSnapshot,
     cursor: MultiBufferCursor<'a>,
     last_offset: Option<MultiBufferOffset>,
 }
 
-impl<'a> MultiBufferPositionCursor<'a> {
+impl<'a> MultiBufferCoordinateCursor<'a> {
     pub fn new(snapshot: &'a MultiBufferSnapshot) -> Self {
         Self {
             snapshot,
@@ -1731,7 +1738,7 @@ impl<'a> MultiBufferPositionCursor<'a> {
     }
 
     pub fn byte_to_position(&mut self, offset: MultiBufferOffset) -> TextResult<Position> {
-        if self.last_offset.is_some_and(|last| offset < last) {
+        if self.last_offset.is_some_and(|last| offset <= last) {
             self.reset();
         }
         if self.last_offset.is_some() {
@@ -1742,6 +1749,31 @@ impl<'a> MultiBufferPositionCursor<'a> {
         self.last_offset = Some(offset);
         self.snapshot
             .byte_to_position_with_cursor(&mut self.cursor, offset)
+    }
+
+    pub fn anchor_at(
+        &mut self,
+        offset: MultiBufferOffset,
+        affinity: Affinity,
+    ) -> MultiBufferAnchor {
+        if self.last_offset.is_some_and(|last| offset <= last) {
+            self.reset();
+        }
+        if self.last_offset.is_some() {
+            self.cursor.seek_forward(offset.into(), Bias::Right);
+        } else {
+            self.cursor.seek(offset.into(), Bias::Right);
+        }
+        self.last_offset = Some(offset);
+        anchor_at_cursor(
+            &self.snapshot.excerpts,
+            &self.snapshot.diff_transforms,
+            Sources::Snapshot(&self.snapshot.excerpt_sources),
+            &mut self.cursor,
+            offset.into(),
+            affinity,
+        )
+        .unwrap_or_else(|| MultiBufferAnchor::boundary(offset))
     }
 }
 
@@ -2063,35 +2095,72 @@ fn input_range_summary<S: SourceTexts + ?Sized>(
     }
     let mut cursor = excerpts.cursor::<ExcerptSummary>(());
     cursor.seek(&start, Bias::Right);
-    while let Some(excerpt) = cursor.item() {
+    if let Some(excerpt) = cursor.item() {
         let excerpt_start = cursor.start().text.len;
-        if excerpt_start >= end.get() {
-            break;
-        }
-        let from = excerpt_start.max(start.get());
-        let to = (excerpt_start + excerpt.output_text_summary().len).min(end.get());
-        if from < to {
-            let content_end = excerpt_start + excerpt.text_summary.len;
-            let content_to = to.min(content_end);
-            if from < content_to {
-                let source = sources
-                    .source_text(excerpt.source_index)
-                    .expect("输入范围必须属于源快照");
-                let byte_start = excerpt.source_range.start().get() + (from - excerpt_start);
-                let byte_end = excerpt.source_range.start().get() + (content_to - excerpt_start);
-                summary += snapshot_range_summary(
-                    source,
-                    TextRange::new(ByteOffset::new(byte_start), ByteOffset::new(byte_end))
-                        .expect("输入子范围必须正序"),
-                )
-                .expect("输入子范围必须属于源快照")
-                .0;
+        if start.get() > excerpt_start {
+            let excerpt_end = excerpt_start + excerpt.output_text_summary().len;
+            summary += partial_excerpt_summary(
+                excerpt,
+                excerpt_start,
+                start.get(),
+                end.get().min(excerpt_end),
+                sources,
+            );
+            if end.get() <= excerpt_end {
+                return summary;
             }
-            if to > content_end {
-                summary += MBTextSummary::newline();
-            }
+            cursor.next();
         }
-        cursor.next();
+    }
+    if end.get() == excerpts.summary().text.len {
+        summary += cursor.suffix().summary().text;
+        return summary;
+    }
+    let mut end_cursor = excerpts.cursor::<ExcerptSummary>(());
+    end_cursor.seek(&end, Bias::Right);
+    let end_index = end_cursor.start().count;
+    if cursor.start().count < end_index {
+        summary += cursor
+            .slice(&ExcerptIndex(end_index), Bias::Right)
+            .summary()
+            .text;
+    }
+    if let Some(excerpt) = end_cursor.item() {
+        let excerpt_start = end_cursor.start().text.len;
+        if end.get() > excerpt_start {
+            summary +=
+                partial_excerpt_summary(excerpt, excerpt_start, excerpt_start, end.get(), sources);
+        }
+    }
+    summary
+}
+
+fn partial_excerpt_summary<S: SourceTexts + ?Sized>(
+    excerpt: &Excerpt,
+    excerpt_start: usize,
+    from: usize,
+    to: usize,
+    sources: &S,
+) -> MBTextSummary {
+    let mut summary = MBTextSummary::default();
+    let content_end = excerpt_start + excerpt.text_summary.len;
+    let content_to = to.min(content_end);
+    if from < content_to {
+        let source = sources
+            .source_text(excerpt.source_index)
+            .expect("输入范围必须属于源快照");
+        let byte_start = excerpt.source_range.start().get() + (from - excerpt_start);
+        let byte_end = excerpt.source_range.start().get() + (content_to - excerpt_start);
+        summary += snapshot_range_summary(
+            source,
+            TextRange::new(ByteOffset::new(byte_start), ByteOffset::new(byte_end))
+                .expect("输入子范围必须正序"),
+        )
+        .expect("输入子范围必须属于源快照")
+        .0;
+    }
+    if to > content_end {
+        summary += MBTextSummary::newline();
     }
     summary
 }
@@ -2556,6 +2625,8 @@ pub enum MultiBufferEvent {
     TextChanged,
     /// excerpts / 组合变换拓扑发生变化，消费方需要收敛源集合。
     ProjectionChanged,
+    /// 只在文尾追加 excerpts；已有组合坐标和锚点范围保持不变。
+    ProjectionAppended,
     Reparsed(gpui::EntityId),
     MetadataChanged,
     /// 差异状态或显示输入变化；组合文本可能保持不变。
@@ -5323,7 +5394,7 @@ impl MultiBuffer {
         self.emit_projection_changed(cx);
     }
 
-    /// 为一组同路径片段构建位置无关映射项；`start_index` 是它们在文档中的起始序号。
+    /// 为一组片段构建位置无关映射项；`start_index` 是它们在文档中的起始序号。
     fn build_entries_for_excerpts(
         &mut self,
         excerpts: Vec<ExcerptRange>,
@@ -5711,6 +5782,107 @@ impl MultiBuffer {
             "set_excerpts_for_path 的片段必须属于同一路径"
         );
         self.apply_excerpts_for_path(path, excerpts, cx)
+    }
+
+    /// 按路径顺序把多个新文件追加到组合文档，并以一次结构增量发布。
+    /// 调用方必须保证新路径严格位于现有路径之后；返回范围可直接追加到搜索装饰。
+    pub fn append_excerpts_for_paths(
+        &mut self,
+        paths: Vec<Vec<ExcerptRange>>,
+        cx: &mut Context<Self>,
+    ) -> AppendedExcerpts {
+        self.assert_no_active_transaction("MultiBuffer::append_excerpts_for_paths");
+        self.sync_pending_sources(cx);
+        let before = self.projection_trees();
+        let base_version = self.state.projection_version;
+        let mut previous_path = self.state.excerpts.last().map(|entry| entry.path.clone());
+        let mut new_sources = Vec::new();
+        let mut subscribe_ids = HashSet::new();
+        let mut flattened = Vec::new();
+        let mut paths_to_project = Vec::with_capacity(paths.len());
+        for group in paths {
+            let first = group.first().expect("追加的文件必须包含片段");
+            let path = path_key_for_source(first.source.read(cx), self.path_order);
+            assert!(
+                previous_path
+                    .as_ref()
+                    .is_none_or(|previous| previous < &path),
+                "追加路径必须按组合文档路径顺序严格递增"
+            );
+            assert!(
+                group.iter().all(|excerpt| path_key_for_source(
+                    excerpt.source.read(cx),
+                    self.path_order
+                ) == path),
+                "同一组片段必须属于同一路径"
+            );
+            previous_path = Some(path.clone());
+            paths_to_project.push(path);
+            for excerpt in group {
+                let source_id = excerpt.source.entity_id();
+                if subscribe_ids.insert(source_id)
+                    && !self.state.source_indices.contains_key(&source_id)
+                {
+                    new_sources.push(excerpt.source.clone());
+                }
+                flattened.push(excerpt);
+            }
+        }
+        if flattened.is_empty() {
+            return AppendedExcerpts {
+                base_version,
+                version: base_version,
+                match_ranges: Vec::new(),
+            };
+        }
+        self.register_sources(new_sources, &subscribe_ids, cx);
+        let old_count = self.state.excerpts.summary().count;
+        let added_count = flattened.len();
+        let mut entries =
+            self.build_entries_for_excerpts(flattened, old_count, old_count + added_count);
+        if entries.is_empty() {
+            return AppendedExcerpts {
+                base_version,
+                version: base_version,
+                match_ranges: Vec::new(),
+            };
+        }
+        for entry in &mut entries {
+            entry.adds_newline = true;
+        }
+        entries.last_mut().expect("追加的片段必须有效").adds_newline = false;
+        self.state.topology_version = self.state.topology_version.wrapping_add(1);
+        let old_len = before.0.summary().text.len;
+        let mut next = before.0.clone();
+        if next.last().is_some() {
+            next.update_last(|entry| entry.adds_newline = true, ());
+        }
+        next.extend(entries, ());
+        let new_len = next.summary().text.len;
+        self.state.excerpts = next;
+        self.sync_diff_transforms(
+            &before,
+            vec![diff_transform_sync::InputEdit::new(
+                old_len..old_len,
+                old_len..new_len,
+            )],
+            None,
+            cx,
+        );
+        self.publish_projection_edit(&before, base_version);
+        if self.projection_sync.is_none() {
+            cx.emit(MultiBufferEvent::ProjectionAppended);
+            cx.notify();
+        }
+        let match_ranges = paths_to_project
+            .iter()
+            .flat_map(|path| self.project_match_ranges(Some(path)))
+            .collect::<Vec<_>>();
+        AppendedExcerpts {
+            base_version,
+            version: self.state.projection_version,
+            match_ranges,
+        }
     }
 
     /// 用给定片段替换某路径的 excerpts，保持其余路径不变并维持路径升序。
@@ -6876,6 +7048,18 @@ fn mapping_at_tree(
     sources: Sources<'_>,
     offset: ByteOffset,
 ) -> Option<(ExcerptMapping, MappingPosition)> {
+    let mut cursor = MultiBufferCursor::new(excerpts, tree, sources);
+    cursor.seek(offset, Bias::Right);
+    mapping_at_cursor(excerpts, tree, sources, &mut cursor, offset)
+}
+
+fn mapping_at_cursor(
+    excerpts: &SumTree<Excerpt>,
+    tree: &SumTree<DiffTransform>,
+    sources: Sources<'_>,
+    cursor: &mut MultiBufferCursor<'_>,
+    offset: ByteOffset,
+) -> Option<(ExcerptMapping, MappingPosition)> {
     if offset.get() == tree.summary().output.len {
         let logical = excerpts.last()?;
         let mut cursor = excerpts.cursor::<ExcerptSummary>(());
@@ -6903,8 +7087,6 @@ fn mapping_at_tree(
         region.adds_newline = false;
         return Some((region.to_mapping(at.clone()), at));
     }
-    let mut cursor = MultiBufferCursor::new(excerpts, tree, sources);
-    cursor.seek(offset, Bias::Right);
     if cursor.item().is_none() {
         // 偏移在文档末尾（或之后）：命中最后一个映射。
         let mut last = MultiBufferCursor::new(excerpts, tree, sources);
@@ -7105,10 +7287,21 @@ fn anchor_in_mappings(
     offset: ByteOffset,
     affinity: Affinity,
 ) -> Option<MultiBufferAnchor> {
-    // 左吸附在删除段末端属于旧侧末端，需保留基线 Anchor；
-    // 若只锚到同点的工作区起点，解析时会按左吸附落到删除段起点，扩大后续编辑的选区。
     let mut cursor = MultiBufferCursor::new(excerpts, tree, sources);
     cursor.seek(offset, Bias::Right);
+    anchor_at_cursor(excerpts, tree, sources, &mut cursor, offset, affinity)
+}
+
+fn anchor_at_cursor(
+    excerpts: &SumTree<Excerpt>,
+    tree: &SumTree<DiffTransform>,
+    sources: Sources<'_>,
+    cursor: &mut MultiBufferCursor<'_>,
+    offset: ByteOffset,
+    affinity: Affinity,
+) -> Option<MultiBufferAnchor> {
+    // 左吸附在删除段末端属于旧侧末端，需保留基线 Anchor；
+    // 若只锚到同点的工作区起点，解析时会按左吸附落到删除段起点，扩大后续编辑的选区。
     let deleted_end = if affinity == Affinity::Before && cursor.start().bytes == offset.get() {
         let mut previous = cursor.clone();
         previous.prev();
@@ -7119,7 +7312,7 @@ fn anchor_in_mappings(
             .mapping()
             .is_some_and(|mapping| mapping.output_range.end().get() == offset.get())
         {
-            cursor = previous;
+            *cursor = previous;
             true
         } else {
             false
@@ -7130,7 +7323,7 @@ fn anchor_in_mappings(
     let (mapping, at) = if deleted_end {
         (cursor.mapping()?, cursor.start().clone())
     } else {
-        mapping_at_tree(excerpts, tree, sources, offset)?
+        mapping_at_cursor(excerpts, tree, sources, cursor, offset)?
     };
     let source_offset = ByteOffset::new(
         (mapping.source_range.start().get() + offset.get().saturating_sub(at.bytes))

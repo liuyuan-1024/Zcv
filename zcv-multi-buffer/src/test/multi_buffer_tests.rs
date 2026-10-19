@@ -1594,6 +1594,55 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn appended_excerpt_matches_use_final_projected_order(cx: &mut TestAppContext) {
+    let existing = singleton("src/file1.rs", "needle\n", cx);
+    let first = singleton("src/file2.rs", "needle\n", cx);
+    let second = singleton("src/file10.rs", "needle\n", cx);
+    let source_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(7)).unwrap();
+    let matched = TextRange::new(ByteOffset::ZERO, ByteOffset::new(6)).unwrap();
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts_for_path(
+            vec![ExcerptRange::new(existing, source_range, vec![matched])],
+            cx,
+        );
+    });
+
+    let appended = cx.update_entity(&combined, |buffer, cx| {
+        buffer.append_excerpts_for_paths(
+            vec![
+                vec![ExcerptRange::new(first, source_range, vec![matched])],
+                vec![ExcerptRange::new(second, source_range, vec![matched])],
+            ],
+            cx,
+        )
+    });
+
+    assert_eq!(
+        appended
+            .match_ranges
+            .iter()
+            .map(|range| (range.start().get(), range.end().get()))
+            .collect::<Vec<_>>(),
+        vec![(8, 14), (16, 22)],
+        "追加的命中必须使用最终组合坐标，且不重复返回原有命中"
+    );
+    assert_ne!(appended.base_version, appended.version);
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(
+        snapshot
+            .excerpts()
+            .map(|excerpt| excerpt.path().to_path_buf())
+            .collect::<Vec<_>>(),
+        vec![
+            PathBuf::from("src/file1.rs"),
+            PathBuf::from("src/file2.rs"),
+            PathBuf::from("src/file10.rs")
+        ]
+    );
+}
+
 /// excerpt 增删等结构变更必须在文本事务之外，否则组合事务身份与坐标基准会错配。
 #[gpui::test]
 #[should_panic(expected = "set_excerpts_for_path 必须在文本事务之外")]
@@ -2085,7 +2134,7 @@ fn assert_output_coordinates(snapshot: &MultiBufferSnapshot) {
         window_end = excerpt.output_range().end();
     }
     assert_eq!(window_end, snapshot.len_bytes(), "逻辑窗口必须覆盖完整输出");
-    let mut positions = MultiBufferPositionCursor::new(snapshot);
+    let mut positions = MultiBufferCoordinateCursor::new(snapshot);
     for byte in text
         .char_indices()
         .map(|(byte, _)| byte)
@@ -5687,4 +5736,32 @@ fn text_summary_matches_concatenated_excerpts(cx: &mut TestAppContext) {
             .expect("全文摘要必须有效"),
         combined_expected
     );
+}
+
+#[gpui::test]
+fn coordinate_cursor_anchors_match_snapshot_across_excerpt_boundaries(cx: &mut TestAppContext) {
+    let first = singleton("src/first.rs", "甲乙", cx);
+    let second = singleton("src/second.rs", "last", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(second, 0..1, cx),
+            ],
+            cx,
+        );
+    });
+    let snapshot = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+    let mut cursor = MultiBufferCoordinateCursor::new(&snapshot);
+    for offset in [0, 3, 6, 7, 8, snapshot.len_bytes().get()] {
+        let offset = MultiBufferOffset::new(offset);
+        for affinity in [Affinity::Before, Affinity::After] {
+            assert_eq!(
+                cursor.anchor_at(offset, affinity),
+                snapshot.anchor_at(offset, affinity),
+                "偏移 {offset:?} 的游标锚点必须与随机定位一致"
+            );
+        }
+    }
 }

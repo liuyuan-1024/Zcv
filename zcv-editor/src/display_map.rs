@@ -61,9 +61,9 @@ pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 use wrap_map::{WrapEdit, WrapMap, WrapPointCursor, WrapSnapshot};
 use zcv_language::HighlightSpan;
 use zcv_multi_buffer::{
-    DiffDisplaySnapshot, ExcerptSnapshot, MultiBuffer, MultiBufferAnchor, MultiBufferOffset,
-    MultiBufferPositionCursor, MultiBufferRange, MultiBufferSnapshot, MultiBufferSource,
-    MultiBufferSubscription,
+    DiffDisplaySnapshot, ExcerptSnapshot, MultiBuffer, MultiBufferAnchor,
+    MultiBufferCoordinateCursor, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
+    MultiBufferSource, MultiBufferSubscription,
 };
 use zcv_text::{
     Affinity, BufferId, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position,
@@ -894,7 +894,7 @@ impl DisplaySnapshot {
 
 /// 按非递减组合偏移把范围逐层投影到显示坐标；每层游标跨范围复用 SumTree 定位。
 pub(crate) struct DisplayPointConverter<'a> {
-    buffer: MultiBufferPositionCursor<'a>,
+    buffer: MultiBufferCoordinateCursor<'a>,
     fold: FoldPointCursor<'a>,
     tab: TabPointCursor<'a>,
     wrap: WrapPointCursor<'a>,
@@ -909,7 +909,7 @@ impl<'a> DisplayPointConverter<'a> {
         let tab_snapshot = wrap_snapshot.tab_snapshot();
         let fold_snapshot = tab_snapshot.fold_snapshot();
         Self {
-            buffer: MultiBufferPositionCursor::new(fold_snapshot.buffer_snapshot()),
+            buffer: MultiBufferCoordinateCursor::new(fold_snapshot.buffer_snapshot()),
             fold: fold_snapshot.point_cursor(),
             tab: tab_snapshot.point_cursor(),
             wrap: wrap_snapshot.point_cursor(),

@@ -14,7 +14,7 @@ use futures::{StreamExt, stream};
 use gpui::{BackgroundExecutor, Task};
 use zcv_git::GitRepository;
 use zcv_language::LanguageRegistry;
-use zcv_path::AbsolutePathBuf;
+use zcv_path::{AbsolutePathBuf, compare_natural_paths};
 use zcv_text::{ByteOffset, Line, Snapshot, TextRange, WordBoundaryPolicy};
 
 use crate::buffer_store::load_buffer;
@@ -78,7 +78,9 @@ pub(crate) async fn search_worktree(
     // 查询只解析一次；尤其是正则查询，编译出的自动机会复用于每个文件快照。
     let prepared_query = query.prepare()?;
 
-    let paths = searchable_file_paths(&plan);
+    let mut paths = searchable_file_paths(&plan);
+    // 搜索结果的到达顺序与普通 MultiBuffer 的路径顺序一致，结果片段可整批追加。
+    paths.sort_by(|left, right| compare_natural_paths(left.as_path(), right.as_path()));
     if paths.is_empty() {
         return Ok(());
     }

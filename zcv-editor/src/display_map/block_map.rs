@@ -8,7 +8,10 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
-use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{
+    ExcerptSnapshot, MultiBufferAnchor, MultiBufferCoordinateCursor, MultiBufferOffset,
+    MultiBufferRange,
+};
 use zcv_text::{Affinity, BufferId, CoordinateError, Line};
 
 use super::error::DisplayMapResult;
@@ -387,10 +390,21 @@ fn compute_specs_in_range(
             .expect("块 patch 终点必须属于换行快照")
     };
     let mut specs = Vec::new();
+    let mut positions = MultiBufferCoordinateCursor::new(buffer);
+    let mut fold_points = snapshot.tab_snapshot().fold_snapshot().point_cursor();
+    let mut tab_points = snapshot.tab_snapshot().point_cursor();
+    let mut wrap_points = snapshot.point_cursor();
+    let mut anchors = MultiBufferCoordinateCursor::new(buffer);
     for boundary in buffer.excerpt_boundaries_in_range(start..=end) {
         let excerpt = boundary.next();
-        let row = snapshot
-            .offset_to_wrap_point(excerpt.output_range().start())
+        let position = positions
+            .byte_to_position(excerpt.output_range().start())
+            .expect("逻辑边界必须属于组合快照");
+        let folded = fold_points
+            .map(position.into(), FoldBias::Left)
+            .expect("逻辑边界必须属于折叠快照");
+        let row = wrap_points
+            .map(tab_points.map(folded))
             .expect("逻辑边界必须属于换行快照")
             .row()
             .get();
@@ -417,11 +431,12 @@ fn compute_specs_in_range(
         } else {
             row
         };
+        let anchor = anchors.anchor_at(excerpt.output_range().start(), Affinity::Before);
         specs.push(BlockSpec {
             wrap_row: row,
             hidden_end,
             placement: Arc::new(BlockPlacement {
-                anchor: buffer.anchor_at(excerpt.output_range().start(), Affinity::Before),
+                anchor,
                 folded,
                 height: if kind == DisplayBlockKind::BufferHeader {
                     FILE_HEADER_HEIGHT

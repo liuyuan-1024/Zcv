@@ -13,7 +13,19 @@ fn decode(bytes: &[u8]) -> Result<String, BufferLoadError> {
 #[test]
 fn bom_is_stripped() {
     let bytes = [0xEF, 0xBB, 0xBF, b'h', b'e', b'l', b'l', b'o', b'\r', b'\n'];
-    assert_eq!(decode(&bytes).unwrap(), "hello\r\n");
+    assert_eq!(decode(&bytes).unwrap(), "hello\n");
+}
+
+#[test]
+fn decoding_normalizes_line_endings_across_read_boundaries() {
+    let mut bytes = vec![b'a'; READ_BUFFER_SIZE - 1];
+    bytes.extend_from_slice(b"\r\nb\rc");
+
+    let decoded = decode(&bytes).expect("文本应可解码");
+    assert_eq!(
+        decoded,
+        format!("{}\nb\nc", "a".repeat(READ_BUFFER_SIZE - 1))
+    );
 }
 
 #[test]
@@ -58,10 +70,17 @@ fn write_rejects_stale_version() {
 }
 
 #[test]
-fn write_normalizes_line_endings_to_lf() {
+fn write_uses_the_buffer_snapshot_without_line_ending_conversion() {
     let buffer = Buffer::from_text("a\nb\rc\r\nd".to_string(), BufferConfig::default()).unwrap();
+    let snapshot = buffer.snapshot();
+    let expected = snapshot
+        .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+        .unwrap()
+        .as_str()
+        .to_owned();
+    assert_eq!(expected, "a\nb\nc\nd");
 
     let mut output = Vec::new();
-    write_buffer_to(&buffer.snapshot(), buffer.version(), &mut output).unwrap();
-    assert_eq!(String::from_utf8(output).unwrap(), "a\nb\nc\nd");
+    write_buffer_to(&snapshot, buffer.version(), &mut output).unwrap();
+    assert_eq!(String::from_utf8(output).unwrap(), expected);
 }

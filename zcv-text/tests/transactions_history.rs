@@ -123,7 +123,7 @@ fn anchors_map_through_a_multi_edit_transaction_with_their_affinity() {
 
 #[test]
 fn failed_multi_edit_boundary_should_keep_transaction_atomic() {
-    let mut buffer = buffer("a\r\nb");
+    let mut buffer = buffer("a🙂b");
     let text = buffer_text(&buffer);
     let version = buffer.version();
     let err = buffer
@@ -138,7 +138,7 @@ fn failed_multi_edit_boundary_should_keep_transaction_atomic() {
 
     assert!(matches!(
         err,
-        TextError::Edit(EditError::InvalidBoundary { offset }) if offset == b(2)
+        TextError::Edit(EditError::RangeOutOfBounds { range }) if range.start() == b(2)
     ));
     assert_eq!(buffer_text(&buffer), text);
     assert_eq!(buffer.version(), version);

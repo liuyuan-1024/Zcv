@@ -3,12 +3,12 @@
 //! 它保证编辑互不重叠，但允许空列表；空事务由 Transaction 层拒绝。
 //!
 //! **Zero-copy 纪律**：内部存储为 `Arc<[Edit]>`，`Clone` 是 O(1) 引用计数递增；
-//! 单个事务内相同 replacement 会归一到同一份 `Arc<str>`。
+//! 单个事务先统一 replacement 的换行，再共享相同内容的 `Arc<str>`。
 
 use std::{collections::HashMap, sync::Arc};
 
 use super::{Edit, edit::empty_replacement};
-use crate::errors::EditError;
+use crate::{errors::EditError, line_endings::normalized_to_lf};
 
 /// 归一化且验证后的编辑列表。
 ///
@@ -38,6 +38,11 @@ impl EditList {
             }
         }
 
+        for edit in &mut edits {
+            if let Some(normalized) = normalized_to_lf(edit.replacement()) {
+                edit.share_replacement_with(Arc::from(normalized));
+            }
+        }
         share_repeated_replacements(&mut edits);
 
         Ok(Self {

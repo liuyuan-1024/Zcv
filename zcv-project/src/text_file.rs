@@ -1,12 +1,12 @@
-//! 文件文本边界：UTF-8/BOM 解码、换行规范化与 Buffer 的加载 / 保存。
+//! 文件文本边界：UTF-8/BOM 解码与 Buffer 的加载 / 保存。
 //!
-//! `zcv-text` 只接收已解码的 `String` 并暴露检测到的换行风格；
-//! 文件 IO、BOM 剥离与保存时的 LF 规范化都由本模块拥有。
+//! `zcv-text::Buffer` 在接收文本时统一换行；保存直接写入权威快照。
 
 use std::io::{self, Write};
 
 use zcv_text::{
     BufferVersion, ByteOffset, Snapshot, TextError, TextRange, TextRead, TransactionError,
+    normalize_to_lf,
 };
 
 /// 单次 `read` 系统调用最多吃多少字节。
@@ -192,10 +192,10 @@ pub(crate) fn decode_to_string<R: io::Read>(mut reader: R) -> Result<String, Buf
         }
     }
 
-    Ok(output)
+    Ok(normalize_to_lf(output))
 }
 
-/// 把文本快照写入 `writer`（换行统一为 LF），先校验调用方持有的版本仍然新鲜。
+/// 把文本快照原样写入 `writer`，先校验调用方持有的版本仍然新鲜。
 ///
 /// 只消费只读快照；宿主完成真实写盘后由文档实体标记保存点。
 pub(crate) fn write_buffer_to<W: Write>(
@@ -214,73 +214,10 @@ pub(crate) fn write_buffer_to<W: Write>(
 
     let range = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes()).map_err(TextError::from)?;
     let chunks = snapshot.chunks(range)?;
-    write_normalized_line_endings(writer, chunks, "\n")?;
-    writer.flush()?;
-    Ok(())
-}
-
-fn write_normalized_line_endings<'a, W, I>(
-    writer: &mut W,
-    chunks: I,
-    target: &str,
-) -> io::Result<()>
-where
-    W: Write,
-    I: IntoIterator<Item = &'a str>,
-{
-    let target = target.as_bytes();
-    let mut pending_cr = false;
-
     for chunk in chunks {
-        let bytes = chunk.as_bytes();
-        let mut index = 0usize;
-        let mut segment_start = 0usize;
-
-        if pending_cr {
-            writer.write_all(target)?;
-            pending_cr = false;
-            if bytes.first() == Some(&b'\n') {
-                index = 1;
-                segment_start = 1;
-            }
-        }
-
-        while index < bytes.len() {
-            match bytes[index] {
-                b'\r' => {
-                    writer.write_all(&bytes[segment_start..index])?;
-                    if bytes.get(index + 1) == Some(&b'\n') {
-                        writer.write_all(target)?;
-                        index += 2;
-                        segment_start = index;
-                    } else if index + 1 == bytes.len() {
-                        pending_cr = true;
-                        index += 1;
-                        segment_start = index;
-                    } else {
-                        writer.write_all(target)?;
-                        index += 1;
-                        segment_start = index;
-                    }
-                }
-                b'\n' => {
-                    writer.write_all(&bytes[segment_start..index])?;
-                    writer.write_all(target)?;
-                    index += 1;
-                    segment_start = index;
-                }
-                _ => {
-                    index += 1;
-                }
-            }
-        }
-
-        writer.write_all(&bytes[segment_start..])?;
+        writer.write_all(chunk.as_bytes())?;
     }
-
-    if pending_cr {
-        writer.write_all(target)?;
-    }
+    writer.flush()?;
     Ok(())
 }
 

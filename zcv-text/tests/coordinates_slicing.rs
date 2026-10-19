@@ -109,28 +109,20 @@ fn invalid_utf8_byte_boundary_should_be_rejected_by_byte_projection_and_slice() 
 }
 
 #[test]
-fn crlf_middle_should_not_be_valid_line_position_or_edit_boundary() {
+fn crlf_input_uses_lf_line_coordinates() {
     let mut buffer = buffer("a\r\nb");
 
-    let char_err = buffer.char_to_position(c(2)).unwrap_err();
-    let byte_err = buffer
+    assert_eq!(buffer_text(&buffer), "a\nb");
+    assert_eq!(buffer.char_to_position(c(2)).unwrap().line, line(1));
+    buffer
         .edit(
             [Edit::insert(b(2), "x").unwrap()],
             TransactionMetadata::default(),
         )
-        .unwrap_err();
-
-    assert!(matches!(
-        char_err,
-        TextError::Coordinate(CoordinateError::CharOutOfBounds(offset)) if offset == c(2)
-    ));
-    assert!(matches!(
-        byte_err,
-        TextError::Edit(EditError::InvalidBoundary { offset }) if offset == b(2)
-    ));
-    assert_eq!(buffer_text(&buffer), "a\r\nb");
-    assert_eq!(buffer.line_start_char(line(1)).unwrap(), c(3));
-    assert_eq!(buffer.line_start_byte(line(1)).unwrap(), b(3));
+        .unwrap();
+    assert_eq!(buffer_text(&buffer), "a\nxb");
+    assert_eq!(buffer.line_start_char(line(1)).unwrap(), c(2));
+    assert_eq!(buffer.line_start_byte(line(1)).unwrap(), b(2));
 }
 
 #[test]

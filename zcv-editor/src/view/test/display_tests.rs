@@ -2878,12 +2878,9 @@ fn staging_a_hunk_with_soft_wrap_keeps_wrap_map_invariant(cx: &mut TestAppContex
     );
 }
 
-/// 回归：中文 CRLF 软换行 diff 在切换 hunk 后，显示坐标换算必须落在行内容内。
-///
-/// 定位在 CRLF 的 \n 上时，投影列会超出行内容字符数；换行层必须在内容末端钳制，
-/// 不能在行内容之外切片。
+/// 中文 CRLF 输入进入源文档与 diff 后统一为 LF；切换 hunk 时显示坐标仍落在行内容内。
 #[gpui::test]
-fn soft_wrap_cjk_crlf_offset_conversion_stays_inside_line_content(cx: &mut TestAppContext) {
+fn soft_wrap_cjk_normalized_input_stays_inside_line_content(cx: &mut TestAppContext) {
     let fill = "中文注释内容".repeat(160);
     let mut working = String::new();
     let mut base = String::new();

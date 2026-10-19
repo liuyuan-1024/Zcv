@@ -17,7 +17,7 @@ use zcv_language::{
 };
 use zcv_text::{
     Anchor, Buffer as TextBuffer, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot,
-    TextRange, TextResult,
+    TextRange, TextResult, normalize_arc_to_lf,
 };
 
 use zcv_text::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
@@ -413,6 +413,15 @@ struct RevisionTexts {
     index: Option<Arc<str>>,
 }
 
+impl RevisionTexts {
+    fn new(base: Option<Arc<str>>, index: Option<Arc<str>>) -> Self {
+        Self {
+            base: base.map(normalize_arc_to_lf),
+            index: index.map(normalize_arc_to_lf),
+        }
+    }
+}
+
 struct CalculatedDiffInputs {
     versions: DiffInputVersions,
     revisions: RevisionTexts,
@@ -537,10 +546,7 @@ impl BufferDiff {
             revision: 0,
             calculated_inputs: None,
             calculation_task: None,
-            revision_texts: RevisionTexts {
-                base: base_text,
-                index: index_text,
-            },
+            revision_texts: RevisionTexts::new(base_text, index_text),
             _working_subscription: subscription,
         };
         this.recompute(cx);
@@ -554,10 +560,7 @@ impl BufferDiff {
         index_text: Option<Arc<str>>,
         cx: &mut Context<Self>,
     ) {
-        let revisions = RevisionTexts {
-            base: base_text,
-            index: index_text,
-        };
+        let revisions = RevisionTexts::new(base_text, index_text);
         if self.revision_texts == revisions {
             return;
         }

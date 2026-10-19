@@ -1,10 +1,13 @@
 //! 外部文本更新：按差异把新文本应用到 Buffer。
 //!
 //! 文件 IO、编码恢复、保存点与保存策略属于上层文件边界；
-//! 本模块只接收已解码的 `String`，不表达保存语义。
+//! 本模块只接收已解码的 `String`，进入版本链前统一换行，不表达保存语义。
 
 use super::Buffer;
-use crate::{ByteOffset, TextRange, TextResult, diff::diff_edits, storage::TextRead};
+use crate::{
+    ByteOffset, TextRange, TextResult, diff::diff_edits, line_endings::normalize_to_lf,
+    storage::TextRead,
+};
 
 impl Buffer {
     /// 用外部文本更新 Buffer。
@@ -13,6 +16,7 @@ impl Buffer {
     /// 锚点、语法树和显示投影因此共享同一条增量坐标链。
     /// 保存点由上层文件边界在写入磁盘后显式推进，本方法不标记保存状态。
     pub fn replace_text(&mut self, text: String) -> TextResult<()> {
+        let text = normalize_to_lf(text);
         let old_text = self.full_text()?;
         if old_text == text {
             return Ok(());

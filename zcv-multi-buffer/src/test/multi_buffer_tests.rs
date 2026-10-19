@@ -2194,7 +2194,7 @@ fn output_coordinates_follow_content_across_logical_excerpts(cx: &mut TestAppCon
     let snapshot = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
     assert_eq!(
         snapshot.text_bytes(),
-        "甲🙂\n乙e\u{301}z\r\n最后\n\n尾🙂\n".as_bytes()
+        "甲🙂\n乙e\u{301}z\n最后\n\n尾🙂\n".as_bytes()
     );
     assert_eq!(snapshot.excerpts().count(), 4);
     assert_output_coordinates(&snapshot);
@@ -2231,11 +2231,6 @@ fn diff_incremental_edits_keep_output_coordinates_and_patch_replay(cx: &mut Test
             .char_indices()
             .map(|(byte, _)| byte)
             .chain(iter::once(source_text.len()))
-            .filter(|byte| {
-                *byte == 0
-                    || *byte == source_text.len()
-                    || &source_text.as_bytes()[byte - 1..=(*byte)] != b"\r\n"
-            })
             .collect::<Vec<_>>();
         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
         let start = seed as usize % boundaries.len();

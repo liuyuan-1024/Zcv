@@ -1,4 +1,4 @@
-//! 增量按行宽度摘要：`Snapshot::text_summary_for_range` 必须与逐行扫描一致，并覆盖插入/删除行、跨行替换、结尾换行、CRLF、undo/redo、大事务与派生快照。
+//! 增量按行宽度摘要：`Snapshot::text_summary_for_range` 必须与逐行扫描一致，并覆盖插入/删除行、跨行替换、结尾换行、换行规范化、undo/redo、大事务与派生快照。
 
 use zcv_text::{
     Buffer, BufferConfig, ByteOffset, Edit, LargeTransactionPolicy, Snapshot, TextRange,
@@ -43,14 +43,9 @@ fn scan_summary(text: &str) -> TextSummary {
     summary
 }
 
-/// 合法编辑边界：字符边界，且不落在 CRLF 的 \r 与 \n 之间（该位置也构成 grapheme 内部）。
+/// 合法编辑边界：内部文本已统一为 LF，此处只需枚举字符边界。
 fn char_boundaries(text: &str) -> Vec<usize> {
-    let bytes = text.as_bytes();
-    let mut boundaries: Vec<usize> = text
-        .char_indices()
-        .map(|(index, _)| index)
-        .filter(|index| !(*index > 0 && bytes[*index - 1] == b'\r' && bytes[*index] == b'\n'))
-        .collect();
+    let mut boundaries: Vec<usize> = text.char_indices().map(|(index, _)| index).collect();
     boundaries.push(text.len());
     boundaries
 }
@@ -238,7 +233,7 @@ fn targeted_edits_keep_summary_equal_to_scan() {
 }
 
 #[test]
-fn trailing_newline_crlf_and_multibyte_summaries_are_stable() {
+fn trailing_newline_normalized_input_and_multibyte_summaries_are_stable() {
     for text in [
         "",
         "a",
@@ -250,18 +245,20 @@ fn trailing_newline_crlf_and_multibyte_summaries_are_stable() {
         "\r\na\r\n\r\n",
         "中\n🙂\r\nb",
     ] {
-        let summary = buffer(text)
+        let buffer = buffer(text);
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        let summary = buffer
             .snapshot()
-            .text_summary_for_range(range(0, text.len()))
+            .text_summary_for_range(range(0, normalized.len()))
             .expect("整段范围必须合法");
-        assert_eq!(summary, scan_summary(text), "文本 {text:?}");
+        assert_eq!(summary, scan_summary(&normalized), "文本 {text:?}");
     }
 }
 
 #[test]
 fn random_edits_keep_summary_equal_to_scan() {
     let mut rng = Lcg::new(0x9E37_79B9_7F4A_7C15);
-    let mut text = "ab\ncde\r\nf".to_string();
+    let mut text = "ab\ncde\nf".to_string();
     let mut buffer = buffer(&text);
     let replacements = ["", "\n", "\r\n", "x", "中", "ab\n", "\n\n", "hello", "🙂"];
 
@@ -290,7 +287,8 @@ fn random_edits_keep_summary_equal_to_scan() {
                 TransactionMetadata::default(),
             )
             .expect("生成的编辑必须合法");
-        text.replace_range(start..end, replacement);
+        let normalized = replacement.replace("\r\n", "\n").replace('\r', "\n");
+        text.replace_range(start..end, &normalized);
 
         assert_summary_matches_scan(&buffer, &text);
     }

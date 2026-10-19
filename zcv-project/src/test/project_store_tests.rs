@@ -193,6 +193,52 @@ fn saving_buffer_writes_current_version_and_marks_it_clean(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn saving_crlf_input_writes_the_source_snapshot_and_marks_that_version_clean(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let path = directory.path().join("document.txt");
+    fs::write(&path, "甲\r\n乙\r").expect("应创建文件");
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&path, cx))
+        .expect("应打开文件");
+    buffer
+        .update(cx, |buffer, cx| {
+            buffer.edit(
+                [Edit::insert(buffer.len_bytes(), "丙\r\n").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+        })
+        .expect("编辑应成功");
+
+    let snapshot = buffer.read_with(cx, |buffer, _| buffer.text_snapshot());
+    let expected = snapshot
+        .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+        .expect("快照应可读取")
+        .as_str()
+        .to_owned();
+    assert_eq!(expected, "甲\n乙\n丙\n");
+
+    project
+        .update(cx, |project, cx| {
+            project.save_file_buffers(
+                vec![(buffer.clone(), path.clone())],
+                FileSaveConflictPolicy::Reject,
+                cx,
+            )
+        })
+        .expect("保存应成功");
+
+    assert_eq!(fs::read_to_string(&path).expect("应读回文件"), expected);
+    buffer.read_with(cx, |buffer, _| {
+        assert_eq!(buffer.saved_version(), snapshot.version());
+        assert!(!buffer.is_dirty());
+    });
+}
+
+#[gpui::test]
 fn failed_save_keeps_buffer_dirty(cx: &mut TestAppContext) {
     let path = test_file_path().join("missing.txt");
     let language_buffer = cx.new(|cx| {

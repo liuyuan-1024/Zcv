@@ -5,13 +5,15 @@
 use super::{Buffer, history};
 use crate::{
     BufferConfig, BufferId, BufferVersion, TextResult, TransactionId,
+    line_endings::normalize_to_lf,
     storage::{RopeyStorage, TextRead},
     tracking::{CoordinateIndex, InsertionIndex},
 };
 
 impl Buffer {
-    /// 从已有文本创建匿名来源 Buffer。
+    /// 从已有文本创建匿名来源 Buffer；内部换行统一为 LF。
     pub fn from_text(text: String, config: BufferConfig) -> TextResult<Self> {
+        let text = normalize_to_lf(text);
         let storage = RopeyStorage::new(text);
         Ok(Self::from_parts(storage, config))
     }

@@ -1,4 +1,4 @@
-//! Buffer 校验边界：集中约束 range、selection、edit list、grapheme 与 CRLF 中点等编辑合法性。
+//! Buffer 校验边界：集中约束 range、selection、edit list 与 grapheme 等编辑合法性。
 //!
 //! 本文件只做防线判断并返回明确错误，不修正调用方输入，也不直接改变 Buffer 状态。
 
@@ -42,7 +42,7 @@ impl Buffer {
         Ok(())
     }
 
-    /// 校验编辑边界（字节偏移）是否合法：不越界、不落在 CRLF 中间、是 UTF-8 字符边界。
+    /// 校验编辑边界（字节偏移）是否合法：不越界，且是 UTF-8 字符边界。
     pub(super) fn validate_edit_boundary(&self, offset: ByteOffset) -> TextResult<()> {
         let value = offset.get();
         let len_bytes = self.storage.len_bytes().get();
@@ -54,15 +54,6 @@ impl Buffer {
         // 校验是否落在 UTF-8 字符边界：byte_to_char 对非字符边界返回 InvalidByteBoundary
         if value < len_bytes && self.storage.byte_to_char(offset).is_err() {
             return Err(CoordinateError::InvalidByteBoundary(offset).into());
-        }
-
-        // 校验是否落在 CRLF 中间
-        if value > 0 && value < len_bytes {
-            let prev = self.storage.char_at_byte(ByteOffset::new(value - 1));
-            let curr = self.storage.char_at_byte(offset);
-            if prev == Some('\r') && curr == Some('\n') {
-                return Err(EditError::InvalidBoundary { offset }.into());
-            }
         }
 
         Ok(())

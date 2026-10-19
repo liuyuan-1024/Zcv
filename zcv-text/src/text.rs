@@ -9,6 +9,7 @@ mod config;
 mod diff;
 mod errors;
 mod indent;
+mod line_endings;
 mod movement;
 mod position_map;
 mod slicing;
@@ -30,6 +31,7 @@ pub use errors::{
     AnchorError, CoordinateError, EditError, StorageError, TextError, TextResult, TransactionError,
 };
 pub use indent::LineIndent;
+pub use line_endings::{normalize_arc_to_lf, normalize_to_lf};
 pub use movement::{MovementDirection, MovementUnit};
 pub use position_map::{Affinity, MappingResult, PositionMap, Stickiness};
 pub use slicing::{LineContent, LineSlice, TextSlice};

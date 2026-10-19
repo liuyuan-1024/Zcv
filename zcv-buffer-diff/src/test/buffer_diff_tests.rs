@@ -126,6 +126,38 @@ fn base_version_change_discards_stale_hunks(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn revision_inputs_and_working_buffer_use_the_same_line_endings(cx: &mut TestAppContext) {
+    let working = language_buffer("a\r\nnew\r\nc\r\n", "src/a.rs", cx);
+    let diff = cx.new(|cx| {
+        let mut input = buffer_diff_input(working, Some("a\r\nold\r\nc\r\n"), "src/a.rs");
+        input.index_text = Some(Arc::from("a\r\nnew\r\nc\r\n"));
+        BufferDiff::new(input, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&diff, |diff, _| diff.snapshot().hunk_count()),
+        1
+    );
+
+    diff.update(cx, |diff, cx| {
+        diff.set_revisions(
+            Some(Arc::from("a\r\nnew\r\nc\r\n")),
+            Some(Arc::from("a\r\nnew\r\nc\r\n")),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    diff.read_with(cx, |diff, cx| {
+        assert_eq!(diff.snapshot().hunk_count(), 0);
+        let base = diff.base_source().expect("应有 base 文档");
+        assert_eq!(
+            super::full_text(&base.read(cx).text_snapshot()),
+            "a\nnew\nc\n"
+        );
+    });
+}
+
+#[gpui::test]
 fn latest_revision_text_supersedes_an_in_flight_change(cx: &mut TestAppContext) {
     let working = language_buffer("原始\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {

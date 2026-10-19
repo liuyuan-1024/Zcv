@@ -126,12 +126,16 @@ impl Item for Editor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
-        let buffers = self
-            .multi_buffer()
-            .read(cx)
+        let multi_buffer = self.multi_buffer();
+        let multi_buffer = multi_buffer.read(cx);
+        let singleton = multi_buffer.singleton_source().is_some();
+        let buffers = multi_buffer
             .file_buffers(cx)
             .into_iter()
-            .filter(|(buffer, _)| buffer.read(cx).is_dirty())
+            .filter(|(buffer, _)| {
+                let buffer = buffer.read(cx);
+                !buffer.is_read_only() && (singleton || buffer.is_dirty())
+            })
             .collect::<Vec<_>>();
         let result = project.update(cx, |project, cx| {
             project.save_file_buffers(buffers, conflict_policy, cx)

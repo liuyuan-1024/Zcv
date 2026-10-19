@@ -61,6 +61,12 @@
   // 换行时续写当前 Markdown 列表项。
   "extend_list_on_newline": true,
 
+  // 保存时删除各行末尾的空格和 Tab；可在 languages 中按语言覆盖。
+  "remove_trailing_whitespace_on_save": true,
+
+  // 保存时把非空文件末尾的 ASCII 空白收成一个换行；可在 languages 中按语言覆盖。
+  "ensure_final_newline_on_save": true,
+
   // 字符串数组；每项须为 globset 可解析的 glob，[] 表示不排除。无法解析的 glob 当前会被忽略。
   "file_scan_exclusions": [
     "**/.git",

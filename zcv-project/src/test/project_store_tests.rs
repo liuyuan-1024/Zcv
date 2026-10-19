@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gpui::{AppContext, TestAppContext};
 use zcv_fs_watch::FsEventStream;
 use zcv_language::LanguageBuffer;
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
 use super::*;
@@ -236,6 +237,215 @@ fn saving_crlf_input_writes_the_source_snapshot_and_marks_that_version_clean(
         assert_eq!(buffer.saved_version(), snapshot.version());
         assert!(!buffer.is_dirty());
     });
+}
+
+#[gpui::test]
+fn save_formats_the_source_buffer_as_one_undo_step_before_writing(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let path = directory.path().join("document.txt");
+    fs::write(&path, "甲  \n乙\t \n \t\n").expect("应创建文件");
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&path, cx))
+        .expect("应打开文件");
+    let before = buffer.read_with(cx, |buffer, _| buffer.version());
+
+    project
+        .update(cx, |project, cx| {
+            project.save_file_buffers(
+                vec![(buffer.clone(), path.clone())],
+                FileSaveConflictPolicy::Reject,
+                cx,
+            )
+        })
+        .expect("保存应成功");
+
+    assert_eq!(fs::read_to_string(&path).unwrap(), "甲\n乙\n");
+    buffer.read_with(cx, |buffer, _| {
+        let snapshot = buffer.text_snapshot();
+        assert_ne!(snapshot.version(), before);
+        assert_eq!(buffer.saved_version(), snapshot.version());
+        assert!(!buffer.is_dirty());
+    });
+    buffer
+        .update(cx, |buffer, cx| buffer.undo(cx))
+        .expect("撤销应成功")
+        .expect("保存整理应可撤销");
+    buffer.read_with(cx, |buffer, _| {
+        let snapshot = buffer.text_snapshot();
+        assert_eq!(
+            snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+                .unwrap()
+                .as_str(),
+            "甲  \n乙\t \n \t\n"
+        );
+        assert!(buffer.is_dirty());
+        assert!(!buffer.can_undo());
+    });
+}
+
+#[gpui::test]
+fn saving_empty_or_already_formatted_file_does_not_create_an_edit(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let project = test_project(directory.path().to_path_buf(), cx);
+    for (name, contents) in [("empty.txt", ""), ("formatted.txt", "内容\n")] {
+        let path = directory.path().join(name);
+        fs::write(&path, contents).unwrap();
+        let buffer = project
+            .update(cx, |project, cx| project.open_buffer(&path, cx))
+            .unwrap();
+        let before = buffer.read_with(cx, |buffer, _| buffer.version());
+
+        project
+            .update(cx, |project, cx| {
+                project.save_file_buffers(
+                    vec![(buffer.clone(), path.clone())],
+                    FileSaveConflictPolicy::Reject,
+                    cx,
+                )
+            })
+            .unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+        buffer.read_with(cx, |buffer, _| {
+            assert_eq!(buffer.version(), before);
+            assert!(!buffer.is_dirty());
+            assert!(!buffer.can_undo());
+        });
+    }
+}
+
+#[gpui::test]
+fn save_whitespace_settings_apply_independently(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("document.txt");
+    fs::write(&path, "a  \nb  \n\n").unwrap();
+    cx.update(|cx| {
+        let mut settings = UserSettings::default();
+        settings.remove_trailing_whitespace_on_save = false;
+        cx.set_global(SettingsStore::new(settings));
+    });
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&path, cx))
+        .unwrap();
+
+    project
+        .update(cx, |project, cx| {
+            project.save_file_buffers(
+                vec![(buffer.clone(), path.clone())],
+                FileSaveConflictPolicy::Reject,
+                cx,
+            )
+        })
+        .unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "a  \nb\n");
+}
+
+#[gpui::test]
+fn disabling_final_newline_keeps_extra_blank_lines_after_trimming(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("document.txt");
+    fs::write(&path, "a  \nb  \n\n").unwrap();
+    cx.update(|cx| {
+        let mut settings = UserSettings::default();
+        settings.ensure_final_newline_on_save = false;
+        cx.set_global(SettingsStore::new(settings));
+    });
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&path, cx))
+        .unwrap();
+
+    project
+        .update(cx, |project, cx| {
+            project.save_file_buffers(
+                vec![(buffer.clone(), path.clone())],
+                FileSaveConflictPolicy::Reject,
+                cx,
+            )
+        })
+        .unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "a\nb\n\n");
+}
+
+#[gpui::test]
+fn save_uses_language_override_without_changing_global_defaults(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let rust_path = directory.path().join("main.rs");
+    let text_path = directory.path().join("notes.txt");
+    fs::write(&rust_path, "fn main() {}  \n\n").unwrap();
+    fs::write(&text_path, "notes  \n\n").unwrap();
+    cx.update(|cx| {
+        let mut settings = SettingsStore::new(UserSettings::default());
+        settings
+            .set_user_settings(
+                r#"{"languages":{"Rust":{"remove_trailing_whitespace_on_save":false,"ensure_final_newline_on_save":false}}}"#,
+            )
+            .unwrap();
+        cx.set_global(settings);
+    });
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let rust = project
+        .update(cx, |project, cx| project.open_buffer(&rust_path, cx))
+        .unwrap();
+    let text = project
+        .update(cx, |project, cx| project.open_buffer(&text_path, cx))
+        .unwrap();
+
+    project
+        .update(cx, |project, cx| {
+            project.save_file_buffers(
+                vec![(rust, rust_path.clone()), (text, text_path.clone())],
+                FileSaveConflictPolicy::Reject,
+                cx,
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(&rust_path).unwrap(),
+        "fn main() {}  \n\n"
+    );
+    assert_eq!(fs::read_to_string(&text_path).unwrap(), "notes\n");
+}
+
+#[gpui::test]
+fn failed_write_keeps_save_format_edit_dirty(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("document.txt");
+    fs::write(&path, "内容  ").unwrap();
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&path, cx))
+        .unwrap();
+    let saved_version = buffer.read_with(cx, |buffer, _| buffer.saved_version());
+    let missing_path = directory.path().join("missing").join("document.txt");
+
+    assert!(
+        project
+            .update(cx, |project, cx| {
+                project.save_file_buffers(
+                    vec![(buffer.clone(), missing_path)],
+                    FileSaveConflictPolicy::Reject,
+                    cx,
+                )
+            })
+            .is_err()
+    );
+    buffer.read_with(cx, |buffer, _| {
+        let snapshot = buffer.text_snapshot();
+        assert_eq!(
+            snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+                .unwrap()
+                .as_str(),
+            "内容\n"
+        );
+        assert_eq!(buffer.saved_version(), saved_version);
+        assert!(buffer.is_dirty());
+    });
+    assert_eq!(fs::read_to_string(&path).unwrap(), "内容  ");
 }
 
 #[gpui::test]
@@ -1020,7 +1230,7 @@ fn external_change_requires_explicit_choice_before_saving(cx: &mut gpui::TestApp
             )
         })
         .expect("显式覆盖应成功");
-    assert_eq!(fs::read_to_string(&file).unwrap(), "磁盘旧内容 本地编辑");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "磁盘旧内容 本地编辑\n");
     assert!(!cx.read_entity(&buffer, |buffer, _| buffer.has_disk_conflict()));
     assert!(!cx.read_entity(&buffer, |buffer, _| buffer.is_dirty()));
 }
@@ -1106,8 +1316,8 @@ fn conflict_in_a_later_source_prevents_partial_multi_file_save(cx: &mut gpui::Te
     let result = project.update(cx, |project, cx| {
         project.save_file_buffers(
             vec![
-                (first_buffer, first.clone()),
-                (second_buffer, second.clone()),
+                (first_buffer.clone(), first.clone()),
+                (second_buffer.clone(), second.clone()),
             ],
             FileSaveConflictPolicy::Reject,
             cx,
@@ -1116,6 +1326,16 @@ fn conflict_in_a_later_source_prevents_partial_multi_file_save(cx: &mut gpui::Te
     assert!(matches!(result, Err(BufferSaveError::Conflict(path)) if path == second));
     assert_eq!(fs::read_to_string(&first).unwrap(), "第一份原内容");
     assert_eq!(fs::read_to_string(&second).unwrap(), "第二份磁盘改动");
+    first_buffer.read_with(cx, |buffer, _| {
+        let snapshot = buffer.text_snapshot();
+        assert_eq!(
+            snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+                .unwrap()
+                .as_str(),
+            "第一份原内容 本地编辑"
+        );
+    });
 }
 
 #[gpui::test]
@@ -1411,6 +1631,20 @@ fn save_events_preserve_undo_history(cx: &mut gpui::TestAppContext) {
     });
 
     language_buffer.read_with(cx, |language_buffer, _| assert!(language_buffer.can_undo()));
+    language_buffer
+        .update(cx, |language_buffer, cx| language_buffer.undo(cx))
+        .expect("撤销应成功")
+        .expect("保存整理应可撤销");
+    language_buffer.read_with(cx, |language_buffer, _| {
+        let snapshot = language_buffer.text_snapshot();
+        assert_eq!(
+            snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+                .expect("应读取完整文本")
+                .as_str(),
+            "原内容 + 修改"
+        );
+    });
     language_buffer
         .update(cx, |language_buffer, cx| language_buffer.undo(cx))
         .expect("撤销应成功")

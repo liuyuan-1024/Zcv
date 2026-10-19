@@ -64,6 +64,33 @@ fn newline_settings_have_explicit_defaults_and_overrides() {
 }
 
 #[test]
+fn save_whitespace_settings_have_independent_global_and_language_overrides() {
+    let defaults = UserSettings::default();
+    assert!(defaults.remove_trailing_whitespace_on_save);
+    assert!(defaults.ensure_final_newline_on_save);
+
+    let settings = UserSettings::merge(
+        parse_user_settings(
+            r#"{
+                "remove_trailing_whitespace_on_save": false,
+                "languages": {
+                    "Rust": {
+                        "remove_trailing_whitespace_on_save": true,
+                        "ensure_final_newline_on_save": false
+                    }
+                }
+            }"#,
+        )
+        .unwrap(),
+    );
+    assert!(!settings.remove_trailing_whitespace_on_save_for_language(None));
+    assert!(settings.ensure_final_newline_on_save_for_language(None));
+    assert!(settings.remove_trailing_whitespace_on_save_for_language(Some("Rust")));
+    assert!(!settings.ensure_final_newline_on_save_for_language(Some("Rust")));
+    assert!(!settings.remove_trailing_whitespace_on_save_for_language(Some("Go")));
+}
+
+#[test]
 fn cursor_shape_setting_supports_all_zed_shapes() {
     for (name, shape) in [
         ("bar", CursorShape::Bar),

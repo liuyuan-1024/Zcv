@@ -19,7 +19,7 @@ use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::{ConflictChoice, FileStatus, parse_conflict_regions, resolve_conflict};
 use zcv_language::{LanguageBuffer, LanguageBufferEvent, LanguageRegistry};
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
-use zcv_text::{ByteOffset, Edit, Snapshot, TextRange, TransactionMetadata};
+use zcv_text::{ByteOffset, Edit, Snapshot, TextRange, TextResult, TransactionMetadata};
 
 use crate::search::SearchQuery;
 
@@ -592,6 +592,7 @@ impl Project {
         let mut saved_paths = Vec::with_capacity(buffers.len());
         let mut resolved_conflict_paths: Vec<AbsolutePathBuf> = Vec::new();
         for (language_buffer, path) in buffers {
+            language_buffer.update(cx, format_buffer_for_save)?;
             let snapshot = language_buffer.read(cx).text_snapshot();
             let is_unmerged = self
                 .git_store
@@ -978,6 +979,58 @@ impl Project {
             cx.emit(ProjectEvent::EntriesChanged);
         }
     }
+}
+
+/// 保存策略先作为源文档事务生效；后续写盘只消费新版本快照。
+fn format_buffer_for_save(
+    buffer: &mut LanguageBuffer,
+    cx: &mut Context<LanguageBuffer>,
+) -> TextResult<()> {
+    let settings = buffer.snapshot().settings;
+    let whitespace_edits = if settings.remove_trailing_whitespace_on_save {
+        buffer.text_snapshot().trailing_whitespace_edits()?
+    } else {
+        Vec::new()
+    };
+    let has_whitespace_edits = !whitespace_edits.is_empty();
+    let final_newline_edit = if settings.ensure_final_newline_on_save && !has_whitespace_edits {
+        buffer.text_snapshot().final_newline_edit()?
+    } else {
+        None
+    };
+    if !has_whitespace_edits && final_newline_edit.is_none() {
+        return Ok(());
+    }
+
+    let started_session = buffer.start_transaction()?.is_some();
+    let result = (|| {
+        if has_whitespace_edits {
+            buffer.edit(
+                whitespace_edits,
+                TransactionMetadata::default().with_description("保存时整理空白"),
+                cx,
+            )?;
+        }
+        if settings.ensure_final_newline_on_save {
+            let edit = if !has_whitespace_edits {
+                final_newline_edit
+            } else {
+                buffer.text_snapshot().final_newline_edit()?
+            };
+            if let Some(edit) = edit {
+                buffer.edit(
+                    [edit],
+                    TransactionMetadata::default().with_description("保存时整理空白"),
+                    cx,
+                )?;
+            }
+        }
+        Ok(())
+    })();
+    if started_session {
+        buffer.end_transaction()?;
+    }
+    result
 }
 
 impl EventEmitter<ProjectEvent> for Project {}

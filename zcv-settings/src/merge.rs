@@ -50,6 +50,10 @@ pub struct UserSettings {
     pub extend_comment_on_newline: bool,
     /// 换行时是否续写 Markdown 列表。
     pub extend_list_on_newline: bool,
+    /// 保存时是否删除各行末尾的空格和 Tab。
+    pub remove_trailing_whitespace_on_save: bool,
+    /// 保存时是否把非空文件末尾的 ASCII 空白收成一个换行。
+    pub ensure_final_newline_on_save: bool,
     /// 终端字体大小（像素）。
     pub terminal_font_size: f32,
     /// 终端行高（相对字号的倍数）。
@@ -128,6 +132,23 @@ impl UserSettings {
         settings
     }
 
+    pub fn remove_trailing_whitespace_on_save_for_language(
+        &self,
+        language_name: Option<&str>,
+    ) -> bool {
+        language_name
+            .and_then(|name| self.languages.get(name))
+            .and_then(|settings| settings.remove_trailing_whitespace_on_save)
+            .unwrap_or(self.remove_trailing_whitespace_on_save)
+    }
+
+    pub fn ensure_final_newline_on_save_for_language(&self, language_name: Option<&str>) -> bool {
+        language_name
+            .and_then(|name| self.languages.get(name))
+            .and_then(|settings| settings.ensure_final_newline_on_save)
+            .unwrap_or(self.ensure_final_newline_on_save)
+    }
+
     /// 将用户配置合并到内置默认层：用户显式配置的字段覆盖默认，未配置字段由内置初始设置补齐。
     pub(crate) fn merge(content: UserSettingsContent) -> Self {
         let defaults = default_content();
@@ -158,6 +179,9 @@ impl UserSettings {
                             tab_size: content.tab_size.and_then(NonZeroUsize::new),
                             insert_spaces: content.insert_spaces,
                             indent_guides: content.indent_guides,
+                            remove_trailing_whitespace_on_save: content
+                                .remove_trailing_whitespace_on_save,
+                            ensure_final_newline_on_save: content.ensure_final_newline_on_save,
                         },
                     )
                 })
@@ -199,6 +223,12 @@ impl UserSettings {
             extend_list_on_newline: content
                 .extend_list_on_newline
                 .unwrap_or(defaults.extend_list_on_newline),
+            remove_trailing_whitespace_on_save: content
+                .remove_trailing_whitespace_on_save
+                .unwrap_or(defaults.remove_trailing_whitespace_on_save),
+            ensure_final_newline_on_save: content
+                .ensure_final_newline_on_save
+                .unwrap_or(defaults.ensure_final_newline_on_save),
             terminal_font_size: content
                 .terminal_font_size
                 .unwrap_or(defaults.terminal_font_size),

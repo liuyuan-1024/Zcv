@@ -18,6 +18,8 @@ pub struct LanguageSettings {
     pub auto_indent: AutoIndentMode,
     pub extend_comment_on_newline: bool,
     pub extend_list_on_newline: bool,
+    pub remove_trailing_whitespace_on_save: bool,
+    pub ensure_final_newline_on_save: bool,
 }
 
 impl Default for LanguageSettings {
@@ -29,6 +31,8 @@ impl Default for LanguageSettings {
             auto_indent: settings.auto_indent,
             extend_comment_on_newline: settings.extend_comment_on_newline,
             extend_list_on_newline: settings.extend_list_on_newline,
+            remove_trailing_whitespace_on_save: settings.remove_trailing_whitespace_on_save,
+            ensure_final_newline_on_save: settings.ensure_final_newline_on_save,
         }
     }
 }
@@ -43,6 +47,10 @@ impl LanguageSettings {
                 auto_indent: settings.auto_indent,
                 extend_comment_on_newline: settings.extend_comment_on_newline,
                 extend_list_on_newline: settings.extend_list_on_newline,
+                remove_trailing_whitespace_on_save: settings
+                    .remove_trailing_whitespace_on_save_for_language(language_name),
+                ensure_final_newline_on_save: settings
+                    .ensure_final_newline_on_save_for_language(language_name),
             }),
         )
     }

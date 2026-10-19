@@ -72,6 +72,8 @@ pub(crate) struct BuiltinSettingsContent {
     pub(crate) auto_indent: AutoIndentMode,
     pub(crate) extend_comment_on_newline: bool,
     pub(crate) extend_list_on_newline: bool,
+    pub(crate) remove_trailing_whitespace_on_save: bool,
+    pub(crate) ensure_final_newline_on_save: bool,
     pub(crate) terminal_font_size: f32,
     pub(crate) terminal_line_height: f32,
     pub(crate) terminal_max_scroll_history_lines: usize,
@@ -136,6 +138,10 @@ pub(crate) struct LanguageOverrideContent {
     pub(crate) insert_spaces: Option<bool>,
     #[serde(deserialize_with = "fallible")]
     pub(crate) indent_guides: Option<IndentGuideSettingsContent>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) remove_trailing_whitespace_on_save: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) ensure_final_newline_on_save: Option<bool>,
 }
 
 /// 一门语言的 Tab / 缩进覆盖值。
@@ -144,6 +150,8 @@ pub struct LanguageOverride {
     pub tab_size: Option<NonZeroUsize>,
     pub insert_spaces: Option<bool>,
     pub(crate) indent_guides: Option<IndentGuideSettingsContent>,
+    pub remove_trailing_whitespace_on_save: Option<bool>,
+    pub ensure_final_newline_on_save: Option<bool>,
 }
 
 /// 按语言解析后的引导线策略。
@@ -227,6 +235,10 @@ pub(crate) struct UserSettingsContent {
     pub(crate) extend_comment_on_newline: Option<bool>,
     #[serde(deserialize_with = "fallible")]
     pub(crate) extend_list_on_newline: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) remove_trailing_whitespace_on_save: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) ensure_final_newline_on_save: Option<bool>,
     #[serde(deserialize_with = "fallible")]
     pub(crate) terminal_font_size: Option<f32>,
     #[serde(deserialize_with = "fallible")]

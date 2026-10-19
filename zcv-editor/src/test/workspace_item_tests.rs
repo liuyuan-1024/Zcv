@@ -126,6 +126,37 @@ fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn saving_clean_singleton_applies_save_format(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = directory.path().canonicalize().expect("临时目录应可规范化");
+    let path = root.join("document.txt");
+    fs::write(&path, "内容  ").expect("应创建文件");
+    let project_root = AbsolutePathBuf::new(root).expect("项目根目录应为绝对路径");
+    let project = cx.new(|cx| Project::new(project_root, Arc::new(LanguageRegistry::new()), cx));
+    let source = project
+        .update(cx, |project, cx| project.open_buffer(&path, cx))
+        .expect("应打开文件");
+    let editor = cx.new(|cx| {
+        let combined = cx.new(|cx| MultiBuffer::singleton(source, cx));
+        Editor::for_multi_buffer(combined, cx)
+    });
+    let item: Box<dyn ItemHandle> = Box::new(editor);
+    cx.update(|cx| {
+        assert!(item.can_save(cx));
+        assert!(!item.is_dirty(cx));
+    });
+
+    let window = cx.add_window(|_, _| Empty);
+    let _save = window
+        .update(cx, |_, window, cx| {
+            item.save(project, FileSaveConflictPolicy::Reject, window, cx)
+        })
+        .expect("测试窗口应保持可用");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "内容\n");
+    cx.update(|cx| assert!(!item.is_dirty(cx)));
+}
+
+#[gpui::test]
 fn editor_item_exposes_conflict_and_restores_the_same_source_document(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let root = directory.path().canonicalize().expect("临时目录应可规范化");
@@ -229,7 +260,7 @@ fn rename_then_save_writes_to_new_path(cx: &mut TestAppContext) {
         .expect("保存应成功");
     assert_eq!(
         fs::read_to_string(&new_path).expect("新路径应有保存内容"),
-        "新内容"
+        "新内容\n"
     );
     assert!(!old_path.exists(), "旧路径不应再存在");
 }

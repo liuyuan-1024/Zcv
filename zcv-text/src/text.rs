@@ -12,6 +12,7 @@ mod indent;
 mod line_endings;
 mod movement;
 mod position_map;
+mod save_format;
 mod slicing;
 mod snapshot;
 mod storage;

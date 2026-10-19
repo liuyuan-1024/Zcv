@@ -41,7 +41,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.9.163"
+version = "0.9.164"
 edition = "2024"
 
 [workspace.lints.rust]

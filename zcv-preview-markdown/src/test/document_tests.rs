@@ -247,6 +247,21 @@ fn keeps_standalone_equals_inside_display_math() {
 }
 
 #[test]
+fn separates_display_math_from_adjacent_paragraph_lines() {
+    assert_eq!(
+        parse("公式如下：\n$$\na^*=\\arg\\max_a I(a)\n$$\n其中 I(a) 为信息增益。"),
+        vec![
+            paragraph("公式如下："),
+            Block::Math {
+                source: "\na^*=\\arg\\max_a I(a)\n".into(),
+                display: true,
+            },
+            paragraph("其中 I(a) 为信息增益。"),
+        ]
+    );
+}
+
+#[test]
 fn preserves_nested_quotes_and_lists() {
     assert_eq!(
         parse(

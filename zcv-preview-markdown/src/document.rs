@@ -417,35 +417,84 @@ fn closes_fenced_code(line: &str, (marker, minimum_length): (u8, usize)) -> bool
     length >= minimum_length && content[length..].iter().all(u8::is_ascii_whitespace)
 }
 
-fn restore_display_math_blocks(blocks: &mut [Block], display_math_blocks: &[DisplayMathBlock]) {
-    for block in blocks {
+fn restore_display_math_blocks(blocks: &mut Vec<Block>, display_math_blocks: &[DisplayMathBlock]) {
+    let mut restored = Vec::with_capacity(blocks.len());
+    for block in blocks.drain(..) {
         match block {
             Block::Paragraph(content) => {
-                let Some([inline]) = content.get(..) else {
-                    continue;
-                };
-                if inline.style != InlineStyle::default() {
-                    continue;
+                let mut paragraph = Vec::new();
+                let mut after_math = false;
+                for inline in content {
+                    let mut remaining = inline.text.as_str();
+                    while let Some((position, math)) = display_math_blocks
+                        .iter()
+                        .filter_map(|math| {
+                            remaining.find(&math.token).map(|position| (position, math))
+                        })
+                        .min_by_key(|(position, _)| *position)
+                    {
+                        if position > 0 {
+                            paragraph.push(Inline {
+                                text: remaining[..position].to_owned(),
+                                style: inline.style.clone(),
+                            });
+                        }
+                        push_math_paragraph(&mut restored, &mut paragraph, after_math);
+                        restored.push(Block::Math {
+                            source: math.source.clone(),
+                            display: true,
+                        });
+                        remaining = &remaining[position + math.token.len()..];
+                        after_math = true;
+                    }
+                    if !remaining.is_empty() {
+                        paragraph.push(Inline {
+                            text: remaining.to_owned(),
+                            style: inline.style,
+                        });
+                    }
                 }
-                let Some(math) = display_math_blocks
-                    .iter()
-                    .find(|math| math.token == inline.text)
-                else {
-                    continue;
-                };
-                *block = Block::Math {
-                    source: math.source.clone(),
-                    display: true,
-                };
+                if after_math {
+                    push_math_paragraph(&mut restored, &mut paragraph, true);
+                } else {
+                    restored.push(Block::Paragraph(paragraph));
+                }
             }
-            Block::Quote(children) => restore_display_math_blocks(children, display_math_blocks),
-            Block::List { items, .. } => {
-                for item in items {
+            Block::Quote(mut children) => {
+                restore_display_math_blocks(&mut children, display_math_blocks);
+                restored.push(Block::Quote(children));
+            }
+            Block::List { start, mut items } => {
+                for item in &mut items {
                     restore_display_math_blocks(item, display_math_blocks);
                 }
+                restored.push(Block::List { start, items });
             }
-            _ => {}
+            block => restored.push(block),
         }
+    }
+    *blocks = restored;
+}
+
+fn push_math_paragraph(blocks: &mut Vec<Block>, content: &mut Vec<Inline>, trim_start: bool) {
+    if trim_start {
+        while let Some(first) = content.first_mut() {
+            first.text = first.text.trim_start_matches('\n').to_owned();
+            if !first.text.is_empty() {
+                break;
+            }
+            content.remove(0);
+        }
+    }
+    while let Some(last) = content.last_mut() {
+        last.text = last.text.trim_end_matches('\n').to_owned();
+        if !last.text.is_empty() {
+            break;
+        }
+        content.pop();
+    }
+    if !content.is_empty() {
+        blocks.push(Block::Paragraph(std::mem::take(content)));
     }
 }
 

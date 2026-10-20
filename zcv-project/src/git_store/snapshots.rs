@@ -18,7 +18,35 @@ use super::{
 impl GitStore {
     pub(super) fn commit_job(&mut self, job: &GitJob, result: JobResult, cx: &mut Context<Self>) {
         match (job, result) {
-            (GitJob::ReloadGitState, JobResult::Reload(scans)) => {
+            (GitJob::ReloadGitState, JobResult::DiscoveryFailed(error)) => {
+                self.report_scan_error(Some(format!("发现 Git 仓库失败：{error}")), cx);
+            }
+            (GitJob::ReloadGitState, JobResult::Reload(results)) => {
+                let mut scans = Vec::new();
+                let mut errors = Vec::new();
+                for result in results {
+                    match result {
+                        Ok(scan) => scans.push(scan),
+                        Err((path, error)) => {
+                            if let Some(previous) = self.repositories.iter().find(|repository| {
+                                super::repository_working_directory(repository.repository.as_ref())
+                                    == path
+                            }) {
+                                scans.push(super::background::ReloadScan {
+                                    working_directory: path.clone(),
+                                    repository: previous.repository.clone(),
+                                    clean_conflicts: Vec::new(),
+                                    snapshot: previous.snapshot.clone(),
+                                });
+                            }
+                            errors.push((path, error));
+                        }
+                    }
+                }
+                let error = errors.first().map(|(path, error)| {
+                    format!("扫描 Git 状态失败（{}）：{error}", path.as_path().display())
+                });
+                self.report_scan_error(error, cx);
                 let auto_resolve_paths = scans
                     .iter()
                     .flat_map(|scan| {
@@ -113,6 +141,27 @@ impl GitStore {
                 }
             }
             (GitJob::RefreshStatuses, JobResult::Refresh(refreshed)) => {
+                let error = refreshed.iter().find_map(|(index, data)| {
+                    data.as_ref().err().map(|error| {
+                        let path = self
+                            .repositories
+                            .get(*index)
+                            .map(|repository| {
+                                repository
+                                    .repository
+                                    .working_directory()
+                                    .display()
+                                    .to_string()
+                            })
+                            .unwrap_or_default();
+                        format!("刷新 Git 状态失败（{path}）：{error}")
+                    })
+                });
+                self.report_scan_error(error, cx);
+                let refreshed = refreshed
+                    .into_iter()
+                    .filter_map(|(index, data)| data.ok().map(|data| (index, data)))
+                    .collect::<Vec<_>>();
                 let auto_resolve_paths = refreshed
                     .iter()
                     .flat_map(|(index, data)| {
@@ -206,6 +255,15 @@ impl GitStore {
                 }
             },
             _ => {}
+        }
+    }
+
+    fn report_scan_error(&mut self, error: Option<String>, cx: &mut Context<Self>) {
+        if error != self.last_scan_error {
+            if let Some(message) = &error {
+                cx.emit(GitStoreEvent::StatusScanFailed(message.clone()));
+            }
+            self.last_scan_error = error;
         }
     }
 }

@@ -692,6 +692,7 @@ fn initialize_workspace(
         let read_error = match event {
             GitStoreEvent::UncommitFailed(error) => Some(format!("撤销提交失败：{error}")),
             GitStoreEvent::RevisionLoadFailed(error) => Some(error.clone()),
+            GitStoreEvent::StatusScanFailed(error) => Some(error.clone()),
             _ => None,
         };
         if let Some(error) = read_error {

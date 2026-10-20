@@ -85,13 +85,20 @@ struct GlobalUpdateManager(Option<Entity<UpdateManager>>);
 
 impl Global for GlobalUpdateManager {}
 
-pub(crate) fn init(cx: &mut App) {
-    let config = UpdateConfig::from_app(cx).map_err(|error| {
-        eprintln!("自动更新未启用：{error:#}");
-        error
-    });
-    let startup_notification = startup_update_notification();
-    let manager = cx.new(|cx| UpdateManager::new(config.ok(), startup_notification, cx));
+pub(crate) fn init(cx: &mut App, client_error: Option<String>) {
+    let config = if client_error.is_some() {
+        None
+    } else {
+        UpdateConfig::from_app(cx)
+            .map_err(|error| eprintln!("自动更新未启用：{error:#}"))
+            .ok()
+    };
+    let startup_notification = match (client_error, startup_update_notification()) {
+        (Some(error), Some(previous)) => Some(Arc::from(format!("{error}\n{previous}"))),
+        (Some(error), None) => Some(Arc::from(error)),
+        (None, previous) => previous,
+    };
+    let manager = cx.new(|cx| UpdateManager::new(config, startup_notification, cx));
     cx.set_global(GlobalUpdateManager(Some(manager.clone())));
     manager.update(cx, |manager, cx| manager.check_for_update(cx));
 }

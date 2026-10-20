@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
+use zcv_path::RelativePathBuf;
 
 use crate::paths;
 
@@ -190,11 +191,12 @@ pub struct BranchStatus {
 /// `git status --porcelain=v1 -z` 的解析结果。
 ///
 /// 路径按仓库根的相对路径存储（unix 分隔符），排序且唯一；
+/// 无法表示为项目相对路径的 Git 输出在解析时返回错误。
 /// 每项保留完整的索引与工作区状态。
 /// 调用方拼接工作目录转绝对路径。
 #[derive(Debug, Default)]
 pub struct GitStatus {
-    pub statuses: Vec<(PathBuf, FileStatus)>,
+    pub statuses: Vec<(RelativePathBuf, FileStatus)>,
     /// 分支头行（`-b` 输出）；首个头行优先，解析失败为 None（不阻断整体解析）。
     pub branch: Option<BranchStatus>,
 }
@@ -263,8 +265,9 @@ fn parse_ahead_behind(counts: &str) -> Option<(usize, usize)> {
 impl GitStatus {
     /// 解析 porcelain v1 -z 的原始输出。
     ///
-    /// `-z` 模式下路径按原始字节输出（不转义），这里按 bytes 切分以兼容
-    /// 非 UTF-8 路径；`--no-renames` 保证每项恰好两位状态码 + 空格 + 路径。
+    /// `-z` 模式下路径按原始字节输出（不转义），这里按 bytes 切分；
+    /// 路径随后转换为项目相对路径，无法表示的路径返回错误。
+    /// `--no-renames` 保证每项恰好两位状态码 + 空格 + 路径。
     pub fn from_bytes(output: &[u8]) -> Result<Self> {
         let mut statuses = Vec::new();
         let mut branch = None;
@@ -294,10 +297,17 @@ impl GitStatus {
                 path = &path[..path.len() - 1];
             }
             let status = FileStatus::from_bytes([entry[0], entry[1]])?;
-            statuses.push((paths::path_from_git_bytes(path), status));
+            let native_path = paths::path_from_git_bytes(path);
+            let relative = RelativePathBuf::from_path(&native_path).with_context(|| {
+                format!(
+                    "Git 状态路径不是有效的项目相对路径：{}",
+                    native_path.display()
+                )
+            })?;
+            statuses.push((relative, status));
         }
         statuses.sort_by(|(a, _), (b, _)| a.cmp(b));
-        let mut merged: Vec<(PathBuf, FileStatus)> = Vec::with_capacity(statuses.len());
+        let mut merged: Vec<(RelativePathBuf, FileStatus)> = Vec::with_capacity(statuses.len());
         for (path, status) in statuses {
             if let Some((previous_path, previous)) = merged.last_mut()
                 && *previous_path == path
@@ -316,7 +326,7 @@ impl GitStatus {
                     (a, b) if a == b => a,
                     _ => anyhow::bail!(
                         "同一路径存在互相冲突的 Git 状态：{}（{previous:?}、{status:?}）",
-                        path.display()
+                        path.as_path().display()
                     ),
                 };
             } else {

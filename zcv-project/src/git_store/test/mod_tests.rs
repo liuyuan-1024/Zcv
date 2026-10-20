@@ -53,6 +53,49 @@ fn scan_discovers_repository_and_reports_status(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn failed_git_status_scan_keeps_last_valid_snapshot(cx: &mut gpui::TestAppContext) {
+    let (root, _temp) = test_git_repo();
+    fs::write(root.join("tracked.txt"), "已修改\n").expect("应修改文件");
+    let git_store =
+        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+
+    let before = cx.read_entity(&git_store, |store, _| {
+        store.status_for_path(&root.join("tracked.txt")).cloned()
+    });
+    assert!(before.is_some());
+    let root = absolute(root);
+    cx.update_entity(&git_store, |store, cx| {
+        store.commit_job(
+            &GitJob::ReloadGitState,
+            JobResult::Reload(vec![Err((root.clone(), "无效的 Git 状态路径".into()))]),
+            cx,
+        );
+    });
+    let after = cx.read_entity(&git_store, |store, _| {
+        store
+            .status_for_path(&root.as_path().join("tracked.txt"))
+            .cloned()
+    });
+    assert_eq!(after, before);
+
+    cx.update_entity(&git_store, |store, cx| {
+        store.commit_job(
+            &GitJob::RefreshStatuses,
+            JobResult::Refresh(vec![(0, Err("无效的 Git 状态路径".into()))]),
+            cx,
+        );
+    });
+    let after_refresh = cx.read_entity(&git_store, |store, _| {
+        store
+            .status_for_path(&root.as_path().join("tracked.txt"))
+            .cloned()
+    });
+    assert_eq!(after_refresh, before);
+}
+
+#[gpui::test]
 fn total_diff_stat_merges_staged_and_unstaged(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     // 先做一次未暂存修改（1 增 1 删：改写第二行内容）。

@@ -1,6 +1,6 @@
 //! 后台执行层：所有 git 命令在这里同步阻塞运行，扫描/合并为纯函数（可脱离 gpui 单测）。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,8 +15,9 @@ use crate::worktree::discover_repositories;
 
 /// 后台 job 的执行结果。
 pub(super) enum JobResult {
-    Reload(Vec<ReloadScan>),
-    Refresh(Vec<(usize, RefreshData)>),
+    Reload(Vec<Result<ReloadScan, (AbsolutePathBuf, String)>>),
+    DiscoveryFailed(String),
+    Refresh(Vec<(usize, Result<RefreshData, String>)>),
     GitOperation(anyhow::Result<()>),
     /// uncommit 的结果（被撤销提交的完整消息，供填回提交信息编辑器）。
     Uncommit(anyhow::Result<Option<String>>),
@@ -61,7 +62,10 @@ pub(super) async fn execute_job(
     match job {
         GitJob::ReloadGitState => {
             // 仓库发现（同步文件系统遍历，放后台）：总是递归发现嵌套仓库，再合并 root 所在的外层仓库。
-            let discovered = discover_repositories(&root).unwrap_or_default();
+            let discovered = match discover_repositories(&root) {
+                Ok(discovered) => discovered,
+                Err(error) => return JobResult::DiscoveryFailed(format!("{error:#}")),
+            };
             let work = discovered
                 .into_iter()
                 .enumerate()
@@ -93,17 +97,20 @@ pub(super) async fn execute_job(
                                 .skip(worker_index)
                                 .step_by(worker_count)
                                 .map(|(index, working_directory, repository)| {
-                                    let snapshot = scan_repository_sync(repository);
                                     (
                                         *index,
-                                        ReloadScan {
-                                            working_directory: working_directory.clone(),
-                                            repository: repository.clone(),
-                                            clean_conflicts: clean_conflicts_for_snapshot(
-                                                repository, &snapshot,
-                                            ),
-                                            snapshot,
-                                        },
+                                        scan_repository_sync(repository)
+                                            .map(|snapshot| ReloadScan {
+                                                working_directory: working_directory.clone(),
+                                                repository: repository.clone(),
+                                                clean_conflicts: clean_conflicts_for_snapshot(
+                                                    repository, &snapshot,
+                                                ),
+                                                snapshot,
+                                            })
+                                            .map_err(|error| {
+                                                (working_directory.clone(), format!("{error:#}"))
+                                            }),
                                     )
                                 })
                                 .collect::<Vec<_>>()
@@ -126,7 +133,11 @@ pub(super) async fn execute_job(
                 if paths.is_empty() {
                     continue;
                 }
-                refreshed.push((index, refresh_repository_data_sync(&repository, paths)));
+                refreshed.push((
+                    index,
+                    refresh_repository_data_sync(&repository, paths)
+                        .map_err(|error| format!("{error:#}")),
+                ));
             }
             JobResult::Refresh(refreshed)
         }
@@ -304,24 +315,9 @@ pub(super) fn reconcile_cancelled_operation(
 ///
 /// branch 名取自 status 头行（零附加进程）；head oid 与最近提交 subject 由 head_commit 一次查询；
 /// 分支列表单独 for-each-ref（分支选择器数据源）。
-fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapshot {
+fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> anyhow::Result<RepositorySnapshot> {
     let (head, last_commit_message) = repository.head_commit().unwrap_or_default();
-    let statuses = match repository.status(&[]) {
-        Ok(statuses) => statuses,
-        Err(_) => {
-            // status 失败时分支名不可得（来自头行），置 None（瞬态，下次刷新自愈）。
-            return RepositorySnapshot {
-                branch: None,
-                head,
-                last_commit_message,
-                has_remote: false,
-                ahead: 0,
-                behind: 0,
-                branch_list: Vec::new(),
-                statuses_by_path: BTreeMap::new(),
-            };
-        }
-    };
+    let statuses = repository.status(&[])?;
     // 无 HEAD（空仓库）时 `--cached HEAD` 会报错，跳过暂存统计。
     let staged = if head.is_some() {
         repository.diff_stat(true, &[]).unwrap_or_default()
@@ -333,11 +329,12 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
     let statuses_by_path = statuses
         .statuses
         .into_iter()
-        .map(|(path, status)| {
-            let relative =
-                RelativePathBuf::from_path(&path).expect("Git status 必须返回仓库相对路径");
-            let staged_diff_stat = staged.get(&path).copied().unwrap_or_default();
-            let unstaged_diff_stat = unstaged.get(&path).copied().unwrap_or_default();
+        .map(|(relative, status)| {
+            let staged_diff_stat = staged.get(relative.as_path()).copied().unwrap_or_default();
+            let unstaged_diff_stat = unstaged
+                .get(relative.as_path())
+                .copied()
+                .unwrap_or_default();
             let entry = StatusEntry {
                 status,
                 diff_stat: add_diff_stats(staged_diff_stat, unstaged_diff_stat),
@@ -347,7 +344,7 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
             (relative, entry)
         })
         .collect();
-    RepositorySnapshot {
+    Ok(RepositorySnapshot {
         branch: statuses
             .branch
             .as_ref()
@@ -359,7 +356,7 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
         behind: statuses.branch.as_ref().map_or(0, |branch| branch.behind),
         branch_list,
         statuses_by_path,
-    }
+    })
 }
 
 /// 后台线程：对变更路径重查状态。
@@ -369,16 +366,13 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
 fn refresh_repository_data_sync(
     repository: &Arc<dyn GitRepository>,
     paths: &[RelativePathBuf],
-) -> RefreshData {
+) -> anyhow::Result<RefreshData> {
     let native_paths = native_paths(paths);
     let touches_git = paths
         .iter()
         .any(|path| path.as_path().as_os_str().is_empty() || is_git_state_path(path.as_path()));
-    let statuses = repository.status(&native_paths).unwrap_or_default();
-    let clean_conflicts = clean_conflict_paths(repository, &statuses.statuses)
-        .into_iter()
-        .map(|path| RelativePathBuf::from_path(&path).expect("Git 冲突路径必须是仓库相对路径"))
-        .collect();
+    let statuses = repository.status(&native_paths)?;
+    let clean_conflicts = clean_conflict_paths(repository, &statuses.statuses);
     // 分支名来自 status 头行（零附加进程）；head oid 与最近提交 subject 由 head_commit 一次查询。
     let (head, last_commit_message) = if touches_git {
         repository.head_commit().unwrap_or_default()
@@ -406,7 +400,7 @@ fn refresh_repository_data_sync(
     let unstaged = repository
         .diff_stat(false, &native_paths)
         .unwrap_or_default();
-    RefreshData {
+    Ok(RefreshData {
         paths: paths.to_vec(),
         head_queried: touches_git,
         branch,
@@ -421,7 +415,7 @@ fn refresh_repository_data_sync(
         staged,
         unstaged,
         clean_conflicts,
-    }
+    })
 }
 
 /// 找出工作区文本已经没有冲突标记、但 Git 仍报告未合并的路径。
@@ -431,15 +425,15 @@ fn refresh_repository_data_sync(
 /// 含有二进制或无效 UTF-8 的冲突文件不自动处理。
 fn clean_conflict_paths(
     repository: &Arc<dyn GitRepository>,
-    statuses: &[(PathBuf, FileStatus)],
-) -> Vec<PathBuf> {
+    statuses: &[(RelativePathBuf, FileStatus)],
+) -> Vec<RelativePathBuf> {
     statuses
         .iter()
         .filter_map(|(path, status)| {
             if *status != FileStatus::Unmerged {
                 return None;
             }
-            let bytes = std::fs::read(repository.working_directory().join(path)).ok()?;
+            let bytes = std::fs::read(repository.working_directory().join(path.as_path())).ok()?;
             let text = std::str::from_utf8(&bytes).ok()?;
             parse_conflict_regions(text)
                 .is_empty()
@@ -455,12 +449,9 @@ fn clean_conflicts_for_snapshot(
     let statuses = snapshot
         .statuses_by_path
         .iter()
-        .map(|(path, entry)| (path.clone().into_path_buf(), entry.status))
+        .map(|(path, entry)| (path.clone(), entry.status))
         .collect::<Vec<_>>();
     clean_conflict_paths(repository, &statuses)
-        .into_iter()
-        .map(|path| RelativePathBuf::from_path(&path).expect("Git 冲突路径必须是仓库相对路径"))
-        .collect()
 }
 
 fn native_paths(paths: &[RelativePathBuf]) -> Vec<PathBuf> {
@@ -503,10 +494,17 @@ pub(super) fn merge_refresh(prev: &mut RepositorySnapshot, data: RefreshData) ->
         }
     }
 
-    for (path, status) in data.statuses.statuses {
-        let relative = RelativePathBuf::from_path(&path).expect("Git status 必须返回仓库相对路径");
-        let staged_diff_stat = data.staged.get(&path).copied().unwrap_or_default();
-        let unstaged_diff_stat = data.unstaged.get(&path).copied().unwrap_or_default();
+    for (relative, status) in data.statuses.statuses {
+        let staged_diff_stat = data
+            .staged
+            .get(relative.as_path())
+            .copied()
+            .unwrap_or_default();
+        let unstaged_diff_stat = data
+            .unstaged
+            .get(relative.as_path())
+            .copied()
+            .unwrap_or_default();
         let entry = StatusEntry {
             status,
             diff_stat: add_diff_stats(staged_diff_stat, unstaged_diff_stat),

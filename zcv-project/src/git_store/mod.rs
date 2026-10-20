@@ -67,6 +67,8 @@ pub enum GitStoreEvent {
     HunkOperationFailed(String),
     /// 修订读取失败；缓存保持原内容，由工作区统一提示。
     RevisionLoadFailed(String),
+    /// Git 状态扫描失败；重复错误在恢复前只通知一次。
+    StatusScanFailed(String),
     /// 已加载修订在可组合文本与不支持的内容之间切换。
     RevisionSupportChanged,
 }
@@ -115,7 +117,7 @@ pub struct RemoteOperationState {
 }
 
 /// 单个仓库的状态快照。
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RepositorySnapshot {
     pub branch: Option<String>,
     pub head: Option<String>,
@@ -348,6 +350,7 @@ pub struct GitStore {
     repositories: Vec<Repository>,
     /// 是否已完成至少一次仓库发现；空集合也表示扫描已完成。
     repository_scan_ready: bool,
+    last_scan_error: Option<String>,
     /// 当前仓库状态的不可变派生索引；
     /// 项目树只克隆 Arc，不在 UI 线程复制状态表。
     status_index: Arc<GitStatusSnapshot>,
@@ -488,6 +491,7 @@ impl GitStore {
             root,
             repositories: Vec::new(),
             repository_scan_ready: false,
+            last_scan_error: None,
             status_index: Arc::new(GitStatusSnapshot::default()),
             active_repo_workdir: None,
             revision_documents: HashMap::new(),
@@ -1330,12 +1334,16 @@ impl GitStore {
                     .ok()
                     .flatten();
                 let edited = if let (Some(source), Some(edit_text)) = (&source, edit_text) {
-                    Some(
-                        source
-                            .update(cx, |source, cx| source.snapshot_with_text(edit_text, cx))
-                            .await
-                            .expect("Git 修订文本必须能派生语言快照"),
-                    )
+                    match source
+                        .update(cx, |source, cx| source.snapshot_with_text(edit_text, cx))
+                        .await
+                    {
+                        Ok(edited) => Some(edited),
+                        Err(error) => {
+                            loaded = Err(Arc::new(error.into()));
+                            None
+                        }
+                    }
                 } else {
                     None
                 };
@@ -1367,12 +1375,21 @@ impl GitStore {
                     // 版本检查覆盖读取、文本差异计算和语法解析，安装与 diff 推送在同一轮更新中完成。
                     if let (Some(source), Some(edited)) = (&source, edited) {
                         let saved_version = edited.base_version();
-                        source.update(cx, |source, cx| {
-                            source
-                                .fast_forward(edited, cx)
-                                .expect("修订文档只由当前 GitStore 加载代次修改");
+                        let result = source.update(cx, |source, cx| {
+                            source.fast_forward(edited, cx)?;
                             source.did_save(saved_version, cx);
+                            Ok::<_, zcv_text::TextError>(())
                         });
+                        if let Err(error) = result {
+                            let error = Arc::new(anyhow::Error::from(error));
+                            store.revision_documents.get_mut(&key).unwrap().loading =
+                                RevisionLoading::Failed(error.clone());
+                            cx.emit(GitStoreEvent::RevisionLoadFailed(format!(
+                                "安装 Git 修订失败（{}，{revision:?}）：{error:#}",
+                                path.display()
+                            )));
+                            return Ok(Err(error));
+                        }
                     }
                     let document =
                         store.store_revision_document(revision, path, loaded, source, cx);

@@ -1,10 +1,23 @@
 use super::*;
 use FileStatus::*;
+use std::path::Path;
 
 fn parse(output: &str) -> Vec<(PathBuf, FileStatus)> {
     GitStatus::from_bytes(output.as_bytes())
         .expect("解析应成功")
         .statuses
+        .into_iter()
+        .map(|(path, status)| (path.into_path_buf(), status))
+        .collect()
+}
+
+#[test]
+fn status_rejects_paths_outside_project_relative_path_contract() {
+    for output in [b"?? /tmp/outside\0".as_slice(), b"?? ../outside\0"] {
+        assert!(GitStatus::from_bytes(output).is_err());
+    }
+    #[cfg(unix)]
+    assert!(GitStatus::from_bytes(b"?? invalid-\xff\0").is_err());
 }
 
 #[test]
@@ -268,5 +281,11 @@ fn branch_header_mixed_with_file_entries() {
     let branch = status.branch.expect("应有分支头行");
     assert_eq!((branch.ahead, branch.behind), (1, 0));
     let paths: Vec<_> = status.statuses.iter().map(|(path, _)| path).collect();
-    assert_eq!(paths, [&PathBuf::from("a.txt"), &PathBuf::from("b.txt")]);
+    assert_eq!(
+        paths,
+        [
+            &RelativePathBuf::from_path(Path::new("a.txt")).unwrap(),
+            &RelativePathBuf::from_path(Path::new("b.txt")).unwrap(),
+        ]
+    );
 }

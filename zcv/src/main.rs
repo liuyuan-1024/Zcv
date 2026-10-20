@@ -25,60 +25,66 @@ fn initial_project_root(
 }
 
 fn main() {
-    let http_client = auto_update::new_http_client().expect("无法初始化自动更新 HTTP 客户端");
-    Application::with_platform(gpui_platform::current_platform(false))
-        .with_assets(Assets)
-        .with_http_client(http_client)
-        .run(|cx: &mut App| {
-            Assets.load_fonts(cx).expect("内置字体应能注册");
+    let http_client = auto_update::new_http_client();
+    let update_error = http_client
+        .as_ref()
+        .err()
+        .map(|error| format!("自动更新不可用：{error:#}"));
+    let mut application =
+        Application::with_platform(gpui_platform::current_platform(false)).with_assets(Assets);
+    if let Ok(http_client) = http_client {
+        application = application.with_http_client(http_client);
+    }
+    application.run(move |cx: &mut App| {
+        Assets.load_fonts(cx).expect("内置字体应能注册");
 
-            zcv_settings::init(cx);
-            // 排版设置落地：SettingsStore 已就绪，按配置覆盖主题默认字号。
-            {
-                let settings = SettingsStore::get(cx);
-                typography::set_base_typography(
-                    cx,
-                    Some(settings.content_font_size),
-                    Some(settings.ui_font_size),
-                    Some(settings.content_line_height),
-                );
-            }
-            // 应用级唯一语言注册表：预览 Provider 与工作区内的 Project 共享同一份。
-            let languages = Arc::new(LanguageRegistry::new());
-            zcv_preview_markdown::init(Arc::clone(&languages), cx);
-            zcv_preview_svg::init(cx);
-            zcv_editor::init(cx, Arc::clone(&languages));
-            zcv_preview_image::init(cx);
-            zcv_search::init(cx);
-            zcv_version_control::init(cx);
-            zcv_keymap::init(cx).expect("内置快捷键应能注册");
-            auto_update::init(cx);
+        zcv_settings::init(cx);
+        // 排版设置落地：SettingsStore 已就绪，按配置覆盖主题默认字号。
+        {
+            let settings = SettingsStore::get(cx);
+            typography::set_base_typography(
+                cx,
+                Some(settings.content_font_size),
+                Some(settings.ui_font_size),
+                Some(settings.content_line_height),
+            );
+        }
+        // 应用级唯一语言注册表：预览 Provider 与工作区内的 Project 共享同一份。
+        let languages = Arc::new(LanguageRegistry::new());
+        zcv_preview_markdown::init(Arc::clone(&languages), cx);
+        zcv_preview_svg::init(cx);
+        zcv_editor::init(cx, Arc::clone(&languages));
+        zcv_preview_image::init(cx);
+        zcv_search::init(cx);
+        zcv_version_control::init(cx);
+        zcv_keymap::init(cx).expect("内置快捷键应能注册");
+        auto_update::init(cx, update_error);
 
-            // 更新 helper 需要在有限时间内确认新版本已经启动；
-            // 项目恢复和窗口创建可能较慢，不能把它们放在启动确认之前。
-            if let Err(error) = auto_update::acknowledge_started_update() {
-                eprintln!("无法确认新版本启动：{error:#}");
-            }
+        // 更新 helper 需要在有限时间内确认新版本已经启动；
+        // 项目恢复和窗口创建可能较慢，不能把它们放在启动确认之前。
+        if let Err(error) = auto_update::acknowledge_started_update() {
+            eprintln!("无法确认新版本启动：{error:#}");
+        }
 
-            match initial_project_root(std::env::args_os(), most_recent_valid_project()) {
-                Some(root) => {
-                    // 打开失败（路径已失效等）回退空工作区，不阻塞启动。
-                    if let Err(error) = open_project_window(root, Arc::clone(&languages), cx) {
-                        open_empty_workspace_with_error(
-                            format!("打开项目失败：{error:#}"),
-                            languages,
-                            cx,
-                        )
-                        .expect("空工作区窗口应能创建");
-                    }
+        match initial_project_root(std::env::args_os(), most_recent_valid_project()) {
+            Some(root) => {
+                // 打开失败（路径已失效等）回退空工作区，不阻塞启动。
+                if let Err(error) = open_project_window(root, Arc::clone(&languages), cx) {
+                    open_empty_workspace_with_error(
+                        format!("打开项目失败：{error:#}"),
+                        languages,
+                        cx,
+                    )
+                    .expect("空工作区窗口应能创建");
                 }
-                None => {
-                    open_empty_workspace(languages, cx).expect("空工作区窗口应能创建");
-                }
             }
+            None => {
+                open_empty_workspace(languages, cx).expect("空工作区窗口应能创建");
+            }
+        }
 
-            cx.activate(true);
-        });
+        cx.activate(true);
+    });
 }
 
 #[cfg(test)]

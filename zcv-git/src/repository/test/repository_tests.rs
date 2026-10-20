@@ -99,7 +99,10 @@ fn status_accepts_path_prefixes() {
 
     let status = repo.status(&[PathBuf::from("src")]).expect("status 应成功");
     let paths: Vec<_> = status.statuses.iter().map(|(p, _)| p.clone()).collect();
-    assert_eq!(paths, vec![PathBuf::from("src/one.rs")]);
+    assert_eq!(
+        paths,
+        vec![zcv_path::RelativePathBuf::from_path(Path::new("src/one.rs")).unwrap()]
+    );
 }
 
 #[test]
@@ -840,7 +843,7 @@ fn uncommit_root_commit_preserves_staged_work_and_unborn_branch() {
     let entry = status
         .statuses
         .iter()
-        .find(|(path, _)| path == Path::new("tracked.txt"))
+        .find(|(path, _)| path.as_path() == Path::new("tracked.txt"))
         .map(|(_, status)| *status)
         .expect("撤销后应保留文件状态");
     assert!(entry.is_created(), "撤销根提交后文件应继续处于新增状态");

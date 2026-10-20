@@ -382,6 +382,7 @@ impl VersionControlPanel {
                 | GitStoreEvent::HunkOperationFailed(_)
                 | GitStoreEvent::UncommitFailed(_)
                 | GitStoreEvent::RevisionLoadFailed(_)
+                | GitStoreEvent::StatusScanFailed(_)
                 | GitStoreEvent::RevisionSupportChanged => {}
             }
         })

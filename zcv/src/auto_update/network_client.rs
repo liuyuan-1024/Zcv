@@ -2,7 +2,7 @@ use std::mem;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use futures::{AsyncReadExt as _, FutureExt as _, TryStreamExt as _};
 use gpui::http_client::{
     AsyncBody, HttpClient, Inner, RedirectPolicy, Request, Response, Url, http,
@@ -30,20 +30,23 @@ fn build_client(builder: reqwest::ClientBuilder) -> Result<UpdateHttpClient> {
 
     Ok(UpdateHttpClient {
         client,
-        runtime: runtime().handle().clone(),
+        runtime: runtime()?.handle().clone(),
         user_agent,
     })
 }
 
-fn runtime() -> &'static tokio::runtime::Runtime {
-    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("无法初始化自动更新 HTTP 运行时")
-    })
+fn runtime() -> Result<&'static tokio::runtime::Runtime> {
+    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| anyhow!("无法初始化自动更新 HTTP 运行时：{error}"))
 }
 
 struct UpdateHttpClient {

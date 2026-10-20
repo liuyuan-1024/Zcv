@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 
 use zcv_git::{DiffStat, FileStatus, RealGitRepository};
 
@@ -55,7 +54,7 @@ fn merge_refresh_replaces_changed_paths_and_keeps_rest() {
         branches: Vec::new(),
         // a.txt 变干净（无输出 → 移除）；sub/c.txt 新增。
         statuses: GitStatus {
-            statuses: vec![(PathBuf::from("sub/c.txt"), FileStatus::Untracked)],
+            statuses: vec![(relative("sub/c.txt"), FileStatus::Untracked)],
             branch: None,
         },
         staged: HashMap::new(),

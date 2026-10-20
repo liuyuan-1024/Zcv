@@ -24,10 +24,10 @@ fn scrolls_proportionally_near_each_edge() {
     );
     assert_eq!(
         drag_autoscroll_delta(point(px(-10.), px(100.)), bounds, edge_margin, max_delta),
-        point(px(-9.), px(0.))
+        point(px(9.), px(0.))
     );
     assert_eq!(
         drag_autoscroll_delta(point(px(810.), px(100.)), bounds, edge_margin, max_delta),
-        point(px(9.), px(0.))
+        point(px(-9.), px(0.))
     );
 }

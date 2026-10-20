@@ -1562,7 +1562,7 @@ impl Editor {
         }
     }
 
-    pub(super) fn scroll_by_gesture(
+    pub(super) fn scroll_by_wheel(
         &mut self,
         delta: Point<Pixels>,
         touch_phase: TouchPhase,
@@ -1571,7 +1571,7 @@ impl Editor {
         let display_snapshot = self.display_snapshot(cx).clone();
         if self
             .scroll_manager
-            .scroll_by_gesture(delta, touch_phase, &display_snapshot)
+            .scroll_by_wheel(delta, touch_phase, &display_snapshot)
         {
             self.input_layout = None;
             cx.notify();

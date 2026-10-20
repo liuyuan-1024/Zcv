@@ -730,6 +730,32 @@ fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+fn mouse_dragging_beyond_right_edge_autoscrolls_horizontally(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "long content ".repeat(300));
+    let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx));
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    let click = point(px(120.), px(10.));
+    cx.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    let right = cx.read_entity(&editor, |editor, _| {
+        editor.last_bounds.expect("渲染后应有视口尺寸").right()
+    });
+    cx.simulate_mouse_move(
+        point(right + px(100.), click.y),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+
+    cx.read_entity(&editor, |editor, _| {
+        assert!(editor.scroll_manager.offset().x > px(0.));
+        assert_eq!(editor.scroll_top(), px(0.));
+    });
+}
+
+#[gpui::test]
 fn dragging_outside_editor_does_not_scroll_editor(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({

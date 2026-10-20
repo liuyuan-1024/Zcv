@@ -2105,7 +2105,6 @@ impl Element for EditorElement {
         let drag_editor = self.editor.clone();
         let drag_layout = Rc::clone(&prepaint.layout);
         let drag_text_bounds = prepaint.layout.text_clip_bounds;
-        let drag_line_height = prepaint.layout.line_height;
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
             if phase != DispatchPhase::Bubble {
                 return;
@@ -2114,8 +2113,7 @@ impl Element for EditorElement {
                 drag_editor.update(cx, |editor, _| editor.end_selection());
                 return;
             }
-            let scroll_delta =
-                selection_autoscroll_delta(event.position, drag_text_bounds, drag_line_height);
+            let scroll_delta = selection_autoscroll_delta(event.position, drag_text_bounds);
             drag_editor.update(cx, |editor, cx| {
                 // 拖拽事件是窗口级的（`dragging` 为任意面板的按下状态）：
                 // 只有编辑器自身正在拖拽选区时才滚动/扩展选区，避免终端等面板拖拽时编辑器联动滚动。
@@ -2152,11 +2150,10 @@ impl Element for EditorElement {
                 return;
             }
             let handled = scroll_editor.update(cx, |editor, cx| match event.delta {
-                ScrollDelta::Pixels(delta) => {
-                    editor.scroll_by_gesture(delta, event.touch_phase, cx)
-                }
-                ScrollDelta::Lines(delta) => editor.scroll_by(
+                ScrollDelta::Pixels(delta) => editor.scroll_by_wheel(delta, event.touch_phase, cx),
+                ScrollDelta::Lines(delta) => editor.scroll_by_wheel(
                     point(scroll_line_height * delta.x, scroll_line_height * delta.y),
+                    event.touch_phase,
                     cx,
                 ),
             });
@@ -4065,14 +4062,11 @@ pub(crate) const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(16);
 fn selection_autoscroll_delta(
     position: Point<Pixels>,
     text_bounds: Bounds<Pixels>,
-    line_height: Pixels,
 ) -> Point<Pixels> {
-    let vertical_margin = line_height.min(text_bounds.size.height / 3.0);
-    let horizontal_margin = 2.5 * line_height;
     drag_autoscroll_delta(
         position,
         text_bounds,
-        point(horizontal_margin, vertical_margin),
+        point(Pixels::ZERO, Pixels::ZERO),
         point(
             text_bounds.size.width / 16.0,
             text_bounds.size.height / 16.0,

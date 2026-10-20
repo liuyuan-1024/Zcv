@@ -362,6 +362,7 @@ impl Render for MarkdownPreviewView {
                     .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll_handle)
+                    .restrict_scroll_to_axis()
                     .p(scale::S6)
                     .text_color(color::current(cx).text)
                     .text_size(type_scale.content_size())
@@ -587,7 +588,7 @@ fn render_block(
             render_math_block(source, *display, key, math_images, cx)
         }
         Block::Mermaid { source } => {
-            render_mermaid_block(source, render_context.mermaid_images, cx)
+            render_mermaid_block(source, namespace, key, render_context.mermaid_images, cx)
         }
         Block::Rule => div()
             .h(fixed::HAIRLINE)
@@ -1343,7 +1344,13 @@ fn render_mermaid(source: &str, renderer: gpui::SvgRenderer) -> Result<MathImage
     Ok(MathImage { image, size })
 }
 
-fn render_mermaid_block(source: &str, images: &MermaidImages, cx: &App) -> AnyElement {
+fn render_mermaid_block(
+    source: &str,
+    namespace: usize,
+    key: usize,
+    images: &MermaidImages,
+    cx: &App,
+) -> AnyElement {
     let content = match images.get(source) {
         Some(Ok(diagram)) => img(diagram.image.clone())
             .w(diagram.size.width)
@@ -1360,10 +1367,14 @@ fn render_mermaid_block(source: &str, images: &MermaidImages, cx: &App) -> AnyEl
             .into_any_element(),
     };
     div()
-        .id("markdown-mermaid-block")
+        .id(ElementId::named_usize(
+            format!("markdown-mermaid-{namespace}"),
+            key,
+        ))
         .w_full()
         .flex()
         .overflow_x_scroll()
+        .restrict_scroll_to_axis()
         .child(content)
         .into_any_element()
 }

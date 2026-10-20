@@ -2,7 +2,7 @@ use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer, M
 
 use gpui::{
     Context, Entity, IntoElement, Modifiers, MouseButton, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, TestAppContext, Window, point, px,
+    ScrollWheelEvent, TestAppContext, TouchPhase, Window, point, px,
 };
 
 /// 测试包装：把预先创建的 Editor 实体作为窗口视图（布局由窗口首帧触发）。
@@ -481,6 +481,66 @@ fn wheel_input_updates_editor_scroll_state(cx: &mut TestAppContext) {
             editor.scroll_manager.anchor().row() > DisplayRow::ZERO
                 || editor.scroll_manager.offset().y > px(0.)
         );
+    });
+}
+
+#[gpui::test]
+fn wheel_gesture_keeps_its_initial_axis(cx: &mut TestAppContext) {
+    let text = (0..120)
+        .map(|row| format!("{row} {}\n", "long content ".repeat(40)))
+        .collect::<String>();
+    let buffer = test_buffer(cx, text);
+    let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx));
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(px(100.), px(100.)),
+        delta: ScrollDelta::Pixels(point(px(-80.), px(-10.))),
+        touch_phase: TouchPhase::Started,
+        ..Default::default()
+    });
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(px(100.), px(100.)),
+        delta: ScrollDelta::Pixels(point(px(-10.), px(-60.))),
+        touch_phase: TouchPhase::Moved,
+        ..Default::default()
+    });
+    cx.read_entity(&editor, |editor, _| {
+        assert!(editor.scroll_manager.offset().x > px(0.));
+        assert_eq!(editor.scroll_top(), px(0.));
+    });
+
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(px(100.), px(100.)),
+        delta: ScrollDelta::Lines(point(0., -3.)),
+        touch_phase: TouchPhase::Started,
+        ..Default::default()
+    });
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(px(100.), px(100.)),
+        delta: ScrollDelta::Lines(point(-5., -1.)),
+        touch_phase: TouchPhase::Moved,
+        ..Default::default()
+    });
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(editor.scroll_manager.offset().x, px(90.));
+        assert!(editor.scroll_top() > px(0.));
+    });
+
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(px(100.), px(100.)),
+        delta: ScrollDelta::Lines(point(0., 0.)),
+        touch_phase: TouchPhase::Ended,
+        ..Default::default()
+    });
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(px(100.), px(100.)),
+        delta: ScrollDelta::Lines(point(-1., -4.)),
+        ..Default::default()
+    });
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(editor.scroll_manager.offset().x, px(90.));
     });
 }
 #[gpui::test]

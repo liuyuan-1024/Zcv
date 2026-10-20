@@ -4,6 +4,7 @@ use gpui::{Bounds, Pixels, Point, point};
 ///
 /// 返回值只描述位移，不修改滚动状态。
 /// 正的 `y` 表示内容向上回看，负的 `y`表示继续查看下方内容；
+/// 正的 `x` 表示内容向左回看，负的 `x` 表示继续查看右侧内容；
 /// 调用方负责按照自身滚动模型应用并钳制结果。
 pub fn drag_autoscroll_delta(
     position: Point<Pixels>,
@@ -25,9 +26,9 @@ pub fn drag_autoscroll_delta(
     let left = bounds.origin.x + edge_margin.x;
     let right = bounds.top_right().x - edge_margin.x;
     if position.x < left {
-        delta.x = -((left - position.x) * speed).min(max_delta.x);
+        delta.x = ((left - position.x) * speed).min(max_delta.x);
     } else if position.x > right {
-        delta.x = ((position.x - right) * speed).min(max_delta.x);
+        delta.x = -((position.x - right) * speed).min(max_delta.x);
     }
 
     delta

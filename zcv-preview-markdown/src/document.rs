@@ -48,6 +48,9 @@ pub(crate) enum Block {
         source: String,
         display: bool,
     },
+    Mermaid {
+        source: String,
+    },
     Rule,
 }
 
@@ -557,11 +560,18 @@ fn finish_active(
     let block = match active {
         ActiveBlock::Heading(level) => Block::Heading { level, content },
         ActiveBlock::Paragraph => standalone_image(&content).unwrap_or(Block::Paragraph(content)),
-        ActiveBlock::Code(language) => Block::Code {
-            language,
-            text: content.into_iter().map(|inline| inline.text).collect(),
-            highlights: None,
-        },
+        ActiveBlock::Code(language) => {
+            let text = content.into_iter().map(|inline| inline.text).collect();
+            if language.as_deref() == Some("mermaid") {
+                Block::Mermaid { source: text }
+            } else {
+                Block::Code {
+                    language,
+                    text,
+                    highlights: None,
+                }
+            }
+        }
     };
     state.push_block(block);
 }

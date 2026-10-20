@@ -301,3 +301,20 @@ fn preserves_nested_quotes_and_lists() {
         ]
     );
 }
+
+#[test]
+fn parses_mermaid_fence_as_diagram_and_keeps_other_code() {
+    assert_eq!(
+        parse("```mermaid\ngraph TD;\nA --> B;\n```\n\n```rust\nfn main() {}\n```"),
+        vec![
+            Block::Mermaid {
+                source: "graph TD;\nA --> B;\n".into(),
+            },
+            Block::Code {
+                language: Some("rust".into()),
+                text: "fn main() {}\n".into(),
+                highlights: None,
+            },
+        ]
+    );
+}

@@ -47,12 +47,14 @@ struct MathImage {
 }
 
 type MathImages = HashMap<String, Result<MathImage, String>>;
+type MermaidImages = HashMap<String, Result<MathImage, String>>;
 
 struct MarkdownRenderContext<'a> {
     source_directory: Option<&'a Path>,
     open_path: Option<&'a OpenPathCallback>,
     type_scale: typography::Typography,
     math_images: &'a MathImages,
+    mermaid_images: &'a MermaidImages,
     window: &'a Window,
     cx: &'a App,
 }
@@ -79,6 +81,9 @@ pub(crate) struct MarkdownPreviewView {
     math_color: Option<gpui::Rgba>,
     math_render_task: Option<Task<()>>,
     math_render_generation: u64,
+    mermaid_images: Arc<MermaidImages>,
+    mermaid_render_task: Option<Task<()>>,
+    mermaid_render_generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +149,9 @@ impl MarkdownPreviewView {
             math_color: None,
             math_render_task: None,
             math_render_generation: 0,
+            mermaid_images: Arc::new(HashMap::new()),
+            mermaid_render_task: None,
+            mermaid_render_generation: 0,
         };
         view.refresh(cx);
         view
@@ -177,6 +185,7 @@ impl MarkdownPreviewView {
         )
         .expect("编辑器文档应为 UTF-8");
         self.blocks = Arc::new(parse(&text));
+        self.ensure_mermaid_render(cx);
         self.math_render_generation = self.math_render_generation.wrapping_add(1);
         self.math_content_size = None;
         self.math_color = None;
@@ -206,6 +215,38 @@ impl MarkdownPreviewView {
             });
         }));
         cx.notify();
+    }
+
+    fn ensure_mermaid_render(&mut self, cx: &mut Context<Self>) {
+        self.mermaid_render_generation = self.mermaid_render_generation.wrapping_add(1);
+        let generation = self.mermaid_render_generation;
+        let sources = collect_mermaid_sources(&self.blocks);
+        self.mermaid_images = Arc::new(MermaidImages::new());
+        self.mermaid_render_task.take();
+        if sources.is_empty() {
+            return;
+        }
+        let renderer = cx.svg_renderer();
+        let render_task = cx.background_spawn(async move {
+            sources
+                .into_iter()
+                .map(|source| {
+                    let result = render_mermaid(&source, renderer.clone());
+                    (source, result)
+                })
+                .collect::<MermaidImages>()
+        });
+        self.mermaid_render_task = Some(cx.spawn(async move |this, cx| {
+            let images = render_task.await;
+            let _ = this.update(cx, |view, cx| {
+                if view.mermaid_render_generation != generation {
+                    return;
+                }
+                view.mermaid_images = Arc::new(images);
+                view.mermaid_render_task = None;
+                cx.notify();
+            });
+        }));
     }
 
     fn ensure_math_render(
@@ -285,6 +326,7 @@ impl Render for MarkdownPreviewView {
             open_path: self.open_path.as_ref(),
             type_scale,
             math_images: &self.math_images,
+            mermaid_images: &self.mermaid_images,
             window,
             cx,
         };
@@ -543,6 +585,9 @@ fn render_block(
         Block::Image { source, alt } => render_image(source, alt, source_directory, cx),
         Block::Math { source, display } => {
             render_math_block(source, *display, key, math_images, cx)
+        }
+        Block::Mermaid { source } => {
+            render_mermaid_block(source, render_context.mermaid_images, cx)
         }
         Block::Rule => div()
             .h(fixed::HAIRLINE)
@@ -1238,7 +1283,7 @@ fn render_math(
             ..Default::default()
         },
     );
-    let image = Image::from_bytes(ImageFormat::Svg, svg.into_bytes())
+    let image = Image::from_bytes(ImageFormat::Svg, svg.as_bytes().to_vec())
         .to_image_data(renderer)
         .map_err(|error| error.to_string())?;
     // SVG 光栅化时按 SMOOTH_SVG_SCALE_FACTOR 放大，逻辑宽度需还原后再用于文本流占位。
@@ -1248,6 +1293,79 @@ fn render_math(
         px(raw.height.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
     );
     Ok(MathImage { image, size })
+}
+
+fn collect_mermaid_sources(blocks: &[Block]) -> Vec<String> {
+    fn visit(blocks: &[Block], sources: &mut Vec<String>) {
+        for block in blocks {
+            match block {
+                Block::Mermaid { source } if !sources.contains(source) => {
+                    sources.push(source.clone())
+                }
+                Block::Quote(children) => visit(children, sources),
+                Block::List { items, .. } => {
+                    for item in items {
+                        visit(item, sources);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut sources = Vec::new();
+    visit(blocks, &mut sources);
+    sources
+}
+
+fn render_mermaid(source: &str, renderer: gpui::SvgRenderer) -> Result<MathImage, String> {
+    let output = merman::Renderer::new()
+        .render(merman::RenderRequest::svg(
+            source,
+            merman::OperationControl::new(),
+            merman::SvgRequest {
+                pipeline: Some(merman::svg::SvgPipeline::resvg_safe()),
+                ..Default::default()
+            },
+        ))
+        .map_err(|error| error.to_string())?;
+    let merman::RenderOutput::Svg(Some(svg)) = output else {
+        return Err("Mermaid 未生成图表".to_owned());
+    };
+    let svg = svg.svg();
+    let image = Image::from_bytes(ImageFormat::Svg, svg.as_bytes().to_vec())
+        .to_image_data(renderer)
+        .map_err(|error| error.to_string())?;
+    let raw = image.size(0);
+    let size = gpui::size(
+        px(raw.width.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
+        px(raw.height.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
+    );
+    Ok(MathImage { image, size })
+}
+
+fn render_mermaid_block(source: &str, images: &MermaidImages, cx: &App) -> AnyElement {
+    let content = match images.get(source) {
+        Some(Ok(diagram)) => img(diagram.image.clone())
+            .w(diagram.size.width)
+            .h(diagram.size.height)
+            .flex_none()
+            .into_any_element(),
+        Some(Err(error)) => div()
+            .text_color(color::current(cx).status_error)
+            .child(format!("Mermaid 图表渲染失败：{error}"))
+            .into_any_element(),
+        None => div()
+            .text_color(color::current(cx).text_muted)
+            .child("正在渲染 Mermaid 图表…")
+            .into_any_element(),
+    };
+    div()
+        .id("markdown-mermaid-block")
+        .w_full()
+        .flex()
+        .overflow_x_scroll()
+        .child(content)
+        .into_any_element()
 }
 
 fn highlight_code_blocks(
@@ -1290,6 +1408,7 @@ fn highlight_code_blocks(
             | Block::Table { .. }
             | Block::Image { .. }
             | Block::Math { .. }
+            | Block::Mermaid { .. }
             | Block::Rule => {}
         }
     }

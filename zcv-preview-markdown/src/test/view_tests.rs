@@ -17,8 +17,8 @@ use super::{
     Block, InlineText, MARKDOWN_REPARSE_DEBOUNCE, MATH_PLACEHOLDER, MarkdownInlineText,
     MarkdownPreviewView, MarkdownRenderContext, MathImage, MathImages, MathPlacement,
     OpenPathCallback, code_lines, heading_line_height, heading_size, highlight_code_blocks,
-    inline_math_bounds, list_marker_char_count, render_block, render_math, render_text_inline,
-    resolve_markdown_file_link, visible_highlights_for_line,
+    inline_math_bounds, list_marker_char_count, render_block, render_math, render_mermaid,
+    render_text_inline, resolve_markdown_file_link, visible_highlights_for_line,
 };
 use zcv_language::{HighlightSpan, LanguageRegistry, SnippetHighlightCancellation};
 
@@ -208,6 +208,16 @@ fn inline_code_chip_outsets_text_and_uses_rounded_background(cx: &mut TestAppCon
         chip.corner_radii.top_left.as_f32() > 0.,
         "行内代码背景应使用圆角"
     );
+}
+
+#[gpui::test]
+fn mermaid_preview_renders_flowchart(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        let diagram = render_mermaid("graph TD; A-->B;", cx.svg_renderer())
+            .expect("有效 Mermaid 图表应能渲染");
+        assert!(diagram.size.width > px(0.));
+        assert!(diagram.size.height > px(0.));
+    });
 }
 
 #[gpui::test]
@@ -416,6 +426,7 @@ fn inline_math_reserves_width_in_the_text_flow(cx: &mut TestAppContext) {
             open_path: None,
             type_scale,
             math_images: &math_images,
+            mermaid_images: &Default::default(),
             window,
             cx: app,
         };
@@ -513,6 +524,7 @@ fn list_marker_height_matches_the_first_line_of_a_wrapped_item(cx: &mut TestAppC
                 open_path: None,
                 type_scale,
                 math_images: &math_images,
+                mermaid_images: &Default::default(),
                 window,
                 cx: app,
             };
@@ -578,6 +590,7 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
                 open_path: None,
                 type_scale,
                 math_images: &math_images,
+                mermaid_images: &Default::default(),
                 window,
                 cx: app,
             };

@@ -38,7 +38,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.10.3"
+version = "0.10.4"
 edition = "2024"
 
 [workspace.lints.rust]
@@ -152,6 +152,7 @@ crossbeam-channel = "0.5"
 
 # ---- Markdown 渲染 ----
 pulldown-cmark = { version = "0.13", default-features = false }
+merman = { version = "=0.8.0", default-features = false, features = ["all-diagrams", "layout-cytoscape", "svg"] }
 
 # ---- 数学公式渲染（Markdown preview KaTeX 兼容） ----
 ratex-parser = "0.1.12"

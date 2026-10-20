@@ -857,12 +857,35 @@ impl Project {
     ///
     /// 同步完成参数校验后返回驱动任务：复制本体在后台线程执行，完成后由任务内部发出 `EntriesChanged`；
     /// 任务返回值携带执行结果（调用方驱动进度用）。
-    /// 失败详情已在此层输出日志（条目未变化时不发出事件），调用方可静默跳过失败项。
+    /// 失败通过任务结果交给调用方展示；失败项不发出变更事件。
     pub fn copy_path(
         &mut self,
         source: &Path,
         destination: &Path,
         overwrite: bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Task<anyhow::Result<()>>> {
+        self.copy_path_impl(source, destination, overwrite, false, cx)
+    }
+
+    /// 从系统文件输入复制文件或目录到项目内，源路径可位于项目外。
+    /// 源路径只读，目标仍由项目文件边界校验和通知。
+    pub fn copy_external_path(
+        &mut self,
+        source: &Path,
+        destination: &Path,
+        overwrite: bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Task<anyhow::Result<()>>> {
+        self.copy_path_impl(source, destination, overwrite, true, cx)
+    }
+
+    fn copy_path_impl(
+        &mut self,
+        source: &Path,
+        destination: &Path,
+        overwrite: bool,
+        external: bool,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Task<anyhow::Result<()>>> {
         let source = normalize_for_comparison(source)?;
@@ -872,7 +895,9 @@ impl Project {
             .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?
             .to_path_buf();
         anyhow::ensure!(source.as_path() != root, "不能复制项目根目录");
-        anyhow::ensure!(source.starts_with(&root), "条目不在当前项目中");
+        if !external {
+            anyhow::ensure!(source.starts_with(&root), "条目不在当前项目中");
+        }
         anyhow::ensure!(destination.starts_with(&root), "目标不在当前项目中");
         anyhow::ensure!(
             !destination.starts_with(&source),

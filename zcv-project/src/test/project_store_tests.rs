@@ -821,6 +821,61 @@ async fn copying_file_completes_in_background(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+async fn copying_external_directory_into_project(cx: &mut gpui::TestAppContext) {
+    let project_dir = tempfile::tempdir().expect("应创建项目目录");
+    let external_dir = tempfile::tempdir().expect("应创建外部目录");
+    let source = external_dir.path().join("源目录");
+    fs::create_dir(&source).expect("应创建源目录");
+    fs::write(source.join("内容.txt"), "外部内容").expect("应创建外部文件");
+    let destination = project_dir.path().join("源目录");
+    let project = test_project(project_dir.path().to_path_buf(), cx);
+
+    assert!(
+        project
+            .update(cx, |project, cx| project.copy_path(
+                &source,
+                &destination,
+                false,
+                cx
+            ))
+            .is_err(),
+        "项目内复制入口仍应要求项目内源路径"
+    );
+    let task = project
+        .update(cx, |project, cx| {
+            project.copy_external_path(&source, &destination, false, cx)
+        })
+        .expect("外部复制入口应接收项目外源路径");
+    task.await.expect("应完成外部目录复制");
+
+    assert_eq!(
+        fs::read_to_string(destination.join("内容.txt")).expect("应读取导入文件"),
+        "外部内容"
+    );
+    assert!(source.join("内容.txt").exists(), "导入不移动源目录");
+}
+
+#[gpui::test]
+fn copying_external_path_rejects_target_outside_project(cx: &mut gpui::TestAppContext) {
+    let project_dir = tempfile::tempdir().expect("应创建项目目录");
+    let external_dir = tempfile::tempdir().expect("应创建外部目录");
+    let source = external_dir.path().join("source.txt");
+    fs::write(&source, "内容").expect("应创建外部文件");
+    let destination = external_dir.path().join("destination.txt");
+    let project = test_project(project_dir.path().to_path_buf(), cx);
+
+    assert!(
+        project
+            .update(cx, |project, cx| {
+                project.copy_external_path(&source, &destination, false, cx)
+            })
+            .is_err(),
+        "目标必须位于项目内"
+    );
+    assert!(!destination.exists());
+}
+
+#[gpui::test]
 async fn copying_with_overwrite_replaces_existing_destination(cx: &mut gpui::TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let source = directory.path().join("source.txt");

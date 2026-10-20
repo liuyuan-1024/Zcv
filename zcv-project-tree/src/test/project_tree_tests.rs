@@ -19,13 +19,13 @@ use zcv_ui::{ConfirmAnswer, tree_row_height};
 
 use super::editing::EditOperation;
 use super::execute::HOVER_EXPAND_DELAY;
-use super::transfer::TreeClipboard;
+use super::transfer::{TransferMode, TreeClipboard};
 
 use std::cell::Cell;
 
 use gpui::{
-    AppContext, Entity, FocusHandle, KeyBinding, Modifiers, MouseButton, Render, TestAppContext,
-    VisualTestContext, point, px,
+    AppContext, ClipboardEntry, ClipboardItem, Entity, ExternalPaths, FileDropEvent, FocusHandle,
+    KeyBinding, Modifiers, MouseButton, Render, TestAppContext, VisualTestContext, point, px,
 };
 
 use super::*;
@@ -1347,6 +1347,89 @@ fn paste_project(
     (directory, project, root, file_a, file_b, target)
 }
 
+#[gpui::test]
+fn pasting_external_file_uses_selected_directory(cx: &mut TestAppContext) {
+    let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
+    let external = tempfile::tempdir().expect("应创建外部目录");
+    let source = external.path().join("外部.txt");
+    std::fs::write(&source, "导入内容").expect("应创建外部文件");
+    let selected = target.clone();
+    let (tree, cx) = cx.add_window_view(move |_, cx| {
+        let mut tree = ProjectTreePanel::new(project, cx);
+        tree.clipboard = Some(TreeClipboard::Copied(vec![abs(file_a)]));
+        tree.state.borrow_mut().select(abs(selected));
+        tree
+    });
+    cx.run_until_parked();
+    cx.write_to_clipboard(ClipboardItem {
+        entries: vec![ClipboardEntry::ExternalPaths(ExternalPaths(
+            [source.clone()].into_iter().collect(),
+        ))],
+    });
+
+    tree.update_in(cx, |tree, window, cx| {
+        tree.handle_tree_paste(&TreePaste, window, cx);
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        std::fs::read_to_string(target.join("外部.txt")).expect("应复制到选中目录"),
+        "导入内容"
+    );
+    assert!(source.exists(), "外部源文件应保留");
+    assert!(
+        !target.join("a.txt").exists(),
+        "系统文件输入应优先于旧的内部剪贴板"
+    );
+}
+
+#[gpui::test]
+fn external_paste_conflict_uses_existing_confirmation(cx: &mut TestAppContext) {
+    let (_temp, project, _root, _file_a, _file_b, target) = paste_project(cx);
+    let external = tempfile::tempdir().expect("应创建外部目录");
+    let source = external.path().join("a.txt");
+    std::fs::write(&source, "新内容").expect("应创建外部文件");
+    std::fs::write(target.join("a.txt"), "旧内容").expect("应创建目标文件");
+    let selected = target.clone();
+    let (tree, cx) = cx.add_window_view(move |_, cx| {
+        let tree = ProjectTreePanel::new(project, cx);
+        tree.state.borrow_mut().select(abs(selected));
+        tree
+    });
+    cx.run_until_parked();
+    cx.write_to_clipboard(ClipboardItem {
+        entries: vec![ClipboardEntry::ExternalPaths(ExternalPaths(
+            [source.clone()].into_iter().collect(),
+        ))],
+    });
+
+    tree.update_in(cx, |tree, window, cx| {
+        tree.handle_tree_paste(&TreePaste, window, cx);
+    });
+
+    cx.read_entity(&tree, |tree, _| {
+        assert!(matches!(
+            tree.conflict.as_ref().map(|session| session.mode),
+            Some(TransferMode::CopyExternal)
+        ));
+    });
+    assert_eq!(
+        std::fs::read_to_string(target.join("a.txt")).expect("应读取目标文件"),
+        "旧内容",
+        "确认前不应覆盖"
+    );
+
+    tree.update(cx, |tree, cx| {
+        tree.resolve_conflict(ConfirmAnswer::Confirm, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::read_to_string(target.join("a.txt")).expect("应读取覆盖后的文件"),
+        "新内容"
+    );
+    assert!(source.exists(), "覆盖后外部源文件应保留");
+}
+
 /// 构造含三个文件与目标目录的拖拽测试项目：root/{a.txt, b.txt, c.txt, dst/}，返回
 /// (临时目录, project, root, a.txt, b.txt, c.txt, dst)。
 /// 行序固定为 [根, dst, a.txt, b.txt, c.txt]（目录先于文件），供点击/拖拽坐标计算。
@@ -1391,6 +1474,12 @@ fn copy_paste_duplicates_files_into_selected_directory(cx: &mut TestAppContext) 
     cx.add_window_view(|window, cx| {
         tree.update(cx, |tree, cx| {
             tree.handle_tree_copy(&TreeCopy, window, cx);
+            let system_clipboard = cx
+                .read_from_clipboard()
+                .and_then(|item| item.text())
+                .expect("复制项目条目应写入系统剪贴板");
+            assert!(system_clipboard.contains(&file_a.to_string_lossy().to_string()));
+            assert!(system_clipboard.contains(&file_b.to_string_lossy().to_string()));
             tree.state.borrow_mut().select(abs(target.clone()));
             tree.handle_tree_paste(&TreePaste, window, cx);
         });
@@ -1434,6 +1523,7 @@ fn copy_paste_reports_progress_middle_state_and_clears_on_completion(cx: &mut Te
     // 此刻读取可稳定卡住复制进行中的 Some((n, total)) 中间态。
     tree.update(cx, |tree, cx| {
         tree.execute_copy(
+            TransferMode::Copy,
             vec![
                 (abs(file_a.clone()), abs(target.join("a.txt"))),
                 (abs(file_b.clone()), abs(target.join("b.txt"))),
@@ -2092,6 +2182,161 @@ fn simulate_drag(cx: &mut VisualTestContext, from_row: usize, to_row: usize) {
         Modifiers::default(),
     );
     cx.run_until_parked();
+}
+
+#[gpui::test]
+fn dragging_external_file_into_directory_copies_it(cx: &mut TestAppContext) {
+    let (_temp, project, _root, _file_a, _file_b, target) = paste_project(cx);
+    let external = tempfile::tempdir().expect("应创建外部目录");
+    let source = external.path().join("拖入.txt");
+    std::fs::write(&source, "拖入内容").expect("应创建外部文件");
+    let (_tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
+    cx.run_until_parked();
+
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let position = point(px(10.), px(f32::from(row_height) + 1.));
+    cx.simulate_event(FileDropEvent::Entered {
+        position,
+        paths: ExternalPaths([source.clone()].into_iter().collect()),
+    });
+    cx.simulate_event(FileDropEvent::Submit { position });
+    cx.run_until_parked();
+
+    assert_eq!(
+        std::fs::read_to_string(target.join("拖入.txt")).expect("应复制到放下目录"),
+        "拖入内容"
+    );
+    assert!(source.exists(), "外部源文件应保留");
+}
+
+#[gpui::test]
+fn external_drag_keeps_scrolling_at_edge_and_stops_on_exit(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建项目目录");
+    for index in 0..100 {
+        std::fs::write(
+            directory.path().join(format!("file-{index:03}.txt")),
+            "内容",
+        )
+        .expect("应创建项目文件");
+    }
+    let external = tempfile::tempdir().expect("应创建外部目录");
+    let source = external.path().join("外部.txt");
+    std::fs::write(&source, "外部内容").expect("应创建外部文件");
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
+    cx.run_until_parked();
+
+    let bounds = cx.update(|window, _| window.bounds());
+    let position = point(px(10.), bounds.bottom_left().y - px(3.));
+    cx.simulate_event(FileDropEvent::Entered {
+        position,
+        paths: ExternalPaths([source].into_iter().collect()),
+    });
+    cx.run_until_parked();
+    let first_offset = cx.read_entity(&tree, |tree, _| {
+        assert!(tree.drag_scroll_task.is_some(), "靠近底边应启动滚动任务");
+        tree.scroll_handle.0.borrow().base_handle.offset().y
+    });
+    cx.executor().advance_clock(Duration::from_millis(16));
+    cx.run_until_parked();
+    let next_offset = cx.read_entity(&tree, |tree, _| {
+        tree.scroll_handle.0.borrow().base_handle.offset().y
+    });
+    assert!(next_offset < first_offset, "指针不动时列表仍应继续向下滚动");
+
+    let slow_position = point(px(10.), bounds.bottom_left().y - bounds.size.height * 0.1);
+    cx.simulate_event(FileDropEvent::Pending {
+        position: slow_position,
+    });
+    cx.run_until_parked();
+    let before_next_tick = cx.read_entity(&tree, |tree, _| {
+        assert_eq!(tree.drag_scroll_step, px(-5.));
+        tree.scroll_handle.0.borrow().base_handle.offset().y
+    });
+    assert_eq!(before_next_tick, next_offset, "更新速度不应重启滚动任务");
+    cx.executor().advance_clock(DRAG_SCROLL_INTERVAL);
+    cx.run_until_parked();
+    let slowed_offset = cx.read_entity(&tree, |tree, _| {
+        tree.scroll_handle.0.borrow().base_handle.offset().y
+    });
+    assert_eq!(
+        slowed_offset,
+        next_offset - px(5.),
+        "下一帧应采用新的滚动速度"
+    );
+
+    let center = point(px(10.), bounds.origin.y + bounds.size.height / 2.);
+    cx.simulate_event(FileDropEvent::Pending { position: center });
+    cx.run_until_parked();
+    cx.read_entity(&tree, |tree, _| {
+        assert!(tree.drag_scroll_task.is_none(), "离开边缘后应停止滚动");
+    });
+    cx.simulate_event(FileDropEvent::Pending { position });
+    cx.run_until_parked();
+    cx.read_entity(&tree, |tree, _| {
+        assert!(tree.drag_scroll_task.is_some(), "回到边缘应重新启动滚动");
+    });
+
+    cx.simulate_event(FileDropEvent::Exited);
+    cx.run_until_parked();
+    let exit_offset = cx.read_entity(&tree, |tree, _| {
+        assert!(tree.drag_scroll_task.is_none(), "外部拖拽离开后应停止滚动");
+        tree.scroll_handle.0.borrow().base_handle.offset().y
+    });
+    cx.executor().advance_clock(Duration::from_millis(32));
+    cx.run_until_parked();
+    let stopped_offset = cx.read_entity(&tree, |tree, _| {
+        tree.scroll_handle.0.borrow().base_handle.offset().y
+    });
+    assert_eq!(stopped_offset, exit_offset, "离开后滚动位置应保持不变");
+}
+
+#[gpui::test]
+fn internal_drag_keeps_scrolling_at_edge(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建项目目录");
+    for index in 0..100 {
+        std::fs::write(
+            directory.path().join(format!("file-{index:03}.txt")),
+            "内容",
+        )
+        .expect("应创建项目文件");
+    }
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
+    cx.run_until_parked();
+
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = px(f32::from(row_height) + 1.);
+    cx.simulate_mouse_down(
+        point(px(10.), row_y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        point(px(14.), row_y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let bounds = cx.update(|window, _| window.bounds());
+    let edge = point(px(10.), bounds.bottom_left().y - px(3.));
+    cx.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    let first_offset = cx.read_entity(&tree, |tree, _| {
+        assert!(tree.drag_scroll_task.is_some(), "内部拖拽也应启动滚动任务");
+        tree.scroll_handle.0.borrow().base_handle.offset().y
+    });
+    cx.executor().advance_clock(Duration::from_millis(16));
+    cx.run_until_parked();
+    let next_offset = cx.read_entity(&tree, |tree, _| {
+        tree.scroll_handle.0.borrow().base_handle.offset().y
+    });
+    assert!(next_offset < first_offset, "内部拖拽停在边缘时应继续滚动");
+
+    cx.simulate_mouse_up(edge, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    cx.read_entity(&tree, |tree, _| {
+        assert!(tree.drag_scroll_task.is_none(), "放下后应停止滚动");
+    });
 }
 
 #[gpui::test]

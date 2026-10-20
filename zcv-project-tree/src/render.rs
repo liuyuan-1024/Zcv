@@ -4,8 +4,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    App, Div, ElementId, Entity, MouseButton, UniformListScrollHandle, WeakEntity, Window, div,
-    prelude::*, uniform_list,
+    App, Div, ElementId, Entity, ExternalPaths, MouseButton, UniformListScrollHandle, WeakEntity,
+    Window, div, prelude::*, uniform_list,
 };
 use zcv_editor::Editor;
 use zcv_path::AbsolutePathBuf;
@@ -243,6 +243,15 @@ pub(super) fn render_row(
                 style
             }
         })
+        .drag_over::<ExternalPaths>({
+            let path = path.clone();
+            move |mut style: gpui::StyleRefinement, dragged: &ExternalPaths, _, cx| {
+                if !dragged.paths().is_empty() && drop_target_dir(&path, is_dir).is_some() {
+                    style.background = Some(gpui::Fill::from(color::current(cx).element_hover));
+                }
+                style
+            }
+        })
         // 拖拽悬停自动展开：悬停折叠目录行约 500ms 后展开（计时器存面板字段）。
         // on_drag_move 在捕获阶段对全部注册行派发且不做命中检测：仅光标真正位于本行范围内才处理，命中后阻断其余行的后续派发。
         .on_drag_move::<TreeDrag>({
@@ -270,6 +279,22 @@ pub(super) fn render_row(
                     tree.update(cx, |tree, cx| {
                         tree.handle_row_drop(dragged, &path, is_dir, cx)
                     });
+                }
+            }
+        })
+        .on_drop({
+            let weak = render_context.weak.clone();
+            let path = path.clone();
+            move |paths: &ExternalPaths, _window, cx| {
+                if let Some(target_dir) = drop_target_dir(&path, is_dir)
+                    && let Some(tree) = weak.upgrade()
+                {
+                    tree.update(cx, |tree, cx| {
+                        tree.stop_drag_scroll();
+                        tree.reset_drag_hover();
+                        tree.import_external_paths(paths, target_dir, cx);
+                    });
+                    cx.stop_propagation();
                 }
             }
         })

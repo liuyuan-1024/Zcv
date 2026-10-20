@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use gpui::{Context, Window};
+use gpui::{ClipboardEntry, ClipboardItem, Context, ExternalPaths, Window};
 
 use zcv_actions::{TreeCancelConflict, TreeClearClipboard, TreeCopy, TreeCut, TreePaste};
 use zcv_path::AbsolutePathBuf;
@@ -46,6 +46,14 @@ impl ProjectTreePanel {
             return;
         }
         self.clipboard = Some(kind(paths));
+        if let Some(clipboard) = &self.clipboard {
+            let paths = clipboard
+                .paths()
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            cx.write_to_clipboard(ClipboardItem::new_string(paths.join("\n")));
+        }
         cx.notify();
     }
 
@@ -76,13 +84,14 @@ impl ProjectTreePanel {
         if self.edit_state.is_some() || self.conflict.is_some() {
             return;
         }
-        let Some(clipboard) = self.clipboard.clone() else {
-            return;
-        };
-        let mode = match &clipboard {
-            TreeClipboard::Copied(_) => TransferMode::Copy,
-            TreeClipboard::Cut(_) => TransferMode::Move,
-        };
+        let external = cx.read_from_clipboard().and_then(|item| {
+            item.entries().iter().find_map(|entry| match entry {
+                ClipboardEntry::ExternalPaths(paths) if !paths.paths().is_empty() => {
+                    Some(paths.clone())
+                }
+                _ => None,
+            })
+        });
         // 目标目录：选中目录→自身、文件→父目录（is_dir 从行模型解析）。
         let (selected, selected_is_dir) = {
             let state = self.state.borrow();
@@ -92,10 +101,47 @@ impl ProjectTreePanel {
                 .unwrap_or(false);
             (state.selected.clone(), is_dir)
         };
-        let Some(target_dir) = paste_target_dir(selected.as_ref(), selected_is_dir) else {
+        let Some(target_dir) =
+            paste_target_dir(selected.as_ref(), selected_is_dir).or_else(|| self.root.clone())
+        else {
             return;
         };
-        self.begin_transfer(mode, target_dir, clipboard.paths().to_vec(), cx);
+        if let Some(paths) = external {
+            self.import_external_paths(&paths, target_dir, cx);
+        } else if let Some(clipboard) = self.clipboard.clone() {
+            let mode = match &clipboard {
+                TreeClipboard::Copied(_) => TransferMode::Copy,
+                TreeClipboard::Cut(_) => TransferMode::Move,
+            };
+            self.begin_transfer(mode, target_dir, clipboard.paths().to_vec(), cx);
+        }
+    }
+
+    pub(super) fn import_external_paths(
+        &mut self,
+        paths: &ExternalPaths,
+        target_dir: AbsolutePathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if self.edit_state.is_some() || self.conflict.is_some() || self.active_transfer.is_some() {
+            return;
+        }
+        let sources: anyhow::Result<Vec<_>> = paths
+            .paths()
+            .iter()
+            .map(|path| {
+                AbsolutePathBuf::new(path.clone())
+                    .map_err(|error| anyhow::anyhow!("{}：{error}", path.display()))
+            })
+            .collect();
+        let sources = match sources {
+            Ok(sources) => sources,
+            Err(error) => {
+                self.report_error(format!("项目树导入失败：{error:#}"), cx);
+                return;
+            }
+        };
+        self.begin_transfer(TransferMode::CopyExternal, target_dir, sources, cx);
     }
 
     pub(super) fn begin_transfer(
@@ -142,6 +188,7 @@ impl ProjectTreePanel {
         row_is_dir: bool,
         cx: &mut Context<Self>,
     ) {
+        self.stop_drag_scroll();
         self.reset_drag_hover();
         if self.edit_state.is_some() || self.conflict.is_some() {
             return;
@@ -264,7 +311,9 @@ impl ProjectTreePanel {
         }
         match mode {
             TransferMode::Move => self.execute_move(items, overwrite_set, cx),
-            TransferMode::Copy => self.execute_copy(items, overwrite_set, cx),
+            TransferMode::Copy | TransferMode::CopyExternal => {
+                self.execute_copy(mode, items, overwrite_set, cx)
+            }
         }
     }
 
@@ -327,6 +376,7 @@ impl ProjectTreePanel {
 
     pub(super) fn execute_copy(
         &mut self,
+        mode: TransferMode,
         items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
         overwrite_set: &HashSet<AbsolutePathBuf>,
         cx: &mut Context<Self>,
@@ -341,8 +391,12 @@ impl ProjectTreePanel {
                 let overwrite = overwrite_set.contains(&source);
                 // UI 线程创建复制任务（同步校验 + 后台复制），await 驱动完成。
                 let created = this.update(cx, |tree, cx| {
-                    tree.project.update(cx, |project, cx| {
-                        project.copy_path(&source, &dest, overwrite, cx)
+                    tree.project.update(cx, |project, cx| match mode {
+                        TransferMode::Copy => project.copy_path(&source, &dest, overwrite, cx),
+                        TransferMode::CopyExternal => {
+                            project.copy_external_path(&source, &dest, overwrite, cx)
+                        }
+                        TransferMode::Move => unreachable!("移动不进入复制执行路径"),
                     })
                 });
                 match created {

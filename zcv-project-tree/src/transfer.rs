@@ -58,10 +58,11 @@ impl TreeClipboard {
     }
 }
 
-/// 传输执行方式：由剪贴板种类决定（Cut 粘贴全为 Move、Copied 粘贴全为 Copy）。
+/// 传输执行方式：内部剪贴板区分复制与移动，系统文件输入走外部复制。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TransferMode {
     Copy,
+    CopyExternal,
     Move,
 }
 

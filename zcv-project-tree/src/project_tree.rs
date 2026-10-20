@@ -12,7 +12,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AsyncApp, Context, Entity, EventEmitter, KeyContext, MouseButton, Pixels, ScrollStrategy, Task,
+    AsyncApp, Bounds, Context, DragMoveEvent, Entity, EventEmitter, ExternalPaths, FileDropEvent,
+    KeyContext, MouseButton, MouseExitEvent, Pixels, Point, ScrollStrategy, Task,
     UniformListScrollHandle, WeakEntity, Window, div, point, prelude::*, px, relative,
 };
 use zcv_actions::TreeActivate;
@@ -20,7 +21,7 @@ use zcv_editor::Editor;
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_project::{Project, WorktreeEntry, translate_path};
 use zcv_theme::{color, fixed, scale};
-use zcv_ui::{ConfirmOverlay, RowClickAction, Scrollbar, TreeState, drag_autoscroll_delta};
+use zcv_ui::{ConfirmOverlay, RowClickAction, Scrollbar, TreeState};
 use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace, typography_for_window};
 
 use zcv_settings::SettingsStore;
@@ -64,6 +65,26 @@ mod project_tree_tests;
 
 /// EntriesChanged 防抖窗口：批量文件操作的事件风暴合并为一次行模型重建。
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(120);
+const DRAG_SCROLL_INTERVAL: Duration = Duration::from_millis(16);
+
+/// 边缘滚动按面板高度的 15% / 5% 分区，避免窄边缘区在高面板上难以触发。
+fn drag_scroll_step(position: Point<Pixels>, bounds: Bounds<Pixels>) -> Pixels {
+    if bounds.size.height <= Pixels::ZERO || !bounds.contains(&position) {
+        return Pixels::ZERO;
+    }
+    let fraction = (position.y - bounds.origin.y) / bounds.size.height;
+    if fraction <= 0.05 {
+        px(8.)
+    } else if fraction <= 0.15 {
+        px(5.)
+    } else if fraction >= 0.95 {
+        px(-8.)
+    } else if fraction >= 0.85 {
+        px(-5.)
+    } else {
+        Pixels::ZERO
+    }
+}
 
 enum RevealTarget {
     Path(AbsolutePathBuf),
@@ -91,7 +112,7 @@ pub struct ProjectTreePanel {
     /// 在项目内移动文件或目录回调（剪切粘贴/拖拽共用）。
     on_move: Option<OnMove>,
     workspace: Option<WeakEntity<Workspace>>,
-    /// 项目树剪贴板：copy/cut 写入，paste 消费。
+    /// 项目树复制／剪切状态；系统剪贴板中的外部文件路径由粘贴入口直接读取。
     clipboard: Option<TreeClipboard>,
     /// 进行中的冲突确认会话（浮层数据源；存在时阻塞其他命令）。
     conflict: Option<ConflictSession>,
@@ -126,6 +147,10 @@ pub struct ProjectTreePanel {
     hover_expand_task: Option<Task<()>>,
     /// 当前拖拽悬停的目录行路径：到期任务校验悬停未移开的依据。
     drag_hover_path: Option<AbsolutePathBuf>,
+    /// 拖拽悬停在面板边缘期间持续滚动；内部与外部拖拽共用。
+    drag_scroll_task: Option<Task<()>>,
+    /// 当前指针位置决定的每帧滚动量；拖拽移动只更新此值，不重建任务。
+    drag_scroll_step: Pixels,
 }
 
 impl ProjectTreePanel {
@@ -188,6 +213,8 @@ impl ProjectTreePanel {
             drag_marked_generation: None,
             hover_expand_task: None,
             drag_hover_path: None,
+            drag_scroll_task: None,
+            drag_scroll_step: Pixels::ZERO,
         };
         this.rebuild_rows(cx);
         this
@@ -571,10 +598,69 @@ impl ProjectTreePanel {
     ) {
         self.activate_selected(true, window, cx);
     }
+
+    fn stop_drag_scroll(&mut self) {
+        self.drag_scroll_task = None;
+        self.drag_scroll_step = Pixels::ZERO;
+    }
+
+    fn handle_drag_scroll<T: 'static>(
+        &mut self,
+        event: &DragMoveEvent<T>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let step = drag_scroll_step(event.event.position, event.bounds);
+        if !event.bounds.contains(&event.event.position) {
+            self.stop_drag_scroll();
+            self.reset_drag_hover();
+            return;
+        }
+        if step == Pixels::ZERO {
+            self.stop_drag_scroll();
+            return;
+        }
+        self.drag_scroll_step = step;
+        if self.drag_scroll_task.is_none() {
+            self.drag_scroll_task = Some(cx.spawn_in(window, async move |this, cx| {
+                loop {
+                    let active = this
+                        .update(cx, |tree, cx| {
+                            tree.drag_scroll_task.as_ref()?;
+                            let base_handle = tree.scroll_handle.0.borrow().base_handle.clone();
+                            let offset = base_handle.offset();
+                            let max_offset = base_handle.max_offset();
+                            let next_y = (offset.y + tree.drag_scroll_step)
+                                .min(px(0.))
+                                .max(-max_offset.y);
+                            if next_y != offset.y {
+                                base_handle.set_offset(point(offset.x, next_y));
+                                cx.notify();
+                            }
+                            Some(())
+                        })
+                        .ok()
+                        .flatten()
+                        .is_some();
+                    if !active {
+                        return;
+                    }
+                    cx.background_executor().timer(DRAG_SCROLL_INTERVAL).await;
+                }
+            }));
+        }
+
+        // 容器先于行处理拖拽移动；命中的行随后重新建立悬停展开计时。
+        self.reset_drag_hover();
+    }
 }
 
 impl gpui::Render for ProjectTreePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        if !cx.has_active_drag() {
+            self.stop_drag_scroll();
+            self.reset_drag_hover();
+        }
         let typography = typography_for_window(window, cx);
         if self.name_edit_focus_subscription.is_none() {
             let entry_name_editor_focus = self.entry_name_editor.read(cx).focus_handle();
@@ -705,37 +791,17 @@ impl gpui::Render for ProjectTreePanel {
             .on_action(cx.listener(Self::handle_tree_cancel_conflict))
             .on_action(cx.listener(Self::handle_tree_confirm_edit))
             .on_action(cx.listener(Self::handle_tree_cancel_edit))
-            // 拖拽靠近上下边缘时滚动列表，保证目标行可以通过持续拖拽进入可视范围。
-            .on_drag_move::<TreeDrag>({
-                let weak = cx.weak_entity();
-                let scroll_handle = self.scroll_handle.clone();
-                move |drag_event, window, cx| {
-                    if !drag_event.bounds.contains(&drag_event.event.position) {
-                        return;
-                    }
-                    let delta = drag_autoscroll_delta(
-                        drag_event.event.position,
-                        drag_event.bounds,
-                        point(px(0.), px(30.)),
-                        point(px(0.), px(12.)),
-                    );
-                    if delta.y != Pixels::ZERO {
-                        let base_handle = scroll_handle.0.borrow().base_handle.clone();
-                        let offset = base_handle.offset();
-                        let max_offset = base_handle.max_offset();
-                        // GPUI 的 max_offset 是正数，列表实际偏移范围是 [-max_offset, 0]。
-                        let next_y = (offset.y + delta.y).min(px(0.)).max(-max_offset.y);
-                        if next_y != offset.y {
-                            base_handle.set_offset(point(offset.x, next_y));
-                            window.refresh();
-                        }
-                    }
-                    // 拖拽悬停离开行区域（列表空白处）：清掉待定的悬停展开计时。
-                    if let Some(tree) = weak.upgrade() {
-                        tree.update(cx, |tree, _| tree.reset_drag_hover());
-                    }
-                }
-            })
+            // 内部条目和系统文件使用同一条持续边缘滚动管线。
+            .on_drag_move(cx.listener(Self::handle_drag_scroll::<TreeDrag>))
+            .on_drag_move(cx.listener(Self::handle_drag_scroll::<ExternalPaths>))
+            .on_mouse_exit(cx.listener(|tree, _: &MouseExitEvent, _, _| {
+                tree.stop_drag_scroll();
+                tree.reset_drag_hover();
+            }))
+            .on_file_drop_exit(cx.listener(|tree, _: &FileDropEvent, _, _| {
+                tree.stop_drag_scroll();
+                tree.reset_drag_hover();
+            }))
             // 行级处理器会在命中具体行后重新调度悬停展开计时。
             // on_drag_move 在捕获阶段对全部注册元素派发且不做命中检测，需自行校验光标位于本容器内；
             // 容器先于各行注册、先于各行执行，行级处理器随后按命中结果覆盖（悬停行重新调度计时）。
@@ -746,7 +812,10 @@ impl gpui::Render for ProjectTreePanel {
                     if cx.has_active_drag()
                         && let Some(tree) = weak.upgrade()
                     {
-                        tree.update(cx, |tree, _| tree.reset_drag_hover());
+                        tree.update(cx, |tree, _| {
+                            tree.stop_drag_scroll();
+                            tree.reset_drag_hover();
+                        });
                     }
                 }
             })

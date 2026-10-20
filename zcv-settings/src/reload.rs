@@ -14,7 +14,7 @@ use gpui::{App, AppContext as _, Global, Task};
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 
 use super::config_dir;
-use super::file::{ensure_user_settings_file, settings_file};
+use super::file::{ensure_settings_files, settings_file};
 use super::merge::UserSettings;
 use super::schema::parse_user_settings;
 use super::store::{GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore};
@@ -33,15 +33,9 @@ pub fn init(cx: &mut App) {
     let error_reporter = cx.new(|_| SettingsErrorReporter::default());
     cx.set_global(GlobalSettingsErrorReporter(error_reporter.clone()));
     let settings_path = settings_file();
-    if let Err(error) = ensure_user_settings_file() {
+    if let Err(error) = ensure_settings_files() {
         error_reporter.update(cx, |reporter, cx| {
-            reporter.report(
-                format!(
-                    "初始化用户设置文件失败（{}）：{error:#}",
-                    settings_path.display()
-                ),
-                cx,
-            )
+            reporter.report(format!("初始化设置文件失败：{error:#}"), cx)
         });
     }
     let content = match fs::read_to_string(settings_path) {

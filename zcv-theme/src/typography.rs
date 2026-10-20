@@ -20,7 +20,7 @@ use serde::Deserialize;
 
 /// 编译期嵌入的内置设置文件（与 zcv-assets 运行时嵌入为同一文件）：
 /// 排版默认值（字号/行高倍数）的唯一数据源，不重复硬编码。
-const INITIAL_SETTINGS: &str = include_str!("../../assets/settings/initial_user_settings.json");
+const INITIAL_SETTINGS: &str = include_str!("../../assets/settings/initial_user_settings.jsonc");
 
 /// 内置设置文件的排版默认值；命名字段杜绝位置索引取错。
 #[derive(Clone, Copy, Deserialize)]

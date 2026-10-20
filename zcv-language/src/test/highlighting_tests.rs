@@ -26,6 +26,26 @@ fn capture_names_for(path: &str, source: &str) -> BTreeSet<String> {
 }
 
 #[test]
+fn jsonc_reference_parses_comments_before_and_inside_root() {
+    let source = "// 配置参考\n{\n  // 用户可覆盖\n  \"theme\": \"system\"\n}\n";
+    let (buffer, syntax) = parsed_syntax("settings.reference.jsonc", source);
+    let snapshot = buffer.snapshot();
+    let syntax = syntax.snapshot();
+    assert!(!syntax.root_tree().unwrap().root_node().has_error());
+    let names = syntax.capture_names();
+    assert!(
+        syntax
+            .highlights(
+                0..snapshot.len_bytes().get(),
+                &snapshot,
+                &HighlightCache::new()
+            )
+            .iter()
+            .any(|span| names[span.capture as usize].as_ref() == "comment")
+    );
+}
+
+#[test]
 fn double_capture_on_same_node_resolves_to_the_inner_span() {
     // 同一节点命中多个 pattern（function_item 与 identifier 都覆盖函数名）：
     // 归并扫描必须稳定产出内层 capture，且相邻 spans 不重叠。

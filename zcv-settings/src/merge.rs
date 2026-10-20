@@ -1,6 +1,6 @@
 //! 用户设置的默认值合并与运行时表示。
 //!
-//! 默认层的唯一数据源是内置 `initial_user_settings.json`。
+//! 默认层的唯一数据源是内置 `initial_user_settings.jsonc`。
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;

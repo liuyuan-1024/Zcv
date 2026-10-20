@@ -1,3 +1,7 @@
+// 此文件在用户配置目录中作为 settings.reference.jsonc 供查阅，不参与设置加载。
+// 请在 settings.json 中只填写需要覆盖的字段；未填写的字段使用当前版本内置值。
+// 参考文件会随应用版本更新，请勿在其中保存个人配置。
+
 {
   // 可用值："system"（跟随系统）、"dark"、"light"；未知主题名会回退到 "system"。
   "theme": "system",

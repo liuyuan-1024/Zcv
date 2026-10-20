@@ -5,15 +5,16 @@ use crate::file::ensure_settings_file;
 use crate::schema::{TerminalShellSetting, parse_builtin_settings, parse_user_settings};
 
 #[test]
-fn missing_user_settings_file_is_created_from_builtin_content() {
+fn missing_user_settings_file_contains_only_overrides() {
     let directory = tempfile::tempdir().expect("应创建临时设置目录");
     let path = directory.path().join("settings.json");
 
-    ensure_settings_file(&path, &INITIAL_USER_SETTINGS).expect("应创建用户设置文件");
+    let template = "// 配置项和当前默认值见同目录的 settings.reference.jsonc。\n{}\n";
+    ensure_settings_file(&path, template).expect("应创建用户设置文件");
 
     assert_eq!(
         fs::read_to_string(path).expect("应读取新建的用户设置文件"),
-        INITIAL_USER_SETTINGS.as_ref()
+        template
     );
 }
 
@@ -23,7 +24,7 @@ fn existing_user_settings_file_is_not_overwritten() {
     let path = directory.path().join("settings.json");
     fs::write(&path, r#"{"theme":"one-dark"}"#).expect("应创建用户设置文件");
 
-    ensure_settings_file(&path, &INITIAL_USER_SETTINGS).expect("已有设置文件应可重复初始化");
+    ensure_settings_file(&path, "{}\n").expect("已有设置文件应可重复初始化");
 
     assert_eq!(
         fs::read_to_string(path).expect("应读取用户设置文件"),

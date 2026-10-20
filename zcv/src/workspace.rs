@@ -615,9 +615,7 @@ fn initialize_workspace(
     workspace.register_action(move |_workspace, _: &SelectGitBranch, window, cx| {
         branch_picker.update(cx, |picker, cx| picker.toggle(window, cx));
     });
-    workspace.set_open_settings_provider(Box::new(|_cx| {
-        zcv_settings::ensure_user_settings_file().map(Path::to_path_buf)
-    }));
+    workspace.set_settings_files_provider(Box::new(|_cx| zcv_settings::ensure_settings_files()));
 
     // ═══ 面板创建与注册 ═══════════════════════════════════════════
 

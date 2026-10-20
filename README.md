@@ -70,7 +70,7 @@ Buffer → LanguageBuffer → MultiBuffer → DisplayMap → Editor → EditorEl
 | [`zcv-update`](zcv-update/README.md) | 更新清单、产物校验与跨进程替换事务。 |
 | [`zcv`](zcv/src/main.rs) | 应用入口与产品级装配。 |
 
-依赖版本统一在根 [`Cargo.toml`](Cargo.toml) 的 `workspace.dependencies` 中声明；子 crate 通过 `workspace = true` 引用。
+内部 crate 和需要统一版本的第三方依赖在根 [`Cargo.toml`](Cargo.toml) 的 `workspace.dependencies` 中声明，由使用方通过 `workspace = true` 引用。仅单个 crate 使用且无统一版本需求的第三方依赖可在该 crate 声明。
 
 ## 项目级规范
 

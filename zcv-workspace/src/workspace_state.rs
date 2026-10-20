@@ -38,9 +38,9 @@ use crate::{ItemHandle, OpenPathCallback};
 const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 const WINDOW_BOUNDS_SAVE_THROTTLE: Duration = Duration::from_millis(100);
 
-/// 打开设置文件的路径提供者：宿主注入，返回设置文件路径或创建失败原因。
-pub(crate) type OpenSettingsPathProvider =
-    Box<dyn Fn(&mut App) -> anyhow::Result<PathBuf> + Send + Sync>;
+/// 打开设置文件的路径提供者：宿主注入，依次返回参考文件和用户文件。
+pub(crate) type SettingsFilesProvider =
+    Box<dyn Fn(&mut App) -> anyhow::Result<(PathBuf, PathBuf)> + Send + Sync>;
 
 type WorkspaceAction =
     Box<dyn Fn(gpui::Stateful<gpui::Div>, &mut Context<Workspace>) -> gpui::Stateful<gpui::Div>>;
@@ -62,8 +62,8 @@ pub struct Workspace {
     bottom_dock: Entity<Dock>,
     /// 顶栏视图，由宿主注入。
     titlebar: Option<AnyView>,
-    /// 打开设置文件的路径提供者（设置文件属于宿主配置，需注入）。
-    open_settings_path_provider: Option<OpenSettingsPathProvider>,
+    /// 设置文件由宿主配置模块持有，工作区只消费打开时的路径。
+    settings_files_provider: Option<SettingsFilesProvider>,
     /// 宿主装配的订阅（git/settings/面板等）。
     _subscriptions: Vec<Subscription>,
     /// 经 register_action 注册的 action handler（render 时挂到根节点，焦点链全局可达）。
@@ -244,7 +244,7 @@ impl Workspace {
             right_dock,
             bottom_dock,
             titlebar: None,
-            open_settings_path_provider: None,
+            settings_files_provider: None,
             _subscriptions: std::iter::once(layout_subscription)
                 .chain(dock_layout_subscriptions)
                 .chain(std::iter::once(focus_lost_subscription))
@@ -470,9 +470,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// 注入打开设置文件的路径提供者。
-    pub fn set_open_settings_provider(&mut self, provider: OpenSettingsPathProvider) {
-        self.open_settings_path_provider = Some(provider);
+    /// 注入配置参考与用户配置的路径提供者。
+    pub fn set_settings_files_provider(&mut self, provider: SettingsFilesProvider) {
+        self.settings_files_provider = Some(provider);
     }
 
     /// 注册 action handler 到 Workspace 根节点（焦点链顶端，快捷键全局可达）。
@@ -665,7 +665,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_path_now(path, focus_opened_item, None, window, cx);
+        self.open_paths_now(vec![path], focus_opened_item, None, window, cx);
     }
 
     /// 打开文件并把文本 Item 定位到指定 UTF-8 字节范围。
@@ -676,8 +676,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_path_now(
-            path,
+        self.open_paths_now(
+            vec![path],
             true,
             Some(ItemNavigation::ByteRange(range)),
             window,
@@ -694,8 +694,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_path_now(
-            path,
+        self.open_paths_now(
+            vec![path],
             true,
             Some(ItemNavigation::LineColumn { line, column }),
             window,
@@ -717,95 +717,110 @@ impl Workspace {
     }
 
     /// 已完成点击判定后的实际文件打开流程：经 ItemProvider 注册表创建 Item。
-    fn open_path_now(
+    /// 单文件与顺序打开的多个文件共用同一条 Provider、Pane 和错误处理管线。
+    fn open_paths_now(
         &mut self,
-        path: PathBuf,
+        paths: Vec<PathBuf>,
         focus_opened_item: bool,
         navigation: Option<ItemNavigation>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let path = match AbsolutePathBuf::canonicalize(&path) {
-            Ok(p) => p.into_path_buf(),
-            Err(error) => {
-                self.show_toast(
-                    ToastKind::Error,
-                    format!("打开文件失败：{}：{error:#}", path.display()),
-                    vec![],
-                    Some(Duration::from_secs(5)),
-                    cx,
-                );
-                return;
-            }
-        };
-        if let Some(provider) = standalone_provider_for(&path, cx) {
-            let preview = provider.create(PreviewDocument::Standalone { path: path.clone() }, cx);
-            let focus = self.pane.update(cx, |pane, cx| {
-                pane.open_item(preview, !focus_opened_item, window, cx)
-            });
-            if focus_opened_item {
-                window.focus(&focus, cx);
-            }
-            window.refresh();
-            return;
-        }
-        let Some(provider) = item_provider_for_path(&path, cx) else {
-            self.show_toast(
-                ToastKind::Error,
-                format!("打开文件失败：{}：没有支持该类型", path.display()),
-                vec![],
-                Some(Duration::from_secs(5)),
-                cx,
-            );
-            return;
-        };
-        let project = self.project.clone();
-        let pane = self.pane.clone();
-        let task = provider.open_item(path.clone(), project, cx);
-        cx.spawn_in(window, async move |workspace, cx| {
-            let item = match task.await {
-                Ok(item) => item,
+        let multiple = paths.len() > 1;
+        let mut tasks = Vec::new();
+        for path in paths {
+            let path = match AbsolutePathBuf::canonicalize(&path) {
+                Ok(p) => p.into_path_buf(),
                 Err(error) => {
-                    workspace
-                        .update_in(cx, |workspace, _window, cx| {
-                            workspace.show_toast(
-                                ToastKind::Error,
-                                format!("打开文件失败：{}：{error:#}", path.display()),
-                                vec![],
-                                Some(Duration::from_secs(5)),
-                                cx,
-                            );
-                        })
-                        .ok();
-                    return;
+                    self.show_toast(
+                        ToastKind::Error,
+                        format!("打开文件失败：{}：{error:#}", path.display()),
+                        vec![],
+                        Some(Duration::from_secs(5)),
+                        cx,
+                    );
+                    continue;
                 }
             };
-            workspace
-                .update_in(cx, |_workspace, window, cx| {
-                    let focus = pane.update(cx, |pane, cx| {
-                        let focus = pane.open_item(item, !focus_opened_item, window, cx);
-                        // `open_item` 可能复用已经打开的同路径标签。
-                        // 导航必须作用于 Pane 最终激活的 Item，而不是可能被丢弃的新建候选 Item。
-                        if let Some(navigation) = navigation
-                            && let Some(active_item) = pane.active_item()
-                        {
-                            match navigation {
-                                ItemNavigation::ByteRange(range) => {
-                                    active_item.navigate_to_byte_range(range, cx);
-                                }
-                                ItemNavigation::LineColumn { line, column } => {
-                                    active_item.navigate_to_line_column(line, column, cx);
-                                }
-                            }
-                        }
-                        focus
+            if let Some(provider) = standalone_provider_for(&path, cx) {
+                let preview =
+                    provider.create(PreviewDocument::Standalone { path: path.clone() }, cx);
+                if !multiple {
+                    let focus = self.pane.update(cx, |pane, cx| {
+                        pane.open_item(preview, !focus_opened_item, window, cx)
                     });
                     if focus_opened_item {
                         window.focus(&focus, cx);
                     }
                     window.refresh();
-                })
-                .ok();
+                    return;
+                }
+                tasks.push((path, Task::ready(Ok(preview))));
+                continue;
+            }
+            let Some(provider) = item_provider_for_path(&path, cx) else {
+                self.show_toast(
+                    ToastKind::Error,
+                    format!("打开文件失败：{}：没有支持该类型", path.display()),
+                    vec![],
+                    Some(Duration::from_secs(5)),
+                    cx,
+                );
+                continue;
+            };
+            let task = provider.open_item(path.clone(), self.project.clone(), cx);
+            tasks.push((path, task));
+        }
+        let pane = self.pane.clone();
+        cx.spawn_in(window, async move |workspace, cx| {
+            let mut navigation = navigation;
+            for (path, task) in tasks {
+                let item = match task.await {
+                    Ok(item) => item,
+                    Err(error) => {
+                        workspace
+                            .update_in(cx, |workspace, _window, cx| {
+                                workspace.show_toast(
+                                    ToastKind::Error,
+                                    format!("打开文件失败：{}：{error:#}", path.display()),
+                                    vec![],
+                                    Some(Duration::from_secs(5)),
+                                    cx,
+                                );
+                            })
+                            .ok();
+                        continue;
+                    }
+                };
+                workspace
+                    .update_in(cx, |_workspace, window, cx| {
+                        let navigation = navigation.take();
+                        let focus = pane.update(cx, |pane, cx| {
+                            let focus =
+                                pane.open_item(item, !focus_opened_item && !multiple, window, cx);
+                            // `open_item` 可能复用已经打开的同路径标签。
+                            // 导航必须作用于 Pane 最终激活的 Item，而不是可能被丢弃的新建候选 Item。
+                            if let Some(navigation) = navigation
+                                && let Some(active_item) = pane.active_item()
+                            {
+                                match navigation {
+                                    ItemNavigation::ByteRange(range) => {
+                                        active_item.navigate_to_byte_range(range, cx);
+                                    }
+                                    ItemNavigation::LineColumn { line, column } => {
+                                        active_item.navigate_to_line_column(line, column, cx);
+                                    }
+                                }
+                            }
+                            focus
+                        });
+                        if focus_opened_item {
+                            window.focus(&focus, cx);
+                        }
+                        window.refresh();
+                    })
+                    .ok();
+            }
         })
         .detach();
     }
@@ -1145,11 +1160,13 @@ impl Workspace {
     }
 
     pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(provider) = &self.open_settings_path_provider else {
+        let Some(provider) = &self.settings_files_provider else {
             return;
         };
         match provider(cx) {
-            Ok(path) => self.open_path(path, true, window, cx),
+            Ok((reference, user)) => {
+                self.open_paths_now(vec![reference, user], true, None, window, cx)
+            }
             Err(error) => {
                 self.show_toast(
                     ToastKind::Error,

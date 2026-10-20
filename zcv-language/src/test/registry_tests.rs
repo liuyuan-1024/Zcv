@@ -21,6 +21,17 @@ fn detects_rust_and_tsx_with_distinct_grammars() {
 }
 
 #[test]
+fn jsonc_uses_json_language() {
+    assert_eq!(
+        LanguageRegistry::new()
+            .language_for_file(Path::new("settings.reference.jsonc"), None)
+            .unwrap()
+            .name(),
+        "JSON"
+    );
+}
+
+#[test]
 fn detects_baseline_languages_by_suffix() {
     for (path, expected) in [
         ("main.c", "C"),

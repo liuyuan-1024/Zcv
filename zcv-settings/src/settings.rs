@@ -15,7 +15,7 @@ mod reload;
 mod schema;
 mod store;
 
-pub use file::ensure_user_settings_file;
+pub use file::ensure_settings_files;
 pub use merge::UserSettings;
 pub use reload::init;
 pub use schema::{
@@ -29,7 +29,7 @@ pub fn config_dir() -> &'static Path {
 }
 
 pub(crate) static INITIAL_USER_SETTINGS: LazyLock<Cow<'static, str>> = LazyLock::new(|| {
-    zcv_assets::text("settings/initial_user_settings.json").expect("内置初始设置应存在")
+    zcv_assets::text("settings/initial_user_settings.jsonc").expect("内置初始设置应存在")
 });
 
 #[cfg(test)]

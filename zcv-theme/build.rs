@@ -1,13 +1,13 @@
 //! 从内置设置文件生成编译期默认 UI 字号，避免在代码里重复硬编码。
 //!
 //! 结构刻度以「默认字号下的像素值」定义，基准字号必须与设置文件一致；
-//! 这里在构建期读取同一份 `initial_user_settings.json`，供 `scale` 模块 `include!`。
+//! 这里在构建期读取同一份 `initial_user_settings.jsonc`，供 `scale` 模块 `include!`。
 
 use std::{env, fs, path::Path};
 
 fn main() {
     let manifest = env::var("CARGO_MANIFEST_DIR").expect("构建脚本应能读取 CARGO_MANIFEST_DIR");
-    let settings = Path::new(&manifest).join("../assets/settings/initial_user_settings.json");
+    let settings = Path::new(&manifest).join("../assets/settings/initial_user_settings.jsonc");
     println!("cargo:rerun-if-changed={}", settings.display());
 
     let content = fs::read_to_string(&settings).expect("内置设置文件应可读");

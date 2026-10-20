@@ -1613,7 +1613,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
         LanguageSpec::tree_sitter(
             "JSON",
             LanguageMatcher {
-                suffixes: &["json"],
+                suffixes: &["json", "jsonc"],
                 first_line_pattern: None,
             },
             || tree_sitter_json::LANGUAGE.into(),

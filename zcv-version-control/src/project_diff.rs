@@ -360,7 +360,7 @@ impl ProjectDiffKind {
     }
 }
 
-pub struct DiffView {
+struct DiffView {
     kind: ProjectDiffKind,
     project: Entity<Project>,
     empty_focus: FocusHandle,
@@ -1320,7 +1320,7 @@ impl Item for DiffView {
 
 /// 从布局恢复 Git 组合文档；
 /// 内容和文件集合始终由当前 GitStore 状态重新生成。
-pub struct ProjectDiffSerializedItemProvider;
+pub(super) struct ProjectDiffSerializedItemProvider;
 
 impl SerializedItemProvider for ProjectDiffSerializedItemProvider {
     fn kind(&self) -> &'static str {

@@ -52,7 +52,6 @@ impl Drop for ParseTask {
 pub struct LanguageBufferSnapshot {
     pub text: Snapshot,
     pub syntax: SyntaxSnapshot,
-    pub language: Option<Arc<Language>>,
     pub settings: Arc<LanguageSettings>,
     pub file_path: Option<PathBuf>,
     pub highlight_cache: Arc<HighlightCache>,
@@ -160,7 +159,6 @@ impl LanguageBuffer {
         LanguageBufferSnapshot {
             text,
             syntax: state.syntax_map.snapshot(),
-            language: state.syntax_map.language_arc(),
             settings: Arc::clone(&state.settings),
             file_path: state.file_path.clone(),
             highlight_cache: Arc::clone(&state.highlight_cache),
@@ -195,13 +193,8 @@ impl LanguageBuffer {
         self.buffer.len_bytes()
     }
 
-    /// 最近一次保存或重载时的文本版本。
-    pub fn saved_version(&self) -> BufferVersion {
-        self.saved_version
-    }
-
     /// 自保存点以来是否存在结构性文本编辑（含未保存编辑的记忆化）。
-    pub fn has_unsaved_edits(&self) -> bool {
+    fn has_unsaved_edits(&self) -> bool {
         let (last_version, has_unsaved_edits) = self.has_unsaved_edits.take();
         let version = self.buffer.version();
         if last_version == version {
@@ -255,15 +248,6 @@ impl LanguageBuffer {
     /// 组合文档用它区分没有文件路径的匿名 Buffer；文本重载和文件路径变化不改变该身份。
     pub fn buffer_id(&self) -> BufferId {
         self.buffer.buffer_id()
-    }
-
-    /// 当前语言引用（编辑器输入行为等消费方取语言配置用，不克隆语法快照）。
-    pub fn language(&self) -> Option<Arc<Language>> {
-        self.state
-            .lock()
-            .expect("语言 Buffer 状态锁不应中毒")
-            .syntax_map
-            .language_arc()
     }
 
     pub fn language_name(&self) -> Option<&'static str> {

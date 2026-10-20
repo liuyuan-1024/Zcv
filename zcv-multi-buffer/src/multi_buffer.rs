@@ -3521,25 +3521,6 @@ impl MultiBufferSnapshot {
         self.topology_version
     }
 
-    /// 从逻辑窗口与输出变换联合派生源读取区域；输出坐标由累积摘要提供。
-    ///
-    /// 组合坐标查询直接用树游标；本方法只在需要随机访问或移交所有权时调用。
-    pub fn regions(&self) -> impl Iterator<Item = ExcerptSnapshot> + '_ {
-        let mut cursor = MultiBufferCursor::new(
-            &self.excerpts,
-            &self.diff_transforms,
-            Sources::Snapshot(&self.excerpt_sources),
-        );
-        // 用 Left 偏置从零长度边界节点开始遍历：空文件的零长度 excerpt 不能被跳过。
-        cursor.seek(ByteOffset::ZERO, Bias::Left);
-        std::iter::from_fn(move || {
-            let (excerpt, _) = cursor.item()?;
-            let snapshot = excerpt.to_snapshot(cursor.start().clone());
-            cursor.next();
-            Some(snapshot)
-        })
-    }
-
     /// 按输入顺序遍历稳定逻辑 excerpts；diff 展开不会增删这些窗口。
     pub fn excerpts(&self) -> impl Iterator<Item = ExcerptSnapshot> + '_ {
         let mut cursor = self.excerpts.cursor::<ExcerptSummary>(());
@@ -3585,16 +3566,8 @@ impl MultiBufferSnapshot {
         snapshot
     }
 
-    /// 按组合顺序遍历逻辑 excerpt 边界。
-    ///
-    /// Header、divider 与整文件折叠都必须消费此边界流；
-    /// 边界由权威逻辑窗口派生，与输出变换的分段无关。
-    /// 单文件文档没有边界，缺口由 `singleton` 直接关闭。
-    pub fn excerpt_boundaries(&self) -> impl Iterator<Item = ExcerptBoundary> + '_ {
-        self.excerpt_boundaries_in_range(MultiBufferOffset::ZERO..=self.len_bytes())
-    }
-
     /// 只枚举起点位于指定输出范围中的逻辑边界；先定位输入窗口，再连续推进。
+    /// Header、divider 与整文件折叠共用此边界流；单文件文档没有边界。
     pub fn excerpt_boundaries_in_range(
         &self,
         range: std::ops::RangeInclusive<MultiBufferOffset>,
@@ -4876,8 +4849,6 @@ pub struct MultiBuffer {
     /// 历史、配置、重命名与保存等文件级事实按本字段委托给底层 LanguageBuffer。
     /// `None` 表示真正的多来源组合文档。
     singleton_source: Option<Entity<LanguageBuffer>>,
-    /// 显式标题；`None` 时由文件路径或内容首行派生。非文件文档（REPL/git 输出等）用它命名。
-    title: Option<String>,
     /// 按显示路径排序的每文件 diff 状态（diff 实体、显示配置与展开覆盖）。
     diffs: Vec<diff_projection::DiffState>,
     /// git 行级 diff 显示输入（hunks、跟踪区间与显示坐标）；`None` = 无 diff 需求。
@@ -4964,7 +4935,6 @@ impl MultiBuffer {
             capability,
             path_order,
             singleton_source: None,
-            title: None,
             diffs: Vec::new(),
             diff: None,
             diff_expanded_by_default: false,
@@ -6797,22 +6767,13 @@ impl MultiBuffer {
         (subscription, snapshot)
     }
 
-    /// 显式标题；`None` 时由文件路径或内容首行派生。
-    pub fn explicit_title(&self) -> Option<&str> {
-        self.title.as_deref()
-    }
-
-    /// 无文件路径、无显式标题、内容也取不到标题时的回落文案。
+    /// 无文件路径、内容也取不到标题时的回落文案。
     pub const DEFAULT_TITLE: &str = "untitled";
 
-    /// 组合文档标题：显式标题 → 单例文件路径文件名 → 内容首行 → [`Self::DEFAULT_TITLE`]。
+    /// 组合文档标题：文件路径文件名 → 单例内容首行 → [`Self::DEFAULT_TITLE`]。
     ///
     /// 标题归文档模型所有，展示层直接消费；返回值永不为空。
     pub fn title(&self, cx: &App) -> Cow<'_, str> {
-        if let Some(title) = self.title.as_ref() {
-            return title.into();
-        }
-
         if let Some(path) = self.file_path(cx)
             && let Some(name) = path.file_name()
         {
@@ -6826,12 +6787,6 @@ impl MultiBuffer {
         }
 
         Self::DEFAULT_TITLE.into()
-    }
-
-    /// 设置显式标题；非文件文档（REPL/git 输出等）据此命名。
-    pub fn set_title(&mut self, title: String, cx: &mut Context<Self>) {
-        self.title = Some(title);
-        cx.notify();
     }
 
     /// 从单例文档内容取标题：首行、折叠连续空白、最多 40 个字符、去尾部空白。

@@ -6,7 +6,6 @@ use gpui::{AppContext as _, TestAppContext};
 
 use zcv_actions::DeployBufferSearch;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging, PendingHunk};
-use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DiffExcerptRanges, ExcerptDiffKind};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
@@ -73,41 +72,8 @@ fn clamp_column_to_line(text: &Snapshot, line: usize, column: usize) -> usize {
 }
 
 use super::*;
-
-/// 项目差异测试使用的无事件监听器，避免真实 OS 事件唤醒 GPUI 测试调度器。
-struct PassiveWatcher {
-    watcher: FsWatcher,
-}
-
-impl PassiveWatcher {
-    fn new() -> Self {
-        Self {
-            watcher: FsWatcher::new(),
-        }
-    }
-}
-
-impl Watcher for PassiveWatcher {
-    fn add(&self, _path: &Path) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn remove(&self, _path: &Path) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn watch(&self, latency: std::time::Duration) -> FsEventStream {
-        self.watcher.watch(latency)
-    }
-}
-
-fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
-    let watcher: Arc<dyn Watcher> = Arc::new(PassiveWatcher::new());
-    cx.new(|cx| {
-        Project::new_with_watcher(root, watcher, Arc::new(LanguageRegistry::new()), cx)
-            .expect("测试项目根目录应可规范化")
-    })
-}
+use crate::test::test_project;
+use zcv_multi_buffer::MultiBufferOffset;
 
 fn canonical_root(path: &Path) -> PathBuf {
     AbsolutePathBuf::canonicalize(path)
@@ -747,9 +713,8 @@ fn created_file_and_pure_deletion_targets_stage_and_unstage_without_display_look
             assert_eq!(
                 hunks.len(),
                 2,
-                "分组={kind:?}，显示索引={:?}，输出区域={:?}",
+                "分组={kind:?}，显示索引={:?}",
                 snapshot.diff_display(),
-                snapshot.regions().collect::<Vec<_>>()
             );
             let targets = hunks
                 .into_iter()
@@ -976,7 +941,7 @@ fn git_status_drives_one_ordered_excerpt_per_changed_file(cx: &mut TestAppContex
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx));
         let paths = snapshot
-            .excerpt_boundaries()
+            .excerpt_boundaries_in_range(MultiBufferOffset::ZERO..=snapshot.len_bytes())
             .map(|boundary| {
                 boundary
                     .next()
@@ -1038,13 +1003,10 @@ fn deleted_output_region_maps_to_working_tree_hunk_position(cx: &mut TestAppCont
         let snapshot = view
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx));
-        let mut regions = snapshot.regions();
         // 删除区域首行（旧侧 "修改前"）→ 工作区第 5 行（0-based 4）。
-        let modified_region = regions
-            .find(|region| {
-                region.path() == modified_path
-                    && region.diff_kind() == Some(ExcerptDiffKind::Deleted)
-            })
+        let modified_region = snapshot
+            .regions_for_path(&modified_path)
+            .find(|region| region.diff_kind() == Some(ExcerptDiffKind::Deleted))
             .expect("修改行应有删除输出区域");
         let location = ExcerptLocation {
             path: modified_path.clone(),
@@ -1076,11 +1038,9 @@ fn deleted_output_region_maps_to_working_tree_hunk_position(cx: &mut TestAppCont
             "删除输出区域应覆盖被修改的旧行（含行尾换行）"
         );
         // 整文件删除：纯删除 hunk 的 range 为空，锚定到变更块起点（0-based 0）。
-        let removed_region = regions
-            .find(|region| {
-                region.path().file_name().and_then(|name| name.to_str()) == Some("removed.txt")
-                    && region.diff_kind() == Some(ExcerptDiffKind::Deleted)
-            })
+        let removed_region = snapshot
+            .regions_for_path(&root.join("removed.txt"))
+            .find(|region| region.diff_kind() == Some(ExcerptDiffKind::Deleted))
             .expect("删除文件应有删除输出区域");
         let removed_location = ExcerptLocation {
             path: removed_region.path().to_path_buf(),

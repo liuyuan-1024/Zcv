@@ -1,10 +1,7 @@
-use std::sync::Arc;
-
 use zcv_actions::DeployBufferSearch;
-use zcv_language::LanguageRegistry;
-use zcv_path::AbsolutePathBuf;
 
 use super::*;
+use crate::test::test_project;
 
 struct GitGraphSearchHost {
     view: Entity<GitGraphView>,
@@ -20,13 +17,7 @@ impl Render for GitGraphSearchHost {
 #[gpui::test]
 fn git_graph_find_from_content_focuses_its_search_bar(cx: &mut gpui::TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    let project = cx.new(|cx| {
-        Project::new(
-            AbsolutePathBuf::canonicalize(directory.path()).expect("测试项目根目录应可规范化"),
-            Arc::new(LanguageRegistry::new()),
-            cx,
-        )
-    });
+    let project = test_project(directory.path().to_path_buf(), cx);
     let (host, cx) = cx.add_window_view(move |_, cx| GitGraphSearchHost {
         view: cx.new(|cx| GitGraphView::new(project, cx)),
         toolbar: cx.new(|_| GitGraphToolbar::new()),
@@ -154,13 +145,7 @@ fn double_click_reset_restores_left_column_and_preserves_total_width() {
 #[gpui::test]
 fn git_graph_view_and_search_bar_release_together(cx: &mut gpui::TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    let project = cx.new(|cx| {
-        Project::new(
-            AbsolutePathBuf::canonicalize(directory.path()).expect("测试项目根目录应可规范化"),
-            Arc::new(LanguageRegistry::new()),
-            cx,
-        )
-    });
+    let project = test_project(directory.path().to_path_buf(), cx);
     let view = cx.new(|cx| GitGraphView::new(project, cx));
     let search_bar = cx.read_entity(&view, |view, _| view.search_bar.clone());
     let weak_view = view.downgrade();

@@ -671,7 +671,7 @@ impl Item for GitGraphView {
 }
 
 /// 从布局恢复 Git 提交图；提交数据始终根据当前项目仓库重新加载。
-pub struct GitGraphSerializedItemProvider;
+pub(super) struct GitGraphSerializedItemProvider;
 
 impl SerializedItemProvider for GitGraphSerializedItemProvider {
     fn kind(&self) -> &'static str {

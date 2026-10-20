@@ -1431,22 +1431,12 @@ fn read_only_singleton(
 }
 
 #[gpui::test]
-fn title_prefers_explicit_then_path_then_content_then_default(cx: &mut TestAppContext) {
+fn title_uses_path_then_content_then_default(cx: &mut TestAppContext) {
     // 有文件路径的单例：标题取文件名。
     let source = singleton("src/main.rs", "fn main() {}\n", cx);
     let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
     cx.update_entity(&multi_buffer, |buffer, cx| {
         assert_eq!(buffer.title(cx), "main.rs");
-        assert!(buffer.explicit_title().is_none());
-    });
-
-    // 显式标题优先于路径派生。
-    cx.update_entity(&multi_buffer, |buffer, cx| {
-        buffer.set_title("变更".to_owned(), cx);
-    });
-    cx.update_entity(&multi_buffer, |buffer, cx| {
-        assert_eq!(buffer.title(cx), "变更");
-        assert_eq!(buffer.explicit_title(), Some("变更"));
     });
 
     // 无文件路径的单例：标题取内容首行（折叠连续空白、去尾部空白）。
@@ -2632,7 +2622,7 @@ fn source_excerpts_and_display_transforms_use_separate_coordinate_trees(cx: &mut
         assert_eq!(snapshot.text_bytes(), b"a\nold\nnew\nz");
         assert!(
             snapshot
-                .regions()
+                .regions_for_path(Path::new("src/diff.rs"))
                 .any(|region| region.diff_kind() == Some(ExcerptDiffKind::Deleted))
         );
         buffer.toggle_diff_hunk_at(0, cx);
@@ -3173,7 +3163,12 @@ fn bounded_logical_boundaries_include_empty_file_at_document_end(cx: &mut TestAp
             cx,
         );
         let snapshot = buffer.snapshot(cx);
-        assert_eq!(snapshot.excerpt_boundaries().count(), 4);
+        assert_eq!(
+            snapshot
+                .excerpt_boundaries_in_range(MultiBufferOffset::ZERO..=snapshot.len_bytes())
+                .count(),
+            4
+        );
         let at_start: Vec<_> = snapshot
             .excerpt_boundaries_in_range(MultiBufferOffset::ZERO..=MultiBufferOffset::ZERO)
             .collect();
@@ -4113,9 +4108,8 @@ fn created_and_pure_deleted_hunks_keep_distinct_source_targets(cx: &mut TestAppC
         assert_eq!(
             hunks.len(),
             2,
-            "展开={expanded}，追加={append}，显示索引={:?}，输出区域={:?}",
+            "展开={expanded}，追加={append}，显示索引={:?}",
             snapshot.diff_display(),
-            snapshot.regions().collect::<Vec<_>>()
         );
         assert_eq!(
             hunks[0].1.source.buffer_id,
@@ -5338,13 +5332,15 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
         );
         assert_eq!(snapshot.excerpts().count(), 1);
         assert_eq!(
-            snapshot.excerpt_boundaries().count(),
+            snapshot
+                .excerpt_boundaries_in_range(MultiBufferOffset::ZERO..=snapshot.len_bytes())
+                .count(),
             1,
             "同一 diff hunk 的物理片段只能形成一个逻辑 excerpt"
         );
         assert_eq!(
             snapshot
-                .regions()
+                .regions_for_path(Path::new("src/a.rs"))
                 .find(|region| region.diff_kind() == Some(ExcerptDiffKind::Deleted))
                 .unwrap()
                 .source_line_for_output_line(1),

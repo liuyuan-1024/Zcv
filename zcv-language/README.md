@@ -10,16 +10,17 @@
 
 文本编辑后先插值语法树坐标；没有在途解析时，在编辑线程内给增量解析约 1 ms 的预算。预算耗尽才转入后台；在途期间的新编辑合并为任务完成后的一次补解析。前台与后台结果共用安装入口，只有与当前文本版本和语言匹配的结果才能安装。插值快照的文本版本已更新，但节点类别可能要等解析完成后才更新；解析安装通过 `Reparsed` 事件推进上层快照。
 
-输入配对、`not_in` 与 `autoclose_before` 由语言规格持有。`overrides.scm` 在装配时编译；其捕获与 `not_in` 名称同时校验。除 Rust 与脚本语言外，C、C++、Go、Python、Shell、JSON、YAML、CSS、HTML 也提供 `overrides.scm`，其字符串与注释作用域用于输入配对、注释续行与词边界。每门语言的结构查询与输入配置逐项对照[语言覆盖表](../docs/语境感知输入阶段0覆盖与样例.md)。`SyntaxSnapshot::input_scope_at` 在同版本文本上按深度和区间终点索引定位可能覆盖光标的注入层，再选择最深语言层与最窄捕获；结果带语言、作用域、输入政策、文本版本与真正解析版本。没有语法树时使用已知源语言的默认政策；待解析注入层仍保留在语法模型中。
+输入配对、`not_in` 与 `autoclose_before` 由语言规格持有。`overrides.scm` 在装配时编译；其捕获与 `not_in` 名称同时校验。除 Rust 与脚本语言外，C、C++、Go、Python、Shell、JSON、YAML、CSS、HTML 也提供 `overrides.scm`，其字符串与注释作用域用于输入配对、注释续行与词边界。
+
+`SyntaxSnapshot::input_scope_at` 在同版本文本上按深度和区间终点索引定位可能覆盖光标的注入层，再选择最深语言层与最窄捕获；结果带语言、作用域、输入政策、文本版本与真正解析版本。没有语法树时使用已知源语言的默认政策；待解析注入层仍保留在语法模型中。
 
 文件级符号使用各语言自己的 `queries/<language>/outline.scm`。`SyntaxSnapshot::outline` 在同一份源快照中使用共享高亮缓存生成标签文本、标签相对高亮和源 `Anchor` 范围，并记录语法层与父子层级；没有该查询的语言明确返回空结果。`MultiBuffer` 把完整落在 excerpt 内的结果映射为组合 `Anchor`，`Editor` 在导航时按当前快照解析锚点。面板刷新期间可以继续绘制旧标签，无需用旧字节范围查询当前文本；捕获名称按当前主题解析样式。
 
-节点导航使用 `SyntaxSnapshot::node_at` 和 `SyntaxSnapshot::node_ancestors`，返回带版本、UTF-8 字节范围、节点种类和语法层的不可变节点摘要。
-注入层优先于宿主层，祖先链不跨层；空白没有独立 Tree-sitter 节点时归属于语法根，文件末尾光标按前一个字节查询。
+节点导航使用 `SyntaxSnapshot::node_at` 和 `SyntaxSnapshot::node_ancestors`，返回带版本、UTF-8 字节范围、节点种类和语法层的不可变节点摘要。注入层优先于宿主层，祖先链不跨层；空白没有独立 Tree-sitter 节点时归属于语法根，文件末尾光标按前一个字节查询。
+
 结构化选择通过 `SyntaxSnapshot::expand_selection_range` 逐级取同一语法层的严格祖先，`Editor` 只持有最终选区。
-局部绑定使用 `queries/<language>/locals.scm` 的 `@local.scope`、`@local.definition` 和 `@local.reference` capture；
-`SyntaxSnapshot::local_bindings` 只返回按作用域确定归属的定义与引用，并携带当前 `BufferVersion`。
-当前已为 Rust、Python、JavaScript/JSX、TypeScript/TSX、Go、C 和 C++ 提供首批局部查询；未声明 `locals.scm` 的语言明确不产生局部绑定结果。
+
+局部绑定使用 `queries/<language>/locals.scm` 的 `@local.scope`、`@local.definition` 和 `@local.reference` capture。`SyntaxSnapshot::local_bindings` 只返回按作用域确定归属的定义与引用，并携带当前 `BufferVersion`。当前已为 Rust、Python、JavaScript/JSX、TypeScript/TSX、Go、C 和 C++ 提供首批局部查询；未声明 `locals.scm` 的语言明确不产生局部绑定结果。
 
 ## 语言规格
 
@@ -53,7 +54,7 @@ overrides.scm           按语法范围覆盖输入政策时提供
 
 JSX／TSX（以及使用 TSX grammar 的 JavaScript）的标签自动闭合节点配置由语言规格的 `with_jsx_tag_auto_close` 声明，描述开放标签、闭合标签、元素与标签名节点种类；`SyntaxSnapshot::jsx_tag_close_text_at` 只在选中语法层内按这些节点判断，不进入输入配对。语言规格的 `with_jsx_tag_auto_close` 与 `overrides.scm` 一样在装配期校验。
 
-JSX／TSX 的 `element` 块注释配置也由语言规格提供。只有语言明确提供文档注释续行配置时才续写块内前缀；例如 CSS 只有块注释配置，Enter 保持普通换行。尚未逐语言核对的输入政策见[语言覆盖表](../docs/语境感知输入阶段0覆盖与样例.md)。
+JSX／TSX 的 `element` 块注释配置也由语言规格提供。只有语言明确提供文档注释续行配置时才续写块内前缀；例如 CSS 只有块注释配置，Enter 保持普通换行。
 
 `brackets.scm` 的 `#set! newline.only` 是语法结构规则，与自动闭合配对配置分开。`BracketPair` 保留该属性，组合层只在同一可编辑 excerpt 内、选区处于开闭括号之间且两侧只有非换行空白时返回它；编辑器据此决定额外空行。
 

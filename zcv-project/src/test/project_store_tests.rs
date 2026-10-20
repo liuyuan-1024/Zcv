@@ -234,7 +234,6 @@ fn saving_crlf_input_writes_the_source_snapshot_and_marks_that_version_clean(
 
     assert_eq!(fs::read_to_string(&path).expect("应读回文件"), expected);
     buffer.read_with(cx, |buffer, _| {
-        assert_eq!(buffer.saved_version(), snapshot.version());
         assert!(!buffer.is_dirty());
     });
 }
@@ -264,7 +263,6 @@ fn save_formats_the_source_buffer_as_one_undo_step_before_writing(cx: &mut TestA
     buffer.read_with(cx, |buffer, _| {
         let snapshot = buffer.text_snapshot();
         assert_ne!(snapshot.version(), before);
-        assert_eq!(buffer.saved_version(), snapshot.version());
         assert!(!buffer.is_dirty());
     });
     buffer
@@ -419,7 +417,6 @@ fn failed_write_keeps_save_format_edit_dirty(cx: &mut TestAppContext) {
     let buffer = project
         .update(cx, |project, cx| project.open_buffer(&path, cx))
         .unwrap();
-    let saved_version = buffer.read_with(cx, |buffer, _| buffer.saved_version());
     let missing_path = directory.path().join("missing").join("document.txt");
 
     assert!(
@@ -442,7 +439,6 @@ fn failed_write_keeps_save_format_edit_dirty(cx: &mut TestAppContext) {
                 .as_str(),
             "内容\n"
         );
-        assert_eq!(buffer.saved_version(), saved_version);
         assert!(buffer.is_dirty());
     });
     assert_eq!(fs::read_to_string(&path).unwrap(), "内容  ");

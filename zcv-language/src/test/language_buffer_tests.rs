@@ -106,9 +106,10 @@ fn language_name_and_syntax_follow_first_line_changes(cx: &mut TestAppContext) {
     language_buffer.read_with(cx, |language_buffer, _| {
         // 未识别文件以纯文本兜底，且无语法树。
         assert_eq!(language_buffer.language_name(), Some("纯文本"));
-        let language = language_buffer.language().expect("兜底语言应存在");
-        assert_eq!(language.name(), "纯文本");
-        assert!(language.grammar().is_none(), "纯文本兜底不应有语法树");
+        assert!(
+            language_buffer.snapshot().syntax.root_tree().is_none(),
+            "纯文本兜底不应有语法树"
+        );
         assert!(
             language_buffer.parse_task.is_none(),
             "纯文本不应启动无意义的后台解析任务"

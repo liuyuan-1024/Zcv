@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, TestAppContext, VisualTestContext, Window};
+use zcv_actions::DeployProjectSearch;
 use zcv_editor::init;
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
@@ -53,6 +54,35 @@ fn test_workspace(
         .expect("测试项目根目录应可规范化")
     });
     Workspace::new_with_project(project, window, cx)
+}
+
+#[gpui::test]
+fn reopening_project_search_reuses_view_and_focuses_query(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let registry = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| init(cx, registry));
+    let (workspace, cx) = cx.add_window_view(move |window, cx| {
+        test_workspace(directory.path().to_path_buf(), window, cx)
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        crate::install(workspace, window, cx);
+        crate::deploy_project_search(workspace, window, cx);
+    });
+    let view = workspace.read_with(cx, project_search_view);
+    let bar = view.read_with(cx, |view, _| view.search_bar.clone());
+    assert!(bar.read_with(cx, |bar, _| bar.has_target()));
+
+    workspace.update_in(cx, |workspace, window, cx| {
+        crate::deploy_project_search(workspace, window, cx);
+    });
+
+    assert_eq!(workspace.read_with(cx, project_search_view), view);
+    let focus = bar.read_with(cx, |bar, cx| bar.query_focus_handle(cx));
+    cx.update(|window, _| assert!(focus.is_focused(window)));
+
+    cx.dispatch_action(DeployProjectSearch);
+    assert_eq!(workspace.read_with(cx, project_search_view), view);
+    cx.update(|window, _| assert!(focus.is_focused(window)));
 }
 
 #[gpui::test]

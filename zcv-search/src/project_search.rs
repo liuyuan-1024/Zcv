@@ -183,11 +183,9 @@ impl SerializedItemProvider for ProjectSearchSerializedItemProvider {
             }
         };
         let view = cx.new(|cx| ProjectSearchView::new(project, cx));
-        view.update(cx, |view, cx| {
-            let search_bar = view.search_bar.clone();
-            search_bar.update(cx, |bar, cx| bar.restore(&state.query, state.options, cx));
-            search_bar.update(cx, |bar, cx| bar.deploy(None, window, cx));
-        });
+        let search_bar = view.read(cx).search_bar.clone();
+        search_bar.update(cx, |bar, cx| bar.restore(&state.query, state.options, cx));
+        search_bar.update(cx, |bar, cx| bar.deploy(None, window, cx));
         subscribe_to_open_excerpts(&view, window, cx);
         Task::ready(Ok(Box::new(view) as Box<dyn ItemHandle>))
     }
@@ -628,28 +626,20 @@ pub(crate) fn deploy(
     {
         let item_id = existing.entity_id();
         pane.update(cx, |pane, cx| pane.activate_tab(item_id, window, cx));
-        // 已有标签重新打开搜索栏并聚焦查询框；activate_tab 自身不改变焦点。
-        existing.update(cx, |view, cx| {
-            let search_bar = view.search_bar.clone();
-            search_bar.update(cx, |bar, cx| bar.deploy(None, window, cx));
-        });
+        // 搜索栏以项目搜索视图为目标，deploy 会读取视图，不能在视图更新期间调用。
+        let search_bar = existing.read(cx).search_bar.clone();
+        search_bar.update(cx, |bar, cx| bar.deploy(None, window, cx));
         return;
     }
 
     let project = workspace.project().clone();
     let view = cx.new(|cx| ProjectSearchView::new(project, cx));
-    view.update(cx, |view, cx| {
-        let search_bar = view.search_bar.clone();
-        search_bar.update(cx, |bar, cx| bar.deploy(seed, window, cx));
-    });
+    let search_bar = view.read(cx).search_bar.clone();
+    search_bar.update(cx, |bar, cx| bar.deploy(seed, window, cx));
     subscribe_to_open_excerpts(&view, window, cx);
-    let view_handle = view.clone();
     workspace.open_item(Box::new(view), window, cx);
     // open_item 会把焦点交给 Item 主内容（结果编辑器）；项目搜索打开后应直接可输入。
-    view_handle.update(cx, |view, cx| {
-        let search_bar = view.search_bar.clone();
-        search_bar.update(cx, |bar, cx| bar.focus_query(window, cx));
-    });
+    search_bar.update(cx, |bar, cx| bar.focus_query(window, cx));
 }
 
 /// 状态栏中的项目搜索入口。

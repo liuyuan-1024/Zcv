@@ -869,7 +869,22 @@ impl Editor {
         );
     }
 
-    /// 跳转到 0-indexed 逻辑行列，并把目标固定在视口顶部下方。
+    pub(crate) fn navigation_offset(
+        snapshot: &MultiBufferSnapshot,
+        line: usize,
+        column: usize,
+    ) -> Option<MultiBufferOffset> {
+        let line = Line::new(line.min(snapshot.line_count() - 1));
+        let (_, max_column) = snapshot.line_content_metrics(line)?;
+        snapshot
+            .position_to_byte(Position::new(
+                line,
+                LogicalColumn::new(column.min(max_column)),
+            ))
+            .ok()
+    }
+
+    /// 跳转到 0-indexed 逻辑行列，超出范围时钳制到末行或行末。
     /// 列按 Unicode scalar value 计数，与 zcv-text Position 坐标一致。
     pub fn navigate_to_line_column(
         &mut self,
@@ -878,9 +893,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> bool {
         let snapshot = self.render_snapshot(cx);
-        let Ok(offset) =
-            snapshot.position_to_byte(Position::new(Line::new(line), LogicalColumn::new(column)))
-        else {
+        let Some(offset) = Self::navigation_offset(&snapshot, line, column) else {
             return false;
         };
         self.change_selections(SelectionSet::caret(offset), cx);

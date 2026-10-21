@@ -4,6 +4,8 @@
 //! 状态项在 `set_active_pane_item` 中订阅 Editor 并在没有活动编辑器时隐藏。
 
 use gpui::{Context, Entity, Render, Subscription, Window, div, prelude::*};
+use zcv_actions::FocusLineColumn;
+use zcv_keymap::display_shortcut;
 use zcv_ui::Button;
 use zcv_workspace::{ItemHandle, StatusItemView, Workspace};
 
@@ -43,13 +45,15 @@ impl StatusItemView for CursorPosition {
 }
 
 impl Render for CursorPosition {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         // 无活动编辑器时隐藏（终端、空工作区等场景不显示空按钮）。
         if self.cursor_text.is_empty() {
             return div().into_any_element();
         }
         Button::text("status-bar.cursor", self.cursor_text.clone())
             .label("跳转到行/列")
+            .shortcut(display_shortcut(&FocusLineColumn, cx))
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(FocusLineColumn), cx))
             .into_any_element()
     }
 }

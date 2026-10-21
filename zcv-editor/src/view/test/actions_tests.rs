@@ -191,8 +191,36 @@ fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext)
             editor.selections(cx).primary().head(),
             MultiBufferOffset::new(12)
         );
-        assert!(!editor.navigate_to_line_column(99, 0, cx));
-        assert!(!<Editor as zcv_workspace::Item>::can_navigate_to_line_column(editor, 99, 0, cx));
+        assert!(<Editor as zcv_workspace::Item>::can_navigate_to_line_column(editor, 99, 99, cx));
+        assert!(editor.navigate_to_line_column(99, 0, cx));
+        assert_eq!(
+            editor.selections(cx).primary().head(),
+            MultiBufferOffset::new(9)
+        );
+        assert!(editor.navigate_to_line_column(0, 99, cx));
+        assert_eq!(
+            editor.selections(cx).primary().head(),
+            MultiBufferOffset::new(8)
+        );
+        assert!(editor.navigate_to_line_column(99, 99, cx));
+        assert_eq!(
+            editor.selections(cx).primary().head(),
+            MultiBufferOffset::new(15)
+        );
+    });
+}
+
+#[gpui::test]
+fn navigate_to_line_column_clamps_empty_document(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "");
+    let editor = cx.new(|cx| Editor::for_language_buffer(buffer, cx));
+    editor.update(cx, |editor, cx| {
+        assert!(<Editor as zcv_workspace::Item>::can_navigate_to_line_column(editor, 999, 999, cx));
+        assert!(editor.navigate_to_line_column(999, 999, cx));
+        assert_eq!(
+            editor.selections(cx).primary().head(),
+            MultiBufferOffset::ZERO
+        );
     });
 }
 

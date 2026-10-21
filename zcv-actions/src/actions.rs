@@ -119,6 +119,7 @@ described_actions!(
         Save => ("保存", "保存当前文档"),
         OpenSettings => ("打开设置", "打开设置文件"),
         FocusQuickAccess,
+        FocusLineColumn => ("跳转到行列", "跳转到当前文档的指定行和列"),
         GitFetch => ("获取远程更新", "从远程仓库获取最新提交"),
         GitPull => ("拉取远程更新", "将远程更新合入当前分支"),
         GitPush => ("推送当前分支", "将本地提交推送到远程仓库"),

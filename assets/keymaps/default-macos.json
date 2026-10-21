@@ -359,6 +359,7 @@
 
       "cmd-s": "workspace::Save",
       "cmd-p": "workspace::FocusQuickAccess",
+      "cmd-g": "workspace::FocusLineColumn",
 
       // =========================
       // Picker

@@ -212,6 +212,7 @@
       "ctrl-m": "window_controls::MinimizeWindow",
       "f11": "window_controls::ToggleMaximizeWindow",
       "ctrl-p": "workspace::FocusQuickAccess",
+      "ctrl-g": "workspace::FocusLineColumn",
       "ctrl-shift-p": "project_picker::ToggleProjectPicker",
       "ctrl-shift-b": "branch_picker::SelectGitBranch",
       "ctrl-,": "workspace::OpenSettings",

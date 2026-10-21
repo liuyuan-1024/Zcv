@@ -102,6 +102,17 @@ impl TopBar {
         self.quick_access
             .update(cx, |search, cx| search.focus(window, cx));
     }
+
+    pub fn focus_line_column(
+        &self,
+        target: Box<dyn crate::ItemHandle>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.quick_access.update(cx, |search, cx| {
+            search.focus_line_column(target, window, cx)
+        });
+    }
 }
 
 impl gpui::Render for TopBar {

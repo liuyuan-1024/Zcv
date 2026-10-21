@@ -1,4 +1,4 @@
-//! 顶栏统一入口：聚合文件、命令与活动文档位置候选。
+//! 顶栏统一入口：普通访问聚合文件和命令，行列入口复用输入和结果面板。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use zcv_project::{Project, ProjectEvent};
 use zcv_theme::{FileIcons, color, scale};
 use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, ListItem, SvgIcon};
 
-use crate::{Workspace, typography_for_window};
+use crate::{ItemHandle, Workspace, typography_for_window};
 
 const SEARCH_WIDTH: gpui::DefiniteLength = scale::structural(420.0);
 const MAX_RESULTS: usize = 100;
@@ -101,15 +101,17 @@ enum InputMode<'a> {
     Empty,
     Mixed(&'a str),
     Commands(&'a str),
-    LineColumn(&'a str),
+}
+
+enum AccessMode {
+    Mixed,
+    LineColumn(Box<dyn ItemHandle>),
 }
 
 fn input_mode(query: &str) -> InputMode<'_> {
     let query = query.trim();
     if let Some(command) = query.strip_prefix('>') {
         InputMode::Commands(command.trim())
-    } else if let Some(position) = query.strip_prefix(':') {
-        InputMode::LineColumn(position.trim())
     } else if query.is_empty() {
         InputMode::Empty
     } else {
@@ -118,16 +120,20 @@ fn input_mode(query: &str) -> InputMode<'_> {
 }
 
 fn parse_line_column(input: &str) -> Option<(usize, usize)> {
-    let (line, column) = input.split_once(':').unwrap_or((input, "1"));
-    if line.is_empty() || column.contains(':') {
-        return None;
+    fn positive_index(digits: &str) -> Option<usize> {
+        let number = digits.bytes().fold(0usize, |number, digit| {
+            number
+                .saturating_mul(10)
+                .saturating_add(usize::from(digit - b'0'))
+        });
+        number.checked_sub(1)
     }
-    let line = line.parse::<usize>().ok()?.checked_sub(1)?;
-    let column = if column.is_empty() {
-        0
-    } else {
-        column.parse::<usize>().ok()?.checked_sub(1)?
-    };
+
+    let mut numbers = input
+        .split(|ch: char| !ch.is_ascii_digit())
+        .filter(|part| !part.is_empty());
+    let line = positive_index(numbers.next()?)?;
+    let column = numbers.next().map(positive_index).unwrap_or(Some(0))?;
     Some((line, column))
 }
 
@@ -138,12 +144,16 @@ enum SearchResult {
     LineColumn { line: usize, column: usize },
 }
 
-impl SearchResult {
+enum MatchCandidate {
+    File(Arc<FileCandidate>),
+    Command(usize),
+}
+
+impl MatchCandidate {
     fn sort_name<'a>(&'a self, commands: &'a [CommandCandidate]) -> &'a str {
         match self {
             Self::File(file) => &file.relative,
             Self::Command(index) => commands[*index].action_name,
-            Self::LineColumn { .. } => unreachable!(),
         }
     }
 }
@@ -152,58 +162,45 @@ fn ranked_results(
     files: &[Arc<FileCandidate>],
     commands: &[CommandCandidate],
     input: &str,
-    has_active_document: bool,
 ) -> Vec<SearchResult> {
     let mode = input_mode(input);
     let query = match mode {
         InputMode::Empty => return Vec::new(),
-        InputMode::Mixed(query) | InputMode::Commands(query) | InputMode::LineColumn(query) => {
-            query
-        }
+        InputMode::Mixed(query) | InputMode::Commands(query) => query,
     };
-    let mut results = Vec::new();
-    if has_active_document
-        && matches!(mode, InputMode::Mixed(_) | InputMode::LineColumn(_))
-        && let Some((line, column)) = parse_line_column(query)
-    {
-        results.push(SearchResult::LineColumn { line, column });
-    }
     let Some(mut matcher) = Matcher::new(query) else {
-        return results;
+        return Vec::new();
     };
-    let mut scored: Vec<(MatchScore, SearchResult)> = Vec::new();
+    let mut scored: Vec<(MatchScore, MatchCandidate)> = Vec::new();
     if matches!(mode, InputMode::Mixed(_)) {
         scored.extend(files.iter().filter_map(|file| {
             file.match_score(&mut matcher)
-                .map(|score| (score, SearchResult::File(file.clone())))
+                .map(|score| (score, MatchCandidate::File(file.clone())))
         }));
     }
-    if matches!(mode, InputMode::Mixed(_) | InputMode::Commands(_)) {
-        scored.extend(commands.iter().enumerate().filter_map(|(index, command)| {
-            command
-                .match_score(&mut matcher)
-                .map(|score| (score, SearchResult::Command(index)))
-        }));
-    }
-    let compare = |left: &(MatchScore, SearchResult), right: &(MatchScore, SearchResult)| {
+    scored.extend(commands.iter().enumerate().filter_map(|(index, command)| {
+        command
+            .match_score(&mut matcher)
+            .map(|score| (score, MatchCandidate::Command(index)))
+    }));
+    let compare = |left: &(MatchScore, MatchCandidate), right: &(MatchScore, MatchCandidate)| {
         right
             .0
             .cmp(&left.0)
             .then_with(|| left.1.sort_name(commands).cmp(right.1.sort_name(commands)))
     };
-    let limit = MAX_RESULTS - results.len();
-    if scored.len() > limit {
-        scored.select_nth_unstable_by(limit, compare);
-        scored.truncate(limit);
+    if scored.len() > MAX_RESULTS {
+        scored.select_nth_unstable_by(MAX_RESULTS, compare);
+        scored.truncate(MAX_RESULTS);
     }
     scored.sort_unstable_by(compare);
-    results.extend(
-        scored
-            .into_iter()
-            .map(|(_, result)| result)
-            .take(MAX_RESULTS - results.len()),
-    );
-    results
+    scored
+        .into_iter()
+        .map(|(_, candidate)| match candidate {
+            MatchCandidate::File(file) => SearchResult::File(file),
+            MatchCandidate::Command(index) => SearchResult::Command(index),
+        })
+        .collect()
 }
 
 impl FileSearchState {
@@ -249,6 +246,7 @@ pub(crate) struct QuickAccess {
     selected_index: usize,
     list_state: ListState,
     workspace: WeakEntity<Workspace>,
+    mode: AccessMode,
     project: gpui::Entity<Project>,
     _focus_subscription: Subscription,
     _blur_subscription: Subscription,
@@ -280,7 +278,9 @@ impl QuickAccess {
         let input_focus = input.focus_handle(cx);
         let host = PickerHost::new(input_focus.clone(), picker_layer);
         let focus_subscription = cx.on_focus(&input_focus, window, |search, _, cx| {
-            if matches!(input_mode(&search.input.text(cx)), InputMode::Mixed(_)) {
+            if matches!(search.mode, AccessMode::Mixed)
+                && matches!(input_mode(&search.input.text(cx)), InputMode::Mixed(_))
+            {
                 search.refresh_files(cx);
             } else {
                 search.refresh_results(cx);
@@ -296,7 +296,8 @@ impl QuickAccess {
             Box::new(move |ErasedEditorEvent::Edited, _, cx| {
                 weak.update(cx, |search, cx| {
                     let query = search.input.text(cx);
-                    if matches!(input_mode(&query), InputMode::Mixed(_))
+                    if matches!(search.mode, AccessMode::Mixed)
+                        && matches!(input_mode(&query), InputMode::Mixed(_))
                         && search.state.load_state == FileLoadState::Stale
                     {
                         search.refresh_files(cx);
@@ -316,7 +317,8 @@ impl QuickAccess {
             ) {
                 search.scan_task.take();
                 search.state.invalidate();
-                if search.host.is_open()
+                if matches!(search.mode, AccessMode::Mixed)
+                    && search.host.is_open()
                     && matches!(input_mode(&search.input.text(cx)), InputMode::Mixed(_))
                 {
                     search.refresh_files(cx);
@@ -338,6 +340,7 @@ impl QuickAccess {
             selected_index: 0,
             list_state: ListState::new(0, ListAlignment::Top, px(100.0)),
             workspace,
+            mode: AccessMode::Mixed,
             project,
             _focus_subscription: focus_subscription,
             _blur_subscription: blur_subscription,
@@ -348,6 +351,24 @@ impl QuickAccess {
     }
 
     pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.mode, AccessMode::Mixed) {
+            self.mode = AccessMode::Mixed;
+            self.input.set_text("", cx);
+            self.refresh_results(cx);
+        }
+        self.host.activate(window, cx);
+        window.focus(&self.input.focus_handle(cx), cx);
+    }
+
+    pub(crate) fn focus_line_column(
+        &mut self,
+        target: Box<dyn ItemHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.mode = AccessMode::LineColumn(target);
+        self.input.set_text("", cx);
+        self.refresh_results(cx);
         self.host.activate(window, cx);
         window.focus(&self.input.focus_handle(cx), cx);
     }
@@ -375,24 +396,13 @@ impl QuickAccess {
 
     fn refresh_results(&mut self, cx: &mut Context<Self>) {
         let query = self.input.text(cx);
-        let position = match input_mode(&query) {
-            InputMode::Mixed(query) | InputMode::LineColumn(query) => parse_line_column(query),
-            _ => None,
+        self.results = match &self.mode {
+            AccessMode::Mixed => ranked_results(&self.state.files, &self.commands, &query),
+            AccessMode::LineColumn(target) => parse_line_column(query.trim())
+                .filter(|&(line, column)| target.can_navigate_to_line_column(line, column, cx))
+                .map(|(line, column)| vec![SearchResult::LineColumn { line, column }])
+                .unwrap_or_default(),
         };
-        let has_active_document = position.is_some_and(|(line, column)| {
-            self.workspace.upgrade().is_some_and(|workspace| {
-                let pane = workspace.read(cx).pane().clone();
-                pane.read(cx)
-                    .active_item()
-                    .is_some_and(|item| item.can_navigate_to_line_column(line, column, cx))
-            })
-        });
-        self.results = ranked_results(
-            &self.state.files,
-            &self.commands,
-            &query,
-            has_active_document,
-        );
         let count = self.results.len();
         self.selected_index = 0;
         self.list_state.reset(count);
@@ -441,17 +451,12 @@ impl QuickAccess {
                     return;
                 };
                 self.restore_focus(window, cx);
-                window.dispatch_action(action, cx);
+                window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
             }
             SearchResult::LineColumn { line, column } => {
-                let navigated = self.workspace.upgrade().is_some_and(|workspace| {
-                    let pane = workspace.read(cx).pane().clone();
-                    pane.update(cx, |pane, cx| {
-                        pane.active_item()
-                            .is_some_and(|item| item.navigate_to_line_column(line, column, cx))
-                    })
-                });
-                if navigated {
+                if let AccessMode::LineColumn(target) = &self.mode
+                    && target.navigate_to_line_column(line, column, cx)
+                {
                     self.restore_focus(window, cx);
                 }
             }
@@ -460,6 +465,9 @@ impl QuickAccess {
 
     fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.host.dismiss(window, cx);
+        self.mode = AccessMode::Mixed;
+        self.input.set_text("", cx);
+        self.refresh_results(cx);
         if self.input.focus_handle(cx).is_focused(window)
             && let Some(workspace) = self.workspace.upgrade()
         {
@@ -541,18 +549,20 @@ impl QuickAccess {
                             .w_full()
                             .p(scale::S8)
                             .text_color(color::current(cx).text_placeholder)
-                            .child(match input_mode(&query) {
-                                InputMode::Empty => {
-                                    "输入文件、命令或行列 · > 仅搜索命令 · : 仅跳转行列".to_string()
+                            .child(match (&self.mode, input_mode(&query)) {
+                                (AccessMode::LineColumn(_), InputMode::Empty) => {
+                                    "输入行列数字，例如 42:8、第42行第8列".to_string()
                                 }
-                                InputMode::Commands("") => "输入命令名称".to_string(),
-                                InputMode::LineColumn("") => {
-                                    "输入行号或行号:列号，例如 42:8".to_string()
+                                (AccessMode::LineColumn(_), _) => {
+                                    "请输入有效的行号或行列".to_string()
                                 }
-                                InputMode::LineColumn(_) => {
-                                    "请输入有效的行号或行号:列号".to_string()
+                                (AccessMode::Mixed, InputMode::Empty) => {
+                                    "输入文件或命令 · > 仅搜索命令".to_string()
                                 }
-                                InputMode::Mixed(_)
+                                (AccessMode::Mixed, InputMode::Commands("")) => {
+                                    "输入命令名称".to_string()
+                                }
+                                (AccessMode::Mixed, InputMode::Mixed(_))
                                     if self.state.load_state == FileLoadState::Loading =>
                                 {
                                     "正在查找文件…".to_string()
@@ -593,9 +603,15 @@ impl Render for QuickAccess {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
             .capture_any_mouse_down(cx.listener(|search, _, window, cx| {
-                search.host.activate(window, cx);
+                if search.input.focus_handle(cx).is_focused(window) {
+                    search.host.activate(window, cx);
+                } else {
+                    search.focus(window, cx);
+                }
             }))
-            .on_click(cx.listener(|search, _, window, cx| search.focus(window, cx)))
+            .on_click(cx.listener(|search, _, window, cx| {
+                window.focus(&search.input.focus_handle(cx), cx);
+            }))
             .child(
                 SvgIcon::new("icons/magnifying_glass.svg")
                     .size(window.rem_size())

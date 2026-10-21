@@ -14,9 +14,10 @@ use gpui::{
     WindowOptions, point, prelude::*, px, size,
 };
 use zcv_actions::{
-    DecreaseContentFontSize, DecreaseUiFontSize, FocusQuickAccess, GitFetch, GitPull, GitPush,
-    IncreaseContentFontSize, IncreaseUiFontSize, NewTerminal, ResetContentFontSize,
-    ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
+    DecreaseContentFontSize, DecreaseUiFontSize, FocusLineColumn, FocusQuickAccess, GitFetch,
+    GitPull, GitPush, IncreaseContentFontSize, IncreaseUiFontSize, NewTerminal,
+    ResetContentFontSize, ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode,
+    ToggleProjectPicker,
 };
 use zcv_editor::{Editor, EditorEvent};
 use zcv_language::LanguageRegistry;
@@ -606,6 +607,18 @@ fn initialize_workspace(
     let quick_access_bar = top_bar.clone();
     workspace.register_action(move |_workspace, _: &FocusQuickAccess, window, cx| {
         quick_access_bar.update(cx, |bar, cx| bar.focus_quick_access(window, cx));
+    });
+    let line_column_bar = top_bar.clone();
+    workspace.register_action(move |workspace, _: &FocusLineColumn, window, cx| {
+        let Some(target) = workspace
+            .pane()
+            .read(cx)
+            .active_item()
+            .map(|item| item.boxed_clone())
+        else {
+            return;
+        };
+        line_column_bar.update(cx, |bar, cx| bar.focus_line_column(target, window, cx));
     });
     let project_picker = top_bar.read(cx).project_picker.clone();
     workspace.register_action(move |_workspace, _: &ToggleProjectPicker, window, cx| {

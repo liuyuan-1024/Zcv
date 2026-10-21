@@ -22,7 +22,8 @@ fn parses_common_markdown_blocks() {
         vec![
             Block::Heading {
                 level: 1,
-                content: vec![plain("标题")]
+                content: vec![plain("标题")],
+                slug: "标题".into(),
             },
             Block::Paragraph(vec![
                 plain("正文 "),
@@ -60,6 +61,7 @@ fn ignores_yaml_front_matter_before_parsing_document_blocks() {
         vec![Block::Heading {
             level: 1,
             content: vec![plain("Zcv 性能优化")],
+            slug: "zcv-性能优化".into(),
         }]
     );
 }

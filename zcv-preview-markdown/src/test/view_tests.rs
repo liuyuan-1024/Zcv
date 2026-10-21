@@ -4,8 +4,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AppContext, Context, IntoElement, Modifiers, ParentElement, Render, StyledText, TestAppContext,
-    TextAlign, TextLayout, Window, div, point, px, size,
+    AppContext, Context, IntoElement, Modifiers, ParentElement, Render, ScrollHandle,
+    StatefulInteractiveElement, Styled, StyledText, TestAppContext, TextAlign, TextLayout, Window,
+    div, point, prelude::*, px, size,
 };
 use zcv_editor::Editor;
 use zcv_theme::typography;
@@ -18,7 +19,8 @@ use super::{
     MarkdownPreviewView, MarkdownRenderContext, MathImage, MathImages, MathPlacement,
     OpenPathCallback, code_lines, heading_line_height, heading_size, highlight_code_blocks,
     inline_math_bounds, list_marker_char_count, render_block, render_math, render_mermaid,
-    render_text_inline, resolve_markdown_file_link, visible_highlights_for_line,
+    render_mermaid_svg, render_text_inline, resolve_markdown_file_link,
+    visible_highlights_for_line,
 };
 use zcv_language::{HighlightSpan, LanguageRegistry, SnippetHighlightCancellation};
 
@@ -59,6 +61,107 @@ fn resolves_relative_file_links_against_the_markdown_directory() {
     );
 }
 
+#[test]
+fn heading_targets_match_chinese_titles_and_distinguish_duplicates() {
+    let blocks = parse("# 资料 2\n\n# 资料 2\n\n# Foo 1\n\n# Foo\n\n# **粗体** 和 `代码`\n");
+    let slugs = blocks
+        .iter()
+        .map(|block| match block {
+            Block::Heading { slug, .. } => slug.as_str(),
+            _ => panic!("应解析为标题"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        slugs,
+        ["资料-2", "资料-2-1", "foo-1", "foo", "粗体-和-代码"]
+    );
+
+    let nested = parse("> # 引用标题\n\n- # 列表标题\n");
+    let Block::Quote(quote) = &nested[0] else {
+        panic!("应解析为引用块");
+    };
+    assert!(matches!(&quote[0], Block::Heading { slug, .. } if slug == "引用标题"));
+    let Block::List { items, .. } = &nested[1] else {
+        panic!("应解析为列表");
+    };
+    assert!(matches!(&items[0][0], Block::Heading { slug, .. } if slug == "列表标题"));
+}
+
+#[gpui::test]
+fn clicking_heading_link_scrolls_within_preview(cx: &mut TestAppContext) {
+    struct TestWindow {
+        scroll: ScrollHandle,
+        heading_bounds: super::HeadingBounds,
+        link: Vec<Inline>,
+        heading: Block,
+    }
+
+    impl Render for TestWindow {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let render_context = MarkdownRenderContext {
+                source_directory: None,
+                open_path: None,
+                type_scale: typography::current(cx),
+                math_images: &Default::default(),
+                mermaid_images: &Default::default(),
+                heading_bounds: &self.heading_bounds,
+                scroll_handle: &self.scroll,
+                window,
+                cx,
+            };
+            let heading = render_block(&self.heading, &mut 0, 0, 0, &render_context);
+            div()
+                .id("heading-link-test-scroll")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .flex()
+                .flex_col()
+                .child(render_text_inline(
+                    &self.link,
+                    0,
+                    None,
+                    None,
+                    Some(&self.heading_bounds),
+                    Some(&self.scroll),
+                    cx,
+                ))
+                .children(
+                    (1..30)
+                        .map(|index| div().h(px(40.)).flex_none().child(format!("第 {index} 项"))),
+                )
+                .child(div().h(px(40.)).flex_none().child(heading))
+                .children(
+                    (31..60)
+                        .map(|index| div().h(px(40.)).flex_none().child(format!("第 {index} 项"))),
+                )
+        }
+    }
+
+    let scroll = ScrollHandle::new();
+    let heading_bounds = super::HeadingBounds::default();
+    let blocks = parse("[跳转](#资料-2)");
+    let Block::Paragraph(link) = blocks[0].clone() else {
+        panic!("应解析为链接段落");
+    };
+    let heading = parse("# 资料 2").remove(0);
+    let (_, cx) = cx.add_window_view({
+        let scroll = scroll.clone();
+        let heading_bounds = heading_bounds.clone();
+        move |_, _| TestWindow {
+            scroll,
+            heading_bounds,
+            link,
+            heading,
+        }
+    });
+    cx.refresh().expect("预览应完成首次绘制");
+    assert!(heading_bounds.borrow().contains_key("资料-2"));
+    cx.simulate_click(point(px(12.), px(8.)), Modifiers::none());
+    cx.refresh().expect("点击后应更新滚动位置");
+    assert_eq!(scroll.top_item(), 30);
+}
+
 #[gpui::test]
 fn clicking_relative_file_link_uses_the_workspace_opener(cx: &mut TestAppContext) {
     struct TestWindow {
@@ -74,6 +177,8 @@ fn clicking_relative_file_link_uses_the_workspace_opener(cx: &mut TestAppContext
                 0,
                 Some(self.directory.as_path()),
                 Some(&self.open_path),
+                None,
+                None,
                 _cx,
             ))
         }
@@ -220,6 +325,19 @@ fn mermaid_preview_renders_flowchart(cx: &mut TestAppContext) {
     });
 }
 
+#[test]
+fn mermaid_chinese_labels_stay_in_native_svg_layout() {
+    let svg = render_mermaid_svg(
+        "flowchart LR\nA[人机/手机/相机采集的衬砌影像] --> B[CNet：有无疑似缺陷初筛]",
+    )
+    .expect("中文节点图表应能渲染");
+    assert!(svg.contains("人机/手机/相机采"));
+    assert!(svg.contains("集的衬砌影像"));
+    assert!(svg.contains("CNet：有无疑似缺"));
+    assert!(svg.contains("陷初筛"));
+    assert!(!svg.contains("merman-foreignobject-fallback-text"), "{svg}");
+}
+
 #[gpui::test]
 fn math_preview_size_follows_content_font_size(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -298,6 +416,7 @@ fn preview_rebuilds_when_source_document_changes(cx: &mut TestAppContext) {
             &vec![Block::Heading {
                 level: 1,
                 content: vec![plain("初始标题")],
+                slug: "初始标题".into(),
             }]
         );
     });
@@ -427,6 +546,8 @@ fn inline_math_reserves_width_in_the_text_flow(cx: &mut TestAppContext) {
             type_scale,
             math_images: &math_images,
             mermaid_images: &Default::default(),
+            heading_bounds: &Default::default(),
+            scroll_handle: &Default::default(),
             window,
             cx: app,
         };
@@ -525,6 +646,8 @@ fn list_marker_height_matches_the_first_line_of_a_wrapped_item(cx: &mut TestAppC
                 type_scale,
                 math_images: &math_images,
                 mermaid_images: &Default::default(),
+                heading_bounds: &Default::default(),
+                scroll_handle: &Default::default(),
                 window,
                 cx: app,
             };
@@ -591,6 +714,8 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
                 type_scale,
                 math_images: &math_images,
                 mermaid_images: &Default::default(),
+                heading_bounds: &Default::default(),
+                scroll_handle: &Default::default(),
                 window,
                 cx: app,
             };

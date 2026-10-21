@@ -1,9 +1,11 @@
 //! Markdown 预览 Item：观察源码 MultiBuffer，解析后渲染为原生块元素。
 
 use std::any::TypeId;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,6 +50,7 @@ struct MathImage {
 
 type MathImages = HashMap<String, Result<MathImage, String>>;
 type MermaidImages = HashMap<String, Result<MathImage, String>>;
+type HeadingBounds = Rc<RefCell<HashMap<String, Bounds<Pixels>>>>;
 
 struct MarkdownRenderContext<'a> {
     source_directory: Option<&'a Path>,
@@ -55,6 +58,8 @@ struct MarkdownRenderContext<'a> {
     type_scale: typography::Typography,
     math_images: &'a MathImages,
     mermaid_images: &'a MermaidImages,
+    heading_bounds: &'a HeadingBounds,
+    scroll_handle: &'a ScrollHandle,
     window: &'a Window,
     cx: &'a App,
 }
@@ -321,12 +326,15 @@ impl Render for MarkdownPreviewView {
             .as_deref()
             .and_then(Path::parent)
             .map(Path::to_path_buf);
+        let heading_bounds = HeadingBounds::default();
         let render_context = MarkdownRenderContext {
             source_directory: source_directory.as_deref(),
             open_path: self.open_path.as_ref(),
             type_scale,
             math_images: &self.math_images,
             mermaid_images: &self.mermaid_images,
+            heading_bounds: &heading_bounds,
+            scroll_handle: &self.scroll_handle,
             window,
             cx,
         };
@@ -337,6 +345,8 @@ impl Render for MarkdownPreviewView {
             .map(|(index, block)| {
                 let mut next_key = 0;
                 div()
+                    .w_full()
+                    .flex_none()
                     .child(render_block(
                         block,
                         &mut next_key,
@@ -367,14 +377,10 @@ impl Render for MarkdownPreviewView {
                     .text_color(color::current(cx).text)
                     .text_size(type_scale.content_size())
                     .line_height(type_scale.content_line())
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .gap(scale::S16)
-                            .children(content),
-                    ),
+                    .flex()
+                    .flex_col()
+                    .gap(scale::S16)
+                    .children(content),
             )
             .child(div().absolute().inset_0().child(self.scrollbar.clone()))
     }
@@ -394,15 +400,26 @@ fn render_block(
     let key = *next_key;
     *next_key += 1;
     match block {
-        Block::Heading { level, content } => {
+        Block::Heading {
+            level,
+            content,
+            slug,
+        } => {
             let size = heading_size(*level, type_scale);
             let line_height = heading_line_height(*level, size, type_scale)
                 .max(inline_math_height(content, math_images).unwrap_or(Pixels::ZERO));
+            let slug = slug.clone();
+            let heading_bounds = Rc::clone(render_context.heading_bounds);
             div()
                 .text_size(size)
                 .line_height(line_height)
                 .font_weight(FontWeight::BOLD)
                 .child(render_inline(content, key, render_context))
+                .on_children_prepainted(move |bounds, _, _| {
+                    if let Some(bounds) = bounds.first().filter(|_| !slug.is_empty()) {
+                        heading_bounds.borrow_mut().insert(slug.clone(), *bounds);
+                    }
+                })
                 .into_any_element()
         }
         Block::Paragraph(content) => div()
@@ -618,7 +635,7 @@ fn block_line_height(
     math_images: &MathImages,
 ) -> Pixels {
     match block {
-        Block::Heading { level, content } => {
+        Block::Heading { level, content, .. } => {
             let size = heading_size(*level, type_scale);
             heading_line_height(*level, size, type_scale)
                 .max(inline_math_height(content, math_images).unwrap_or(Pixels::ZERO))
@@ -826,6 +843,8 @@ impl InlineText {
         key: usize,
         source_directory: Option<&Path>,
         open_path: Option<&OpenPathCallback>,
+        heading_bounds: Option<&HeadingBounds>,
+        scroll_handle: Option<&ScrollHandle>,
         cx: &App,
     ) -> AnyElement {
         let InlineText {
@@ -843,9 +862,26 @@ impl InlineText {
         } else {
             let source_directory = source_directory.map(Path::to_path_buf);
             let open_path = open_path.cloned();
+            let heading_bounds = heading_bounds.cloned();
+            let scroll_handle = scroll_handle.cloned();
             InteractiveText::new(("markdown-link", key), text)
                 .on_click(link_ranges, move |index, window, cx| {
                     let link = &links[index];
+                    if let Some(slug) = link.strip_prefix('#') {
+                        if let (Some(bounds), Some(scroll_handle)) = (
+                            heading_bounds
+                                .as_ref()
+                                .and_then(|targets| targets.borrow().get(slug).copied()),
+                            scroll_handle.as_ref(),
+                        ) {
+                            let offset = scroll_handle.offset();
+                            let scroll_top = scroll_handle.bounds().top();
+                            scroll_handle
+                                .set_offset(point(offset.x, offset.y + scroll_top - bounds.top()));
+                            window.refresh();
+                        }
+                        return;
+                    }
                     if let Some(path) =
                         resolve_markdown_file_link(link, source_directory.as_deref())
                         && let Some(open_path) = &open_path
@@ -919,6 +955,8 @@ fn render_inline(
             key,
             render_context.source_directory,
             render_context.open_path,
+            Some(render_context.heading_bounds),
+            Some(render_context.scroll_handle),
             render_context.cx,
         );
     }
@@ -927,6 +965,8 @@ fn render_inline(
         key,
         render_context.source_directory,
         render_context.open_path,
+        Some(render_context.heading_bounds),
+        Some(render_context.scroll_handle),
         render_context.cx,
     )
 }
@@ -936,13 +976,22 @@ fn render_text_inline(
     key: usize,
     source_directory: Option<&Path>,
     open_path: Option<&OpenPathCallback>,
+    heading_bounds: Option<&HeadingBounds>,
+    scroll_handle: Option<&ScrollHandle>,
     cx: &App,
 ) -> AnyElement {
     let mut inline_text = InlineText::default();
     for inline in content {
         inline_text.push(&inline.text, &inline.style, cx);
     }
-    inline_text.finish(key, source_directory, open_path, cx)
+    inline_text.finish(
+        key,
+        source_directory,
+        open_path,
+        heading_bounds,
+        scroll_handle,
+        cx,
+    )
 }
 
 fn resolve_markdown_file_link(link: &str, source_directory: Option<&Path>) -> Option<PathBuf> {
@@ -1319,7 +1368,25 @@ fn collect_mermaid_sources(blocks: &[Block]) -> Vec<String> {
 }
 
 fn render_mermaid(source: &str, renderer: gpui::SvgRenderer) -> Result<MathImage, String> {
+    let svg = render_mermaid_svg(source)?;
+    let image = Image::from_bytes(ImageFormat::Svg, svg.as_bytes().to_vec())
+        .to_image_data(renderer)
+        .map_err(|error| error.to_string())?;
+    let raw = image.size(0);
+    let size = gpui::size(
+        px(raw.width.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
+        px(raw.height.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
+    );
+    Ok(MathImage { image, size })
+}
+
+fn render_mermaid_svg(source: &str) -> Result<String, String> {
+    let config = merman::MermaidConfig::from_value(serde_json::json!({
+        "htmlLabels": false,
+        "flowchart": { "htmlLabels": false },
+    }));
     let output = merman::Renderer::new()
+        .with_engine(merman::Engine::new().with_site_config(config))
         .render(merman::RenderRequest::svg(
             source,
             merman::OperationControl::new(),
@@ -1332,16 +1399,7 @@ fn render_mermaid(source: &str, renderer: gpui::SvgRenderer) -> Result<MathImage
     let merman::RenderOutput::Svg(Some(svg)) = output else {
         return Err("Mermaid 未生成图表".to_owned());
     };
-    let svg = svg.svg();
-    let image = Image::from_bytes(ImageFormat::Svg, svg.as_bytes().to_vec())
-        .to_image_data(renderer)
-        .map_err(|error| error.to_string())?;
-    let raw = image.size(0);
-    let size = gpui::size(
-        px(raw.width.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
-        px(raw.height.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
-    );
-    Ok(MathImage { image, size })
+    Ok(svg.svg().to_owned())
 }
 
 fn render_mermaid_block(

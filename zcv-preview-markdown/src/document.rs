@@ -1,4 +1,5 @@
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::collections::{HashMap, HashSet};
 use zcv_language::SnippetHighlights;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub(crate) enum Block {
     Heading {
         level: u8,
         content: Vec<Inline>,
+        slug: String,
     },
     Paragraph(Vec<Inline>),
     Code {
@@ -313,7 +315,67 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
 
     finish_active(&mut active, &mut active_content, &mut state);
     restore_display_math_blocks(&mut state.blocks, &display_math_blocks);
+    assign_heading_slugs(&mut state.blocks);
     state.blocks
+}
+
+fn assign_heading_slugs(blocks: &mut [Block]) {
+    fn visit(
+        blocks: &mut [Block],
+        counts: &mut HashMap<String, usize>,
+        used: &mut HashSet<String>,
+    ) {
+        for block in blocks {
+            match block {
+                Block::Heading { content, slug, .. } => {
+                    let text = content
+                        .iter()
+                        .map(|inline| inline.text.as_str())
+                        .collect::<String>();
+                    let base = heading_slug(&text);
+                    if base.is_empty() {
+                        continue;
+                    }
+                    let count = counts.entry(base.clone()).or_default();
+                    let mut candidate = if *count == 0 {
+                        base.clone()
+                    } else {
+                        format!("{base}-{count}")
+                    };
+                    *count += 1;
+                    while used.contains(&candidate) {
+                        candidate = format!("{base}-{count}");
+                        *count += 1;
+                    }
+                    used.insert(candidate.clone());
+                    *slug = candidate;
+                }
+                Block::Quote(children) => visit(children, counts, used),
+                Block::List { items, .. } => {
+                    for item in items {
+                        visit(item, counts, used);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    visit(blocks, &mut HashMap::new(), &mut HashSet::new());
+}
+
+fn heading_slug(text: &str) -> String {
+    text.trim()
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_alphanumeric() || matches!(ch, '-' | '_') {
+                Some(ch.to_lowercase().next().unwrap_or(ch))
+            } else if ch == ' ' {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 struct DisplayMathBlock {
@@ -558,7 +620,11 @@ fn finish_active(
         return;
     }
     let block = match active {
-        ActiveBlock::Heading(level) => Block::Heading { level, content },
+        ActiveBlock::Heading(level) => Block::Heading {
+            level,
+            content,
+            slug: String::new(),
+        },
         ActiveBlock::Paragraph => standalone_image(&content).unwrap_or(Block::Paragraph(content)),
         ActiveBlock::Code(language) => {
             let text = content.into_iter().map(|inline| inline.text).collect();

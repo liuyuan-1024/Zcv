@@ -16,6 +16,7 @@ ratex-layout.workspace = true
 ratex-parser.workspace = true
 ratex-svg.workspace = true
 ratex-types.workspace = true
+serde_json.workspace = true
 zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-project.workspace = true

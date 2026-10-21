@@ -15,8 +15,8 @@ use zcv_theme::{color, scale};
 use zcv_ui::Button;
 
 use crate::branch_picker::{BranchPicker, OnBranchSelected};
-use crate::global_search::GlobalSearch;
 use crate::project_picker::ProjectPicker;
+use crate::quick_access::QuickAccess;
 use crate::{OnProjectSelected, Workspace};
 
 mod window_controls;
@@ -36,7 +36,7 @@ pub struct TopBar {
     pub project_picker: Entity<ProjectPicker>,
     /// 分支选择器（显示当前分支名；与 TopBar 一样直接读取 GitStore）。
     pub branch_picker: Entity<BranchPicker>,
-    global_search: Entity<GlobalSearch>,
+    quick_access: Entity<QuickAccess>,
     /// Git 状态权威；TopBar 只在渲染时读取，不再由宿主推送可写副本。
     git_store: Entity<GitStore>,
     /// 应用级更新控件由 binary 装配层注入；TopBar 只负责其固定布局位置。
@@ -68,14 +68,23 @@ impl TopBar {
                 cx,
             )
         });
-        let branch_picker =
-            cx.new(|cx| BranchPicker::new(git_store.clone(), on_branch, picker_layer, window, cx));
-        let global_search = cx.new(|cx| GlobalSearch::new(project, workspace.clone(), window, cx));
+        let branch_picker = cx.new(|cx| {
+            BranchPicker::new(
+                git_store.clone(),
+                on_branch,
+                picker_layer.clone(),
+                window,
+                cx,
+            )
+        });
+        let quick_access = cx.new(|cx| {
+            QuickAccess::new(project, workspace.clone(), picker_layer.clone(), window, cx)
+        });
         let git_subscription = cx.subscribe(&git_store, |_, _, _: &GitStoreEvent, cx| cx.notify());
         Self {
             project_picker,
             branch_picker,
-            global_search,
+            quick_access,
             git_store,
             update_control: None,
             workspace,
@@ -89,8 +98,8 @@ impl TopBar {
         cx.notify();
     }
 
-    pub fn focus_global_search(&self, window: &mut Window, cx: &mut App) {
-        self.global_search
+    pub fn focus_quick_access(&self, window: &mut Window, cx: &mut App) {
+        self.quick_access
             .update(cx, |search, cx| search.focus(window, cx));
     }
 }
@@ -116,7 +125,7 @@ impl gpui::Render for TopBar {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(self.global_search.clone()),
+                    .child(self.quick_access.clone()),
             )
             .child(
                 div()

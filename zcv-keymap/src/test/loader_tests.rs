@@ -72,7 +72,7 @@ fn parameterized_actions_have_distinct_shortcuts(cx: &mut TestAppContext) {
 }
 
 #[test]
-fn global_search_shortcut_keeps_project_picker_binding() {
+fn quick_access_shortcut_keeps_project_picker_binding() {
     for (source, search_keys, project_keys) in [
         ("default-macos.json", "cmd-p", "cmd-shift-p"),
         ("default-linux.json", "ctrl-p", "ctrl-shift-p"),
@@ -82,11 +82,11 @@ fn global_search_shortcut_keeps_project_picker_binding() {
         let global = groups
             .iter()
             .find(|group| group.context.is_none() && group.bindings.contains_key(search_keys))
-            .unwrap_or_else(|| panic!("{source} 缺少全局搜索快捷键"));
+            .unwrap_or_else(|| panic!("{source} 缺少统一入口快捷键"));
 
         assert_eq!(
             global.bindings.get(search_keys).map(RawAction::name),
-            Some("workspace::FocusGlobalSearch")
+            Some("workspace::FocusQuickAccess")
         );
         assert_eq!(
             global.bindings.get(project_keys).map(RawAction::name),

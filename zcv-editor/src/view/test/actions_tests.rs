@@ -180,6 +180,7 @@ fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext)
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer, cx));
 
     editor.update(cx, |editor, cx| {
+        assert!(<Editor as zcv_workspace::Item>::can_navigate_to_line_column(editor, 0, 2, cx));
         assert!(editor.navigate_to_line_column(0, 2, cx));
         assert_eq!(
             editor.selections(cx).primary().head(),
@@ -191,6 +192,7 @@ fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext)
             MultiBufferOffset::new(12)
         );
         assert!(!editor.navigate_to_line_column(99, 0, cx));
+        assert!(!<Editor as zcv_workspace::Item>::can_navigate_to_line_column(editor, 99, 0, cx));
     });
 }
 

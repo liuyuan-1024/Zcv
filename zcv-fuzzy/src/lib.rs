@@ -5,13 +5,7 @@
 pub struct MatchScore {
     class: u8,
     quality: i64,
-}
-
-/// 文件名与完整路径采用同一评分，分数相同则优先文件名命中。
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct PathMatchScore {
-    score: MatchScore,
-    name_match: bool,
+    primary_match: bool,
 }
 
 /// 查询拥有规范化后的字符；评分时复用动态规划缓冲区。
@@ -51,12 +45,14 @@ impl Matcher {
             return Some(MatchScore {
                 class: 3,
                 quality: 0,
+                primary_match: false,
             });
         }
         if normalized.starts_with(query) {
             return Some(MatchScore {
                 class: 2,
                 quality: -(len as i64),
+                primary_match: false,
             });
         }
         if let Some(position) = normalized
@@ -66,6 +62,7 @@ impl Matcher {
             return Some(MatchScore {
                 class: 1,
                 quality: -(position as i64) * 4 - len as i64,
+                primary_match: false,
             });
         }
         let mut remaining = query.iter();
@@ -125,20 +122,17 @@ impl Matcher {
             .map(|quality| MatchScore {
                 class: 0,
                 quality: quality - len as i64,
+                primary_match: false,
             })
     }
 
-    /// 对名称和相对路径评分，供文件与最近项目列表共用。
-    pub fn score_path(&mut self, name: &str, path: &str) -> Option<PathMatchScore> {
-        let name = self.score(name).map(|score| PathMatchScore {
-            score,
-            name_match: true,
+    /// 对主要名称与补充名称采用同一评分；基础分相同时优先主要名称命中。
+    pub fn score_fields(&mut self, primary: &str, secondary: &str) -> Option<MatchScore> {
+        let primary = self.score(primary).map(|mut score| {
+            score.primary_match = true;
+            score
         });
-        let path = self.score(path).map(|score| PathMatchScore {
-            score,
-            name_match: false,
-        });
-        name.max(path)
+        primary.max(self.score(secondary))
     }
 }
 

@@ -1,7 +1,7 @@
 //! PickerHost —— 「按钮 + 浮层」外壳：打开状态、dismiss、焦点与浮层渲染。
 //!
 //! ProjectPicker / BranchPicker 各自持有数据源与按钮内容，共用的开关交互、焦点管理、全屏拦截与浮层样式链收敛到这里。
-//! 打开状态与互斥由同一顶栏持有的 `PickerLayer` 管理。
+//! 打开状态与互斥由同一顶栏持有的 `PickerLayer` 管理，常驻输入入口也复用它的焦点会话。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -27,7 +27,7 @@ impl OverlayId {
     }
 }
 
-/// 同一顶栏的选择器共享一个活动浮层；其他窗口拥有独立实例。
+/// 同一顶栏的入口与选择器共享一个活动浮层；其他窗口拥有独立实例。
 #[derive(Clone, Default)]
 pub struct PickerLayer {
     active: Rc<RefCell<Option<ActiveOverlay>>>,
@@ -50,6 +50,23 @@ impl ActiveOverlay {
 }
 
 impl PickerLayer {
+    fn activate(
+        &self,
+        id: OverlayId,
+        focus_scope: FocusHandle,
+        previous_focus: Option<WeakFocusHandle>,
+    ) {
+        let mut active = self.active.borrow_mut();
+        let previous_focus = active
+            .take()
+            .map_or(previous_focus, |current| current.previous_focus);
+        *active = Some(ActiveOverlay {
+            id,
+            focus_scope,
+            previous_focus,
+        });
+    }
+
     fn is_open(&self, id: OverlayId) -> bool {
         self.active
             .borrow()
@@ -95,7 +112,7 @@ impl PickerLayer {
     }
 }
 
-/// 「按钮 + 浮层」外壳。
+/// 顶栏浮层与焦点会话外壳；选择器另外使用按钮与浮层渲染能力。
 pub struct PickerHost {
     id: OverlayId,
     focus: FocusHandle,
@@ -117,6 +134,18 @@ impl PickerHost {
 
     pub fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
+    }
+
+    /// 聚焦常驻入口；重复聚焦不覆盖本次交互的归还目标。
+    pub fn activate(&self, window: &mut Window, cx: &App) {
+        let previous = window.focused(cx).map(|focus| focus.downgrade());
+        self.layer.activate(self.id, self.focus.clone(), previous);
+        window.refresh();
+    }
+
+    /// 焦点已转移到其他目标时，仅结束本入口在顶栏浮层中的登记。
+    pub fn clear(&self) {
+        self.layer.dismiss(self.id);
     }
 
     /// 供 Picker 的 on_dismiss 使用的处理器。

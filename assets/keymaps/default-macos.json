@@ -358,7 +358,7 @@
       // =========================
 
       "cmd-s": "workspace::Save",
-      "cmd-p": "workspace::FocusGlobalSearch",
+      "cmd-p": "workspace::FocusQuickAccess",
 
       // =========================
       // Picker

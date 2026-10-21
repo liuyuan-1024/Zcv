@@ -36,9 +36,9 @@ fn case_does_not_reject_a_candidate() {
 }
 
 #[test]
-fn path_match_prefers_the_name_when_scores_are_equal() {
+fn primary_field_wins_when_scores_are_equal() {
     let mut matcher = Matcher::new("src").unwrap();
-    let name = matcher.score_path("src", "nested/src").unwrap();
-    let path = matcher.score_path("other", "src").unwrap();
+    let name = matcher.score_fields("src", "nested/src").unwrap();
+    let path = matcher.score_fields("other", "src").unwrap();
     assert!(name > path);
 }

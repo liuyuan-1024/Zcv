@@ -8,6 +8,28 @@ use gpui::{Action, actions};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+/// 可在统一入口执行的命令及其用户可见说明。
+pub struct CommandMetadata {
+    pub action_name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+}
+
+macro_rules! described_actions {
+    ($namespace:ident, $catalog:ident, [$($action:ident $(=> ($title:literal, $description:literal))?),* $(,)?]) => {
+        actions!($namespace, [$($action),*]);
+        const $catalog: &[CommandMetadata] = &[
+            $(
+                $(CommandMetadata {
+                    action_name: concat!(stringify!($namespace), "::", stringify!($action)),
+                    title: $title,
+                    description: $description,
+                },)?
+            )*
+        ];
+    };
+}
+
 /// 执行 Panel 的键盘三态命令，`panel` 是 Panel 的稳定 ID。
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, JsonSchema, Action)]
 #[action(namespace = dock)]
@@ -24,8 +46,9 @@ impl FocusOrHidePanel {
     }
 }
 
-actions!(
+described_actions!(
     editor,
+    EDITOR_COMMANDS,
     [
         MoveLeft,
         MoveRight,
@@ -51,7 +74,7 @@ actions!(
         SelectToEnd,
         SelectPageUp,
         SelectPageDown,
-        SelectAll,
+        SelectAll => ("全选", "选中当前文档的全部内容"),
         SelectLargerSyntaxNode,
         SelectSmallerSyntaxNode,
         RenameLocal,
@@ -66,15 +89,15 @@ actions!(
         Newline,
         MoveLineUp,
         MoveLineDown,
-        Undo,
-        Redo,
-        Cut,
-        Copy,
-        Paste,
-        Indent,
-        Outdent,
-        ToggleIndentGuides,
-        UnfoldAll,
+        Undo => ("撤销", "撤销最近一次编辑"),
+        Redo => ("重做", "重新执行已撤销的编辑"),
+        Cut => ("剪切", "剪切选中的内容"),
+        Copy => ("复制", "复制选中的内容"),
+        Paste => ("粘贴", "在光标处粘贴剪贴板内容"),
+        Indent => ("增加缩进", "增加选中行的缩进"),
+        Outdent => ("减少缩进", "减少选中行的缩进"),
+        ToggleIndentGuides => ("切换缩进参考线", "显示或隐藏编辑器中的缩进参考线"),
+        UnfoldAll => ("展开全部折叠", "展开当前文档中折叠的内容"),
         OpenExcerpts,
     ]
 );
@@ -89,29 +112,31 @@ actions!(
     ]
 );
 
-actions!(
+described_actions!(
     workspace,
+    WORKSPACE_COMMANDS,
     [
-        Save,
-        OpenSettings,
-        FocusGlobalSearch,
-        GitFetch,
-        GitPull,
-        GitPush,
-        IncreaseContentFontSize,
-        DecreaseContentFontSize,
-        ResetContentFontSize,
-        IncreaseUiFontSize,
-        DecreaseUiFontSize,
-        ResetUiFontSize,
+        Save => ("保存", "保存当前文档"),
+        OpenSettings => ("打开设置", "打开设置文件"),
+        FocusQuickAccess,
+        GitFetch => ("获取远程更新", "从远程仓库获取最新提交"),
+        GitPull => ("拉取远程更新", "将远程更新合入当前分支"),
+        GitPush => ("推送当前分支", "将本地提交推送到远程仓库"),
+        IncreaseContentFontSize => ("增大内容字号", "放大编辑器和内容区域的文字"),
+        DecreaseContentFontSize => ("减小内容字号", "缩小编辑器和内容区域的文字"),
+        ResetContentFontSize => ("重置内容字号", "恢复内容区域的默认字号"),
+        IncreaseUiFontSize => ("增大界面字号", "放大界面文字"),
+        DecreaseUiFontSize => ("减小界面字号", "缩小界面文字"),
+        ResetUiFontSize => ("重置界面字号", "恢复界面文字的默认字号"),
         RestartToUpdate
     ]
 );
 
-actions!(
+described_actions!(
     terminal,
+    TERMINAL_COMMANDS,
     [
-        NewTerminal,
+        NewTerminal => ("新建终端", "打开一个新的终端会话"),
         Clear,
         Interrupt,
         IncreaseFontSize,
@@ -120,16 +145,25 @@ actions!(
     ]
 );
 
-actions!(dock, [ToggleLeftDock, ToggleBottomDock, ToggleRightDock,]);
-
-actions!(
-    pane,
+described_actions!(
+    dock,
+    DOCK_COMMANDS,
     [
-        CloseTab,
-        NextTab,
-        PrevTab,
-        TogglePreview,
-        DeployBufferSearch
+        ToggleLeftDock => ("切换左侧面板", "显示或隐藏左侧面板"),
+        ToggleBottomDock => ("切换底部面板", "显示或隐藏底部面板"),
+        ToggleRightDock => ("切换右侧面板", "显示或隐藏右侧面板")
+    ]
+);
+
+described_actions!(
+    pane,
+    PANE_COMMANDS,
+    [
+        CloseTab => ("关闭标签页", "关闭当前标签页"),
+        NextTab => ("切换到下一个标签页", "激活右侧的标签页"),
+        PrevTab => ("切换到上一个标签页", "激活左侧的标签页"),
+        TogglePreview => ("切换预览", "显示或隐藏当前文档的预览"),
+        DeployBufferSearch => ("查找当前文档", "在当前文档中搜索文本")
     ]
 );
 
@@ -152,20 +186,41 @@ actions!(
     ]
 );
 
-actions!(
+described_actions!(
     window_controls,
-    [QuitWindow, MinimizeWindow, ToggleMaximizeWindow]
+    WINDOW_COMMANDS,
+    [
+        QuitWindow => ("关闭窗口", "关闭当前应用窗口"),
+        MinimizeWindow => ("最小化窗口", "将当前窗口缩到任务栏或 Dock"),
+        ToggleMaximizeWindow => ("切换窗口最大化", "最大化或恢复当前窗口")
+    ]
 );
 
 actions!(harness, [ToggleHarnessMode]);
 
-actions!(branch_picker, [SelectGitBranch, DeleteGitBranch]);
+described_actions!(
+    branch_picker,
+    BRANCH_PICKER_COMMANDS,
+    [
+        SelectGitBranch => ("切换 Git 分支", "打开当前项目的分支选择器"),
+        DeleteGitBranch
+    ]
+);
 
-actions!(project_search, [DeployProjectSearch]);
+described_actions!(
+    project_search,
+    PROJECT_SEARCH_COMMANDS,
+    [DeployProjectSearch => ("搜索项目内容", "在项目文件中搜索文本")]
+);
 
-actions!(
+described_actions!(
     project_picker,
-    [ToggleProjectPicker, OpenLocalProject, DeleteRecentProject]
+    PROJECT_PICKER_COMMANDS,
+    [
+        ToggleProjectPicker => ("切换项目", "打开最近项目选择器"),
+        OpenLocalProject,
+        DeleteRecentProject
+    ]
 );
 
 actions!(
@@ -206,3 +261,24 @@ actions!(
         TreeClearClipboard
     ]
 );
+
+/// 返回声明为用户可执行命令的 action 元数据。
+pub fn commands() -> impl Iterator<Item = &'static CommandMetadata> {
+    [
+        EDITOR_COMMANDS,
+        WORKSPACE_COMMANDS,
+        TERMINAL_COMMANDS,
+        DOCK_COMMANDS,
+        PANE_COMMANDS,
+        WINDOW_COMMANDS,
+        BRANCH_PICKER_COMMANDS,
+        PROJECT_SEARCH_COMMANDS,
+        PROJECT_PICKER_COMMANDS,
+    ]
+    .into_iter()
+    .flatten()
+}
+
+#[cfg(test)]
+#[path = "test/actions_tests.rs"]
+mod tests;

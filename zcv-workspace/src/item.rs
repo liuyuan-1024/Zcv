@@ -107,6 +107,10 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         false
     }
 
+    fn can_navigate_to_line_column(&self, _line: usize, _column: usize, _cx: &App) -> bool {
+        false
+    }
+
     /// 预览视图 Item 把自己暴露给 Pane。
     /// 非预览视图返回 None，无需实现。
     fn as_preview_item(
@@ -185,6 +189,7 @@ pub trait ItemHandle: Send + 'static {
     fn multi_buffer(&self, cx: &App) -> Option<Entity<MultiBuffer>>;
     fn navigate_to_byte_range(&self, range: Range<usize>, cx: &mut App) -> bool;
     fn navigate_to_line_column(&self, line: usize, column: usize, cx: &mut App) -> bool;
+    fn can_navigate_to_line_column(&self, line: usize, column: usize, cx: &App) -> bool;
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>>;
     fn as_searchable(&self, cx: &App) -> Option<Box<dyn SearchableItemHandle>>;
     fn can_save(&self, cx: &App) -> bool;
@@ -288,6 +293,10 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.update(cx, |item, cx| {
             item.navigate_to_line_column(line, column, cx)
         })
+    }
+
+    fn can_navigate_to_line_column(&self, line: usize, column: usize, cx: &App) -> bool {
+        self.read(cx).can_navigate_to_line_column(line, column, cx)
     }
 
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>> {

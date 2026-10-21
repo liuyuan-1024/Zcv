@@ -112,7 +112,7 @@ impl ProjectPickerDelegate {
                 .enumerate()
                 .filter_map(|(index, project)| {
                     matcher
-                        .score_path(&project.label(), &project.path)
+                        .score_fields(&project.label(), &project.path)
                         .map(|score| (score, index))
                 })
                 .collect();

@@ -6,6 +6,7 @@ use gpui::{App, Context, Entity, SharedString, Task, Window};
 use zcv_multi_buffer::MultiBuffer;
 use zcv_path::simplify_native;
 use zcv_project::{FileSaveConflictPolicy, Project};
+use zcv_text::{Line, LogicalColumn, Position};
 use zcv_workspace::{Item, ItemEvent, SearchableItemHandle};
 
 use crate::view::NAVIGATION_TOP_OFFSET;
@@ -117,6 +118,12 @@ impl Item for Editor {
         cx: &mut Context<Self>,
     ) -> bool {
         Editor::navigate_to_line_column(self, line, column, cx)
+    }
+
+    fn can_navigate_to_line_column(&self, line: usize, column: usize, cx: &App) -> bool {
+        self.render_snapshot(cx)
+            .position_to_byte(Position::new(Line::new(line), LogicalColumn::new(column)))
+            .is_ok()
     }
 
     fn save(

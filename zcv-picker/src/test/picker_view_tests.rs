@@ -555,6 +555,51 @@ fn picker_restores_the_original_focus_without_overwriting_a_new_target(cx: &mut 
 }
 
 #[gpui::test]
+fn persistent_input_and_picker_share_the_original_focus(cx: &mut TestAppContext) {
+    init(cx);
+    let (host, cx) = cx.add_window_view(|window, cx| {
+        let layer = PickerLayer::default();
+        let picker = cx.new(|cx| {
+            Picker::new(
+                ScrollDelegate {
+                    selected_index: Rc::new(Cell::new(0)),
+                },
+                px(300.0),
+                window,
+                cx,
+            )
+        });
+        FocusPickerHost {
+            first: PickerHost::new(cx.focus_handle(), layer.clone()),
+            first_picker: picker.clone(),
+            second: PickerHost::new(cx.focus_handle(), layer),
+            second_picker: picker,
+            previous: cx.focus_handle(),
+            other: cx.focus_handle(),
+        }
+    });
+    let previous = cx.read_entity(&host, |host, _| host.previous.clone());
+    cx.update(|window, cx| window.focus(&previous, cx));
+    host.update_in(cx, |host, window, cx| {
+        host.first.toggle(&host.first_picker, window, cx);
+        host.second.activate(window, cx);
+        window.focus(&host.second.focus_handle(), cx);
+        assert!(!host.first.is_open());
+    });
+    host.update_in(cx, |host, window, cx| host.second.dismiss(window, cx));
+    cx.update(|window, _| assert!(previous.is_focused(window)));
+
+    host.update_in(cx, |host, window, cx| {
+        host.second.activate(window, cx);
+        window.focus(&host.second.focus_handle(), cx);
+        host.first.toggle(&host.first_picker, window, cx);
+        assert!(!host.second.is_open());
+    });
+    host.update_in(cx, |host, window, cx| host.first.dismiss(window, cx));
+    cx.update(|window, _| assert!(previous.is_focused(window)));
+}
+
+#[gpui::test]
 fn picker_list_scrolls_inside_host_overlay(cx: &mut TestAppContext) {
     init(cx);
     let (wrapper, cx) = cx.add_window_view(|window, cx| {

@@ -14,7 +14,7 @@ use gpui::{
     WindowOptions, point, prelude::*, px, size,
 };
 use zcv_actions::{
-    DecreaseContentFontSize, DecreaseUiFontSize, FocusGlobalSearch, GitFetch, GitPull, GitPush,
+    DecreaseContentFontSize, DecreaseUiFontSize, FocusQuickAccess, GitFetch, GitPull, GitPush,
     IncreaseContentFontSize, IncreaseUiFontSize, NewTerminal, ResetContentFontSize,
     ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
 };
@@ -603,9 +603,9 @@ fn initialize_workspace(
     });
     workspace.set_titlebar(top_bar.clone().into(), cx);
     // TopBar 组件不在主焦点链上：把搜索框与选择器的命令 handler 注册到 Workspace 根节点。
-    let search_bar = top_bar.clone();
-    workspace.register_action(move |_workspace, _: &FocusGlobalSearch, window, cx| {
-        search_bar.update(cx, |bar, cx| bar.focus_global_search(window, cx));
+    let quick_access_bar = top_bar.clone();
+    workspace.register_action(move |_workspace, _: &FocusQuickAccess, window, cx| {
+        quick_access_bar.update(cx, |bar, cx| bar.focus_quick_access(window, cx));
     });
     let project_picker = top_bar.read(cx).project_picker.clone();
     workspace.register_action(move |_workspace, _: &ToggleProjectPicker, window, cx| {

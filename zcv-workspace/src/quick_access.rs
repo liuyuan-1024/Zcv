@@ -613,6 +613,7 @@ impl Render for QuickAccess {
             }))
             .on_click(cx.listener(|search, _, window, cx| {
                 window.focus(&search.input.focus_handle(cx), cx);
+                cx.stop_propagation();
             }))
             .child(
                 SvgIcon::new("icons/magnifying_glass.svg")

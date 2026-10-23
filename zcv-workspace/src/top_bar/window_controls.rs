@@ -2,4 +2,4 @@
 
 mod platform;
 
-pub(super) use platform::{WindowControls, leading_inset, trailing};
+pub(super) use platform::{WindowControls, leading_inset, titlebar_interaction, trailing};

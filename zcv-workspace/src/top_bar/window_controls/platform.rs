@@ -1,6 +1,9 @@
 //! 系统窗口控制的平台入口。
 
-use gpui::{AnyElement, App, Window};
+use gpui::{AnyElement, App, Div, Stateful, Window};
+
+#[cfg(target_os = "macos")]
+use gpui::prelude::*;
 
 #[cfg(not(target_os = "macos"))]
 use zcv_theme::scale;
@@ -13,6 +16,22 @@ mod windows;
 
 #[cfg(target_os = "macos")]
 pub(in crate::top_bar) use macos::{WindowControls, leading_inset};
+
+pub(in crate::top_bar) fn titlebar_interaction(bar: Stateful<Div>) -> Stateful<Div> {
+    #[cfg(target_os = "macos")]
+    {
+        bar.on_click(|event, window, _| {
+            if event.click_count() == 2 {
+                window.titlebar_double_click();
+            }
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        bar
+    }
+}
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Default)]

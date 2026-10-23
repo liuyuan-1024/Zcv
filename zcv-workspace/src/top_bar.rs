@@ -121,8 +121,7 @@ impl gpui::Render for TopBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let height = bar_height(window, cx);
         self.window_controls.align(window, height);
-        bar_frame(height, cx)
-            .id("top-bar")
+        window_controls::titlebar_interaction(bar_frame(height, cx).id("top-bar"))
             .child(
                 content_frame(window)
                     .gap(scale::S6)

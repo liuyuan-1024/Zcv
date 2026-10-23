@@ -1,8 +1,12 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use gpui::TestAppContext;
+use gpui::{AppContext, TestAppContext};
+use zcv_language::LanguageRegistry;
+use zcv_settings::{
+    GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore, UserSettings,
+};
 
-use super::initial_project_root;
+use super::{initial_project_root, open_workspace_or_empty};
 
 #[test]
 fn startup_uses_explicit_command_line_project() {
@@ -28,6 +32,33 @@ fn startup_without_path_uses_recent_project_or_none() {
         initial_project_root([OsString::from("zcv")].into_iter(), None),
         None
     );
+}
+
+#[gpui::test]
+fn closed_last_window_can_open_a_workspace_again(cx: &mut TestAppContext) {
+    let languages = std::sync::Arc::new(LanguageRegistry::new());
+    cx.update(|cx| {
+        let reporter = cx.new(|_| SettingsErrorReporter::default());
+        cx.set_global(GlobalSettingsErrorReporter(reporter));
+        cx.set_global(SettingsStore::new(UserSettings::default()));
+        zcv_editor::init(cx, languages.clone());
+        open_workspace_or_empty(None, languages.clone(), cx);
+        assert_eq!(cx.windows().len(), 1);
+    });
+
+    let window = cx.update(|cx| cx.windows().pop().expect("应有一个工作区窗口"));
+    cx.update(|cx| {
+        window
+            .update(cx, |_, window, _| window.remove_window())
+            .expect("应能关闭工作区窗口");
+    });
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        assert!(cx.windows().is_empty());
+        open_workspace_or_empty(None, languages, cx);
+        assert_eq!(cx.windows().len(), 1);
+    });
 }
 
 /// Panel 键盘命令使用单一带参 Action，不为每个 Panel 声明类型。

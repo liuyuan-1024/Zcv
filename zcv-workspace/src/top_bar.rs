@@ -11,7 +11,7 @@ use zcv_picker::PickerLayer;
 use zcv_project::{
     GitJobPhase, GitOperationKind, GitStore, GitStoreEvent, Project, RemoteOperationState,
 };
-use zcv_theme::{color, scale};
+use zcv_theme::{color, scale, typography};
 use zcv_ui::Button;
 
 use crate::{
@@ -22,8 +22,6 @@ use crate::{
 };
 
 mod window_controls;
-
-use window_controls::render as render_window_controls;
 
 pub(crate) type TopBarCallback = Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -45,6 +43,7 @@ pub struct TopBar {
     update_control: Option<AnyView>,
     workspace: WeakEntity<Workspace>,
     callbacks: TopBarCallbacks,
+    window_controls: window_controls::WindowControls,
     _git_subscription: Subscription,
 }
 
@@ -91,6 +90,7 @@ impl TopBar {
             update_control: None,
             workspace,
             callbacks,
+            window_controls: window_controls::WindowControls::default(),
             _git_subscription: git_subscription,
         }
     }
@@ -119,38 +119,58 @@ impl TopBar {
 
 impl gpui::Render for TopBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        bar_frame(cx)
+        let height = bar_height(window, cx);
+        self.window_controls.align(window, height);
+        bar_frame(height, cx)
             .id("top-bar")
             .child(
-                div()
-                    .min_w_0()
-                    .overflow_x_hidden()
-                    .child(cluster(leading_slots(window, self, cx))),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(self.quick_access.clone()),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .overflow_x_hidden()
-                    .flex()
-                    .child(cluster(trailing_slots(
-                        self.update_control.as_ref(),
-                        self.workspace.clone(),
-                        cx,
+                content_frame(window)
+                    .gap(scale::S6)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_x_hidden()
+                            .child(cluster(leading_slots(self, cx))),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(self.quick_access.clone()),
+                    )
+                    .child(div().min_w_0().overflow_x_hidden().flex().child(cluster(
+                        trailing_slots(self.update_control.as_ref(), self.workspace.clone(), cx),
                     ))),
             )
+            .when_some(window_controls::trailing(window, cx), |bar, controls| {
+                bar.child(controls)
+            })
+            .child(bar_bottom_border(cx))
     }
 }
 
-fn bar_frame(cx: &App) -> Div {
+fn bar_height(window: &Window, cx: &App) -> gpui::Pixels {
+    typography::ui_line_at(window.rem_size(), cx)
+        + scale::to_pixels(scale::S12, window)
+        + scale::to_pixels(scale::S8, window)
+}
+
+fn content_frame(window: &Window) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .flex_1()
+        .min_w_0()
+        .py(scale::S6)
+        .pr(scale::S6)
+        .pl(window_controls::leading_inset(window))
+}
+
+fn bar_frame(height: gpui::Pixels, cx: &App) -> Div {
     div()
         .window_control_area(WindowControlArea::Drag)
         .relative()
@@ -158,17 +178,17 @@ fn bar_frame(cx: &App) -> Div {
         .flex_row()
         .items_center()
         .w_full()
-        .p(scale::S6)
-        .gap(scale::S6)
+        .h(height)
         .bg(color::current(cx).title_bar_background)
         .text_color(color::current(cx).text)
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .border_b_1()
-                .border_color(color::current(cx).border),
-        )
+}
+
+fn bar_bottom_border(cx: &App) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .border_b_1()
+        .border_color(color::current(cx).border)
 }
 
 fn cluster(items: Vec<AnyElement>) -> Div {
@@ -179,11 +199,8 @@ fn cluster(items: Vec<AnyElement>) -> Div {
 #[path = "test/top_bar_tests.rs"]
 mod tests;
 
-fn leading_slots(window: &Window, top_bar: &TopBar, cx: &App) -> Vec<AnyElement> {
+fn leading_slots(top_bar: &TopBar, cx: &App) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
-
-    // 无标题栏窗口，因此在应用顶栏提供三色控制。
-    out.push(render_window_controls(window, top_bar.workspace.clone()).into_any_element());
 
     // 项目选择器
     out.push(top_bar.project_picker.clone().into_any_element());

@@ -1,5 +1,4 @@
-# 依赖管理约定：内部 crate 和需要统一版本的第三方依赖在
-# [workspace.dependencies] 声明，使用方通过 workspace = true 引用。
+# 依赖管理约定：内部 crate 和需要统一版本的第三方依赖在[workspace.dependencies] 声明，使用方通过 workspace = true 引用。
 # 仅单个 crate 使用且无统一版本需求的第三方依赖可在该 crate 声明。
 # 各 crate 按实际用途声明额外 features；Cargo 会合并同一依赖的 features。
 # 平台特定依赖由使用方放在对应的 target 依赖表中。
@@ -38,7 +37,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.10.13"
+version = "0.10.14"
 edition = "2024"
 
 [workspace.lints.rust]

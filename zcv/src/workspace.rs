@@ -13,7 +13,7 @@ use std::{
 use anyhow::Context as _;
 use gpui::{
     App, AsyncApp, Context, Entity, PromptLevel, TitlebarOptions, WeakEntity, Window, WindowBounds,
-    WindowOptions, point, prelude::*, px, size,
+    WindowOptions, prelude::*, px, size,
 };
 use zcv_actions::{
     DecreaseContentFontSize, DecreaseUiFontSize, FocusLineColumn, FocusQuickAccess, GitFetch,
@@ -204,12 +204,12 @@ fn open_workspace_window(
             titlebar: Some(TitlebarOptions {
                 title: Some("".into()),
                 appears_transparent: true,
-                traffic_light_position: Some(point(px(-100.0), px(-100.0))),
+                traffic_light_position: None,
             }),
             ..Default::default()
         },
         |window, cx| {
-            cx.new(|cx| {
+            let workspace = cx.new(|cx| {
                 let workspace = build_workspace(&root, languages, window, cx);
                 if let Some(message) = startup_error {
                     workspace.show_toast(
@@ -221,7 +221,17 @@ fn open_workspace_window(
                     );
                 }
                 workspace
-            })
+            });
+            let workspace_for_close = workspace.clone();
+            window.on_window_should_close(cx, move |window, cx| {
+                workspace_for_close.update(cx, |workspace, cx| {
+                    let root = workspace.project().read(cx).root().map(Path::to_path_buf);
+                    save_window_bounds(root.as_deref(), window, cx);
+                    workspace.flush_layout(cx);
+                });
+                true
+            });
+            workspace
         },
     )?;
     Ok(())

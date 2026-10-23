@@ -200,32 +200,6 @@ fn folded_deleted_hunk_before_wrapped_row_anchors_to_wrapped_first_subrow(cx: &m
         .expect("测试窗口应保持可用");
 }
 
-#[test]
-fn diff_kind_for_row_matches_display_row_ranges() {
-    // 输入是 diff_hunk_rows 的输出：Deleted 已从空区间展开为锚定行的单行区间。
-    let diff_rows = vec![
-        (2..5, DiffHunkKind::Modified, DiffHunkStaging::NoStaging),
-        (7..8, DiffHunkKind::Deleted, DiffHunkStaging::NoStaging),
-    ];
-
-    assert_eq!(diff_row_for_row(&diff_rows, 1), None);
-    assert_eq!(
-        diff_row_for_row(&diff_rows, 2),
-        Some((DiffHunkKind::Modified, DiffHunkStaging::NoStaging))
-    );
-    assert_eq!(
-        diff_row_for_row(&diff_rows, 4),
-        Some((DiffHunkKind::Modified, DiffHunkStaging::NoStaging))
-    );
-    assert_eq!(diff_row_for_row(&diff_rows, 5), None);
-    assert_eq!(
-        diff_row_for_row(&diff_rows, 7),
-        Some((DiffHunkKind::Deleted, DiffHunkStaging::NoStaging))
-    );
-    assert_eq!(diff_row_for_row(&diff_rows, 8), None);
-    assert_eq!(diff_row_for_row(&[], 0), None);
-}
-
 #[gpui::test]
 fn every_diff_hunk_exposes_a_control_anchor(cx: &mut TestAppContext) {
     let buffer = Buffer::from_text(
@@ -276,8 +250,6 @@ fn every_diff_hunk_exposes_a_control_anchor(cx: &mut TestAppContext) {
             (4, BufferId::new(2)),
         ]
     );
-    // 新增块默认折叠：只保留 gutter 竖条，不整行着色。
-    assert_eq!(rendered.expanded_rows, Vec::<Range<usize>>::new());
     // 纯新增块也要登记点击区域，否则普通文档既不能展开也无法着色。
     assert!(
         rendered
@@ -286,13 +258,6 @@ fn every_diff_hunk_exposes_a_control_anchor(cx: &mut TestAppContext) {
             .any(|(_, index, kind)| *index == 0 && *kind == DiffHunkKind::Added),
         "纯新增块应可点击展开"
     );
-
-    // 差异审阅视图（默认展开）下新增块才整行着色。
-    let expanded_added = hunk_rendering(
-        &snapshot,
-        resolved_hunks(&hunks[..1], &[true], &[None], &[]).into_iter(),
-    );
-    assert_eq!(expanded_added.expanded_rows, vec![0..1]);
 }
 
 #[gpui::test]
@@ -314,7 +279,7 @@ fn materialized_modified_hunk_uses_real_old_and_new_document_rows(cx: &mut TestA
     );
 
     assert_eq!(
-        rendered.diff_rows,
+        rendered.scrollbar_rows,
         vec![
             (1..2, DiffHunkKind::Deleted, DiffHunkStaging::NoStaging),
             (2..3, DiffHunkKind::Added, DiffHunkStaging::NoStaging)
@@ -456,7 +421,7 @@ fn staging_drives_hollow_blocks(cx: &mut TestAppContext) {
         resolved_hunks(&[staged], &[true], &[None], &[]).into_iter(),
     );
     assert_eq!(
-        rendered.diff_rows,
+        rendered.scrollbar_rows,
         vec![(1..3, DiffHunkKind::Added, DiffHunkStaging::Staged)]
     );
     assert_eq!(

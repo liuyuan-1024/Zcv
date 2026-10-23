@@ -221,12 +221,12 @@ impl DisplayDecorations {
     }
 }
 
-/// hunks 的单遍渲染数据：行标记 / 竖条 / 点击区域共用同一份行区间计算。
+/// hunks 的单遍装饰数据：滚动条标记、竖条与点击区域共用行区间计算。
 #[derive(Clone)]
 pub(crate) struct HunkRendering {
-    /// 行标记：显示行区间、行级色、以及 hunk 相对 index 的暂存语义。
-    pub(crate) diff_rows: Vec<(Range<usize>, DiffHunkKind, DiffHunkStaging)>,
-    /// gutter 竖条：与 diff_rows 同源，按暂存语义区分空心 / 实心。
+    /// 滚动条标记：显示行区间、旧/新侧类型和暂存语义；文本行颜色由组合行状态提供。
+    pub(crate) scrollbar_rows: Vec<(Range<usize>, DiffHunkKind, DiffHunkStaging)>,
+    /// gutter 竖条：按暂存语义区分空心 / 实心。
     pub(crate) strips: Vec<(Range<usize>, DiffHunkKind, DiffHunkStaging)>,
     pub(crate) hit_regions: Vec<(Range<usize>, usize, DiffHunkKind)>,
     /// hunk 操作栏的锚定显示范围；控件取范围起点作为右上角所在行。
@@ -236,8 +236,6 @@ pub(crate) struct HunkRendering {
     /// 宿主注入的 hunk 行范围与视觉语义。
     pub(crate) editor_hunks: Vec<(Range<usize>, EditorHunk)>,
     pub(crate) editor_hunk_parts: Vec<(Range<usize>, DiffHunkKind, EditorHunkMarkerKind)>,
-    /// 需要整行差异背景的显示行区间；只有展开态包含（新增块的展开态由注入方决定）。
-    pub(crate) expanded_rows: Vec<Range<usize>>,
     /// 展开的 hollow（已暂存）连续块；边框只在块首 / 末行按该行背景色绘制，相邻行之间不画线。
     pub(crate) hollow_blocks: Vec<Range<usize>>,
     /// 展开 hunk 的词级变化片段（组合文档字节范围 + 新增/删除色）。
@@ -337,7 +335,7 @@ impl DiffDecorationSnapshot {
         });
 
         let mut scrollbar_diff_markers = rendering
-            .diff_rows
+            .scrollbar_rows
             .iter()
             .map(|(rows, kind, _)| (rows.clone(), *kind))
             .collect::<Vec<_>>();
@@ -362,14 +360,13 @@ impl DiffDecorationSnapshot {
 
     pub(crate) fn rendering_for_viewport(&self, viewport: Range<usize>) -> HunkRendering {
         HunkRendering {
-            diff_rows: visible_triples(&self.rendering.diff_rows, &viewport),
+            scrollbar_rows: visible_triples(&self.rendering.scrollbar_rows, &viewport),
             strips: visible_triples(&self.rendering.strips, &viewport),
             hit_regions: visible_triples(&self.rendering.hit_regions, &viewport),
             controls: Vec::new(),
             control_indices: Vec::new(),
             editor_hunks: visible_pairs(&self.rendering.editor_hunks, &viewport),
             editor_hunk_parts: visible_triples(&self.rendering.editor_hunk_parts, &viewport),
-            expanded_rows: visible_ranges(&self.rendering.expanded_rows, &viewport),
             hollow_blocks: visible_ranges(&self.rendering.hollow_blocks, &viewport),
             word_diff_highlights: Vec::new(),
         }
@@ -484,19 +481,18 @@ fn visible_triples<T: Clone, U: Clone>(
         .collect()
 }
 
-/// hunks（逻辑行）→ 行级渲染数据，单遍遍历产出五份视图：
+/// hunks（逻辑行）→ 装饰数据，单遍遍历产出各消费方的视图：
 ///
-/// - `diff_rows`：行标记（gutter 指示，wrap 下行映射出的全部显示行都覆盖）
+/// - `scrollbar_rows`：滚动条标记覆盖的显示行，包含软换行片段
 /// - `strips`：竖条范围与状态色（竖条颜色不随展开变化）
 /// - `hit_regions`：可点击色带区域（显示行范围 + 点击目标 old_range + 类型）
-/// - `expanded_rows`：整行差异背景数据源（只有展开态着色；折叠 hunk 仅保留 gutter 竖条）
 /// - `hollow_blocks`：展开的已暂存（hollow）连续块（边框按块边界合并绘制，不做逐行描边）
 /// - `word_diff_highlights`：展开态 hunk 的词级变化片段（组合文档字节范围；折叠态无）
 ///
 /// 覆盖终点取 hunk 之后第一行的行首显示行（end 行首显示行 − 1 即 hunk 最后一个显示行，左闭右开区间 [start, end) 恰好盖住全部 wrap 片段）；
 /// hunk 到达文件末尾时以显示快照行数为终点。
 /// 纯删除 hunk（空范围）：折叠时行内不做标记（gutter 红色三角提示），展开后标记物化的旧侧行；
-/// 修改 hunk 展开后：旧侧行按删除色、修改行按新增色（base 旧行红、新行绿）。
+/// 修改 hunk 展开后，滚动条按旧侧删除与新侧新增分别标记。
 /// 映射失败（越界等）跳过该 hunk。
 #[cfg(test)]
 pub(crate) fn hunk_rendering(
@@ -510,12 +506,11 @@ fn hunk_rendering_indexed(
     snapshot: &DisplaySnapshot,
     resolved: impl Iterator<Item = (usize, ResolvedDiffHunk)>,
 ) -> HunkRendering {
-    let mut diff_rows = Vec::new();
+    let mut scrollbar_rows = Vec::new();
     let mut strips = Vec::new();
     let mut hit_regions = Vec::new();
     let mut controls = Vec::new();
     let mut control_indices = Vec::new();
-    let mut expanded_rows = Vec::new();
     let mut hollow_blocks = Vec::new();
     let mut word_diff_highlights = Vec::new();
     for (index, resolved) in resolved {
@@ -535,14 +530,11 @@ fn hunk_rendering_indexed(
         match hunk.kind {
             DiffHunkKind::Added => {
                 if let Some(rows) = new_rows {
-                    diff_rows.push((rows.clone(), DiffHunkKind::Added, staging));
+                    scrollbar_rows.push((rows.clone(), DiffHunkKind::Added, staging));
                     strips.push((rows.clone(), DiffHunkKind::Added, staging));
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Added));
-                    if is_expanded {
-                        expanded_rows.push(rows.clone());
-                        if hollow {
-                            hollow_blocks.push(rows.clone());
-                        }
+                    if is_expanded && hollow {
+                        hollow_blocks.push(rows.clone());
                     }
                     controls.push((rows, HunkControlTarget::Diff(resolved.source)));
                     control_indices.push(index);
@@ -550,9 +542,8 @@ fn hunk_rendering_indexed(
             }
             DiffHunkKind::Deleted => {
                 if is_expanded && let Some(rows) = old_rows {
-                    diff_rows.push((rows.clone(), DiffHunkKind::Deleted, staging));
+                    scrollbar_rows.push((rows.clone(), DiffHunkKind::Deleted, staging));
                     strips.push((rows.clone(), DiffHunkKind::Deleted, staging));
-                    expanded_rows.push(rows.clone());
                     if hollow {
                         hollow_blocks.push(rows.clone());
                     }
@@ -569,10 +560,8 @@ fn hunk_rendering_indexed(
             }
             DiffHunkKind::Modified => {
                 if is_expanded && let (Some(old_rows), Some(new_rows)) = (&old_rows, &new_rows) {
-                    diff_rows.push((old_rows.clone(), DiffHunkKind::Deleted, staging));
-                    diff_rows.push((new_rows.clone(), DiffHunkKind::Added, staging));
-                    expanded_rows.push(old_rows.clone());
-                    expanded_rows.push(new_rows.clone());
+                    scrollbar_rows.push((old_rows.clone(), DiffHunkKind::Deleted, staging));
+                    scrollbar_rows.push((new_rows.clone(), DiffHunkKind::Added, staging));
                     let rows = old_rows.start.min(new_rows.start)..old_rows.end.max(new_rows.end);
                     strips.push((rows.clone(), DiffHunkKind::Modified, staging));
                     if hollow {
@@ -582,7 +571,7 @@ fn hunk_rendering_indexed(
                     controls.push((rows, HunkControlTarget::Diff(resolved.source)));
                     control_indices.push(index);
                 } else if let Some(rows) = new_rows {
-                    diff_rows.push((rows.clone(), DiffHunkKind::Modified, staging));
+                    scrollbar_rows.push((rows.clone(), DiffHunkKind::Modified, staging));
                     strips.push((rows.clone(), DiffHunkKind::Modified, staging));
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Modified));
                     controls.push((rows, HunkControlTarget::Diff(resolved.source)));
@@ -592,12 +581,11 @@ fn hunk_rendering_indexed(
         }
     }
     let mut rendering = HunkRendering {
-        diff_rows,
+        scrollbar_rows,
         strips,
         hit_regions,
         controls,
         control_indices,
-        expanded_rows,
         hollow_blocks,
         word_diff_highlights,
         editor_hunks: Vec::new(),
@@ -679,17 +667,6 @@ fn logical_anchor_rows(snapshot: &DisplaySnapshot, line: usize) -> Option<Range<
         .line_to_display_row(Line::new(line + 1))
         .map_or_else(|| snapshot.line_count(), |row| row.get());
     Some(start..end.max(start + 1))
-}
-
-/// 查询显示行所属的 diff 类型与暂存语义（gutter 与内容背景共用；线性扫描，hunks 数量级小）。
-pub(crate) fn diff_row_for_row(
-    diff_rows: &[(Range<usize>, DiffHunkKind, DiffHunkStaging)],
-    row: usize,
-) -> Option<(DiffHunkKind, DiffHunkStaging)> {
-    diff_rows
-        .iter()
-        .find(|(range, _, _)| range.contains(&row))
-        .map(|(_, kind, staging)| (*kind, *staging))
 }
 
 /// 该 hunk 是否用空心色条 + 透明行背景。

@@ -1,13 +1,15 @@
 //! `BufferDiff` 后台任务所有权与输入版本门控的定向测试。
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gpui::{AppContext as _, Entity, Task, TestAppContext};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
-use crate::{BufferDiff, BufferDiffInput, DiffHunkStaging, PendingHunk, diff_line_boundary};
+use crate::{
+    BufferDiff, BufferDiffEvent, BufferDiffInput, DiffHunkStaging, PendingHunk, diff_line_boundary,
+};
 
 #[test]
 fn diff_line_boundary_excludes_only_the_terminal_empty_line() {
@@ -123,6 +125,73 @@ fn base_version_change_discards_stale_hunks(cx: &mut TestAppContext) {
         cx.update_entity(&diff, |diff, cx| diff.is_current_version_calculated(cx)),
         "base 前进后必须补算到当前输入版本"
     );
+}
+
+#[gpui::test]
+fn changed_base_text_with_identical_hunk_geometry_emits_a_range(cx: &mut TestAppContext) {
+    let working = language_buffer("a\nnew\nz\n", "src/a.rs", cx);
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            buffer_diff_input(working, Some("a\nold\nz\n"), "src/a.rs"),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let ranges = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&ranges);
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&diff, move |_, event, _| {
+            let BufferDiffEvent::DiffChanged { changed_range } = event;
+            observed.lock().unwrap().push(changed_range.clone());
+        })
+    });
+
+    diff.update(cx, |diff, cx| {
+        diff.set_revisions(Some(Arc::from("a\nOLD\nz\n")), None, cx)
+    });
+    cx.run_until_parked();
+
+    let ranges = ranges.lock().unwrap();
+    assert_eq!(ranges.len(), 1);
+    assert!(ranges[0].is_some(), "旧侧文本变化必须同步其输出变换");
+}
+
+#[gpui::test]
+fn changed_hunk_anchor_with_identical_geometry_emits_a_range(cx: &mut TestAppContext) {
+    let working = language_buffer("a\nb\nc\n", "src/a.rs", cx);
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            buffer_diff_input(working.clone(), Some("a\nB\nc\n"), "src/a.rs"),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let ranges = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&ranges);
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&diff, move |_, event, _| {
+            let BufferDiffEvent::DiffChanged { changed_range } = event;
+            observed.lock().unwrap().push(changed_range.clone());
+        })
+    });
+
+    working.update(cx, |working, cx| {
+        working
+            .edit(
+                vec![Edit::replace(
+                    zcv_text::TextRange::new(ByteOffset::new(2), ByteOffset::new(3)).unwrap(),
+                    "z",
+                )],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    cx.run_until_parked();
+
+    let ranges = ranges.lock().unwrap();
+    assert_eq!(ranges.len(), 1);
+    assert!(ranges[0].is_some(), "新的 hunk Anchor 必须刷新组合变换");
 }
 
 #[gpui::test]

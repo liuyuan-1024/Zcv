@@ -611,7 +611,7 @@ impl Editor {
         &mut self,
         display_path: &std::path::Path,
         excerpt_ranges: DiffExcerptRanges,
-        changed_range: Range<zcv_text::Anchor>,
+        changed_range: Option<Range<zcv_text::Anchor>>,
         cx: &mut Context<Self>,
     ) -> bool {
         let updated = self.multi_buffer.update(cx, |buffer, cx| {

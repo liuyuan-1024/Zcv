@@ -89,6 +89,14 @@ pub enum ExcerptDiffKind {
     Deleted,
 }
 
+/// 组合输出行的差异状态，由当前输出变换直接提供给显示行游标。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffRowStatus {
+    pub kind: DiffHunkKind,
+    pub staging: DiffHunkStaging,
+    pub expanded: bool,
+}
+
 impl ExcerptRange {
     pub fn new(
         source: Entity<LanguageBuffer>,
@@ -1910,6 +1918,37 @@ impl<'a> MultiBufferLineCursor<'a> {
     pub fn excerpt_snapshot(&self) -> Option<ExcerptSnapshot> {
         let (excerpt, _) = self.cursor.item()?;
         Some(excerpt.to_snapshot(self.cursor.start().clone()))
+    }
+
+    /// 当前行的差异状态与文本从同一个组合变换节点读取。
+    pub fn diff_row_status(&self) -> Option<DiffRowStatus> {
+        let (region, transform) = self.cursor.item()?;
+        let at = self.cursor.start();
+        let info = transform.hunks().iter().find(|info| {
+            matches!(
+                info.side,
+                DiffTransformHunkSide::Content | DiffTransformHunkSide::Old
+            )
+        })?;
+        let (line_start, _) = self.line_content_range()?;
+        if line_start >= at.bytes + region.output_text_summary().len {
+            return None;
+        }
+        let kind = match info.side {
+            DiffTransformHunkSide::Old => DiffHunkKind::Deleted,
+            DiffTransformHunkSide::Content
+                if info.kind == DiffHunkKind::Modified && info.expanded =>
+            {
+                DiffHunkKind::Added
+            }
+            DiffTransformHunkSide::Content => info.kind,
+            DiffTransformHunkSide::BoundaryStart => return None,
+        };
+        Some(DiffRowStatus {
+            kind,
+            staging: info.staging,
+            expanded: info.expanded,
+        })
     }
 
     /// 当前行内容起点的源映射；复用行游标的位置，不重新定位组合树。

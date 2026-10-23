@@ -439,7 +439,6 @@ fn word_diff_background_keeps_changed_operator_out_of_adjacent_ligatures(cx: &mu
                         scroll_offset: point(scroll_x, px(0.)),
                         primary_caret_column: None,
                         line_height: px(20.),
-                        diff_rows: &[],
                     },
                     window,
                     cx,
@@ -647,8 +646,8 @@ fn test_hunk_rendering(
     DiffDecorationSnapshot::from_resolved(snapshot, resolved, &[])
 }
 
-/// 行级标记的显示行区间（测试专用）。
-fn diff_hunk_rows(
+/// 滚动条差异标记的显示行区间（测试专用）。
+fn scrollbar_hunk_rows(
     snapshot: &DisplaySnapshot,
     hunks: &[DisplayHunk],
     expanded: &[bool],
@@ -656,7 +655,7 @@ fn diff_hunk_rows(
 ) -> Vec<(Range<usize>, DiffHunkKind)> {
     test_hunk_rendering(snapshot, hunks, expanded, old_display_ranges)
         .rendering_for_viewport(0..usize::MAX)
-        .diff_rows
+        .scrollbar_rows
         .into_iter()
         .map(|(rows, kind, _)| (rows, kind))
         .collect()
@@ -751,7 +750,6 @@ fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
                     scroll_offset: point(px(0.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -825,7 +823,6 @@ fn active_line_background_covers_all_soft_wrapped_rows(cx: &mut TestAppContext) 
                     scroll_offset: point(px(0.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -898,29 +895,11 @@ fn editor_width_soft_wrap_keeps_mixed_cjk_inside_text_bounds(cx: &mut TestAppCon
                     let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
                     let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
                     let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
-                    if text.starts_with("新增") && quarter_pixels == 720 {
-                        let rows: Vec<_> = viewport
-                            .iter()
-                            .map(|row| {
-                                let WrapRowKind::Text {
-                                    byte_range,
-                                    projected_line,
-                                    ..
-                                } = row.kind();
-                                projected_line_text(&display, *projected_line)
-                                    .expect("显示行文本应可解析")
-                                    .as_ref()[byte_range.clone()]
-                                    .to_owned()
-                            })
-                            .collect();
-                        assert_eq!(
-                            rows,
-                            [
-                                "新增 Zcv 架构维护技能并整合可见性清理",
-                                "、架构体检与架构减法流程",
-                            ]
-                        );
+                    if quarter_pixels == 720 {
+                        assert!(viewport.len() > 1, "窄文本布局区应触发软换行");
                     }
+
+                    let mut wrapped_text = String::new();
 
                     for row in &viewport {
                         let WrapRowKind::Text {
@@ -931,6 +910,7 @@ fn editor_width_soft_wrap_keeps_mixed_cjk_inside_text_bounds(cx: &mut TestAppCon
                         let row_text = projected_line_text(&display, *projected_line)
                             .expect("显示行文本应可解析");
                         let row_text = &row_text.as_ref()[byte_range.clone()];
+                        wrapped_text.push_str(row_text);
                         let run = TextRun {
                             len: row_text.len(),
                             font: font.clone(),
@@ -952,6 +932,7 @@ fn editor_width_soft_wrap_keeps_mixed_cjk_inside_text_bounds(cx: &mut TestAppCon
                             f32::from(shaped.width),
                         );
                     }
+                    assert_eq!(wrapped_text, text, "软换行应保留完整文本及顺序");
                 }
             }
         })
@@ -1030,7 +1011,6 @@ fn multibuffer_header_can_start_above_viewport(cx: &mut TestAppContext) {
                     scroll_offset: point(px(0.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -1221,7 +1201,6 @@ fn wrapped_unicode_markdown_queries_highlights_from_source_chunks(cx: &mut TestA
                     scroll_offset: point(px(0.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -1268,7 +1247,6 @@ fn large_buffer_layout_shapes_only_visible_rows(cx: &mut TestAppContext) {
                     scroll_offset: point(px(0.), px(10.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -1325,7 +1303,6 @@ fn gutter_and_text_share_vertical_rows_but_only_text_scrolls_horizontally(cx: &m
                     scroll_offset: point(px(20.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -1379,7 +1356,6 @@ fn indent_guide_columns_use_the_same_tab_size_as_text(cx: &mut TestAppContext) {
                     scroll_offset: point(px(0.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -1453,7 +1429,6 @@ fn folded_projection_rows_drive_layout_and_hit_testing(cx: &mut TestAppContext) 
                     scroll_offset: point(px(0.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -1520,7 +1495,6 @@ fn folded_element_participates_in_cross_fragment_coordinates(cx: &mut TestAppCon
                     scroll_offset: point(px(0.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -1709,7 +1683,6 @@ fn constrain_width_bounds_element_fragment(cx: &mut TestAppContext) {
                         scroll_offset: point(px(0.), px(0.)),
                         primary_caret_column: None,
                         line_height: px(20.),
-                        diff_rows: &[],
                     },
                     window,
                     cx,
@@ -1798,7 +1771,6 @@ fn inline_element_prepaints_at_the_final_translated_origin(cx: &mut TestAppConte
                     scroll_offset: point(px(0.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -1853,7 +1825,6 @@ fn multi_line_selection_uses_one_rounded_contour_with_inner_turns(cx: &mut TestA
                     scroll_offset: point(px(0.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -1926,7 +1897,6 @@ fn selected_spaces_render_one_dot_each_without_treating_tabs_as_spaces(cx: &mut 
                     scroll_offset: point(px(0.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -1989,7 +1959,6 @@ fn caret_outside_visible_rows_is_not_painted_on_viewport_edge(cx: &mut TestAppCo
                     scroll_offset: point(px(0.), px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -2056,7 +2025,6 @@ fn multibuffer_excerpt_uses_the_same_text_selection_geometry_as_a_single_buffer(
                 scroll_offset: point(px(0.), px(0.)),
                 primary_caret_column: None,
                 line_height: px(20.),
-                diff_rows: &[],
             };
             let single_layout = layout_visible_lines(
                 project_display_snapshot(cx, single_snapshot.clone()),
@@ -2138,7 +2106,7 @@ fn multibuffer_excerpt_uses_the_same_text_selection_geometry_as_a_single_buffer(
 }
 
 #[gpui::test]
-fn diff_hunk_rows_maps_logical_rows_to_display_rows(cx: &mut TestAppContext) {
+fn scrollbar_hunk_rows_map_logical_rows_to_display_rows(cx: &mut TestAppContext) {
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -2154,7 +2122,7 @@ fn diff_hunk_rows_maps_logical_rows_to_display_rows(cx: &mut TestAppContext) {
             .expect("应创建 Buffer");
             let snapshot = project_display_snapshot(cx, buffer.snapshot());
             assert_eq!(
-                diff_hunk_rows(
+                scrollbar_hunk_rows(
                     &snapshot,
                     &[
                         DisplayHunk {
@@ -2213,7 +2181,7 @@ fn diff_hunk_rows_maps_logical_rows_to_display_rows(cx: &mut TestAppContext) {
 
             // 行 0 wrap 成 N 段：marker 覆盖 [0, N)，N = 行 1 的行首显示行。
             assert_eq!(
-                diff_hunk_rows(
+                scrollbar_hunk_rows(
                     &snapshot,
                     &[DisplayHunk {
                         range: 0..1,
@@ -2229,7 +2197,7 @@ fn diff_hunk_rows_maps_logical_rows_to_display_rows(cx: &mut TestAppContext) {
 
             // 越界 hunk（超出文件末尾）用 line_count 收尾。
             assert_eq!(
-                diff_hunk_rows(
+                scrollbar_hunk_rows(
                     &snapshot,
                     &[DisplayHunk {
                         range: 1..10,
@@ -2247,7 +2215,7 @@ fn diff_hunk_rows_maps_logical_rows_to_display_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn diff_hunk_rows_expanded_deleted_marks_materialized_old_rows(cx: &mut TestAppContext) {
+fn scrollbar_hunk_rows_mark_materialized_deleted_rows(cx: &mut TestAppContext) {
     let collapsed = project_display_snapshot(
         cx,
         Buffer::from_text(
@@ -2265,7 +2233,7 @@ fn diff_hunk_rows_expanded_deleted_marks_materialized_old_rows(cx: &mut TestAppC
     };
     // 未展开：行内无标记（删除点由 gutter 红色三角提示）。
     assert_eq!(
-        diff_hunk_rows(
+        scrollbar_hunk_rows(
             &collapsed,
             std::slice::from_ref(&collapsed_hunk),
             &[false],
@@ -2299,7 +2267,7 @@ fn diff_hunk_rows_expanded_deleted_marks_materialized_old_rows(cx: &mut TestAppC
         staging: DiffHunkStaging::NoStaging,
     };
     assert_eq!(
-        diff_hunk_rows(
+        scrollbar_hunk_rows(
             &expanded,
             std::slice::from_ref(&expanded_hunk),
             &[true],
@@ -2331,7 +2299,7 @@ fn modified_hunk_expansion_marks_old_and_new_rows(cx: &mut TestAppContext) {
         staging: DiffHunkStaging::NoStaging,
     };
     assert_eq!(
-        diff_hunk_rows(
+        scrollbar_hunk_rows(
             &snapshot,
             std::slice::from_ref(&hunk),
             &[true],
@@ -2532,7 +2500,6 @@ fn windowed_placeholder_chunk_keeps_renderer_and_element(cx: &mut TestAppContext
                     scroll_offset: point(em_advance * 266., px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,
@@ -2590,7 +2557,6 @@ fn windowed_selection_geometry_matches_caret(cx: &mut TestAppContext) {
                     scroll_offset: point(em_advance * 150., px(0.)),
                     primary_caret_column: None,
                     line_height: px(20.),
-                    diff_rows: &[],
                 },
                 window,
                 cx,

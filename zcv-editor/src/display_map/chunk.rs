@@ -17,7 +17,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use gpui::{HighlightStyle, UnderlineStyle, px};
 use zcv_language::HighlightSpan;
-use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
+use zcv_multi_buffer::{
+    DiffRowStatus, ExcerptSnapshot, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
+};
 use zcv_text::Line;
 
 use super::block_map::{BlockRow, BlockRows, DisplayBlock};
@@ -955,6 +957,7 @@ pub(crate) fn chunk_to_run(chunk: &Chunk<'_>, base: gpui::TextRun) -> gpui::Text
 /// 行终止符仍由下层组合文本保有，用于坐标与行数计算，不能进入 `shape_line` 的单行输入。
 pub(crate) struct DisplayTextRow<'a> {
     pub(crate) row: DisplayRow,
+    pub(crate) diff_status: Option<DiffRowStatus>,
     pub(crate) excerpt: Option<&'a ExcerptSnapshot>,
     pub(crate) source_line: usize,
     pub(crate) fragment_index: usize,
@@ -1069,6 +1072,7 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
         on_row(DisplayRowEvent::Text {
             row: DisplayTextRow {
                 row: row.index(),
+                diff_status: row.diff_status(),
                 excerpt: row.excerpt(),
                 source_line: stream_line.get(),
                 fragment_index: *fragment_index,

@@ -385,9 +385,9 @@ fn resolved_diff_hunks_in_lines(
 
     let mut resolved = Vec::with_capacity(candidates.len());
     for (key, item_indices) in candidates {
-        let Some(index) = diff_display.index_of(&key.0, key.1, key.2) else {
-            continue;
-        };
+        let index = diff_display
+            .index_of(&key.0, key.1, key.2)
+            .expect("变换 hunk 身份必须存在于同版显示索引");
         let mut accum = None;
         let mut inspected = HashSet::new();
         for item_index in item_indices {
@@ -727,7 +727,7 @@ impl MultiBuffer {
         &mut self,
         display_path: &Path,
         excerpt_ranges: DiffExcerptRanges,
-        changed_range: Range<Anchor>,
+        changed_range: Option<Range<Anchor>>,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(index) = self
@@ -748,16 +748,9 @@ impl MultiBuffer {
         }
         let diff = self.diffs[index].diff.clone();
         if self.diffs[index].revision == Some(diff.read(cx).revision()) {
-            if !ranges_changed {
-                return false;
-            }
-            self.begin_projection_sync();
-            self.sync_pending_sources(cx);
-            let updated = self.sync_diff_range(index, &changed_range, cx);
-            self.finish_projection_sync(cx);
-            return updated;
+            return false;
         }
-        self.diff_changed(diff.entity_id(), Some(changed_range), cx);
+        self.diff_changed(diff.entity_id(), changed_range, cx);
         true
     }
 
@@ -1268,7 +1261,7 @@ impl MultiBuffer {
             return true;
         }
 
-        if let Some(changed_range) = changed_range {
+        if let Some(changed_range) = changed_range.as_ref() {
             let working = working_snapshot_for(&self.diffs[index], cx);
             let start = changed_range
                 .start
@@ -1295,10 +1288,15 @@ impl MultiBuffer {
                         .iter()
                         .any(|current| anchor_matches(&over.hunk_start, current, &working))
             });
-            self.sync_diff_range(index, &changed_range, cx);
+            self.sync_diff_range(index, changed_range, cx);
         }
-        // 缺少范围时只接受 BufferDiff 状态，不同步 diff 投影，也不触发整文件重建。
-        // 记录已处理版本，使源文档同步可以完成。
+        // 缺少范围仍安装同版本的修订源与显示输入；输出变换保持不变。
+        if changed_range.is_none() {
+            self.prepare_diff_source_for_file(index, cx);
+            let working = self.diffs[index].diff.read(cx).working().clone();
+            let path = crate::path_key_for_source(working.read(cx), self.path_order);
+            self.refresh_diff_display_for_path(&path, cx);
+        }
         self.diffs[index].revision = Some(revision);
         true
     }
@@ -1436,6 +1434,7 @@ impl MultiBuffer {
         &self,
         excerpt: &Excerpt,
         range: Range<usize>,
+        owns_end_boundary: bool,
         cx: &App,
     ) -> Vec<DiffTransform> {
         let source = &self.state.sources[excerpt.source_index];
@@ -1526,7 +1525,10 @@ impl MultiBuffer {
                 self.diff_expanded_by_default,
             );
             let owns_boundary = hunk_start >= start
-                && (hunk_start < end || (hunk_start == end && (completes || range.is_empty())));
+                && (hunk_start < end
+                    || (hunk_start == end
+                        && owns_end_boundary
+                        && (hunk_start == hunk_end || (expanded && !hunk.base_lines.is_empty()))));
             let mut old_visible = false;
             if owns_boundary
                 && expanded

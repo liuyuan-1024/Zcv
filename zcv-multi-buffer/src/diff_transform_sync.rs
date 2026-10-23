@@ -161,6 +161,7 @@ impl MultiBuffer {
                     self.diff_transforms_for_excerpt(
                         excerpt,
                         0..excerpt.output_text_summary().len,
+                        true,
                         cx,
                     ),
                     (),
@@ -212,9 +213,16 @@ impl MultiBuffer {
                 }
                 let range = edit.new.start.get().saturating_sub(start)
                     ..(edit.new.end.get().min(end) - start);
+                // 旧变换在终点以 Right 偏置切开，终点的零输入删除节点属于本次替换。
+                // 新片段必须以同一归属规则接管它，不能让后缀和新片段都跳过该节点。
+                let owns_end_boundary =
+                    edit.new.end.get() <= end || range.end == excerpt.output_text_summary().len;
                 append_transforms(
                     &mut next,
-                    SumTree::from_iter(self.diff_transforms_for_excerpt(excerpt, range, cx), ()),
+                    SumTree::from_iter(
+                        self.diff_transforms_for_excerpt(excerpt, range, owns_end_boundary, cx),
+                        (),
+                    ),
                 );
                 if end > edit.new.end.get() {
                     break;

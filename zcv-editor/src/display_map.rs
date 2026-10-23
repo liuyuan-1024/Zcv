@@ -42,7 +42,7 @@ pub(crate) use decorations::EditorHunkMarkerKind;
 pub(crate) use decorations::hunk_rendering;
 pub(crate) use decorations::{
     DiffDecorationSnapshot, DisplayDecorations, SearchDecorationInput, SearchDecorationSnapshot,
-    diff_row_for_row, is_hollow_hunk,
+    is_hollow_hunk,
 };
 pub use decorations::{EditorHunk, EditorHunkPart, HunkControlTarget};
 pub(crate) use display_width::DisplayColumn;
@@ -1213,8 +1213,8 @@ impl DisplayMap {
             syntax_crease_cache: Arc::new(Mutex::new(SyntaxCreaseIndex::default())),
             version,
         };
-        // 复用已投影的 diff 装饰要求显示几何未变：块几何代际是唯一判据。
-        // 不能拿「是否有换行重排」代理——折叠、显示策略或 excerpt 拓扑变化同样改变显示行。
+        // 显示几何和 diff 输入都必须未变，才能复用已投影的装饰。
+        // 块几何代际涵盖折叠、显示策略及 excerpt 拓扑变化，不能只检查换行重排。
         let geometry_unchanged = self.snapshot.as_ref().is_some_and(|previous| {
             previous.block_snapshot.geometry_epoch() == snapshot.block_snapshot.geometry_epoch()
         });

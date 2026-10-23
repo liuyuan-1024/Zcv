@@ -291,6 +291,12 @@ impl<'a> WrapRows<'a> {
             .as_ref()
             .and_then(MultiBufferLineCursor::excerpt_snapshot)
     }
+
+    pub(super) fn current_diff_row_status(&self) -> Option<zcv_multi_buffer::DiffRowStatus> {
+        self.line_cursor
+            .as_ref()
+            .and_then(MultiBufferLineCursor::diff_row_status)
+    }
 }
 
 #[derive(Debug, Clone)]

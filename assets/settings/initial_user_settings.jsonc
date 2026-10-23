@@ -10,7 +10,7 @@
   "content_font_size": 16,
 
   // 数字，单位为像素；字号应大于 0（当前只校验数字类型）。
-  "ui_font_size": 13,
+  "ui_font_size": 14,
 
   // 数字，表示内容字号的行高倍数；应大于 0（当前只校验数字类型）。
   "content_line_height": 1.618,

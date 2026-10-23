@@ -12,7 +12,9 @@ use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, Transact
 use super::common::{buffer_text, focus_editor, inject_editor_diff, inject_file_diff, test_buffer};
 use super::*;
 use crate::display_map::test_support::{WrapRowKind, projected_line_text};
-use crate::display_map::{DisplayColumn, DisplayPoint, DisplayRow, hunk_rendering};
+use crate::display_map::{
+    DisplayColumn, DisplayPoint, DisplayRow, DisplayRowEvent, HighlightStyles, hunk_rendering,
+};
 
 /// 由绝对坐标切片构造按段解析输入，供渲染单元测试调用。
 fn resolved_hunks(
@@ -213,11 +215,14 @@ fn diff_decorations_are_cached_and_consumed_by_viewport(cx: &mut TestAppContext)
     );
 
     assert!(
-        cached.rendering_for_viewport(0..1).diff_rows.is_empty(),
+        cached
+            .rendering_for_viewport(0..1)
+            .scrollbar_rows
+            .is_empty(),
         "视口外的 diff 行不应进入本帧消费数据"
     );
     assert_eq!(
-        cached.rendering_for_viewport(1..2).diff_rows.len(),
+        cached.rendering_for_viewport(1..2).scrollbar_rows.len(),
         1,
         "视口内的 diff 行应从派生快照切片得到"
     );
@@ -368,7 +373,7 @@ fn staging_one_hunk_preserves_the_remaining_hunk_decoration(cx: &mut TestAppCont
         editor.update_diff_excerpt_ranges(
             PathBuf::from("src/a.rs").as_path(),
             DiffExcerptRanges::Windows(std::iter::once(20..30).collect()),
-            first_range,
+            Some(first_range),
             cx,
         );
     });
@@ -389,22 +394,156 @@ fn staging_one_hunk_preserves_the_remaining_hunk_decoration(cx: &mut TestAppCont
     cx.read_entity(&editor, assert_viewport_projection);
 }
 
-/// 回归：同一行内编辑且 diff 几何未变化时，显示链只替换文本快照，
-/// 不重建已投影的 diff 装饰。
 #[gpui::test]
-fn geometry_preserving_diff_edit_reuses_diff_decorations(cx: &mut TestAppContext) {
+fn staging_another_hunk_preserves_deleted_row_status(cx: &mut TestAppContext) {
+    for deleted_line in [14, 29] {
+        let original = (0..30)
+            .map(|line| format!("line{line}\n"))
+            .collect::<String>();
+        let first_staged = original.replace("line3\n", "first change\n");
+        let working = first_staged.replace(&format!("line{deleted_line}\n"), "");
+        let source = test_buffer(cx, &working);
+        source.update(cx, |buffer, cx| {
+            buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+        });
+        let base: Arc<str> = Arc::from(original);
+        let diff = cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    operations: None,
+                    working: source,
+                    base_text: Some(base.clone()),
+                    index_text: Some(base),
+                    path: PathBuf::from("src/a.rs"),
+                    language_registry: Arc::new(LanguageRegistry::new()),
+                    key: 0,
+                },
+                cx,
+            )
+        });
+        let combined = cx.new(MultiBuffer::empty);
+        combined.update(cx, |combined, cx| {
+            combined.set_diff_hunks_expanded_by_default(true, cx);
+            combined.set_diff_files(
+                vec![DiffFile {
+                    diff: diff.clone(),
+                    display_path: PathBuf::from("src/a.rs"),
+                    excerpt_ranges: DiffExcerptRanges::FullFile,
+                }],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read_entity(&diff, |diff, _| diff.snapshot().hunk_count()),
+            2
+        );
+        assert_eq!(
+            combined.update(cx, |combined, cx| {
+                combined.snapshot(cx).resolved_diff_hunks().len()
+            }),
+            2
+        );
+        let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
+        let assert_deleted_row = |editor: &Editor, cx: &App| {
+            let display = editor.display_snapshot(cx);
+            let mut deleted_rows = 0;
+            display
+                .chunks(
+                    DisplayRow::new(0)..DisplayRow::new(display.line_count()),
+                    HighlightStyles::default(),
+                    None,
+                )
+                .for_each_row(|event| {
+                    if let DisplayRowEvent::Text { row, .. } = event
+                        && row.excerpt.is_some_and(|excerpt| {
+                            excerpt.diff_kind() == Some(zcv_multi_buffer::ExcerptDiffKind::Deleted)
+                        })
+                    {
+                        if let Some(status) = row.diff_status {
+                            deleted_rows += 1;
+                            assert_eq!(status.kind, DiffHunkKind::Deleted);
+                            assert!(status.expanded);
+                        } else {
+                            assert_eq!(
+                                row.row.get() + 1,
+                                display.line_count(),
+                                "只有末尾换行产生的空行不携带删除状态"
+                            );
+                        }
+                    }
+                });
+            assert!(deleted_rows > 0, "第 {deleted_line} 行的删除内容必须可见");
+            deleted_rows
+        };
+        if deleted_line == 14 {
+            let window = cx.add_window(|_, _| gpui::Empty);
+            window
+                .update(cx, |_, window, cx| {
+                    let text_system = window.text_system().clone();
+                    let font = window.text_style().font();
+                    let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+                    editor.update(cx, |editor, cx| {
+                        editor.display_map.update(cx, |map, cx| {
+                            map.set_wrap_width(Some(px(30.)), font, font_size, &text_system, cx)
+                        })
+                    });
+                })
+                .expect("测试窗口应保持可用");
+            cx.run_until_parked();
+            assert!(
+                cx.read_entity(&editor, assert_deleted_row) > 1,
+                "中段删除行软换行后的所有显示片段都应携带差异状态"
+            );
+        } else {
+            cx.read_entity(&editor, assert_deleted_row);
+        }
+
+        diff.update(cx, |diff, cx| {
+            diff.set_revisions(
+                Some(Arc::from(first_staged.clone())),
+                Some(Arc::from(first_staged.clone())),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read_entity(&diff, |diff, _| diff.snapshot().hunk_count()),
+            1
+        );
+        assert_eq!(
+            cx.read_entity(&diff, |diff, _| {
+                diff.snapshot().hunks().next().unwrap().kind
+            }),
+            DiffHunkKind::Deleted
+        );
+        editor.update(cx, |editor, cx| {
+            editor.multi_buffer.update(cx, |buffer, cx| {
+                let snapshot = buffer.snapshot(cx);
+                assert_eq!(snapshot.resolved_diff_hunks().len(), 1);
+                assert!(
+                    String::from_utf8_lossy(&snapshot.text_bytes())
+                        .contains(&format!("line{deleted_line}")),
+                    "旧侧删除内容必须保留在组合投影中"
+                );
+            })
+        });
+        cx.read_entity(&editor, assert_deleted_row);
+    }
+}
+
+/// 回归：同一行内编辑即使不改变 hunk 行范围，控件也必须使用当前 diff 的源操作范围。
+#[gpui::test]
+fn geometry_preserving_diff_edit_updates_hunk_control_source(cx: &mut TestAppContext) {
     let source = test_buffer(cx, "a\nb\nc\n");
     let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
     inject_file_diff(&editor, &source, Arc::from("a\nB\nc\n"), cx);
 
     let before = editor.update(cx, |editor, cx| {
-        editor.display_snapshot(cx).diff_decorations()
-    });
-    let before_input = editor.update(cx, |editor, cx| {
         editor
-            .multi_buffer
-            .update(cx, |buffer, cx| buffer.snapshot(cx).diff_display().cloned())
-            .expect("已注入 diff 必须有显示输入")
+            .display_snapshot(cx)
+            .buffer_snapshot()
+            .resolved_diff_hunks()
     });
     cx.update_entity(&source, |source, cx| {
         source
@@ -422,22 +561,22 @@ fn geometry_preserving_diff_edit_reuses_diff_decorations(cx: &mut TestAppContext
     });
     cx.run_until_parked();
 
-    let after = editor.update(cx, |editor, cx| {
-        editor.display_snapshot(cx).diff_decorations()
+    let (after, controls) = editor.update(cx, |editor, cx| {
+        let display = editor.display_snapshot(cx);
+        let after = display.buffer_snapshot().resolved_diff_hunks();
+        let controls = display
+            .diff_decorations()
+            .visible_controls(&(0..display.line_count()));
+        (after, controls)
     });
-    let after_input = editor.update(cx, |editor, cx| {
-        editor
-            .multi_buffer
-            .update(cx, |buffer, cx| buffer.snapshot(cx).diff_display().cloned())
-            .expect("已注入 diff 必须有显示输入")
-    });
-    assert!(
-        Arc::ptr_eq(&before_input, &after_input),
-        "同一行内编辑未改变 hunk 几何时不得替换 diff 显示输入"
-    );
-    assert!(
-        Arc::ptr_eq(&before, &after),
-        "同一行内编辑未改变 hunk 几何时不得重建 diff 装饰"
+    assert_eq!(before.len(), 1);
+    assert_eq!(after.len(), 1);
+    assert_eq!(before[0].1.hunk, after[0].1.hunk);
+    assert_ne!(before[0].1.source, after[0].1.source);
+    assert_eq!(controls.len(), 1);
+    assert_eq!(
+        controls[0].2,
+        HunkControlTarget::Diff(after[0].1.source.clone())
     );
 }
 
@@ -2721,7 +2860,7 @@ fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut 
             .into_iter(),
         );
         assert_eq!(
-            rendering.diff_rows,
+            rendering.scrollbar_rows,
             vec![
                 (1..2, DiffHunkKind::Deleted, DiffHunkStaging::NoStaging),
                 (2..3, DiffHunkKind::Added, DiffHunkStaging::NoStaging),

@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_multi_buffer::{
-    ExcerptSnapshot, MultiBufferAnchor, MultiBufferCoordinateCursor, MultiBufferOffset,
-    MultiBufferRange,
+    DiffRowStatus, ExcerptSnapshot, MultiBufferAnchor, MultiBufferCoordinateCursor,
+    MultiBufferOffset, MultiBufferRange,
 };
 use zcv_text::{Affinity, BufferId, CoordinateError, Line};
 
@@ -151,6 +151,7 @@ pub(crate) struct BlockRow {
     height: usize,
     kind: BlockRowKind,
     excerpt: Option<ExcerptSnapshot>,
+    diff_status: Option<DiffRowStatus>,
 }
 
 impl BlockRow {
@@ -160,6 +161,10 @@ impl BlockRow {
 
     pub(crate) fn height(&self) -> usize {
         self.height
+    }
+
+    pub(crate) fn diff_status(&self) -> Option<DiffRowStatus> {
+        self.diff_status
     }
 
     pub(crate) fn kind(&self) -> &WrapRowKind {
@@ -275,6 +280,7 @@ impl<'a> BlockRows<'a> {
                     height,
                     kind: BlockRowKind::Block(DisplayBlock { kind, excerpt }),
                     excerpt: None,
+                    diff_status: None,
                 })
             }
             TransformKind::Text => {
@@ -282,11 +288,13 @@ impl<'a> BlockRows<'a> {
                 self.wrap_rows.seek_forward(wrap_row);
                 let wrap = self.wrap_rows.next()?;
                 let excerpt = self.wrap_rows.current_excerpt();
+                let diff_status = self.wrap_rows.current_diff_row_status();
                 let row = BlockRow {
                     index: DisplayRow::new(self.row),
                     height: 1,
                     kind: BlockRowKind::Text(wrap),
                     excerpt,
+                    diff_status,
                 };
                 self.row += 1;
                 if self.row >= transform_start.0.0 + transform.output_rows {

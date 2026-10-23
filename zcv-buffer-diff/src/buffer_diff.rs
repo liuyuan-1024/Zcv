@@ -702,7 +702,23 @@ impl BufferDiff {
             .is_none_or(|inputs| inputs.revisions != self.revision_texts);
         let working = self.working.read(cx).text_snapshot();
         let previous_hunks = self.snapshot.hunks.iter().cloned().collect::<Vec<_>>();
-        let mut changed_range = changed_hunk_range(&previous_hunks, &hunks, &working);
+        let previous_base = self
+            .calculated_inputs
+            .as_ref()
+            .and_then(|inputs| inputs.revisions.base.as_deref());
+        let current_base = self.revision_texts.base.as_deref();
+        let base_changed = self
+            .calculated_inputs
+            .as_ref()
+            .is_none_or(|inputs| inputs.versions.base != versions.base);
+        let mut changed_range = changed_hunk_range(
+            &previous_hunks,
+            &hunks,
+            &working,
+            previous_base,
+            current_base,
+            base_changed,
+        );
         let pending_hunks = if revisions_changed {
             Vec::new()
         } else {
@@ -1019,23 +1035,30 @@ fn hunks_equivalent(a: &[DiffHunk], b: &[DiffHunk]) -> bool {
         })
 }
 
-/// 找出新旧 hunk 序列中最小的连续变化范围，并将其锚定到当前 working 快照。
+/// 比较 hunk 的锚点身份、元数据与旧侧内容，找出需要替换输出变换的范围。
 fn changed_hunk_range(
     old: &[DiffHunk],
     new: &[DiffHunk],
     working: &Snapshot,
+    old_base: Option<&str>,
+    new_base: Option<&str>,
+    base_changed: bool,
 ) -> Option<Range<Anchor>> {
     let prefix = old
         .iter()
         .zip(new)
-        .take_while(|(old, new)| diff_hunks_equal_in(old, new, working))
+        .take_while(|(old, new)| {
+            diff_hunks_equal_for_projection(old, new, old_base, new_base, base_changed)
+        })
         .count();
     let mut suffix = 0;
     while prefix + suffix < old.len().min(new.len())
-        && diff_hunks_equal_in(
+        && diff_hunks_equal_for_projection(
             &old[old.len() - suffix - 1],
             &new[new.len() - suffix - 1],
-            working,
+            old_base,
+            new_base,
+            base_changed,
         )
     {
         suffix += 1;
@@ -1052,22 +1075,29 @@ fn changed_hunk_range(
     )
 }
 
-fn diff_hunks_equal_in(old: &DiffHunk, new: &DiffHunk, working: &Snapshot) -> bool {
-    let resolve = |anchor: &Anchor| anchor.resolve_in(working).ok();
-    resolve(&old.buffer_range.start) == resolve(&new.buffer_range.start)
-        && resolve(&old.buffer_range.end) == resolve(&new.buffer_range.end)
+fn diff_hunks_equal_for_projection(
+    old: &DiffHunk,
+    new: &DiffHunk,
+    old_base: Option<&str>,
+    new_base: Option<&str>,
+    base_changed: bool,
+) -> bool {
+    let base_text_equal = !base_changed
+        || match (old_base, new_base) {
+            (Some(old_base), Some(new_base)) => {
+                old_base[old.diff_base_byte_range.clone()]
+                    == new_base[new.diff_base_byte_range.clone()]
+            }
+            (None, None) => true,
+            _ => false,
+        };
+    old.buffer_range == new.buffer_range
         && old.diff_base_byte_range == new.diff_base_byte_range
+        && base_text_equal
         && old.kind == new.kind
         && old.staging == new.staging
         && old.base_word_diffs == new.base_word_diffs
-        && old.buffer_word_diffs.len() == new.buffer_word_diffs.len()
-        && old
-            .buffer_word_diffs
-            .iter()
-            .zip(&new.buffer_word_diffs)
-            .all(|(old, new)| {
-                resolve(&old.start) == resolve(&new.start) && resolve(&old.end) == resolve(&new.end)
-            })
+        && old.buffer_word_diffs == new.buffer_word_diffs
 }
 
 fn anchor_ranges_union(

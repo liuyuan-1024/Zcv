@@ -1333,6 +1333,17 @@ fn staging_first_hunk_keeps_last_deletion_visible_after_reopening(cx: &mut TestA
             assert!(hunks[0].1.old_range.is_some(), "删除块的旧侧必须可见");
             let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
             assert!(text.contains("line29"), "末行删除内容必须显示：{text:?}");
+            let line = snapshot
+                .byte_to_line(MultiBufferOffset::new(
+                    text.find("line29").expect("旧侧行必须可定位"),
+                ))
+                .expect("旧侧偏移必须可转换为行");
+            let status = snapshot
+                .line_cursor(line)
+                .and_then(|cursor| cursor.diff_row_status())
+                .expect("旧侧行必须携带差异状态");
+            assert_eq!(status.kind, DiffHunkKind::Deleted);
+            assert!(status.expanded);
         });
     };
     assert_last_deletion(&view, cx);

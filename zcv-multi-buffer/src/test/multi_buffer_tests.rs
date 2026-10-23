@@ -4019,6 +4019,40 @@ fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut T
     );
 }
 
+#[gpui::test]
+fn base_text_change_with_same_hunk_geometry_updates_materialized_old_side(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "a\nnew\nz\n", cx);
+    let diff = test_diff_entity(source.clone(), "src/a.rs", Some("a\nold\nz\n"), None, cx);
+    let combined = cx.new(|cx| MultiBuffer::singleton(source, cx));
+    combined.update(cx, |buffer, cx| {
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.set_diff_files(
+            vec![DiffFile {
+                diff: diff.clone(),
+                display_path: PathBuf::from("src/a.rs"),
+                excerpt_ranges: DiffExcerptRanges::FullFile,
+            }],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert!(combined.update(cx, |buffer, cx| {
+        String::from_utf8_lossy(&buffer.snapshot(cx).text_bytes()).contains("old")
+    }));
+
+    diff.update(cx, |diff, cx| {
+        diff.set_revisions(Some(Arc::from("a\nOLD\nz\n")), None, cx)
+    });
+    cx.run_until_parked();
+    combined.update(cx, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        let text = String::from_utf8(snapshot.text_bytes()).unwrap();
+        assert!(text.contains("OLD"), "旧侧内容必须跟随新基线：{text:?}");
+        assert!(!text.contains("old"));
+        assert_eq!(snapshot.resolved_diff_hunks().len(), 1);
+    });
+}
+
 /// 回归：外部整体替换后，显示 hunk 必须从新工作区快照重算，旧 Git 操作 hunk 不得复用。
 #[gpui::test]
 fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContext) {
@@ -4408,7 +4442,7 @@ fn diff_hunks_survive_geometry_preserving_edits(cx: &mut TestAppContext) {
         1
     );
 
-    // 同一行内改内容：行数不变、hunk 行范围与词级范围都不变，diff 不会发出 DiffChanged。
+    // 同一行内改内容：行数和 hunk 几何不变，新的 Anchor 身份仍须驱动变换同步。
     cx.update_entity(&source, |source, cx| {
         source
             .edit(

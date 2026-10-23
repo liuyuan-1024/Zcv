@@ -867,12 +867,7 @@ impl DiffView {
         }
         let event_path = diff.read(cx).path().clone();
         let subscription = cx.subscribe(diff, move |view, diff, event, cx| {
-            let BufferDiffEvent::DiffChanged {
-                changed_range: Some(changed_range),
-            } = event
-            else {
-                return;
-            };
+            let BufferDiffEvent::DiffChanged { changed_range } = event;
             if !view.files.iter().any(|file| file.path == event_path) {
                 return;
             }

@@ -19,7 +19,9 @@ use zcv_actions::OpenExcerpts;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_keymap::display_shortcut;
 use zcv_language::BracketPair;
-use zcv_multi_buffer::{IndentGuide, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
+use zcv_multi_buffer::{
+    DiffRowStatus, IndentGuide, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
+};
 use zcv_settings::{CursorShape, IndentGuideSettings, SettingsStore, UserSettings};
 use zcv_text::Line;
 use zcv_theme::{color, fixed, scale};
@@ -36,7 +38,7 @@ use super::display_map::{
     DisplayColumn, DisplayPoint, DisplayRange, DisplayRow, DisplayRowEvent, DisplaySnapshot,
     EditorHunkMarkerKind, FILE_HEADER_HEIGHT, HighlightStyles, HunkControlTarget,
     RenderedWhitespace, SearchDecorationSnapshot, StickyBufferHeader, byte_for_display_column,
-    chunk_to_run, diff_row_for_row, display_column_for_byte, is_hollow_hunk,
+    chunk_to_run, display_column_for_byte, is_hollow_hunk,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -283,7 +285,7 @@ struct LayoutLine {
     /// 行文本起点在完整显示行中的显示列；水平窗口化时用于逆算命中位置。
     window_start_column: usize,
     /// 该显示行所属的 git diff 类型与暂存语义（内容背景用；wrap 续行同样标注）。
-    git_diff: Option<(DiffHunkKind, DiffHunkStaging)>,
+    git_diff: Option<DiffRowStatus>,
     /// placeholder 提示行：命中测试不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
     is_placeholder: bool,
 }
@@ -615,8 +617,6 @@ pub(super) struct VisibleLineLayoutParams<'a> {
     /// 未换行时，窗口化必须覆盖待自动滚动的光标，否则命中测试只能看到当前水平窗口的末尾，无法把视口带到真实光标位置。
     pub(super) primary_caret_column: Option<usize>,
     pub(super) line_height: Pixels,
-    /// git diff 显示行区间（prepaint 从 `diff_hunk_rows` 计算，gutter/内容共用）。
-    pub(super) diff_rows: &'a [(Range<usize>, DiffHunkKind, DiffHunkStaging)],
 }
 
 impl EditorLayout {
@@ -758,8 +758,6 @@ pub(super) struct PrepaintState {
     placeholder_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
     /// hunk 竖条范围与状态色（竖条色不随展开变化；已暂存仅描边，行背景按行状态另行绘制）。
     hunk_strips: Arc<Vec<(Range<usize>, DiffHunkKind, DiffHunkStaging)>>,
-    /// 整行差异背景范围（新增行始终包含，修改/删除只在展开时包含）。
-    expanded_rows: Arc<Vec<Range<usize>>>,
     /// 展开的未暂存（hollow）连续块：边框按块边界合并绘制，颜色取块首 / 末行的行背景色。
     hollow_blocks: Arc<Vec<Range<usize>>>,
     editor_hunk_parts: Arc<Vec<(Range<usize>, DiffHunkKind, EditorHunkMarkerKind)>>,
@@ -1673,7 +1671,6 @@ impl Element for EditorElement {
         let diff_decorations = display_snapshot.diff_decorations_for_viewport(visible_rows.clone());
         let search_decorations = display_snapshot.search_decorations();
         let hunk_render = diff_decorations.rendering_for_viewport(visible_rows.clone());
-        let diff_rows = &hunk_render.diff_rows;
         let fold_query_range = visible_source_lines.clone();
         let guide_query_range = visible_source_lines.clone();
         let mut layout = layout_visible_lines_from_viewport(
@@ -1697,7 +1694,6 @@ impl Element for EditorElement {
                 scroll_offset,
                 primary_caret_column,
                 line_height,
-                diff_rows,
             },
             window,
             cx,
@@ -1959,7 +1955,6 @@ impl Element for EditorElement {
         }
 
         // 整行差异背景范围（内容区与 gutter 共用；未展开的修改/删除 hunk 只由竖条/三角提示）。
-        let expanded_rows = Arc::new(hunk_render.expanded_rows.clone());
         let hollow_blocks = Arc::new(hunk_render.hollow_blocks.clone());
         PrepaintState {
             layout,
@@ -1975,7 +1970,6 @@ impl Element for EditorElement {
             crease_toggles,
             placeholder_hitboxes,
             hunk_strips,
-            expanded_rows,
             hollow_blocks,
             editor_hunk_parts: Arc::new(hunk_render.editor_hunk_parts.clone()),
             scrollbar,
@@ -2224,18 +2218,13 @@ impl Element for EditorElement {
                 }
             }
             for line in &prepaint.layout.lines {
-                let Some((kind, staging)) = line.git_diff else {
+                let Some(status) = line.git_diff.filter(|status| status.expanded) else {
                     continue;
                 };
-                if !prepaint
-                    .expanded_rows
-                    .iter()
-                    .any(|range| range.contains(&line.row.get()))
-                {
-                    continue;
-                }
                 // 展开态没有 Modified 类型行（展开后旧行标 Deleted、修改行标 Added）。
-                let Some(background) = diff_hunk_background_color(colors, kind, staging) else {
+                let Some(background) =
+                    diff_hunk_background_color(colors, status.kind, status.staging)
+                else {
                     continue;
                 };
                 let bounds = Bounds::from_corners(
@@ -2371,18 +2360,12 @@ impl Element for EditorElement {
                             ));
                         }
                     }
-                    let Some((kind, staging)) = line.git_diff else {
+                    let Some(status) = line.git_diff.filter(|status| status.expanded) else {
                         continue;
                     };
-                    if !prepaint
-                        .expanded_rows
-                        .iter()
-                        .any(|range| range.contains(&line.row.get()))
-                    {
-                        continue;
-                    }
                     // 展开态没有 Modified 类型行（展开后旧行标 Deleted、修改行标 Added）。
-                    let Some(background) = diff_hunk_background_color(diff_colors, kind, staging)
+                    let Some(background) =
+                        diff_hunk_background_color(diff_colors, status.kind, status.staging)
                     else {
                         continue;
                     };
@@ -2769,7 +2752,7 @@ fn paint_hollow_block_edges(
     if first.row.get() == block.start
         && let Some(color) = first
             .git_diff
-            .and_then(|(kind, _)| diff_hollow_border_color(colors, kind))
+            .and_then(|status| diff_hollow_border_color(colors, status.kind))
     {
         let top = first.origin.y;
         window.paint_quad(fill(
@@ -2780,7 +2763,7 @@ fn paint_hollow_block_edges(
     if last.row.get() + 1 == block.end
         && let Some(color) = last
             .git_diff
-            .and_then(|(kind, _)| diff_hollow_border_color(colors, kind))
+            .and_then(|status| diff_hollow_border_color(colors, status.kind))
     {
         let bottom = last.origin.y + line_height;
         window.paint_quad(fill(
@@ -2947,7 +2930,6 @@ fn layout_visible_lines_from_viewport(
         scroll_offset,
         primary_caret_column,
         line_height,
-        diff_rows,
     } = params;
     let line_count = display_snapshot.line_count();
     let start = start_row.get().min(line_count.saturating_sub(1));
@@ -3067,6 +3049,7 @@ fn layout_visible_lines_from_viewport(
     // 颜色在本帧取一次，供 push_line 与 for_each_row 共享，避免两个闭包各自借 cx。
     let colors = *color::current(cx);
     let mut push_line = |row: usize,
+                         git_diff: Option<DiffRowStatus>,
                          logical_line: Option<Line>,
                          gutter_line: Option<Line>,
                          gutter_number: Option<usize>,
@@ -3211,7 +3194,6 @@ fn layout_visible_lines_from_viewport(
                 }
             }
         }
-        let git_diff = diff_row_for_row(diff_rows, row);
         let window_prefix_width = if window_prefix.is_empty() {
             Pixels::ZERO
         } else {
@@ -3254,7 +3236,7 @@ fn layout_visible_lines_from_viewport(
                 .to_string();
             let active = active_lines.contains(&logical_line);
             // 行号按 diff 状态着色（只取行级类型，暂存状态不改变行号色）。
-            let number_color = match (active, git_diff.map(|(kind, _)| kind)) {
+            let number_color = match (active, git_diff.map(|status| status.kind)) {
                 (_, Some(DiffHunkKind::Added)) => colors.version_control_added,
                 (_, Some(DiffHunkKind::Deleted)) => colors.version_control_deleted,
                 (_, Some(DiffHunkKind::Modified)) => colors.version_control_modified,
@@ -3381,6 +3363,7 @@ fn layout_visible_lines_from_viewport(
                 };
                 push_line(
                     row.row.get(),
+                    row.diff_status,
                     Some(Line::new(row.source_line)),
                     gutter_line,
                     gutter_number,

@@ -764,6 +764,8 @@ pub(super) struct PrepaintState {
     scrollbar: Option<ScrollbarLayout>,
     block_elements: Vec<AnyElement>,
     sticky_buffer_header: Option<AnyElement>,
+    /// 字符宽：行增量滚动的水平换算基准。
+    em_advance: Pixels,
     /// 当前帧编辑器聚焦状态（含窗口激活）；绘制阶段据此决定 caret 可见性。
     is_focused: bool,
 }
@@ -1968,6 +1970,7 @@ impl Element for EditorElement {
             scrollbar,
             block_elements,
             sticky_buffer_header,
+            em_advance,
             is_focused: render_snapshot.is_focused(),
         }
     }
@@ -2132,17 +2135,26 @@ impl Element for EditorElement {
         let scroll_editor = self.editor.clone();
         let scroll_hitbox = prepaint.hitbox.clone();
         let scroll_line_height = prepaint.layout.line_height;
+        let scroll_em_advance = prepaint.em_advance;
         window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble || !scroll_hitbox.should_handle_scroll(window) {
                 return;
             }
-            let handled = scroll_editor.update(cx, |editor, cx| match event.delta {
-                ScrollDelta::Pixels(delta) => editor.scroll_by_wheel(delta, event.touch_phase, cx),
-                ScrollDelta::Lines(delta) => editor.scroll_by_wheel(
-                    point(scroll_line_height * delta.x, scroll_line_height * delta.y),
-                    event.touch_phase,
-                    cx,
-                ),
+            let handled = scroll_editor.update(cx, |editor, cx| {
+                let delta = match event.delta {
+                    ScrollDelta::Pixels(mut delta) => {
+                        editor.filter_scroll_delta(&mut delta, event.touch_phase);
+                        delta
+                    }
+                    // 离散滚轮不参与手势主轴过滤，只按内容度量换算。
+                    ScrollDelta::Lines(delta) => {
+                        point(scroll_em_advance * delta.x, scroll_line_height * delta.y)
+                    }
+                };
+                if delta == point(Pixels::ZERO, Pixels::ZERO) {
+                    return false;
+                }
+                editor.scroll_by(delta, cx)
             });
             if handled {
                 cx.stop_propagation();

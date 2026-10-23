@@ -489,7 +489,7 @@ fn wheel_input_updates_editor_scroll_state(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn wheel_gesture_keeps_its_initial_axis(cx: &mut TestAppContext) {
+fn wheel_gesture_filters_to_dominant_axis_and_unlocks_on_reversal(cx: &mut TestAppContext) {
     let text = (0..120)
         .map(|row| format!("{row} {}\n", "long content ".repeat(40)))
         .collect::<String>();
@@ -498,6 +498,7 @@ fn wheel_gesture_keeps_its_initial_axis(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.refresh().expect("测试窗口应可刷新");
 
+    // 手势以水平为主轴，后续小幅纵向分量被过滤。
     cx.simulate_event(ScrollWheelEvent {
         position: point(px(100.), px(100.)),
         delta: ScrollDelta::Pixels(point(px(-80.), px(-10.))),
@@ -506,7 +507,7 @@ fn wheel_gesture_keeps_its_initial_axis(cx: &mut TestAppContext) {
     });
     cx.simulate_event(ScrollWheelEvent {
         position: point(px(100.), px(100.)),
-        delta: ScrollDelta::Pixels(point(px(-10.), px(-60.))),
+        delta: ScrollDelta::Pixels(point(px(-30.), px(-5.))),
         touch_phase: TouchPhase::Moved,
         ..Default::default()
     });
@@ -515,36 +516,69 @@ fn wheel_gesture_keeps_its_initial_axis(cx: &mut TestAppContext) {
         assert_eq!(editor.scroll_top(), px(0.));
     });
 
+    // 纵向分量明显反超，主轴解锁，两轴同时滚动。
     cx.simulate_event(ScrollWheelEvent {
         position: point(px(100.), px(100.)),
-        delta: ScrollDelta::Lines(point(0., -3.)),
-        touch_phase: TouchPhase::Started,
-        ..Default::default()
-    });
-    cx.simulate_event(ScrollWheelEvent {
-        position: point(px(100.), px(100.)),
-        delta: ScrollDelta::Lines(point(-5., -1.)),
+        delta: ScrollDelta::Pixels(point(px(-2.), px(-60.))),
         touch_phase: TouchPhase::Moved,
         ..Default::default()
     });
     cx.read_entity(&editor, |editor, _| {
-        assert_eq!(editor.scroll_manager.offset().x, px(90.));
         assert!(editor.scroll_top() > px(0.));
     });
 
+    // Ended 重置手势；下一次移动重新判定主轴。
     cx.simulate_event(ScrollWheelEvent {
         position: point(px(100.), px(100.)),
-        delta: ScrollDelta::Lines(point(0., 0.)),
+        delta: ScrollDelta::Pixels(point(px(0.), px(0.))),
         touch_phase: TouchPhase::Ended,
         ..Default::default()
     });
+    let (before_x, before_top) = cx.read_entity(&editor, |editor, _| {
+        (editor.scroll_manager.offset().x, editor.scroll_top())
+    });
     cx.simulate_event(ScrollWheelEvent {
         position: point(px(100.), px(100.)),
-        delta: ScrollDelta::Lines(point(-1., -4.)),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-40.))),
+        touch_phase: TouchPhase::Moved,
         ..Default::default()
     });
     cx.read_entity(&editor, |editor, _| {
-        assert_eq!(editor.scroll_manager.offset().x, px(90.));
+        assert_eq!(editor.scroll_manager.offset().x, before_x);
+        assert!(editor.scroll_top() > before_top);
+    });
+}
+
+#[gpui::test]
+fn line_wheel_delta_uses_character_width_horizontally(cx: &mut TestAppContext) {
+    let text = (0..120)
+        .map(|row| format!("{row} {}\n", "long content ".repeat(40)))
+        .collect::<String>();
+    let buffer = test_buffer(cx, text);
+    let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx));
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    let (line_height, em_advance) = cx.update(|window, _| {
+        let text_style = window.text_style();
+        let font = text_style.font();
+        let font_size = text_style.font_size.to_pixels(window.rem_size());
+        let em_advance = window
+            .text_system()
+            .em_advance(window.text_system().resolve_font(&font), font_size)
+            .expect("测试字体必须包含拉丁字形");
+        (window.line_height(), em_advance)
+    });
+
+    // 行增量不做手势轴过滤：横向按字符宽、纵向按行高换算。
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(px(100.), px(100.)),
+        delta: ScrollDelta::Lines(point(-2., -3.)),
+        ..Default::default()
+    });
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(editor.scroll_manager.offset().x, em_advance * 2.);
+        assert_eq!(editor.scroll_top(), line_height * 3.);
     });
 }
 #[gpui::test]

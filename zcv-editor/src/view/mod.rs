@@ -1580,23 +1580,12 @@ impl Editor {
         }
     }
 
-    pub(super) fn scroll_by_wheel(
+    pub(super) fn filter_scroll_delta(
         &mut self,
-        delta: Point<Pixels>,
+        delta: &mut Point<Pixels>,
         touch_phase: TouchPhase,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let display_snapshot = self.display_snapshot(cx).clone();
-        if self
-            .scroll_manager
-            .scroll_by_wheel(delta, touch_phase, &display_snapshot)
-        {
-            self.input_layout = None;
-            cx.notify();
-            true
-        } else {
-            false
-        }
+    ) {
+        self.scroll_manager.filter_scroll_delta(delta, touch_phase);
     }
 
     /// 布局前消费待自动滚动点并应用垂直部分（见 `ScrollManager::apply_pending_autoscroll_vertical`）。

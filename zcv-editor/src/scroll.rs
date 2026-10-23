@@ -2,9 +2,7 @@
 
 use zcv_multi_buffer::MultiBufferAnchor;
 
-use std::time::{Duration, Instant};
-
-use gpui::{Pixels, Point, TouchPhase, point, px};
+use gpui::{OngoingScroll, Pixels, Point, TouchPhase, point, px};
 use zcv_text::Affinity;
 
 use super::display_map::{DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot};
@@ -75,16 +73,8 @@ pub(super) struct ScrollManager {
     /// 本次自动滚动请求的水平部分待布局后钳制（垂直部分已在布局前应用）。
     pending_horizontal_autoscroll: bool,
     thumb_state: ScrollbarThumbState,
-    /// 同一次滚动手势的主轴；无手势阶段的平台按事件间隔分组。
-    wheel_axis: Option<ScrollAxis>,
-    last_wheel_event: Option<Instant>,
-    wheel_has_phase: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScrollAxis {
-    Horizontal,
-    Vertical,
+    /// 与 gpui 滚动容器共用的滚轮手势主轴状态。
+    ongoing_scroll: OngoingScroll,
 }
 
 impl ScrollViewport {
@@ -154,44 +144,16 @@ impl ScrollManager {
         self.anchor != old_anchor || self.display_point != old_point
     }
 
-    pub(super) fn scroll_by_wheel(
+    /// 按滚轮手势的主轴过滤像素增量。
+    ///
+    /// 手势规则由 gpui 统一提供，与滚动容器使用同一实现；
+    /// 行增量不经此过滤，直接按内容度量换算成像素后滚动。
+    pub(super) fn filter_scroll_delta(
         &mut self,
-        mut delta: Point<Pixels>,
+        delta: &mut Point<Pixels>,
         touch_phase: TouchPhase,
-        snapshot: &DisplaySnapshot,
-    ) -> bool {
-        if matches!(touch_phase, TouchPhase::Ended | TouchPhase::Cancelled) {
-            self.wheel_axis = None;
-            self.last_wheel_event = None;
-            self.wheel_has_phase = false;
-            return false;
-        }
-        if touch_phase == TouchPhase::Started {
-            self.wheel_has_phase = true;
-        }
-        if delta == point(Pixels::ZERO, Pixels::ZERO) {
-            return false;
-        }
-        let now = Instant::now();
-        if self.wheel_axis.is_none()
-            || touch_phase == TouchPhase::Started
-            || !self.wheel_has_phase
-                && self
-                    .last_wheel_event
-                    .is_none_or(|last| now.duration_since(last) >= Duration::from_millis(28))
-        {
-            self.wheel_axis = Some(if delta.x.abs() > delta.y.abs() {
-                ScrollAxis::Horizontal
-            } else {
-                ScrollAxis::Vertical
-            });
-        }
-        self.last_wheel_event = Some(now);
-        match self.wheel_axis.expect("非零滚动位移必须确定主轴") {
-            ScrollAxis::Horizontal => delta.y = Pixels::ZERO,
-            ScrollAxis::Vertical => delta.x = Pixels::ZERO,
-        }
-        self.scroll_by(delta, snapshot)
+    ) {
+        self.ongoing_scroll.filter(delta, touch_phase);
     }
 
     pub(super) fn request_autoscroll(&mut self, anchor: MultiBufferAnchor) {
@@ -420,9 +382,7 @@ impl Default for ScrollManager {
             pending_autoscroll: None,
             pending_horizontal_autoscroll: false,
             thumb_state: ScrollbarThumbState::Idle,
-            wheel_axis: None,
-            last_wheel_event: None,
-            wheel_has_phase: false,
+            ongoing_scroll: OngoingScroll::default(),
         }
     }
 }

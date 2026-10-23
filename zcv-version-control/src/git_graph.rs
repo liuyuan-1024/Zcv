@@ -532,7 +532,7 @@ impl Render for GitGraphView {
             graph_content_width,
             weak: list_weak.clone(),
         };
-        let list = uniform_list("git-graph-list", len, move |range, _window, cx| {
+        let mut list = uniform_list("git-graph-list", len, move |range, _window, cx| {
             let Some(view) = list_weak.upgrade() else {
                 return Vec::new();
             };
@@ -568,6 +568,7 @@ impl Render for GitGraphView {
         .flex_1()
         .min_h_0()
         .track_scroll(&self.scroll_handle);
+        list.interactivity().base_style.restrict_scroll_to_axis = Some(true);
 
         let content = div()
             .w(content_width)

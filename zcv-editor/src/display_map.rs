@@ -19,10 +19,12 @@ mod fold_map;
 mod tab_map;
 mod wrap_map;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::num::NonZeroUsize;
-use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    num::NonZeroUsize,
+    ops::Range,
+    sync::{Arc, Mutex},
+};
 
 use crate::scrollbar::{ScrollbarMarker, marker_geometry};
 
@@ -1281,10 +1283,10 @@ impl DisplayMap {
     /// 设置软换行宽度与字体；变化时启动预算内重排，经同步入口消费净编辑。
     pub(crate) fn set_wrap_width(
         &mut self,
-        wrap_width: Option<gpui::Pixels>,
+        wrap_width: Option<Pixels>,
         font: gpui::Font,
-        font_size: gpui::Pixels,
-        text_system: &std::sync::Arc<gpui::TextSystem>,
+        font_size: Pixels,
+        text_system: &Arc<gpui::TextSystem>,
         cx: &mut Context<Self>,
     ) -> bool {
         let changed = self.wrap_map.update(cx, |map, cx| {

@@ -16,14 +16,17 @@ pub use diff_projection::{
 };
 pub(crate) use path_key::{PathKey, PathKeyIndex, PathOrder};
 
-use std::borrow::Cow;
-use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, hash_map::Entry};
-use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, Weak};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::{HashMap, HashSet, hash_map::Entry},
+    iter, mem,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, Weak},
+};
 
-use gpui::{App, Context, Entity, EventEmitter, Subscription};
+use gpui::{App, Context, Entity, EntityId, EventEmitter, Subscription};
 use sum_tree::{Bias, ContextLessSummary, Cursor, Dimension, Item, SeekTarget, SumTree, TreeMap};
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
@@ -121,11 +124,7 @@ impl ExcerptRange {
     ///
     /// 范围终点可以等于 `line_count`；
     /// 空文件的 `0..1` 会得到零字节源范围，按组合尾换行不变式在非末尾片段时占一个组合边界行。
-    pub fn line_range(
-        source: Entity<LanguageBuffer>,
-        lines: std::ops::Range<usize>,
-        cx: &App,
-    ) -> Self {
+    pub fn line_range(source: Entity<LanguageBuffer>, lines: Range<usize>, cx: &App) -> Self {
         let text = source.read(cx).text_snapshot();
         Self::line_range_from_text(source, &text, lines)
     }
@@ -136,7 +135,7 @@ impl ExcerptRange {
     pub(crate) fn line_range_from_text(
         source: Entity<LanguageBuffer>,
         text: &Snapshot,
-        lines: std::ops::Range<usize>,
+        lines: Range<usize>,
     ) -> Self {
         assert!(lines.start <= lines.end, "excerpt 行范围必须正序");
         assert!(lines.end <= text.line_count(), "excerpt 行范围不能越界");
@@ -194,19 +193,19 @@ pub enum MultiBufferAnchor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ExcerptAnchor {
     path: PathKeyIndex,
-    source_id: Option<gpui::EntityId>,
+    source_id: Option<EntityId>,
     text_anchor: Anchor,
     diff_base_anchor: Option<DiffBaseAnchor>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct DiffBaseAnchor {
-    source_id: gpui::EntityId,
+    source_id: EntityId,
     text_anchor: Anchor,
 }
 
 impl MultiBufferAnchor {
-    fn excerpt(path: PathKeyIndex, source_id: Option<gpui::EntityId>, text_anchor: Anchor) -> Self {
+    fn excerpt(path: PathKeyIndex, source_id: Option<EntityId>, text_anchor: Anchor) -> Self {
         Self::Excerpt(ExcerptAnchor {
             path,
             source_id,
@@ -291,7 +290,7 @@ struct ExcerptSourceSnapshot {
 /// 输出行/字节范围由游标推导；源操作范围是 BufferDiff 快照的只读派生数据。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DiffTransformHunkInfo {
-    working: gpui::EntityId,
+    working: EntityId,
     /// 完整工作区 Anchor 范围；整文件新增等无源 hunk 的合成节点为 None。
     buffer_range: Option<Range<Anchor>>,
     /// 源文件无 base 时，Git 操作以整文件为单位；hunk 范围仍服务展开身份。
@@ -347,7 +346,7 @@ struct Excerpt {
     /// 指向源表（`ExcerptState::sources` / 快照的 `excerpt_sources`）的索引。
     source_index: usize,
     /// 该片段所属的工作区源实体；纯文本派生快照没有实体源，因此为 `None`。
-    source_id: Option<gpui::EntityId>,
+    source_id: Option<EntityId>,
     editable: bool,
 }
 
@@ -373,7 +372,7 @@ struct OutputRegion {
     /// 指向源表（`ExcerptState::sources` / 快照的 `excerpt_sources`）的索引。
     source_index: usize,
     /// 该片段所属的工作区源实体；纯文本派生快照没有实体源，因此为 `None`。
-    source_id: Option<gpui::EntityId>,
+    source_id: Option<EntityId>,
     editable: bool,
     diff_kind: Option<ExcerptDiffKind>,
 }
@@ -382,7 +381,7 @@ struct OutputRegion {
 #[derive(Clone, Debug)]
 struct DeletedHunkRegion {
     source_index: usize,
-    source_id: gpui::EntityId,
+    source_id: EntityId,
     source_range: ExcerptContext,
     source_start_line: usize,
     text_summary: MBTextSummary,
@@ -761,7 +760,7 @@ struct ExcerptSummary {
     text: MBTextSummary,
     count: usize,
     path_key: PathKey,
-    max_anchor: Option<(Option<gpui::EntityId>, Anchor)>,
+    max_anchor: Option<(Option<EntityId>, Anchor)>,
 }
 
 impl ContextLessSummary for ExcerptSummary {
@@ -2289,7 +2288,7 @@ struct ProjectionSync {
     snapshot_changed: bool,
     /// 差异结果已安装；帧提交时再通知显示层，避免消费者读取未完成的投影。
     diff_changed: bool,
-    waiting_for_diff_sources: HashSet<gpui::EntityId>,
+    waiting_for_diff_sources: HashSet<EntityId>,
 }
 
 /// 多文件文档中一个可见片段的一帧元数据。
@@ -2421,7 +2420,7 @@ pub struct MultiBufferSnapshot {
     /// 纯文本编辑由 `projection_version` 表达；显示层据此替换只读附属数据而不重建显示拓扑。
     excerpt_sources: TreeMap<usize, ExcerptSourceSnapshot>,
     /// 源实体到快照源索引的派生索引，供源级元数据增量直接定位。
-    source_indices: Arc<HashMap<gpui::EntityId, usize>>,
+    source_indices: Arc<HashMap<EntityId, usize>>,
     file_sources: TreeMap<BufferId, FileSource>,
     dirty_source_count: usize,
     capture_names: Arc<[Arc<str>]>,
@@ -2666,7 +2665,7 @@ pub enum MultiBufferEvent {
     ProjectionChanged,
     /// 只在文尾追加 excerpts；已有组合坐标和锚点范围保持不变。
     ProjectionAppended,
-    Reparsed(gpui::EntityId),
+    Reparsed(EntityId),
     MetadataChanged,
     /// 差异状态或显示输入变化；组合文本可能保持不变。
     DiffChanged,
@@ -3564,7 +3563,7 @@ impl MultiBufferSnapshot {
     pub fn excerpts(&self) -> impl Iterator<Item = ExcerptSnapshot> + '_ {
         let mut cursor = self.excerpts.cursor::<ExcerptSummary>(());
         cursor.next();
-        std::iter::from_fn(move || {
+        iter::from_fn(move || {
             let excerpt = cursor.item()?;
             let start = cursor.start().text.len;
             let snapshot = self.logical_excerpt_snapshot(excerpt, start);
@@ -3623,7 +3622,7 @@ impl MultiBufferSnapshot {
         let mut previous = previous_cursor.item().map(|excerpt| {
             self.logical_excerpt_snapshot(excerpt, previous_cursor.start().text.len)
         });
-        std::iter::from_fn(move || {
+        iter::from_fn(move || {
             if self.singleton {
                 return None;
             }
@@ -3814,7 +3813,7 @@ impl MultiBufferSnapshot {
 
     /// 查询组合坐标中的语法高亮，并把每个源 Buffer 的 capture index 映射到本快照的统一表。
     ///
-    pub fn highlights(&self, range: std::ops::Range<usize>) -> Vec<HighlightSpan> {
+    pub fn highlights(&self, range: Range<usize>) -> Vec<HighlightSpan> {
         let mut spans = Vec::new();
         // 片段按输出顺序排列，内容结束位置单调递增；
         // 先用输出字节游标定位第一个可能重叠的片段，避免每个视口范围都扫描整份多文件结果。
@@ -3977,7 +3976,7 @@ impl MultiBufferSnapshot {
         if !pair.newline_only {
             return false;
         }
-        let between = |range: std::ops::Range<usize>| {
+        let between = |range: Range<usize>| {
             source
                 .text
                 .slice_byte_range(ByteOffset::new(range.start), ByteOffset::new(range.end))
@@ -4061,7 +4060,7 @@ impl MultiBufferSnapshot {
     }
 
     /// 查询严格包围组合范围的最小 source 语法节点，并映射回组合坐标。
-    pub fn ancestor_range(&self, range: std::ops::Range<usize>) -> Option<std::ops::Range<usize>> {
+    pub fn ancestor_range(&self, range: Range<usize>) -> Option<Range<usize>> {
         self.expand_selection_range(range)
     }
 
@@ -4075,7 +4074,7 @@ impl MultiBufferSnapshot {
     }
 
     /// 返回组合坐标中选区所在语法层的节点链，顺序为最小节点到语法根节点。
-    pub fn node_ancestors(&self, range: std::ops::Range<usize>) -> Vec<SyntaxNode> {
+    pub fn node_ancestors(&self, range: Range<usize>) -> Vec<SyntaxNode> {
         let Some((mapping, source, source_range)) = self.source_range(range.clone()) else {
             return Vec::new();
         };
@@ -4090,10 +4089,7 @@ impl MultiBufferSnapshot {
     }
 
     /// 将选区扩展到当前语法层中严格包围它的下一个节点。
-    pub fn expand_selection_range(
-        &self,
-        range: std::ops::Range<usize>,
-    ) -> Option<std::ops::Range<usize>> {
+    pub fn expand_selection_range(&self, range: Range<usize>) -> Option<Range<usize>> {
         let (mapping, source, source_range) = self.source_range(range.clone())?;
         let ancestor = source
             .syntax
@@ -4248,7 +4244,7 @@ impl MultiBufferSnapshot {
         &self,
         item: &OutlineItem,
         path_index: PathKeyIndex,
-        source_id: Option<gpui::EntityId>,
+        source_id: Option<EntityId>,
     ) -> OutlineItem<MultiBufferAnchor> {
         let wrap = |anchor: Anchor| MultiBufferAnchor::excerpt(path_index, source_id, anchor);
         let wrap_range = |range: &Range<Anchor>| wrap(range.start)..wrap(range.end);
@@ -4299,7 +4295,7 @@ impl MultiBufferSnapshot {
     fn source_outline_identity(
         &self,
         source_index: usize,
-    ) -> Option<(PathBuf, PathKeyIndex, Option<gpui::EntityId>)> {
+    ) -> Option<(PathBuf, PathKeyIndex, Option<EntityId>)> {
         let mut cursor = MultiBufferCursor::new(
             &self.excerpts,
             &self.diff_transforms,
@@ -4382,12 +4378,8 @@ impl MultiBufferSnapshot {
 
     fn source_range(
         &self,
-        range: std::ops::Range<usize>,
-    ) -> Option<(
-        ExcerptMapping,
-        &ExcerptSourceSnapshot,
-        std::ops::Range<usize>,
-    )> {
+        range: Range<usize>,
+    ) -> Option<(ExcerptMapping, &ExcerptSourceSnapshot, Range<usize>)> {
         let (mapping, at) = mapping_at_tree(
             &self.excerpts,
             &self.diff_transforms,
@@ -4680,8 +4672,8 @@ fn resolve_outline_range(range: &Range<Anchor>, source_text: &Snapshot) -> Optio
 
 fn project_range_contained(
     segments: &[(TextRange, MultiBufferRange)],
-    range: &std::ops::Range<usize>,
-) -> Option<std::ops::Range<usize>> {
+    range: &Range<usize>,
+) -> Option<Range<usize>> {
     segments.iter().find_map(|(source, output)| {
         let source_start = source.start().get();
         let source_end = source.end().get();
@@ -4694,8 +4686,8 @@ fn project_range_contained(
 
 fn project_range_spanning(
     segments: &[(TextRange, MultiBufferRange)],
-    range: &std::ops::Range<usize>,
-) -> Option<std::ops::Range<usize>> {
+    range: &Range<usize>,
+) -> Option<Range<usize>> {
     let start = map_source_offset(segments, range.start, false)?;
     let end = map_source_offset(segments, range.end, true)?;
     (start <= end).then_some(start..end)
@@ -4736,10 +4728,10 @@ fn project_syntax_node(
 }
 
 fn project_range(
-    range: std::ops::Range<usize>,
+    range: Range<usize>,
     source_range: TextRange,
     output_range: MultiBufferRange,
-) -> Option<std::ops::Range<usize>> {
+) -> Option<Range<usize>> {
     let source_start = source_range.start().get();
     (source_start <= range.start && range.end <= source_range.end().get()).then(|| {
         let output_start = output_range.start().get();
@@ -4836,7 +4828,7 @@ struct ExcerptState {
     /// 按源去重的 (text, syntax, capture_map) 表。
     sources: Vec<ExcerptSource>,
     /// 源实体到 `sources` 索引的派生索引，供增量追加按身份查找源状态。
-    source_indices: HashMap<gpui::EntityId, usize>,
+    source_indices: HashMap<EntityId, usize>,
     /// 路径身份表：索引一经分配不再变化，锚点用索引做紧凑表示。
     path_keys: Vec<PathKey>,
     path_key_indices: HashMap<PathKey, PathKeyIndex>,
@@ -4846,7 +4838,7 @@ struct ExcerptState {
     /// 非文本状态（语法安装、捕获表等）版本；纯文本编辑不推进它。
     metadata_epoch: u64,
     /// 源事件只登记脏源；组合快照读取时才消费这些源的订阅。
-    pending_source_syncs: HashMap<gpui::EntityId, PendingSourceSync>,
+    pending_source_syncs: HashMap<EntityId, PendingSourceSync>,
     projection_changes: ProjectionChangeTopic,
     next_transaction_id: TransactionId,
     active_transaction: Option<TransactionId>,
@@ -5240,7 +5232,7 @@ impl MultiBuffer {
             .map(|excerpt| excerpt.source.entity_id())
             .collect::<HashSet<_>>();
         // 结构重建只替换拓扑：仍存活的源复用已有连接，不为一次重排重建全部订阅。
-        let mut previous_subscriptions = std::mem::take(&mut self.state.source_subscriptions)
+        let mut previous_subscriptions = mem::take(&mut self.state.source_subscriptions)
             .into_iter()
             .map(|subscription| (subscription.source.entity_id(), subscription))
             .collect::<HashMap<_, _>>();
@@ -5281,7 +5273,7 @@ impl MultiBuffer {
             excerpt: ExcerptRange,
             path: PathKey,
             source_index: usize,
-            source_id: gpui::EntityId,
+            source_id: EntityId,
             start_line: usize,
         }
         let mut prepared = Vec::with_capacity(excerpts.len());
@@ -5410,8 +5402,8 @@ impl MultiBuffer {
         start_index: usize,
         total: usize,
     ) -> Vec<Excerpt> {
-        let mut path_keys = std::mem::take(&mut self.state.path_keys);
-        let mut path_key_indices = std::mem::take(&mut self.state.path_key_indices);
+        let mut path_keys = mem::take(&mut self.state.path_keys);
+        let mut path_key_indices = mem::take(&mut self.state.path_key_indices);
         let mut entries = Vec::with_capacity(excerpts.len());
         for (position, excerpt) in excerpts.into_iter().enumerate() {
             let source_id = excerpt.source.entity_id();
@@ -5456,7 +5448,7 @@ impl MultiBuffer {
     /// 分隔换行的生命周期由 excerpt 插入、移除维护。
     fn splice_source_path(
         &mut self,
-        source_id: gpui::EntityId,
+        source_id: EntityId,
         source_position_map: &PositionMap,
         expanded_excerpts: Option<&HashSet<usize>>,
         _cx: &App,
@@ -5688,7 +5680,7 @@ impl MultiBuffer {
     fn register_sources(
         &mut self,
         new_sources: Vec<Entity<LanguageBuffer>>,
-        subscribe_ids: &HashSet<gpui::EntityId>,
+        subscribe_ids: &HashSet<EntityId>,
         cx: &mut Context<Self>,
     ) -> usize {
         if !new_sources.is_empty() {
@@ -5926,7 +5918,7 @@ impl MultiBuffer {
     /// 因而同一源只有一个增量游标，不会重放已消费的旧事件。
     fn synchronize_source_change(
         &mut self,
-        source_id: gpui::EntityId,
+        source_id: EntityId,
         expanded_excerpts: Option<&HashSet<usize>>,
         refresh_metadata: bool,
         cx: &mut Context<Self>,
@@ -5981,7 +5973,7 @@ impl MultiBuffer {
         Some(source_change)
     }
 
-    fn refresh_source_snapshot(&mut self, source_id: gpui::EntityId, cx: &App) {
+    fn refresh_source_snapshot(&mut self, source_id: EntityId, cx: &App) {
         let Some(source) = self
             .state
             .sources
@@ -5996,7 +5988,7 @@ impl MultiBuffer {
     }
 
     /// Deleted 源的文本由 BufferDiff 推进；其语法只能同步到当前投影已采用的同一文本版本。
-    fn refresh_source_metadata_if_current(&mut self, source_id: gpui::EntityId, cx: &App) {
+    fn refresh_source_metadata_if_current(&mut self, source_id: EntityId, cx: &App) {
         let Some((source, text_version)) = self
             .state
             .sources
@@ -6013,11 +6005,7 @@ impl MultiBuffer {
         self.install_source_snapshot(source_id, snapshot);
     }
 
-    fn install_source_snapshot(
-        &mut self,
-        source_id: gpui::EntityId,
-        snapshot: LanguageBufferSnapshot,
-    ) {
+    fn install_source_snapshot(&mut self, source_id: EntityId, snapshot: LanguageBufferSnapshot) {
         self.snapshot_dirty = true;
         self.state.metadata_epoch = self.state.metadata_epoch.wrapping_add(1);
         if let Some(excerpt_source) = self
@@ -6040,7 +6028,7 @@ impl MultiBuffer {
         }
     }
 
-    fn mark_source_snapshot_changed(&mut self, source_id: gpui::EntityId) {
+    fn mark_source_snapshot_changed(&mut self, source_id: EntityId) {
         let Some(source_index) = self.state.source_indices.get(&source_id).copied() else {
             return;
         };
@@ -6058,7 +6046,7 @@ impl MultiBuffer {
     /// 把源 Buffer 的版本化编辑同步到组合投影。
     fn apply_source_change(
         &mut self,
-        source_id: gpui::EntityId,
+        source_id: EntityId,
         source_position_map: &PositionMap,
         source_change: &TextChangeBatch,
         expanded_excerpts: Option<&HashSet<usize>>,
@@ -6306,8 +6294,8 @@ impl MultiBuffer {
         self.state.topology_version = self.state.topology_version.wrapping_add(1);
         let before = self.projection_trees();
         let old_version = self.state.projection_version;
-        let mut path_keys = std::mem::take(&mut self.state.path_keys);
-        let mut path_key_indices = std::mem::take(&mut self.state.path_key_indices);
+        let mut path_keys = mem::take(&mut self.state.path_keys);
+        let mut path_key_indices = mem::take(&mut self.state.path_key_indices);
         let mut entries = self.state.excerpts.iter().cloned().collect::<Vec<_>>();
         for excerpt in &mut entries {
             let source = &mut self.state.sources[excerpt.source_index];
@@ -6626,7 +6614,7 @@ impl MultiBuffer {
         if self.state.pending_source_syncs.is_empty() {
             return;
         }
-        let source_syncs = std::mem::take(&mut self.state.pending_source_syncs);
+        let source_syncs = mem::take(&mut self.state.pending_source_syncs);
         for (source_id, sync) in source_syncs {
             self.synchronize_source_change(source_id, None, sync.refresh_metadata, cx);
         }
@@ -7380,7 +7368,7 @@ impl AnchorResolution {
 /// 路径与源 Anchor 共同构成输入树的查询键；摘要保存该子树的最后一个源 Anchor。
 struct AnchorSeekTarget<'a> {
     path_key: &'a PathKey,
-    source_id: Option<gpui::EntityId>,
+    source_id: Option<EntityId>,
     anchor: Anchor,
     source: Option<&'a Snapshot>,
 }
@@ -7402,8 +7390,8 @@ impl SeekTarget<'_, ExcerptSummary, ExcerptSummary> for AnchorSeekTarget<'_> {
 
 fn source_for_id<'a, S: SourceTexts + ?Sized>(
     sources: &'a S,
-    indices: &HashMap<gpui::EntityId, usize>,
-    id: Option<gpui::EntityId>,
+    indices: &HashMap<EntityId, usize>,
+    id: Option<EntityId>,
 ) -> Option<&'a Snapshot> {
     let index = match id {
         Some(id) => *indices.get(&id)?,
@@ -7464,7 +7452,7 @@ fn resolve_anchor_in_mappings<S: SourceTexts + ?Sized>(
     tree: &SumTree<DiffTransform>,
     path_keys: &[PathKey],
     sources: &S,
-    source_indices: &HashMap<gpui::EntityId, usize>,
+    source_indices: &HashMap<EntityId, usize>,
     anchor: &MultiBufferAnchor,
 ) -> TextResult<AnchorResolution> {
     let anchor = match anchor {

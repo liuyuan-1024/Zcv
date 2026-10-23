@@ -1,20 +1,25 @@
-use std::collections::{HashMap, HashSet};
-use std::ops::{ControlFlow, Range};
-use std::path::Path;
-use std::sync::{Arc, OnceLock};
-use std::thread;
+use std::{
+    collections::{HashMap, HashSet},
+    mem,
+    ops::{ControlFlow, Range},
+    path::Path,
+    sync::{Arc, OnceLock},
+    thread,
+};
 
 use tree_sitter::StreamingIterator;
 use zcv_text::{
     Anchor, BufferVersion, ByteOffset, Snapshot, TextChangeBatch, TextRange, WordBoundaryPolicy,
 };
 
-use crate::registry::LanguageRegistry;
-use crate::tree_sitter_utils::{
-    IncrementalParser, PARSE_TIME_SLICE, ParseCancellation, ParseError, QueryCursorHandle,
-    SnapshotTextProvider, drop_offloaded, edit_tree, node_text, parse_tree, ranges_overlap,
+use crate::{
+    InputScope, Language,
+    registry::LanguageRegistry,
+    tree_sitter_utils::{
+        IncrementalParser, PARSE_TIME_SLICE, ParseCancellation, ParseError, QueryCursorHandle,
+        SnapshotTextProvider, drop_offloaded, edit_tree, node_text, parse_tree, ranges_overlap,
+    },
 };
-use crate::{InputScope, Language};
 
 /// 可增量更新的语法状态。
 ///
@@ -76,13 +81,13 @@ pub struct SyntaxSnapshot {
 
 impl Drop for SyntaxSnapshot {
     fn drop(&mut self) {
-        offload_state_if_last(std::mem::replace(&mut self.state, empty_syntax_state()));
+        offload_state_if_last(mem::replace(&mut self.state, empty_syntax_state()));
     }
 }
 
 impl Drop for SyntaxMap {
     fn drop(&mut self) {
-        offload_state_if_last(std::mem::replace(&mut self.state, empty_syntax_state()));
+        offload_state_if_last(mem::replace(&mut self.state, empty_syntax_state()));
     }
 }
 
@@ -227,7 +232,7 @@ fn interpolate_state(
     }
     let mut invalid_layers = Vec::new();
     let mut retained = Vec::with_capacity(state.injections.len());
-    for mut layer in std::mem::take(&mut state.injections) {
+    for mut layer in mem::take(&mut state.injections) {
         // 锚点自行跟随编辑；范围被删空说明注入点已消失，必须丢弃该层。
         let non_empty =
             layer_bytes(new_snapshot, &layer).is_some_and(|bytes| bytes.start < bytes.end);
@@ -310,7 +315,7 @@ impl SyntaxMap {
             return false;
         }
         self.language = language;
-        offload_state_if_last(std::mem::replace(&mut self.state, empty_syntax_state()));
+        offload_state_if_last(mem::replace(&mut self.state, empty_syntax_state()));
         self.parsed_version = snapshot.version();
         self.interpolated_version = snapshot.version();
         self.interpolated_snapshot = snapshot.clone();
@@ -356,8 +361,8 @@ impl SyntaxMap {
         if syntax.version != text.version() || !same_language {
             return false;
         }
-        let parsed_state = std::mem::replace(&mut syntax.state, empty_syntax_state());
-        let old_state = std::mem::replace(&mut self.state, parsed_state);
+        let parsed_state = mem::replace(&mut syntax.state, empty_syntax_state());
+        let old_state = mem::replace(&mut self.state, parsed_state);
         offload_state_if_last(old_state);
         self.parsed_version = syntax.parsed_version;
         self.interpolated_version = syntax.version;
@@ -374,8 +379,8 @@ impl SyntaxMap {
         if parsed.version != self.interpolated_version || !same_language {
             return false;
         }
-        let parsed_state = std::mem::replace(&mut parsed.state, empty_syntax_state());
-        let old_state = std::mem::replace(&mut self.state, parsed_state);
+        let parsed_state = mem::replace(&mut parsed.state, empty_syntax_state());
+        let old_state = mem::replace(&mut self.state, parsed_state);
         offload_state_if_last(old_state);
         self.parsed_version = parsed.parsed_version;
         true
@@ -633,7 +638,7 @@ impl SyntaxSnapshot {
             };
             state.tree = new_tree;
 
-            let old_injections = std::mem::take(&mut state.injections);
+            let old_injections = mem::take(&mut state.injections);
             // 范围与任何变化区间相交的已解析旧层进入复用表（供增量解析）；其余原样保留。
             // 先把锚点范围解析成当前快照字节；无法解析的层直接丢弃。
             let mut seen = HashSet::new();
@@ -681,7 +686,7 @@ impl SyntaxSnapshot {
 
             // 保留层与重新收集层的同深重叠清理：变化区间边界可能命中同一注入（如围栏行编辑改了注入语言但内容范围未变），此时以新收集为准。
             let mut final_layers = Vec::with_capacity(state.injections.len() + collected.len());
-            for layer in std::mem::take(&mut state.injections) {
+            for layer in mem::take(&mut state.injections) {
                 let Some(old_bytes) = layer_bytes(snapshot, &layer) else {
                     continue;
                 };

@@ -1,6 +1,8 @@
-use std::mem;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::{
+    mem,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use anyhow::{Result, anyhow};
 use futures::{AsyncReadExt as _, FutureExt as _, TryStreamExt as _};

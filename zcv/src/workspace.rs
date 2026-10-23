@@ -3,10 +3,12 @@
 //! 工作区（Pane/Dock/命令分发）在 zcv-workspace；
 //! 本模块只做 binary 侧的具体装配：面板（项目树/版本控制）、状态栏按钮、git/settings 订阅与 diff hunks 推送。
 
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::Context as _;
 use gpui::{
@@ -33,8 +35,10 @@ use zcv_workspace::{
     Workspace, add_to_recent, load_window_bounds, save_window_bounds,
 };
 
-use crate::auto_update::{UpdateButton, UpdateManager};
-use crate::harness::HarnessButton;
+use crate::{
+    auto_update::{UpdateButton, UpdateManager},
+    harness::HarnessButton,
+};
 use zcv_outline::OutlinePanel;
 use zcv_path::AbsolutePathBuf;
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
@@ -48,7 +52,7 @@ use zcv_version_control::{
 fn on_open_file_callback(weak: &WeakEntity<Workspace>) -> OnOpenFile {
     let weak = weak.clone();
     Rc::new(
-        move |path: PathBuf, focus_opened_item: bool, window: &mut Window, cx: &mut gpui::App| {
+        move |path: PathBuf, focus_opened_item: bool, window: &mut Window, cx: &mut App| {
             if let Some(ws) = weak.upgrade() {
                 ws.update(cx, |ws, cx| {
                     ws.open_path(path, focus_opened_item, window, cx);
@@ -62,11 +66,7 @@ fn on_open_file_callback(weak: &WeakEntity<Workspace>) -> OnOpenFile {
 fn on_open_git_diff_callback(weak: &WeakEntity<Workspace>) -> OnOpenGitDiff {
     let weak = weak.clone();
     Rc::new(
-        move |kind,
-              path: PathBuf,
-              focus_opened_item: bool,
-              window: &mut Window,
-              cx: &mut gpui::App| {
+        move |kind, path: PathBuf, focus_opened_item: bool, window: &mut Window, cx: &mut App| {
             if let Some(workspace) = weak.upgrade() {
                 workspace.update(cx, |workspace, cx| {
                     deploy_project_diff(workspace, kind, path, focus_opened_item, window, cx);
@@ -79,7 +79,7 @@ fn on_open_git_diff_callback(weak: &WeakEntity<Workspace>) -> OnOpenGitDiff {
 /// 构造版本管理面板打开版本控制图的回调。
 fn on_open_git_graph_callback(weak: &WeakEntity<Workspace>) -> OnOpenGitGraph {
     let weak = weak.clone();
-    Rc::new(move |window: &mut Window, cx: &mut gpui::App| {
+    Rc::new(move |window: &mut Window, cx: &mut App| {
         if let Some(workspace) = weak.upgrade() {
             workspace.update(cx, |workspace, cx| {
                 deploy_git_graph(workspace, window, cx);
@@ -489,7 +489,7 @@ fn initialize_workspace(
 ) {
     // ═══ 顶栏注入 ═══════════════════════════════════════════════════
 
-    let weak_self: gpui::WeakEntity<Workspace> = cx.weak_entity();
+    let weak_self: WeakEntity<Workspace> = cx.weak_entity();
     let weak_branch = weak_self.clone();
     let on_branch: OnBranchSelected = Rc::new(move |action, _window, app| {
         if let Some(ws) = weak_branch.upgrade() {

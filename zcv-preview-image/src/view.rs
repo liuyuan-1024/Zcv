@@ -1,7 +1,9 @@
 //! 栅格图片预览 Item。
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, Image, ObjectFit, Render, RenderImage,

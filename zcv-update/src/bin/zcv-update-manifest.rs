@@ -1,8 +1,6 @@
 //! 从发布包生成 Zcv 更新清单。
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
 use semver::Version;

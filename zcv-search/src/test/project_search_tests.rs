@@ -1,7 +1,6 @@
-use std::path::Path;
-use std::sync::Arc;
+use std::{fs, path::Path, sync::Arc};
 
-use gpui::{AppContext as _, Context, TestAppContext, VisualTestContext, Window};
+use gpui::{AppContext as _, Context, Entity, TestAppContext, VisualTestContext, Window};
 use zcv_actions::DeployProjectSearch;
 use zcv_editor::init;
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
@@ -154,7 +153,7 @@ fn project_search_folds_all_files_in_one_display_update(cx: &mut TestAppContext)
 async fn project_search_installs_background_loaded_results(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");
-    std::fs::write(root.join("result.txt"), "needle\n").expect("应创建命中文件");
+    fs::write(root.join("result.txt"), "needle\n").expect("应创建命中文件");
     cx.update(|cx| init(cx, Arc::new(LanguageRegistry::new())));
 
     let (workspace, cx) = cx.add_window_view(move |window, cx| test_workspace(root, window, cx));
@@ -191,9 +190,9 @@ async fn restored_project_search_tab_opens_excerpt_files(cx: &mut TestAppContext
         .expect("项目根应可规范化")
         .into_path_buf();
     let file = root.join("needle.txt");
-    std::fs::write(&file, "needle").expect("应创建测试文件");
+    fs::write(&file, "needle").expect("应创建测试文件");
     // 打开文件经 ItemProvider 注册表分发，测试同样需要文本 Provider。
-    cx.update(|cx| init(cx, std::sync::Arc::new(LanguageRegistry::new())));
+    cx.update(|cx| init(cx, Arc::new(LanguageRegistry::new())));
 
     let provider = ProjectSearchSerializedItemProvider;
     let (workspace, cx) = cx.add_window_view({
@@ -319,7 +318,7 @@ fn project_search_view_and_search_bar_release_together(cx: &mut TestAppContext) 
 async fn deploying_project_search_focuses_query_input(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");
-    cx.update(|cx| init(cx, std::sync::Arc::new(LanguageRegistry::new())));
+    cx.update(|cx| init(cx, Arc::new(LanguageRegistry::new())));
 
     let (workspace, cx) = cx.add_window_view({
         let root = root.clone();
@@ -412,7 +411,7 @@ async fn cmd_f_in_project_search_results_reuses_project_query(cx: &mut TestAppCo
     );
 }
 
-fn project_search_view(workspace: &Workspace, cx: &gpui::App) -> gpui::Entity<ProjectSearchView> {
+fn project_search_view(workspace: &Workspace, cx: &gpui::App) -> Entity<ProjectSearchView> {
     workspace
         .pane()
         .read(cx)
@@ -423,7 +422,7 @@ fn project_search_view(workspace: &Workspace, cx: &gpui::App) -> gpui::Entity<Pr
 }
 
 fn assert_query_input_focused(
-    workspace: &gpui::Entity<Workspace>,
+    workspace: &Entity<Workspace>,
     cx: &mut VisualTestContext,
     context: &str,
 ) {

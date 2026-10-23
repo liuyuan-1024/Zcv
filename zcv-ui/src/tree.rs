@@ -1,9 +1,11 @@
 //! 树行渲染辅助函数 —— 通用行框架、树节点行、选中框与树导航状态原语。
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
-use gpui::{AnyElement, App, DefiniteLength, ElementId, Pixels, Window, div, prelude::*};
+use gpui::{AnyElement, App, DefiniteLength, Div, ElementId, Pixels, Window, div, prelude::*};
 use zcv_theme::{FileIcons, color, fixed, scale, typography};
 
 use crate::SvgIcon;
@@ -64,14 +66,14 @@ impl TreeRowFrame {
         id: impl Into<ElementId>,
         window: &Window,
         cx: &App,
-    ) -> gpui::Stateful<gpui::Div> {
+    ) -> gpui::Stateful<Div> {
         self.render(window, cx)
             .id(id)
             .cursor_pointer()
             .hover(|style| style.bg(color::current(cx).element_hover))
     }
 
-    pub fn render(self, window: &Window, cx: &App) -> gpui::Div {
+    pub fn render(self, window: &Window, cx: &App) -> Div {
         let mut row = blank_row(window, cx)
             .relative()
             .pl(self.left_padding)
@@ -129,7 +131,7 @@ impl TreeRowFrame {
 ///
 /// 截断必须设置在直接承载文本的元素上；
 /// 仅限制外层树行的溢出不会为内部文本生成省略号。
-pub fn tree_row_label(element: impl IntoElement) -> gpui::Div {
+pub fn tree_row_label(element: impl IntoElement) -> Div {
     div().flex_1().min_w_0().truncate().child(element)
 }
 
@@ -225,12 +227,12 @@ pub fn auto_fold_dirs<N: AutoFoldDir>(node: &N, expanded: impl Fn(&N) -> bool) -
 }
 
 /// 树行行高（= 空白行基座高度）：滚动计算、命中测试坐标等需要行高数值的场景读取。
-pub fn tree_row_height(window: &Window, cx: &App) -> gpui::Pixels {
+pub fn tree_row_height(window: &Window, cx: &App) -> Pixels {
     metrics(window, cx).row_height
 }
 
 /// 选中框——absolute 覆盖整行，不参与行布局。
-pub fn selection_border(window: &Window, cx: &App) -> gpui::Div {
+pub fn selection_border(window: &Window, cx: &App) -> Div {
     let m = metrics(window, cx);
     div()
         .absolute()
@@ -274,7 +276,7 @@ pub fn row_click_action(is_dir: bool, click_count: usize) -> RowClickAction {
 /// 行高只定义在 [`metrics`] 并经本函数落地：
 /// 文件条目行与文本行都构建在它之上，uniform_list 按对第 0 行的实测决定槽高、要求列表内所有行等高，因此同一棵树内的行必须全部出自本基座。
 /// 派生行不得覆写高度，也不得叠加垂直 padding（会撑出行盒，超出等宽槽）。
-fn blank_row(window: &Window, cx: &App) -> gpui::Div {
+fn blank_row(window: &Window, cx: &App) -> Div {
     div()
         .w_full()
         .flex()
@@ -283,7 +285,7 @@ fn blank_row(window: &Window, cx: &App) -> gpui::Div {
 }
 
 /// 渲染缩进竖线——每条线直接 absolute 定位在行上。
-fn guide_lines(depth: usize, window: &Window, cx: &App) -> Vec<gpui::Div> {
+fn guide_lines(depth: usize, window: &Window, cx: &App) -> Vec<Div> {
     let m = metrics(window, cx);
     let line_color = color::current(cx).border;
     let line_w = fixed::HAIRLINE;
@@ -658,10 +660,10 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
 
 /// 树行布局度量。
 struct TreeMetrics {
-    row_height: gpui::Pixels,
-    indent: gpui::Pixels,
-    padding: gpui::Pixels,
-    icon_size: gpui::Pixels,
+    row_height: Pixels,
+    indent: Pixels,
+    padding: Pixels,
+    icon_size: Pixels,
 }
 
 fn metrics(window: &Window, cx: &App) -> TreeMetrics {
@@ -676,11 +678,11 @@ fn metrics(window: &Window, cx: &App) -> TreeMetrics {
 }
 
 impl TreeMetrics {
-    fn indent_left(&self, depth: usize) -> gpui::Pixels {
+    fn indent_left(&self, depth: usize) -> Pixels {
         self.indent * (depth as f32) + self.padding
     }
 
-    fn guide_x(&self, depth: usize) -> gpui::Pixels {
+    fn guide_x(&self, depth: usize) -> Pixels {
         self.indent * (depth as f32) + self.icon_size / 2.0 + self.padding
     }
 }

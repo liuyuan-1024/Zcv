@@ -1,5 +1,4 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use gpui::TestAppContext;
 use zcv_text::{BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};

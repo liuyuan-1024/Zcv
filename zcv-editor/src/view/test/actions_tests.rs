@@ -1,15 +1,18 @@
 use zcv_language::LanguageRegistry;
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferOffset, MultiBufferRange};
 
-use gpui::{TestAppContext, point, px, size};
+use gpui::{Modifiers, TestAppContext, point, px, size};
 use zcv_actions::{ConfirmLocalRename, RenameLocal};
 use zcv_text::{Edit, TransactionId, TransactionMetadata};
 
 use super::common::{buffer_text, focus_editor, inject_file_diff, test_buffer};
 use super::*;
-use crate::display_map::{DisplayPoint, DisplayRow};
-use crate::scroll::ScrollViewport;
-use crate::selection::{Selection, SelectionSet};
+use crate::{
+    display_map::{DisplayPoint, DisplayRow},
+    scroll::ScrollViewport,
+    selection::{Selection, SelectionSet},
+};
+use std::sync::Arc;
 
 #[gpui::test]
 fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext) {
@@ -234,7 +237,7 @@ fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppCont
             LanguageBuffer::new(
                 raw_buffer,
                 Some(PathBuf::from("main.rs")),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }
@@ -276,7 +279,7 @@ fn stale_outline_label_survives_utf8_shift_and_navigates_by_anchor(cx: &mut Test
         LanguageBuffer::new(
             raw_buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -331,7 +334,7 @@ fn diff_injection_keeps_outline_items_spanning_hunks(cx: &mut TestAppContext) {
             LanguageBuffer::new(
                 raw_buffer,
                 Some(PathBuf::from("README.md")),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }
@@ -367,12 +370,7 @@ fn diff_injection_keeps_outline_items_spanning_hunks(cx: &mut TestAppContext) {
 
     // 在“三级”段内制造 diff hunk：工作区源被切成多段，跨段的 section 不能因此丢失。
     let base = text.replace("### 三级\n\n正文", "### 三级\n\n修改正文");
-    inject_file_diff(
-        &editor,
-        &language_buffer,
-        std::sync::Arc::from(base.as_str()),
-        cx,
-    );
+    inject_file_diff(&editor, &language_buffer, Arc::from(base.as_str()), cx);
     cx.run_until_parked();
 
     let after = names(cx, &editor);
@@ -528,7 +526,7 @@ fn editor_element_renders_multiline_unicode_text(cx: &mut TestAppContext) {
     });
 
     cx.run_until_parked();
-    cx.simulate_click(point(px(1000.), px(12.)), gpui::Modifiers::default());
+    cx.simulate_click(point(px(1000.), px(12.)), Modifiers::default());
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.render_snapshot(cx).line_count(), 2);
         assert_eq!(
@@ -546,7 +544,7 @@ fn clicking_the_gutter_selects_a_logical_line(cx: &mut TestAppContext) {
     });
 
     cx.run_until_parked();
-    cx.simulate_click(point(px(4.), px(32.)), gpui::Modifiers::default());
+    cx.simulate_click(point(px(4.), px(32.)), Modifiers::default());
 
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
@@ -560,7 +558,7 @@ fn clicking_the_gutter_selects_a_logical_line(cx: &mut TestAppContext) {
 
     cx.simulate_click(
         point(px(4.), px(58.)),
-        gpui::Modifiers {
+        Modifiers {
             shift: true,
             ..Default::default()
         },
@@ -583,7 +581,7 @@ fn committed_input_uses_element_input_handler_and_preserves_unicode(cx: &mut Tes
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
-    cx.simulate_click(point(px(4.), px(12.)), gpui::Modifiers::default());
+    cx.simulate_click(point(px(4.), px(12.)), Modifiers::default());
     cx.simulate_input("中😀e\u{301}");
 
     assert_eq!(buffer_text(&buffer, cx), "中😀e\u{301}");
@@ -710,7 +708,7 @@ fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestApp
             LanguageBuffer::new(
                 raw_buffer,
                 Some(PathBuf::from("main.rs")),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }
@@ -803,7 +801,7 @@ fn f2_opens_inline_local_rename_and_enter_commits_it(cx: &mut TestAppContext) {
             LanguageBuffer::new(
                 raw_buffer,
                 Some(PathBuf::from("main.rs")),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }
@@ -873,7 +871,7 @@ fn select_larger_syntax_node_reaches_file_root_from_rust_imports_and_structures(
             LanguageBuffer::new(
                 raw_buffer,
                 Some(PathBuf::from("main.rs")),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }
@@ -915,7 +913,7 @@ fn matching_brackets_come_from_tree_sitter_query(cx: &mut TestAppContext) {
             LanguageBuffer::new(
                 raw_buffer,
                 Some(PathBuf::from("main.rs")),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }
@@ -1501,7 +1499,7 @@ fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
             LanguageBuffer::new(
                 raw_buffer,
                 Some(PathBuf::from("main.rs")),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }
@@ -1532,7 +1530,7 @@ fn composite_excerpt_uses_its_source_tree_sitter_indent_query(cx: &mut TestAppCo
             LanguageBuffer::new(
                 raw_buffer,
                 Some(PathBuf::from("main.rs")),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }
@@ -1579,7 +1577,7 @@ fn newline_does_not_compound_indent_inside_an_outer_rust_block(cx: &mut TestAppC
             LanguageBuffer::new(
                 raw_buffer,
                 Some(PathBuf::from("main.rs")),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }
@@ -1614,7 +1612,7 @@ fn newline_uses_the_nearest_code_line_as_its_indent_basis(cx: &mut TestAppContex
             LanguageBuffer::new(
                 raw_buffer,
                 Some(PathBuf::from("main.rs")),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }

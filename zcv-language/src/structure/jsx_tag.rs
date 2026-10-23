@@ -6,9 +6,7 @@
 use tree_sitter::Node;
 use zcv_text::{ByteOffset, Snapshot};
 
-use crate::JsxTagAutoCloseConfig;
-use crate::syntax_map::SyntaxSnapshot;
-use crate::tree_sitter_utils::node_text;
+use crate::{JsxTagAutoCloseConfig, syntax_map::SyntaxSnapshot, tree_sitter_utils::node_text};
 
 /// 检查开放标签是否已闭合时，最多沿父元素回看两层。
 ///

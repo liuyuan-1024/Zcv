@@ -1,12 +1,17 @@
 //! tree-sitter 适配工具：池化游标与解析器、文本提供者、树编辑与偏移映射。
 
-use std::any::Any;
-use std::ops::ControlFlow;
-use std::ops::{Deref, DerefMut, Range};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    any::Any,
+    fmt::{self, Display, Formatter},
+    ops::{ControlFlow, Deref, DerefMut, Range},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 use tree_sitter::{InputEdit, Parser, Point, QueryCursor};
 use zcv_text::{ByteOffset, Snapshot, TextChangeBatch, TextError, TextResult};
@@ -44,8 +49,8 @@ pub(crate) enum ParseError {
     Failed,
 }
 
-impl std::fmt::Display for ParseSetupError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for ParseSetupError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoGrammar => write!(formatter, "语言没有可解析的语法"),
             Self::Language(error) => write!(formatter, "无法设置解析语言：{error}"),
@@ -55,8 +60,8 @@ impl std::fmt::Display for ParseSetupError {
     }
 }
 
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for ParseError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::BudgetExhausted => write!(formatter, "解析时间片预算用尽"),
             Self::Cancelled => write!(formatter, "解析已取消"),
@@ -483,19 +488,16 @@ pub(crate) fn edit_tree(
     true
 }
 
-pub(crate) fn ranges_overlap(
-    left: &std::ops::Range<usize>,
-    right: &std::ops::Range<usize>,
-) -> bool {
+pub(crate) fn ranges_overlap(left: &Range<usize>, right: &Range<usize>) -> bool {
     left.start < right.end && right.start < left.end
 }
 
-pub(crate) fn encloses(outer: &std::ops::Range<usize>, inner: &std::ops::Range<usize>) -> bool {
+pub(crate) fn encloses(outer: &Range<usize>, inner: &Range<usize>) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
 
 /// 取节点范围内的文本（去掉首尾空白）。
-pub(crate) fn node_text(snapshot: &Snapshot, range: std::ops::Range<usize>) -> Option<String> {
+pub(crate) fn node_text(snapshot: &Snapshot, range: Range<usize>) -> Option<String> {
     snapshot
         .slice_byte_range(ByteOffset::new(range.start), ByteOffset::new(range.end))
         .ok()

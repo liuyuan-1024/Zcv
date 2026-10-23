@@ -5,18 +5,17 @@
 //! 每层（主层 + 注入层）单独产出按文档序排列的 capture 区间，然后 k 路归并 capture 起点；
 //! 活动栈用区间终点恢复外层高亮，避免为结束位置额外构造一份全局事件数组。
 
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-use std::ops::Range;
-use std::sync::Arc;
+use std::{cmp::Reverse, collections::BinaryHeap, ops::Range, sync::Arc};
 
 use tree_sitter::StreamingIterator;
 use zcv_text::{ByteOffset, Line, Snapshot};
 
-use crate::Language;
-use crate::highlight_cache::HighlightCache;
-use crate::syntax_map::SyntaxSnapshot;
-use crate::tree_sitter_utils::{ParseCancellation, QueryCursorHandle, SnapshotTextProvider};
+use crate::{
+    Language,
+    highlight_cache::HighlightCache,
+    syntax_map::SyntaxSnapshot,
+    tree_sitter_utils::{ParseCancellation, QueryCursorHandle, SnapshotTextProvider},
+};
 
 /// 一个非重叠的 tree-sitter capture 区间。
 ///

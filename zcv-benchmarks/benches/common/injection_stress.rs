@@ -2,8 +2,10 @@
 //!
 //! 只被使用它的 bench 通过 `#[path]` 引入，避免在其它 bench 中产生未使用代码。
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use crate::common::fill_with_block;
 

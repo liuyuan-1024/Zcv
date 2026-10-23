@@ -1,13 +1,11 @@
-use std::path::Path;
-use std::process::Command;
-use std::sync::Arc;
+use std::{fs, path::Path, process::Command, slice, sync::Arc};
 
-use gpui::{AppContext as _, TestAppContext};
+use gpui::{AppContext as _, AvailableSpace, TestAppContext, px};
 
 use zcv_actions::DeployBufferSearch;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging, PendingHunk};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::{DiffExcerptRanges, ExcerptDiffKind};
+use zcv_multi_buffer::{DiffExcerptRanges, ExcerptDiffKind, MultiBufferOffset};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
 
 #[test]
@@ -73,7 +71,6 @@ fn clamp_column_to_line(text: &Snapshot, line: usize, column: usize) -> usize {
 
 use super::*;
 use crate::test::test_project;
-use zcv_multi_buffer::MultiBufferOffset;
 
 fn canonical_root(path: &Path) -> PathBuf {
     AbsolutePathBuf::canonicalize(path)
@@ -88,15 +85,15 @@ fn binary_files_stay_in_status_but_not_staged_or_unstaged_diff(cx: &mut TestAppC
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
-    std::fs::write(root.join("keep.txt"), "原始内容\n").unwrap();
+    fs::write(root.join("keep.txt"), "原始内容\n").unwrap();
     run_in(&root, &["git", "add", "keep.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
 
-    std::fs::write(root.join("keep.txt"), "已暂存文本\n").unwrap();
-    std::fs::write(root.join("staged.ico"), b"\0\0\x01\0\xff\xfe\0\x01").unwrap();
+    fs::write(root.join("keep.txt"), "已暂存文本\n").unwrap();
+    fs::write(root.join("staged.ico"), b"\0\0\x01\0\xff\xfe\0\x01").unwrap();
     run_in(&root, &["git", "add", "keep.txt", "staged.ico"]);
-    std::fs::write(root.join("keep.txt"), "未暂存文本\n").unwrap();
-    std::fs::write(root.join("untracked.icns"), b"icns\0\0\x01\0\xff\xfe").unwrap();
+    fs::write(root.join("keep.txt"), "未暂存文本\n").unwrap();
+    fs::write(root.join("untracked.icns"), b"icns\0\0\x01\0\xff\xfe").unwrap();
 
     let project = test_project(root.clone(), cx);
     let store = project.read_with(cx, |project, _| project.git_store());
@@ -132,10 +129,10 @@ fn unstaged_diff_removes_open_file_when_disk_content_becomes_binary(cx: &mut Tes
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
     let path = root.join("tracked.txt");
-    std::fs::write(&path, "原始内容\n").unwrap();
+    fs::write(&path, "原始内容\n").unwrap();
     run_in(&root, &["git", "add", "tracked.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-    std::fs::write(&path, "修改内容\n").unwrap();
+    fs::write(&path, "修改内容\n").unwrap();
 
     let project = test_project(root.clone(), cx);
     let store = project.read_with(cx, |project, _| project.git_store());
@@ -152,9 +149,9 @@ fn unstaged_diff_removes_open_file_when_disk_content_becomes_binary(cx: &mut Tes
         );
     });
 
-    std::fs::write(&path, b"binary\0content").unwrap();
+    fs::write(&path, b"binary\0content").unwrap();
     store.update(cx, |store, cx| {
-        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+        store.refresh_statuses_for_paths(slice::from_ref(&path), cx)
     });
     cx.run_until_parked();
     cx.run_until_parked();
@@ -169,9 +166,9 @@ fn unstaged_diff_removes_open_file_when_disk_content_becomes_binary(cx: &mut Tes
     });
     assert!(store.read_with(cx, |store, _| store.status_for_path(&path).is_some()));
 
-    std::fs::write(&path, "再次修改\n").unwrap();
+    fs::write(&path, "再次修改\n").unwrap();
     store.update(cx, |store, cx| {
-        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+        store.refresh_statuses_for_paths(slice::from_ref(&path), cx)
     });
     cx.run_until_parked();
     cx.run_until_parked();
@@ -194,10 +191,10 @@ fn staged_diff_tracks_revision_text_support_changes(cx: &mut TestAppContext) {
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
     let path = root.join("tracked.txt");
-    std::fs::write(&path, "原始内容\n").unwrap();
+    fs::write(&path, "原始内容\n").unwrap();
     run_in(&root, &["git", "add", "tracked.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-    std::fs::write(&path, "已暂存修改\n").unwrap();
+    fs::write(&path, "已暂存修改\n").unwrap();
     run_in(&root, &["git", "add", "tracked.txt"]);
 
     let project = test_project(root.clone(), cx);
@@ -215,20 +212,20 @@ fn staged_diff_tracks_revision_text_support_changes(cx: &mut TestAppContext) {
     };
     assert_eq!(excerpt_count(&view, cx), 1);
 
-    std::fs::write(&path, b"binary\0content").unwrap();
+    fs::write(&path, b"binary\0content").unwrap();
     run_in(&root, &["git", "add", "tracked.txt"]);
     store.update(cx, |store, cx| {
-        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+        store.refresh_statuses_for_paths(slice::from_ref(&path), cx)
     });
     cx.run_until_parked();
     cx.run_until_parked();
     assert_eq!(excerpt_count(&view, cx), 0);
     assert!(store.read_with(cx, |store, _| store.status_for_path(&path).is_some()));
 
-    std::fs::write(&path, "重新暂存文本\n").unwrap();
+    fs::write(&path, "重新暂存文本\n").unwrap();
     run_in(&root, &["git", "add", "tracked.txt"]);
     store.update(cx, |store, cx| {
-        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+        store.refresh_statuses_for_paths(slice::from_ref(&path), cx)
     });
     cx.run_until_parked();
     cx.run_until_parked();
@@ -242,12 +239,12 @@ fn conflict_projection_refresh_preserves_unchanged_files(cx: &mut TestAppContext
     let first = root.join("first.rs");
     let second = root.join("second.rs");
     let third = root.join("third.rs");
-    std::fs::create_dir(root.join("sub")).expect("应创建路径归一化测试目录");
+    fs::create_dir(root.join("sub")).expect("应创建路径归一化测试目录");
     let second_display = root.join("sub").join("..").join("second.rs");
     assert_ne!(second_display, second);
     let conflict = "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> theirs\n";
     for path in [&first, &second, &third] {
-        std::fs::write(path, conflict).expect("应写入冲突文件");
+        fs::write(path, conflict).expect("应写入冲突文件");
     }
     let project = test_project(root, cx);
     let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Conflict, project, cx));
@@ -513,11 +510,8 @@ fn project_diff_control_render_cost(cx: &mut TestAppContext) {
             });
             let mut render = || {
                 visual.draw(
-                    gpui::point(gpui::px(0.), gpui::px(0.)),
-                    gpui::size(
-                        gpui::AvailableSpace::MinContent,
-                        gpui::AvailableSpace::MinContent,
-                    ),
+                    gpui::point(px(0.), px(0.)),
+                    gpui::size(AvailableSpace::MinContent, AvailableSpace::MinContent),
                     |_, _| probe.clone().into_any_element(),
                 );
             };
@@ -690,11 +684,11 @@ fn created_file_and_pure_deletion_targets_stage_and_unstage_without_display_look
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
     let deleted_path = root.join("deleted.txt");
-    std::fs::write(&deleted_path, "removed\n").unwrap();
+    fs::write(&deleted_path, "removed\n").unwrap();
     run_in(&root, &["git", "add", "."]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-    std::fs::write(&deleted_path, "").unwrap();
-    std::fs::write(root.join("created.txt"), "created\n").unwrap();
+    fs::write(&deleted_path, "").unwrap();
+    fs::write(root.join("created.txt"), "created\n").unwrap();
 
     let project = test_project(root.clone(), cx);
     for (kind, operation) in [
@@ -807,12 +801,10 @@ fn project_diff_keeps_hunk_interest_while_its_multibuffer_is_empty(cx: &mut Test
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
     let path = root.join("tracked.txt");
-    std::fs::write(&path, "line0\nline1\nline2\n原内容\nline4\nline5\nline6\n")
-        .expect("应创建文件");
+    fs::write(&path, "line0\nline1\nline2\n原内容\nline4\nline5\nline6\n").expect("应创建文件");
     run_in(&root, &["git", "add", "tracked.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-    std::fs::write(&path, "line0\nline1\nline2\n新内容\nline4\nline5\nline6\n")
-        .expect("应修改文件");
+    fs::write(&path, "line0\nline1\nline2\n新内容\nline4\nline5\nline6\n").expect("应修改文件");
 
     let project = test_project(root.clone(), cx);
     let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
@@ -848,13 +840,13 @@ fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext)
     let original = (1..=20)
         .map(|line| format!("line {line}"))
         .collect::<Vec<_>>();
-    std::fs::write(&path, original.join("\n")).expect("应创建文件");
+    fs::write(&path, original.join("\n")).expect("应创建文件");
     run_in(&root, &["git", "add", "."]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
     // 删除第 17 行（1-based）。
     let mut changed = original.clone();
     changed.remove(16);
-    std::fs::write(&path, changed.join("\n")).expect("应写入删除后的文件");
+    fs::write(&path, changed.join("\n")).expect("应写入删除后的文件");
 
     let project = test_project(root.clone(), cx);
     let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
@@ -915,21 +907,21 @@ fn git_status_drives_one_ordered_excerpt_per_changed_file(cx: &mut TestAppContex
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
-    std::fs::write(root.join("deleted.txt"), "将被删除\n").expect("应创建文件");
-    std::fs::write(
+    fs::write(root.join("deleted.txt"), "将被删除\n").expect("应创建文件");
+    fs::write(
         root.join("modified.txt"),
         "line0\nline1\nline2\nline3\n修改前\nline5\nline6\nline7\n",
     )
     .expect("应创建文件");
     run_in(&root, &["git", "add", "."]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-    std::fs::remove_file(root.join("deleted.txt")).expect("应删除文件");
-    std::fs::write(
+    fs::remove_file(root.join("deleted.txt")).expect("应删除文件");
+    fs::write(
         root.join("modified.txt"),
         "line0\nline1\nline2\nline3\n修改后\nline5\nline6\nline7\n",
     )
     .expect("应修改文件");
-    std::fs::write(root.join("untracked.txt"), "新增\n").expect("应创建未跟踪文件");
+    fs::write(root.join("untracked.txt"), "新增\n").expect("应创建未跟踪文件");
 
     let project = test_project(root.clone(), cx);
     let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
@@ -970,21 +962,21 @@ fn deleted_output_region_maps_to_working_tree_hunk_position(cx: &mut TestAppCont
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
     let modified_path = root.join("modified.txt");
-    std::fs::write(
+    fs::write(
         &modified_path,
         "line0\nline1\nline2\nline3\n修改前\nline5\nline6\nline7\n",
     )
     .expect("应创建文件");
-    std::fs::write(root.join("removed.txt"), "将被删除\n").expect("应创建文件");
+    fs::write(root.join("removed.txt"), "将被删除\n").expect("应创建文件");
     run_in(&root, &["git", "add", "."]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
     // 工作区：修改第 5 行（0-based 4），并删除 removed.txt。
-    std::fs::write(
+    fs::write(
         &modified_path,
         "line0\nline1\nline2\nline3\n修改后\nline5\nline6\nline7\n",
     )
     .expect("应修改文件");
-    std::fs::remove_file(root.join("removed.txt")).expect("应删除文件");
+    fs::remove_file(root.join("removed.txt")).expect("应删除文件");
 
     let project = test_project(root.clone(), cx);
     let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
@@ -1092,18 +1084,18 @@ fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestApp
     let original = (0..12)
         .map(|line| format!("line{line}"))
         .collect::<Vec<_>>();
-    std::fs::write(&path, format!("{}\n", original.join("\n"))).expect("应创建文件");
+    fs::write(&path, format!("{}\n", original.join("\n"))).expect("应创建文件");
     run_in(&root, &["git", "add", "partial.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
 
     let mut staged = original.clone();
     staged[2] = "已暂存内容".into();
-    std::fs::write(&path, format!("{}\n", staged.join("\n"))).expect("应写入暂存版本");
+    fs::write(&path, format!("{}\n", staged.join("\n"))).expect("应写入暂存版本");
     run_in(&root, &["git", "add", "partial.txt"]);
 
     let mut worktree = staged;
     worktree[9] = "未暂存内容".into();
-    std::fs::write(&path, format!("{}\n", worktree.join("\n"))).expect("应写入工作区版本");
+    fs::write(&path, format!("{}\n", worktree.join("\n"))).expect("应写入工作区版本");
 
     let project = test_project(root.clone(), cx);
     let staged_view = cx.new(|cx| DiffView::new(ProjectDiffKind::Staged, project.clone(), cx));
@@ -1160,14 +1152,14 @@ fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppCont
     let original = (0..30)
         .map(|line| format!("line{line} {}", "主".repeat(12)))
         .collect::<Vec<_>>();
-    std::fs::write(&path, format!("{}\n", original.join("\n"))).expect("应创建文件");
+    fs::write(&path, format!("{}\n", original.join("\n"))).expect("应创建文件");
     run_in(&root, &["git", "add", "two-hunks.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
 
     let mut changed = original;
     changed[3] = "第一个变更块".into();
     changed[25] = "第二个变更块".into();
-    std::fs::write(&path, format!("{}\n", changed.join("\n"))).expect("应修改文件");
+    fs::write(&path, format!("{}\n", changed.join("\n"))).expect("应修改文件");
 
     let project = test_project(root.clone(), cx);
     let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
@@ -1230,7 +1222,7 @@ fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppCont
         });
     }
 
-    let staged = std::process::Command::new("git")
+    let staged = Command::new("git")
         .args(["diff", "--cached", "--", "two-hunks.txt"])
         .current_dir(&root)
         .output()
@@ -1291,14 +1283,14 @@ fn staging_first_hunk_keeps_last_deletion_visible_after_reopening(cx: &mut TestA
     let original = (0..30)
         .map(|line| format!("line{line}"))
         .collect::<Vec<_>>();
-    std::fs::write(&path, format!("{}\n", original.join("\n"))).expect("应创建文件");
+    fs::write(&path, format!("{}\n", original.join("\n"))).expect("应创建文件");
     run_in(&root, &["git", "add", "last-deletion.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
 
     let mut changed = original;
     changed[3] = "已修改的第一个块".into();
     changed.remove(29);
-    std::fs::write(&path, format!("{}\n", changed.join("\n"))).expect("应修改文件");
+    fs::write(&path, format!("{}\n", changed.join("\n"))).expect("应修改文件");
 
     let project = test_project(root.clone(), cx);
     let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
@@ -1366,7 +1358,7 @@ fn initially_staged_deleted_file_displays_old_side(cx: &mut TestAppContext) {
         .map(|line| format!("删除前的内容 {line}"))
         .collect::<Vec<_>>()
         .join("\n");
-    std::fs::write(&path, format!("{original}\n")).expect("应创建文件");
+    fs::write(&path, format!("{original}\n")).expect("应创建文件");
     run_in(&root, &["git", "add", "deleted.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
     run_in(&root, &["git", "rm", "-q", "deleted.txt"]);
@@ -1403,10 +1395,10 @@ fn staged_projection_refreshes_without_status_change_or_restart(cx: &mut TestApp
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
     let path = root.join("staged.txt");
-    std::fs::write(&path, "原始内容\n").unwrap();
+    fs::write(&path, "原始内容\n").unwrap();
     run_in(&root, &["git", "add", "staged.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-    std::fs::write(&path, "暂存甲\n").unwrap();
+    fs::write(&path, "暂存甲\n").unwrap();
     run_in(&root, &["git", "add", "staged.txt"]);
     let project = test_project(root.clone(), cx);
     let store = project.read_with(cx, |project, _| project.git_store());
@@ -1425,7 +1417,7 @@ fn staged_projection_refreshes_without_status_change_or_restart(cx: &mut TestApp
     for expected in [Some("暂存乙\n"), None, Some("暂存丙\n")] {
         match expected {
             Some(text) => {
-                std::fs::write(&path, text).unwrap();
+                fs::write(&path, text).unwrap();
                 run_in(&root, &["git", "add", "staged.txt"]);
             }
             None => run_in(&root, &["git", "rm", "-q", "--cached", "staged.txt"]),
@@ -1478,13 +1470,13 @@ fn head_change_updates_staged_projection_without_rebuilding_file_list(cx: &mut T
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
     let path = root.join("staged.txt");
-    std::fs::write(&path, "首次提交\n").unwrap();
+    fs::write(&path, "首次提交\n").unwrap();
     run_in(&root, &["git", "add", "staged.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "first"]);
-    std::fs::write(&path, "第二次提交\n").unwrap();
+    fs::write(&path, "第二次提交\n").unwrap();
     run_in(&root, &["git", "add", "staged.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "second"]);
-    std::fs::write(&path, "当前暂存\n").unwrap();
+    fs::write(&path, "当前暂存\n").unwrap();
     run_in(&root, &["git", "add", "staged.txt"]);
 
     let project = test_project(root.clone(), cx);
@@ -1528,10 +1520,10 @@ fn clearing_pending_hunk_restores_projection_without_rebuilding_files(cx: &mut T
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
     let path = root.join("pending.txt");
-    std::fs::write(&path, "原始内容\n").unwrap();
+    fs::write(&path, "原始内容\n").unwrap();
     run_in(&root, &["git", "add", "pending.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-    std::fs::write(&path, "修改内容\n").unwrap();
+    fs::write(&path, "修改内容\n").unwrap();
 
     let project = test_project(root, cx);
     let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
@@ -1587,10 +1579,10 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
     let modified_path = root.join("modified.txt");
-    std::fs::write(&modified_path, "line0\nline1\nline2\nline3\nline4").expect("应创建文件");
+    fs::write(&modified_path, "line0\nline1\nline2\nline3\nline4").expect("应创建文件");
     run_in(&root, &["git", "add", "."]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-    std::fs::write(&modified_path, "line0\n改过\nline2\nline3\nline4").expect("应修改文件");
+    fs::write(&modified_path, "line0\n改过\nline2\nline3\nline4").expect("应修改文件");
 
     let project = test_project(root.clone(), cx);
     let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
@@ -1673,7 +1665,7 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
     project.update(cx, |project, cx| {
         let store = project.git_store();
         store.update(cx, |store, cx| {
-            store.refresh_statuses_for_paths(std::slice::from_ref(&modified_path), cx);
+            store.refresh_statuses_for_paths(slice::from_ref(&modified_path), cx);
         });
     });
     cx.run_until_parked();
@@ -1704,10 +1696,10 @@ fn plain_editor_expansion_then_git_refresh_keeps_diff_view_consistent(cx: &mut T
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
     let modified_path = root.join("modified.txt");
-    std::fs::write(&modified_path, "line0\nline1\nline2\nline3\nline4\n").expect("应创建文件");
+    fs::write(&modified_path, "line0\nline1\nline2\nline3\nline4\n").expect("应创建文件");
     run_in(&root, &["git", "add", "."]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-    std::fs::write(&modified_path, "line0\n改过\nline2\nline3\nline4\n").expect("应修改文件");
+    fs::write(&modified_path, "line0\n改过\nline2\nline3\nline4\n").expect("应修改文件");
 
     let project = test_project(root.clone(), cx);
     // 普通编辑器：独立 excerpts 组合文档（整文件 excerpt，共享 LanguageBuffer 只作工作区源），与 item_provider 打开路径一致；展开修改块。
@@ -1738,7 +1730,7 @@ fn plain_editor_expansion_then_git_refresh_keeps_diff_view_consistent(cx: &mut T
     project.update(cx, |project, cx| {
         let store = project.git_store();
         store.update(cx, |store, cx| {
-            store.refresh_statuses_for_paths(std::slice::from_ref(&modified_path), cx);
+            store.refresh_statuses_for_paths(slice::from_ref(&modified_path), cx);
         });
     });
     cx.run_until_parked();
@@ -1761,14 +1753,14 @@ fn expansion_edit_then_refresh_keeps_diff_view_consistent(cx: &mut TestAppContex
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
     let modified_path = root.join("modified.txt");
-    std::fs::write(
+    fs::write(
         &modified_path,
         "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\n",
     )
     .expect("应创建文件");
     run_in(&root, &["git", "add", "."]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-    std::fs::write(
+    fs::write(
         &modified_path,
         "line0\n改过\nline2\nline3\nline4\nline5\nline6\nline7\n",
     )
@@ -1816,7 +1808,7 @@ fn expansion_edit_then_refresh_keeps_diff_view_consistent(cx: &mut TestAppContex
     project.update(cx, |project, cx| {
         let store = project.git_store();
         store.update(cx, |store, cx| {
-            store.refresh_statuses_for_paths(std::slice::from_ref(&modified_path), cx);
+            store.refresh_statuses_for_paths(slice::from_ref(&modified_path), cx);
         });
     });
     cx.run_until_parked();
@@ -1964,8 +1956,7 @@ fn staged_project_diff_find_seeds_query_from_editor_selection(cx: &mut TestAppCo
 #[gpui::test]
 fn diff_view_scroll_keeps_host_quiet_and_folding_notifies(cx: &mut TestAppContext) {
     use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
-    use std::cell::Cell;
-    use std::rc::Rc;
+    use std::{cell::Cell, rc::Rc};
     use zcv_multi_buffer::ExcerptRange;
 
     let directory = tempfile::tempdir().unwrap();

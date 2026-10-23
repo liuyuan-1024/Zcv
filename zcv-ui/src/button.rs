@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use gpui::{
     App, ClickEvent, CursorStyle, DefiniteLength, ElementId, IntoElement, MouseButton, Pixels,
-    RenderOnce, ViewElement, Window, div, prelude::*,
+    RenderOnce, Rgba, ViewElement, Window, div, prelude::*,
 };
 use zcv_theme::{color, scale, typography};
 
@@ -84,7 +84,7 @@ pub struct Button {
     content: ButtonContent,
     style: ButtonStyle,
     size: ButtonSize,
-    color: Option<gpui::Rgba>,
+    color: Option<Rgba>,
     tooltip: TooltipSpec,
     on_click: Option<ClickHandler>,
     disabled: bool,
@@ -160,7 +160,7 @@ impl Button {
     }
 
     /// 设置颜色（覆盖默认色）。
-    pub fn color(mut self, color: gpui::Rgba) -> Self {
+    pub fn color(mut self, color: Rgba) -> Self {
         self.color = Some(color);
         self
     }

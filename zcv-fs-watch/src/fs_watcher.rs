@@ -7,16 +7,19 @@
 //! 3. `FsWatcher` 实例 —— 每个 Project 一个实例，包装 GlobalWatcher，提供 `Watcher` trait
 //! 4. Watcher::watch 返回按 latency 合并的事件批次流，调用方 await 并触发界面刷新
 
-use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
-use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
-use std::thread;
-use std::time::Duration;
+use std::{
+    cmp::Ordering,
+    collections::HashMap,
+    iter, mem,
+    path::{Component, Path, PathBuf},
+    pin::Pin,
+    sync::{Arc, Mutex, OnceLock, mpsc},
+    thread,
+    time::Duration,
+};
 
 use crossbeam_channel::Sender as CbSender;
-use futures::StreamExt as _;
-use futures::stream::Stream;
+use futures::{StreamExt as _, stream::Stream};
 use notify::{Event, EventKind, RecursiveMode, Watcher as NotifyWatcher};
 use zcv_path::AbsolutePathBuf;
 
@@ -411,8 +414,7 @@ impl GlobalWatcher {
         let mut native_rescan = false;
         let mut poll_rescan = false;
 
-        for (mode, event) in std::iter::once(first).chain(std::iter::from_fn(|| rx.try_recv().ok()))
-        {
+        for (mode, event) in iter::once(first).chain(iter::from_fn(|| rx.try_recv().ok())) {
             let rescan_flag = match mode {
                 WatcherMode::Native => &mut native_rescan,
                 WatcherMode::Poll => &mut poll_rescan,
@@ -659,7 +661,7 @@ impl FsWatcher {
                 if !latency.is_zero() {
                     smol::Timer::after(latency).await;
                 }
-                let events = std::mem::take(&mut *pending.lock().unwrap());
+                let events = mem::take(&mut *pending.lock().unwrap());
                 (!events.is_empty()).then_some(events)
             }
         }))
@@ -850,7 +852,7 @@ impl Drop for FsWatcher {
         // 取消所有 pending 注册
         self.pending_registrations.lock().unwrap().clear();
         // 从 GlobalWatcher 注销所有注册
-        let registrations = std::mem::take(&mut *self.registrations.lock().unwrap());
+        let registrations = mem::take(&mut *self.registrations.lock().unwrap());
         for (_, reg) in registrations {
             global_watcher().remove(reg.id);
         }
@@ -1062,15 +1064,15 @@ fn extend_sorted(dst: &mut Vec<PathEvent>, mut new: Vec<PathEvent>) {
     let mut j = 0;
     while i < dst.len() && j < new.len() {
         match dst[i].path.cmp(&new[j].path) {
-            std::cmp::Ordering::Less => {
+            Ordering::Less => {
                 result.push(dst[i].clone());
                 i += 1;
             }
-            std::cmp::Ordering::Greater => {
+            Ordering::Greater => {
                 result.push(new[j].clone());
                 j += 1;
             }
-            std::cmp::Ordering::Equal => {
+            Ordering::Equal => {
                 // 保留新事件（覆盖旧事件）
                 result.push(new[j].clone());
                 i += 1;

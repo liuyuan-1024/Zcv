@@ -3,13 +3,11 @@
 //! 面板持有当前活动编辑器、筛选结果和折叠状态；
 //! 语法数据由 `zcv-editor` 提供，行的通用树几何由 `zcv-ui` 提供。
 
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Render, Task, UniformListScrollHandle, Window, div,
-    prelude::*, uniform_list,
+    App, Context, Entity, FocusHandle, Render, Subscription, Task, UniformListScrollHandle, Window,
+    div, prelude::*, uniform_list,
 };
 use zcv_editor::{Editor, EditorEvent, OutlineEntry, OutlineVersion};
 use zcv_language::LanguageRegistry;
@@ -26,10 +24,10 @@ pub struct OutlinePanel {
     focus: FocusHandle,
     pane: Entity<Pane>,
     active_editor: Option<Entity<Editor>>,
-    editor_subscription: Option<gpui::Subscription>,
+    editor_subscription: Option<Subscription>,
     search_input: Entity<Editor>,
-    _search_subscription: gpui::Subscription,
-    _pane_subscription: gpui::Subscription,
+    _search_subscription: Subscription,
+    _pane_subscription: Subscription,
     /// 当前查询筛选后的可见大纲行。
     rows: Vec<OutlineRow>,
     /// 已安装版本上的未过滤条目；查询变化只在其上重建行。

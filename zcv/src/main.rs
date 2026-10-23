@@ -4,9 +4,7 @@ mod auto_update;
 mod harness;
 mod workspace;
 
-use std::ffi::OsString;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{ffi::OsString, path::PathBuf, sync::Arc};
 
 use gpui::{App, Application};
 use workspace::{open_empty_workspace, open_empty_workspace_with_error, open_project_window};

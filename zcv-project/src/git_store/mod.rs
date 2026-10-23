@@ -19,16 +19,19 @@ mod snapshots;
 use jobs::{GitJob, GitJobId, GitJobKey, GitJobRecord, ScheduledGitJob};
 pub use jobs::{GitJobPhase, GitJobStatus, GitOperationKind};
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    mem,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use background::{JobResult, execute_job};
 use futures::{FutureExt as _, future::Shared};
 use gpui::{
-    App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Task,
-    WeakEntity,
+    App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, EntityId, EventEmitter,
+    Task, WeakEntity,
 };
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkStaging, DiffOperations, PendingHunk};
 use zcv_git::{
@@ -251,7 +254,7 @@ fn repository_working_directory(repository: &dyn GitRepository) -> AbsolutePathB
 }
 
 /// 共享 diff 缓存的键：路径、working 实体、调用方给出的差异视图身份。
-type SharedDiffKey = (AbsolutePathBuf, gpui::EntityId, u64);
+type SharedDiffKey = (AbsolutePathBuf, EntityId, u64);
 
 /// 一个共享 diff 实体及其 base 修订；index 参照固定来自 Git index。
 ///
@@ -668,7 +671,7 @@ impl GitStore {
     fn uncommitted_diff_for(
         &self,
         path: &AbsolutePathBuf,
-        working_id: gpui::EntityId,
+        working_id: EntityId,
     ) -> Option<Entity<BufferDiff>> {
         self.shared_diffs
             .iter()
@@ -1320,7 +1323,7 @@ impl GitStore {
             .spawn(async move |this, cx| {
                 let mut loaded = loaded.await.map_err(Arc::new);
                 let edit_text = match loaded.as_mut().ok() {
-                    Some(LoadedRevision::Text { text, .. }) => Some(std::mem::take(text)),
+                    Some(LoadedRevision::Text { text, .. }) => Some(mem::take(text)),
                     Some(LoadedRevision::Missing) => Some(String::new()),
                     Some(LoadedRevision::Unsupported) | None => None,
                 };
@@ -1618,7 +1621,7 @@ impl GitStore {
 
     /// 刷新某修订下所有已加载或被引用的路径（HEAD 整体改写时使用）。
     fn refresh_all_revision_documents(&mut self, revision: GitRevision, cx: &mut Context<Self>) {
-        let mut paths: std::collections::BTreeSet<AbsolutePathBuf> = self
+        let mut paths: BTreeSet<AbsolutePathBuf> = self
             .revision_documents
             .keys()
             .filter(|(cached, _)| *cached == revision)
@@ -1649,10 +1652,9 @@ impl GitStore {
                 grouped_diff_requests: Vec::new(),
             }),
             GitJob::RefreshStatuses => {
-                let paths: Vec<AbsolutePathBuf> =
-                    std::mem::take(&mut self.paths_needing_status_update)
-                        .into_iter()
-                        .collect();
+                let paths: Vec<AbsolutePathBuf> = mem::take(&mut self.paths_needing_status_update)
+                    .into_iter()
+                    .collect();
                 let (repositories, grouped_paths) = self.group_paths_by_repo(&paths);
                 Some(JobPreparation {
                     root,

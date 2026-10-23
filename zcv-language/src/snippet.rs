@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use zcv_text::{Buffer, BufferConfig};
 
-use crate::HighlightSpan;
-use crate::registry::LanguageRegistry;
-use crate::syntax_map::SyntaxMap;
-use crate::tree_sitter_utils::ParseCancellation;
+use crate::{
+    HighlightSpan, registry::LanguageRegistry, syntax_map::SyntaxMap,
+    tree_sitter_utils::ParseCancellation,
+};
 
 /// 一段代码片段的高亮 capture 区间和对应 capture 名称表。
 ///

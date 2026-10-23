@@ -2,14 +2,14 @@
 //!
 //! 默认层的唯一数据源是内置 `initial_user_settings.jsonc`。
 
-use std::collections::HashMap;
-use std::num::NonZeroUsize;
-use std::sync::LazyLock;
+use std::{collections::HashMap, num::NonZeroUsize, sync::LazyLock};
 
-use super::INITIAL_USER_SETTINGS;
-use super::schema::{
-    AutoIndentMode, BuiltinSettingsContent, CursorShape, IndentGuideSettings, LanguageOverride,
-    SoftWrapMode, TabConfig, UserSettingsContent, parse_builtin_settings,
+use super::{
+    INITIAL_USER_SETTINGS,
+    schema::{
+        AutoIndentMode, BuiltinSettingsContent, CursorShape, IndentGuideSettings, LanguageOverride,
+        SoftWrapMode, TabConfig, UserSettingsContent, parse_builtin_settings,
+    },
 };
 
 #[derive(Clone, Debug, PartialEq)]

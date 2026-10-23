@@ -4,12 +4,10 @@
 
 use std::rc::Rc;
 
-use gpui::{AnyElement, App, SharedString, Window, prelude::*};
+use gpui::{AnyElement, App, SharedString, ViewElement, Window, prelude::*};
 use zcv_actions::{ReplaceAll, ReplaceNext};
 
-use crate::button::Button;
-use crate::input_shell::InputShell;
-use crate::tooltip::ShortcutResolver;
+use crate::{button::Button, input_shell::InputShell, tooltip::ShortcutResolver};
 
 /// 替换动作回调。
 type ActionHandler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -56,10 +54,10 @@ impl ReplaceInput {
 }
 
 impl IntoElement for ReplaceInput {
-    type Element = gpui::ViewElement<Self>;
+    type Element = ViewElement<Self>;
 
     fn into_element(self) -> Self::Element {
-        gpui::ViewElement::new(self)
+        ViewElement::new(self)
     }
 }
 

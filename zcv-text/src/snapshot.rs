@@ -2,9 +2,7 @@
 //!
 //! 本文件保证后台读取可脱离可变 Buffer；它不提交编辑、不维护历史，也不暴露 Ropey 内部类型。
 
-use std::borrow::Cow;
-use std::cmp::Ordering;
-use std::ops::Range;
+use std::{borrow::Cow, cmp::Ordering, ops::Range};
 
 use crate::{
     Affinity, Anchor, BufferConfig, BufferVersion, ByteOffset, CharOffset, Line, MovementDirection,

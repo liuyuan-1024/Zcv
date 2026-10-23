@@ -5,7 +5,8 @@
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, Entity, MouseButton, Render, Subscription, Window, div, prelude::*,
+    Animation, AnimationExt, Entity, IntoElement, MouseButton, Render, Subscription, Window, div,
+    prelude::*,
 };
 use zcv_project::{GitJobPhase, GitJobStatus, GitStore, GitStoreEvent};
 use zcv_theme::{color, scale};
@@ -37,7 +38,7 @@ impl StatusItemView for ActivityIndicator {
 }
 
 impl Render for ActivityIndicator {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 动画帧直接读取共享进度，使 git 流式输出无需逐行跨线程发送界面事件也能更新。
         let Some(task) = self.git_store.read(cx).current_job() else {
             // 无任务时不占位。
@@ -75,7 +76,7 @@ impl Render for ActivityIndicator {
 /// spinner 帧：Braille 点阵字符（等宽，帧间无布局抖动）。
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-fn animated_task(task: GitJobStatus) -> impl gpui::IntoElement {
+fn animated_task(task: GitJobStatus) -> impl IntoElement {
     div().with_animation(
         "activity-indicator-task",
         Animation::new(Duration::from_millis(1000)).repeat(),

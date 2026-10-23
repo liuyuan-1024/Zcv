@@ -1,13 +1,14 @@
 use super::*;
-use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    time::{Duration, Instant},
+};
 
 use tempfile::TempDir;
 
-use crate::FileStatus;
-use crate::status::StatusCode;
+use crate::{FileStatus, status::StatusCode};
 
 /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。
 ///
@@ -341,11 +342,11 @@ fn test_repo_with_remote() -> (PathBuf, PathBuf, TempDir) {
         &["git", "init", "-q", "--bare", remote.to_str().unwrap()],
     );
     let root = temp_dir.path().join("work");
-    std::fs::create_dir(&root).expect("应创建工作仓库目录");
+    fs::create_dir(&root).expect("应创建工作仓库目录");
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
-    std::fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
+    fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
     run_in(&root, &["git", "add", "tracked.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
     run_in(
@@ -362,7 +363,7 @@ fn fetch_pull_push_work_against_remote() {
     let repo = open_repo(&root);
 
     // 制造"本地领先远程一个提交"：提交后 push，再回退本地 HEAD。
-    std::fs::write(root.join("pushed.txt"), "推送内容\n").expect("应写入文件");
+    fs::write(root.join("pushed.txt"), "推送内容\n").expect("应写入文件");
     run_in(&root, &["git", "add", "pushed.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "待推送提交"]);
     run_in(&root, &["git", "push", "-q", "origin", "master"]);
@@ -399,7 +400,7 @@ fn fetch_pull_push_work_against_remote() {
     );
 
     // push：把新提交推送到远程。
-    std::fs::write(root.join("again.txt"), "再推一次\n").expect("应写入文件");
+    fs::write(root.join("again.txt"), "再推一次\n").expect("应写入文件");
     run_in(&root, &["git", "add", "again.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "再推一次"]);
     repo.push_cancellable(&GitCancellation::new())
@@ -567,7 +568,7 @@ fn status_reports_branch_tracking() {
     assert_eq!((branch.ahead, branch.behind), (0, 0));
 
     // 本地新提交 → ahead 1（可推送）。
-    std::fs::write(root.join("new.txt"), "新提交\n").expect("应写入文件");
+    fs::write(root.join("new.txt"), "新提交\n").expect("应写入文件");
     run_in(&root, &["git", "add", "new.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "本地提交"]);
     let branch = repo

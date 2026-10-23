@@ -1,7 +1,6 @@
 //! Editor 的文件内搜索：持有搜索结果（绑定 BufferVersion），编辑后自动重搜。
 
-use std::ops::Range;
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use zcv_multi_buffer::{
     AppendedExcerpts, MultiBufferAnchor, MultiBufferCoordinateCursor, MultiBufferRange,
@@ -11,10 +10,10 @@ use zcv_project::{RegexSearchResult, SearchQuery, SearchQueryResult, SearchResul
 use zcv_text::{Affinity, BufferVersion};
 use zcv_workspace::{Direction, SearchEvent, SearchableItem};
 
-use crate::display_map::SearchDecorationInput;
-use crate::selection::EditOutcome;
+use crate::{display_map::SearchDecorationInput, selection::EditOutcome};
 
 use super::{Editor, edit_metadata};
+use gpui::{App, Context, Window};
 
 impl gpui::EventEmitter<SearchEvent> for Editor {}
 
@@ -149,7 +148,7 @@ impl EditorSearch {
 
 impl SearchableItem for Editor {
     /// 主选区文本作为查询建议；空选区（仅光标）不种入。
-    fn query_suggestion(&self, cx: &gpui::App) -> Option<String> {
+    fn query_suggestion(&self, cx: &App) -> Option<String> {
         let range = self.resolved_selections(cx).primary().range();
         if range.is_empty() {
             return None;
@@ -163,12 +162,7 @@ impl SearchableItem for Editor {
         )
     }
 
-    fn search(
-        &mut self,
-        query: &SearchQuery,
-        _window: &mut gpui::Window,
-        cx: &mut gpui::Context<Self>,
-    ) {
+    fn search(&mut self, query: &SearchQuery, _window: &mut Window, cx: &mut Context<Self>) {
         self.search = self.execute_search(query, cx);
         self.advance_snapshots(cx);
         // 自动定位到第一个匹配（选区 + 视口滚动，光标跟随）。
@@ -183,7 +177,7 @@ impl SearchableItem for Editor {
         cx.emit(SearchEvent::MatchesInvalidated);
     }
 
-    fn clear_search(&mut self, _window: &mut gpui::Window, cx: &mut gpui::Context<Self>) {
+    fn clear_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.search = None;
         // 搜索装饰是独立于显示拓扑的输入：清空搜索必须同步移除高亮与滚动条标记。
         self.advance_snapshots(cx);
@@ -191,7 +185,7 @@ impl SearchableItem for Editor {
         cx.emit(SearchEvent::MatchesInvalidated);
     }
 
-    fn search_count(&self, _cx: &gpui::App) -> (usize, Option<usize>) {
+    fn search_count(&self, _cx: &App) -> (usize, Option<usize>) {
         self.search
             .as_ref()
             .map_or((0, None), |search| (search.len(), search.active_index))
@@ -201,8 +195,8 @@ impl SearchableItem for Editor {
         &mut self,
         direction: Direction,
         count: usize,
-        _window: &mut gpui::Window,
-        cx: &mut gpui::Context<Self>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
     ) {
         self.advance_snapshots(cx);
         let selection = *self.resolved_selections(cx).primary();
@@ -253,8 +247,8 @@ impl SearchableItem for Editor {
     fn replace_current(
         &mut self,
         replacement: &str,
-        _window: &mut gpui::Window,
-        cx: &mut gpui::Context<Self>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> bool {
         // 编辑链路会在事务后自动重搜，这里兜底拒绝过期结果。
         let Some(search) = &self.search else {
@@ -290,8 +284,8 @@ impl SearchableItem for Editor {
     fn replace_all(
         &mut self,
         replacement: &str,
-        _window: &mut gpui::Window,
-        cx: &mut gpui::Context<Self>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> usize {
         let Some(search) = &self.search else { return 0 };
         let count = search.len();
@@ -325,7 +319,7 @@ impl Editor {
         &self,
         literal: &Option<SearchResult>,
         regex: &Option<RegexSearchResult>,
-        cx: &gpui::Context<Self>,
+        cx: &Context<Self>,
     ) -> bool {
         let projection_version = self.display_snapshot(cx).buffer_snapshot().version();
         literal
@@ -341,7 +335,7 @@ impl Editor {
         &mut self,
         query: SearchQuery,
         ranges: Vec<MultiBufferRange>,
-        cx: &mut gpui::Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         let snapshot = self
             .multi_buffer
@@ -381,7 +375,7 @@ impl Editor {
         &mut self,
         query: SearchQuery,
         appended: AppendedExcerpts,
-        cx: &mut gpui::Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         let snapshot = self
             .multi_buffer
@@ -432,11 +426,7 @@ impl Editor {
     }
 
     /// 执行搜索并返回新的搜索状态；`None` 表示无结果（query 为空或搜索报错）。
-    fn execute_search(
-        &self,
-        query: &SearchQuery,
-        cx: &mut gpui::Context<Self>,
-    ) -> Option<EditorSearch> {
+    fn execute_search(&self, query: &SearchQuery, cx: &mut Context<Self>) -> Option<EditorSearch> {
         if query.query.is_empty() {
             return None;
         }
@@ -475,7 +465,7 @@ impl Editor {
     ///
     /// 外部派生结果集（项目搜索结果）由结果所有者拥有，Editor 不把它改写成当前文档上的 Query 重搜；
     /// 只按当前快照重投影已有锚点范围，保持 `External` 语义不变。
-    pub(crate) fn research_after_edit(&mut self, cx: &mut gpui::Context<Self>) {
+    pub(crate) fn research_after_edit(&mut self, cx: &mut Context<Self>) {
         let Some(search) = &self.search else { return };
         if search.query.query.is_empty() {
             return;

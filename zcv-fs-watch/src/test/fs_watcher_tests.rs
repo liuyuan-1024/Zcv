@@ -1,4 +1,5 @@
 use super::*;
+use std::{fs, thread};
 
 /// 测试语义只关心路径层级；
 /// 将简写路径锚定到当前目录，避免把 Unix 根路径误当作 Windows 上的绝对路径。
@@ -156,17 +157,17 @@ fn test_extend_sorted_keeps_entries_after_replaced_path() {
 fn test_path_semantics_can_be_queried_for_existing_path() {
     let temp = tempfile::tempdir().unwrap();
     let first = temp.path().join("ZcvCaseProbe");
-    std::fs::create_dir(&first).unwrap();
+    fs::create_dir(&first).unwrap();
     let second = temp.path().join("zcvcaseprobe");
-    let expected_case_sensitive = match std::fs::create_dir(&second) {
+    let expected_case_sensitive = match fs::create_dir(&second) {
         Ok(()) => {
-            std::fs::remove_dir(&second).unwrap();
+            fs::remove_dir(&second).unwrap();
             true
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(error) => panic!("创建大小写探测目录失败：{error}"),
     };
-    std::fs::remove_dir(&first).unwrap();
+    fs::remove_dir(&first).unwrap();
 
     let semantics = platform::path_semantics(temp.path()).unwrap();
     assert_eq!(semantics.case_sensitive, expected_case_sensitive);
@@ -186,7 +187,7 @@ fn test_fs_watcher_basic_lifecycle() {
 fn child_registration_survives_removal_of_parent_in_same_watcher() {
     let temp = tempfile::tempdir().unwrap();
     let child = temp.path().join("child");
-    std::fs::create_dir(&child).unwrap();
+    fs::create_dir(&child).unwrap();
     let watcher = FsWatcher::new();
 
     watcher.add(temp.path()).unwrap();
@@ -226,7 +227,7 @@ fn concurrent_add_of_same_path_keeps_one_registration() {
             let watcher = watcher.clone();
             let root = root.clone();
             let start = start.clone();
-            std::thread::spawn(move || {
+            thread::spawn(move || {
                 start.wait();
                 watcher.add(&root).unwrap();
             })
@@ -256,7 +257,7 @@ fn concurrent_add_of_same_path_keeps_one_registration() {
 fn overlapping_watchers_keep_parent_os_watch_until_last_child_closes() {
     let temp = tempfile::tempdir().unwrap();
     let child = temp.path().join("child");
-    std::fs::create_dir(&child).unwrap();
+    fs::create_dir(&child).unwrap();
     let parent_watcher = FsWatcher::new();
     let child_watcher = FsWatcher::new();
     parent_watcher.add(temp.path()).unwrap();
@@ -294,17 +295,17 @@ fn child_watcher_receives_changes_after_parent_watcher_closes() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let child = root.join("child");
-    std::fs::create_dir(&child).unwrap();
+    fs::create_dir(&child).unwrap();
     let parent_watcher = FsWatcher::new();
     let child_watcher = FsWatcher::new();
     let mut events = child_watcher.watch(Duration::ZERO);
     parent_watcher.add(&root).unwrap();
     child_watcher.add(&child).unwrap();
     drop(parent_watcher);
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
 
     let file = child.join("changed.txt");
-    std::fs::write(&file, "外部写入").unwrap();
+    fs::write(&file, "外部写入").unwrap();
     let batch = smol::block_on(smol::future::or(events.next(), async {
         smol::Timer::after(Duration::from_secs(5)).await;
         None
@@ -320,14 +321,14 @@ fn real_file_change_reaches_registered_watcher() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let nested = root.join("nested");
-    std::fs::create_dir(&nested).unwrap();
+    fs::create_dir(&nested).unwrap();
     let watcher = FsWatcher::new();
     let mut events = watcher.watch(Duration::ZERO);
     watcher.add(&root).unwrap();
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
 
     let file = nested.join("changed.txt");
-    std::fs::write(&file, "外部写入").unwrap();
+    fs::write(&file, "外部写入").unwrap();
     let batch = smol::block_on(smol::future::or(events.next(), async {
         smol::Timer::after(Duration::from_secs(5)).await;
         None

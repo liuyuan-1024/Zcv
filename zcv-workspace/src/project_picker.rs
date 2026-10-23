@@ -5,14 +5,11 @@
 //!
 //! 最近项目从 `~/.zcv/recent_projects.json` 读取，"打开本地项目"调用系统文件选择器选择目录。
 
-use std::cell::RefCell;
-use std::path::Path;
-use std::rc::Rc;
-use std::time::Duration;
+use std::{cell::RefCell, path::Path, rc::Rc, time::Duration};
 
 use gpui::{
-    Action, App, ClickEvent, Context, Entity, PathPromptOptions, Render, WeakEntity, Window, div,
-    prelude::*,
+    Action, AnyElement, App, ClickEvent, Context, Entity, PathPromptOptions, Render, WeakEntity,
+    Window, div, prelude::*,
 };
 use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
 use zcv_fuzzy::Matcher;
@@ -22,8 +19,11 @@ use zcv_project::Project;
 use zcv_theme::{color, scale};
 use zcv_ui::{Button, ListItem, SvgIcon};
 
-use crate::recent_projects::{self, ProjectEntry};
-use crate::{ToastKind, Workspace, typography_for_window};
+use crate::{
+    ToastKind, Workspace,
+    recent_projects::{self, ProjectEntry},
+    typography_for_window,
+};
 
 // ═══ 回调 ════════════════════════════════════════════════════════
 
@@ -190,7 +190,7 @@ impl PickerDelegate for ProjectPickerDelegate {
         index: usize,
         is_selected: bool,
         cx: &mut Context<Picker<Self>>,
-    ) -> gpui::AnyElement {
+    ) -> AnyElement {
         let entry = &self.projects[self.filtered[index]];
         let is_current = self.is_current_project(entry, cx);
         let icon_color = color::current(cx).icon_muted;
@@ -245,7 +245,7 @@ impl PickerDelegate for ProjectPickerDelegate {
     fn placeholder_text(&self) -> &str {
         "搜索项目..."
     }
-    fn render_footer(&self, window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement> {
+    fn render_footer(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         let typography = typography_for_window(window, cx);
         let shortcut = cx
             .try_global::<KeyBindings>()

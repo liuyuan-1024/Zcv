@@ -2,6 +2,7 @@ use zcv_actions::DeployBufferSearch;
 
 use super::*;
 use crate::test::test_project;
+use gpui::TestAppContext;
 
 struct GitGraphSearchHost {
     view: Entity<GitGraphView>,
@@ -15,7 +16,7 @@ impl Render for GitGraphSearchHost {
 }
 
 #[gpui::test]
-fn git_graph_find_from_content_focuses_its_search_bar(cx: &mut gpui::TestAppContext) {
+fn git_graph_find_from_content_focuses_its_search_bar(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = test_project(directory.path().to_path_buf(), cx);
     let (host, cx) = cx.add_window_view(move |_, cx| GitGraphSearchHost {
@@ -43,7 +44,7 @@ fn git_graph_find_from_content_focuses_its_search_bar(cx: &mut gpui::TestAppCont
 /// 行高必须跟随内容字号通道：内容字号放大后行高应变大。
 /// 若走错通道，`cmd-=`（workspace::IncreaseContentFontSize）对版本控制图没有任何可见效果。
 #[gpui::test]
-fn row_height_follows_content_font_size(cx: &mut gpui::TestAppContext) {
+fn row_height_follows_content_font_size(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let original = f32::from(typography::content_size(cx));
         let baseline = row_height(typography::content_line(cx), typography::ui_size(cx));
@@ -143,7 +144,7 @@ fn double_click_reset_restores_left_column_and_preserves_total_width() {
 /// 关闭标签/面板（不触发活动 Item 变化、因而不会清 target）时两者都无法释放。
 /// 目标改为弱句柄后，释放外部强引用即可让视图与搜索栏一起释放。
 #[gpui::test]
-fn git_graph_view_and_search_bar_release_together(cx: &mut gpui::TestAppContext) {
+fn git_graph_view_and_search_bar_release_together(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = test_project(directory.path().to_path_buf(), cx);
     let view = cx.new(|cx| GitGraphView::new(project, cx));

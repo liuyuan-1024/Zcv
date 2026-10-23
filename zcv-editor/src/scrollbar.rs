@@ -3,11 +3,9 @@
 //! 事件处理与绘制在 EditorElement 中完成；
 //! 本模块只负责几何计算，全部公式用 Pixels 模型表达。
 
-use std::ops::Range;
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
-use super::display_map::EditorHunkMarkerKind;
-use super::scroll::ScrollbarThumbState;
+use super::{display_map::EditorHunkMarkerKind, scroll::ScrollbarThumbState};
 use gpui::{Bounds, Hitbox, HitboxBehavior, Pixels, Point, Size, Task, Window, point, px, size};
 
 /// 滚动轴宽度。

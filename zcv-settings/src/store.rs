@@ -5,8 +5,7 @@
 use anyhow::Result;
 use gpui::{App, Context, Entity, EventEmitter, Global};
 
-use super::merge::UserSettings;
-use super::schema::parse_user_settings;
+use super::{merge::UserSettings, schema::parse_user_settings};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingsError(pub String);

@@ -4,8 +4,10 @@
 //! 由 Workspace 持有并叠加在根视图上，各条提示独立计时和关闭。
 //! 容器自身不注册鼠标事件（不创建 hitbox），不会拦截下方视图的交互。
 
-use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::{
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use gpui::{
     AlignItems, AnyElement, App, AsyncApp, Bounds, ClipboardItem, Context, Display, Element,
@@ -372,7 +374,7 @@ impl ToastLayer {
 }
 
 impl Render for ToastLayer {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let typography = typography_for_window(window, cx);
         let mut stack = div()
             .id("toast-stack")

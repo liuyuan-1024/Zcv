@@ -1,9 +1,12 @@
 //! 后台执行层：所有 git 命令在这里同步阻塞运行，扫描/合并为纯函数（可脱离 gpui 单测）。
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    thread,
+    time::Duration,
+};
 
 use zcv_git::{
     Branch, DiffStat, FileStatus, GitCancellation, GitRepository, GitStatus, parse_conflict_regions,
@@ -85,10 +88,10 @@ pub(super) async fn execute_job(
             // 每个仓库的 git 命令彼此独立。
             // 用有界线程数并行扫描，避免嵌套仓库数量增加时把所有 head/status/diff/branch 查询串成长尾；
             // 索引顺序仍按发现顺序保持。
-            let worker_count = std::thread::available_parallelism()
+            let worker_count = thread::available_parallelism()
                 .map_or(1, std::num::NonZeroUsize::get)
                 .min(work.len());
-            let scans = std::thread::scope(|scope| {
+            let scans = thread::scope(|scope| {
                 let handles = (0..worker_count)
                     .map(|worker_index| {
                         let work = &work;
@@ -281,8 +284,8 @@ pub(super) fn reconcile_cancelled_operation(
     // 状态确认不能变成另一个无限期挂起的远程任务。
     let confirmation = GitCancellation::new();
     let timeout = confirmation.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(10));
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(10));
         timeout.cancel();
     });
     if let Err(error) = repository.fetch_cancellable(&confirmation) {

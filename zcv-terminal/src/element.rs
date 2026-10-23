@@ -3,15 +3,14 @@
 //! 渲染只读 `Terminal::last_content` 快照，不触碰模拟器锁。
 //! 布局阶段把同一行的相邻同风格单元格合并为文本段（LineRun），背景色合并为色块（LayoutRect），绘制阶段逐段 shape + paint。
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
 
-use alacritty_terminal::vte::ansi::Color;
+use alacritty_terminal::vte::ansi::{Color, CursorShape};
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, Font, GlobalElementId, HighlightStyle, Hsla,
-    InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId, Pixels, Point,
-    Rgba, ShapedLine, StatefulInteractiveElement, TextRun, Window, px, relative, size,
+    App, Bounds, ContentMask, DispatchPhase, Element, ElementId, Entity, Font, GlobalElementId,
+    HighlightStyle, Hsla, InspectorElementId, InteractiveElement, Interactivity, IntoElement,
+    LayoutId, Pixels, Point, Rgba, ShapedLine, StatefulInteractiveElement, StrikethroughStyle,
+    TextAlign, TextRun, UnderlineStyle, Window, fill, px, relative, size,
 };
 use unicode_width::UnicodeWidthChar;
 use zcv_theme::{color, typography};
@@ -19,7 +18,6 @@ use zcv_theme::{color, typography};
 use crate::{
     Cell, Content, IndexedCell, Modes, SelectionGeometry, TerminalBounds, TerminalView, palette,
 };
-use alacritty_terminal::vte::ansi::CursorShape;
 
 /// 同一行的渲染数据：文本段、起点与起始网格列。
 struct LineRun {
@@ -118,7 +116,7 @@ fn grid_layout(
 }
 
 pub(super) struct TerminalElement {
-    view: gpui::Entity<TerminalView>,
+    view: Entity<TerminalView>,
     interactivity: Interactivity,
     interaction_state: Rc<RefCell<InteractionState>>,
     /// 文本段 shape 缓存：滚动等重绘帧直接命中，避免每帧全量字体 shaping。
@@ -171,8 +169,8 @@ struct RunStyle {
     font: Font,
     color: u32,
     background_color: Option<u32>,
-    underline: Option<gpui::UnderlineStyle>,
-    strikethrough: Option<gpui::StrikethroughStyle>,
+    underline: Option<UnderlineStyle>,
+    strikethrough: Option<StrikethroughStyle>,
 }
 
 impl From<&TextRun> for RunStyle {
@@ -202,7 +200,7 @@ mod shaped_run_key_tests;
 mod grid_layout_tests;
 
 impl TerminalElement {
-    pub(super) fn new(view: gpui::Entity<TerminalView>) -> Self {
+    pub(super) fn new(view: Entity<TerminalView>) -> Self {
         let mut element = TerminalElement {
             view,
             interactivity: Default::default(),
@@ -443,9 +441,9 @@ impl Element for TerminalElement {
         let ime_cursor_bounds = layout.cursor.as_ref().map(|cursor| cursor.bounds);
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            window.paint_quad(gpui::fill(bounds, layout.background));
+            window.paint_quad(fill(bounds, layout.background));
             for rect in &layout.rects {
-                window.paint_quad(gpui::fill(shifted(rect.bounds, offset), rect.color));
+                window.paint_quad(fill(shifted(rect.bounds, offset), rect.color));
             }
             for run in &layout.text_runs {
                 // 滚动等重绘帧行内容不变，shape 结果直接命中缓存。
@@ -475,7 +473,7 @@ impl Element for TerminalElement {
                     .paint(
                         origin + offset,
                         layout.line_height,
-                        gpui::TextAlign::Left,
+                        TextAlign::Left,
                         None,
                         window,
                         cx,
@@ -494,7 +492,7 @@ impl Element for TerminalElement {
                     font: layout.font.clone(),
                     color: color::current(cx).text.into(),
                     background_color: Some(color::current(cx).editor_selection_background.into()),
-                    underline: Some(gpui::UnderlineStyle {
+                    underline: Some(UnderlineStyle {
                         thickness: px(1.),
                         color: None,
                         wavy: false,
@@ -511,7 +509,7 @@ impl Element for TerminalElement {
                     .paint(
                         shifted(*cursor_bounds, offset).origin,
                         layout.line_height,
-                        gpui::TextAlign::Left,
+                        TextAlign::Left,
                         None,
                         window,
                         cx,
@@ -523,7 +521,7 @@ impl Element for TerminalElement {
             if ime_marked_text.is_none()
                 && let Some(cursor) = &layout.cursor
             {
-                window.paint_quad(gpui::fill(shifted(cursor.bounds, offset), cursor.color));
+                window.paint_quad(fill(shifted(cursor.bounds, offset), cursor.color));
                 if let Some((text, color)) = &cursor.text {
                     let run = TextRun {
                         len: text.len(),
@@ -543,7 +541,7 @@ impl Element for TerminalElement {
                         .paint(
                             cursor.bounds.origin,
                             layout.line_height,
-                            gpui::TextAlign::Left,
+                            TextAlign::Left,
                             None,
                             window,
                             cx,
@@ -585,7 +583,7 @@ impl TerminalElement {
         let state = self.interaction_state.clone();
         let view = self.view.clone();
         window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
-            if phase != gpui::DispatchPhase::Bubble || event.pressed_button.is_none() {
+            if phase != DispatchPhase::Bubble || event.pressed_button.is_none() {
                 return;
             }
             let (geometry, hitbox) = {
@@ -605,7 +603,7 @@ impl TerminalElement {
         let state = self.interaction_state.clone();
         let view = self.view.clone();
         window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _window, cx| {
-            if phase != gpui::DispatchPhase::Bubble {
+            if phase != DispatchPhase::Bubble {
                 return;
             }
             let Some(geometry) = state.borrow().geometry else {
@@ -968,12 +966,12 @@ fn cell_highlight_style(cell: &Cell, cx: &mut App) -> HighlightStyle {
         background_color: Some(bg.into()),
         font_weight: cell.is_bold().then_some(gpui::FontWeight::BOLD),
         font_style: cell.is_italic().then_some(gpui::FontStyle::Italic),
-        underline: cell.has_underline().then_some(gpui::UnderlineStyle {
+        underline: cell.has_underline().then_some(UnderlineStyle {
             thickness: px(1.),
             color: Some(fg.into()),
             wavy: false,
         }),
-        strikethrough: cell.has_strikeout().then_some(gpui::StrikethroughStyle {
+        strikethrough: cell.has_strikeout().then_some(StrikethroughStyle {
             thickness: px(1.),
             color: Some(fg.into()),
         }),

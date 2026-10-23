@@ -8,14 +8,13 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Point, Render,
-    Subscription, WeakEntity, Window, deferred, div, prelude::*, px,
+    App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Point,
+    Render, Subscription, WeakEntity, Window, deferred, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 use zcv_theme::{color, scale};
 
-use crate::pane::Pane;
-use crate::panel::PanelHandle;
+use crate::{pane::Pane, panel::PanelHandle};
 
 /// Dock 对外发出的事件。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -466,12 +465,12 @@ impl Render for Dock {
 }
 
 impl Focusable for Dock {
-    fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
     }
 }
 
-fn placeholder_div(cx: &gpui::App) -> gpui::Div {
+fn placeholder_div(cx: &App) -> Div {
     div()
         .size_full()
         .flex()
@@ -491,7 +490,7 @@ pub(crate) fn render_body(
     left_dock: Entity<Dock>,
     right_dock: Entity<Dock>,
     bottom_dock: Entity<Dock>,
-) -> gpui::Div {
+) -> Div {
     let mut row = div()
         .flex_1()
         .flex()

@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use gpui::{AppContext, Entity, TestAppContext, VisualTestContext};
 use zcv_language::{LanguageBuffer, LanguageRegistry};

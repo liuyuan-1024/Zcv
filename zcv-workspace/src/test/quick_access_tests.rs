@@ -1,10 +1,9 @@
 use super::*;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, Pixels, SharedString,
-    TestAppContext, canvas, point,
+    App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Modifiers, Pixels,
+    SharedString, TestAppContext, canvas, point,
 };
 use zcv_language::LanguageRegistry;
 
@@ -56,8 +55,8 @@ impl Render for TestView {
 }
 
 struct FocusHost {
-    search: gpui::Entity<QuickAccess>,
-    _workspace: gpui::Entity<Workspace>,
+    search: Entity<QuickAccess>,
+    _workspace: Entity<Workspace>,
     previous: FocusHandle,
     other: FocusHandle,
 }
@@ -148,7 +147,7 @@ fn clicking_quick_access_records_the_focus_before_the_input_takes_it(cx: &mut Te
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.focus(&previous, cx));
-    cx.simulate_click(point(px(10.0), px(10.0)), gpui::Modifiers::default());
+    cx.simulate_click(point(px(10.0), px(10.0)), Modifiers::default());
     cx.run_until_parked();
     let input_focus = cx.read_entity(&search, |search, cx| search.input.focus_handle(cx));
     cx.update(|window, _| assert!(input_focus.is_focused(window)));
@@ -225,7 +224,7 @@ fn line_column_entry_reuses_input_and_normal_search_does_not_offer_navigation(
         );
     });
     cx.run_until_parked();
-    cx.simulate_click(point(px(10.0), px(10.0)), gpui::Modifiers::default());
+    cx.simulate_click(point(px(10.0), px(10.0)), Modifiers::default());
     cx.run_until_parked();
     search.update_in(cx, |search, _, cx| {
         assert!(matches!(search.mode, AccessMode::LineColumn(_)));
@@ -241,7 +240,7 @@ fn line_column_entry_reuses_input_and_normal_search_does_not_offer_navigation(
     });
     cx.update(|window, cx| window.focus(&other, cx));
     cx.run_until_parked();
-    cx.simulate_click(point(px(10.0), px(10.0)), gpui::Modifiers::default());
+    cx.simulate_click(point(px(10.0), px(10.0)), Modifiers::default());
     cx.run_until_parked();
     search.update_in(cx, |search, _, cx| {
         search.input.set_text("1", cx);

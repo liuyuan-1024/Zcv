@@ -8,8 +8,10 @@
 //! DisplayMap 在同一显示版本上把输入投影为显示行坐标并随快照保存；
 //! EditorElement 只从 DisplaySnapshot 按视口消费，不持有显示坐标副本。
 
-use std::ops::Range;
-use std::sync::{Arc, OnceLock};
+use std::{
+    ops::Range,
+    sync::{Arc, OnceLock},
+};
 
 use gpui::SharedString;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};

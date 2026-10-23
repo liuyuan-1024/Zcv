@@ -1,7 +1,9 @@
-use std::cell::Cell;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{
+    cell::Cell,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use gpui::{App, AppContext, Context, EventEmitter, Task};
 use zcv_settings::SettingsStore;
@@ -10,12 +12,14 @@ use zcv_text::{
     Line, Snapshot, TextRange, TextResult, TextSubscription, TransactionId, TransactionMetadata,
 };
 
-use crate::Language;
-use crate::highlight_cache::HighlightCache;
-use crate::language_settings::LanguageSettings;
-use crate::registry::LanguageRegistry;
-use crate::syntax_map::{SyntaxMap, SyntaxSnapshot};
-use crate::tree_sitter_utils::ParseCancellation;
+use crate::{
+    Language,
+    highlight_cache::HighlightCache,
+    language_settings::LanguageSettings,
+    registry::LanguageRegistry,
+    syntax_map::{SyntaxMap, SyntaxSnapshot},
+    tree_sitter_utils::ParseCancellation,
+};
 
 /// 语言 Buffer 的显式更新语义；
 /// 文本插值、后台解析和元数据变化具有不同消费成本。

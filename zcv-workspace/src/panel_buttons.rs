@@ -11,8 +11,8 @@ use zcv_ui::Button;
 
 use zcv_actions::FocusOrHidePanel;
 
-use crate::{ItemHandle, Workspace};
 use crate::{
+    ItemHandle, Workspace,
     dock::{Dock, DockPosition},
     status_bar::StatusItemView,
 };

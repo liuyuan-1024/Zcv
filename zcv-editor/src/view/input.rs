@@ -3,8 +3,7 @@
 //! 输入法组合的 marked text 从第一次 preedit 起就走普通文本事务（与键盘输入同管线），组合区域只在语法样式之上叠加下划线；
 //! 这里只维护组合会话身份与候选框定位数据。
 
-use std::ops::Range;
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use gpui::{
     App, Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window, px, size,
@@ -16,8 +15,10 @@ use zcv_multi_buffer::{
 use zcv_text::{Affinity, TransactionId, Utf16Offset};
 
 use super::*;
-use crate::element::EditorInputLayout;
-use crate::selection::{Selection, SelectionSet, apply_edits, replace_selections};
+use crate::{
+    element::EditorInputLayout,
+    selection::{Selection, SelectionSet, apply_edits, replace_selections},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EditorComposition {

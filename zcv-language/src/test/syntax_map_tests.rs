@@ -6,8 +6,10 @@ use zcv_text::{
 };
 
 use super::*;
-use crate::highlight_cache::HighlightCache;
-use crate::test::{parsed_syntax, parsed_syntax_with_config, rust_buffer};
+use crate::{
+    highlight_cache::HighlightCache,
+    test::{parsed_syntax, parsed_syntax_with_config, rust_buffer},
+};
 
 /// 测试共用：按给定编辑把语法映射推进到新版本（插值 + 后台解析 + 安装）。
 fn edit_and_reparse(buffer: &mut Buffer, syntax: &mut SyntaxMap, edits: Vec<Edit>) {

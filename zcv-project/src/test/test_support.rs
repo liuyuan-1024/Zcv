@@ -2,8 +2,11 @@
 //!
 //! project / worktree / git_store 的测试各自持有同构实现，收敛于此避免三份克隆。
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+};
 
 use gpui::{AppContext as _, Entity, TestAppContext};
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
@@ -65,7 +68,7 @@ pub(crate) fn test_git_repo() -> (PathBuf, tempfile::TempDir) {
 
 /// 在指定目录执行 git 命令（测试断言成功）。
 pub(crate) fn run_git(dir: &Path, args: &[&str]) {
-    let output = std::process::Command::new("git")
+    let output = Command::new("git")
         .args(args)
         .current_dir(dir)
         .output()
@@ -81,7 +84,7 @@ pub(crate) fn run_git(dir: &Path, args: &[&str]) {
 /// 读取指定目录仓库的 `master` 分支 commit（测试断言用）。
 pub(crate) fn rev_parse(dir: &Path) -> String {
     String::from_utf8_lossy(
-        &std::process::Command::new("git")
+        &Command::new("git")
             .args(["rev-parse", "master"])
             .current_dir(dir)
             .output()

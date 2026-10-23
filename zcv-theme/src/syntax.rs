@@ -3,9 +3,7 @@
 //! 本模块只提供查询机制，不定义色值。色值来自主题 TOML，由 `theme_data` 单一解析器解析后经 `set_theme` 注入。
 //! 查询走点分前缀回退：`keyword.control.import` 未命中 → `keyword.control` → `keyword` → 默认样式。
 
-use std::collections::BTreeMap;
-use std::ops::Bound;
-use std::sync::Arc;
+use std::{collections::BTreeMap, ops::Bound, sync::Arc};
 
 use gpui::{App, Global, HighlightStyle};
 

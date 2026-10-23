@@ -1,11 +1,13 @@
 //! 顶栏统一入口：普通访问聚合文件和命令，行列入口复用输入和结果面板。
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use gpui::{
-    App, Context, ListAlignment, ListOffset, ListSizingBehavior, ListState, MouseButton, Pixels,
-    Render, Subscription, Task, WeakEntity, Window, deferred, div, list, prelude::*, px,
+    App, Context, Entity, ListAlignment, ListOffset, ListSizingBehavior, ListState, MouseButton,
+    Pixels, Render, Subscription, Task, WeakEntity, Window, deferred, div, list, prelude::*, px,
 };
 use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev, commands,
@@ -247,7 +249,7 @@ pub(crate) struct QuickAccess {
     list_state: ListState,
     workspace: WeakEntity<Workspace>,
     mode: AccessMode,
-    project: gpui::Entity<Project>,
+    project: Entity<Project>,
     _focus_subscription: Subscription,
     _blur_subscription: Subscription,
     _input_subscription: Subscription,
@@ -257,7 +259,7 @@ pub(crate) struct QuickAccess {
 
 impl QuickAccess {
     pub(crate) fn new(
-        project: gpui::Entity<Project>,
+        project: Entity<Project>,
         workspace: WeakEntity<Workspace>,
         picker_layer: PickerLayer,
         window: &mut Window,

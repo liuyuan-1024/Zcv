@@ -6,15 +6,18 @@
 //! 模块划分：本文件承载实体与行模型管理；
 //! 渲染见 render.rs，键盘动作见 actions.rs，名称编辑见 editing.rs，剪贴板与传输执行见 execute.rs，拖拽/传输纯逻辑见 drag.rs / transfer.rs。
 
-use std::cell::RefCell;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::time::Duration;
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+    rc::Rc,
+    time::Duration,
+};
 
 use gpui::{
-    AsyncApp, Bounds, Context, DragMoveEvent, Entity, EventEmitter, ExternalPaths, FileDropEvent,
-    KeyContext, MouseButton, MouseExitEvent, Pixels, Point, ScrollStrategy, Task,
-    UniformListScrollHandle, WeakEntity, Window, div, point, prelude::*, px, relative,
+    App, AsyncApp, Bounds, Context, DragMoveEvent, Entity, EventEmitter, ExternalPaths,
+    FileDropEvent, FocusHandle, KeyContext, MouseButton, MouseExitEvent, Pixels, Point,
+    ScrollStrategy, Task, UniformListScrollHandle, WeakEntity, Window, div, point, prelude::*, px,
+    relative,
 };
 use zcv_actions::TreeActivate;
 use zcv_editor::Editor;
@@ -27,21 +30,21 @@ use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace, typography_for_wind
 use zcv_settings::SettingsStore;
 
 /// 打开文件回调：面板请求 Workspace 打开路径（弱引用防循环持有）。
-pub type OnOpenFile = Rc<dyn Fn(PathBuf, bool, &mut Window, &mut gpui::App)>;
+pub type OnOpenFile = Rc<dyn Fn(PathBuf, bool, &mut Window, &mut App)>;
 
 /// 重命名文件或目录回调。
-pub type OnRename = Rc<dyn Fn(PathBuf, PathBuf, &mut gpui::App) -> anyhow::Result<()>>;
+pub type OnRename = Rc<dyn Fn(PathBuf, PathBuf, &mut App) -> anyhow::Result<()>>;
 
 /// 新建文件或目录回调。
-pub type OnCreate = Rc<dyn Fn(PathBuf, bool, &mut gpui::App) -> anyhow::Result<()>>;
+pub type OnCreate = Rc<dyn Fn(PathBuf, bool, &mut App) -> anyhow::Result<()>>;
 
 /// 将文件或目录移到系统废纸篓回调。
 ///
 /// 带 `Window`：删除文件后需要关闭打开它的 tab，工具栏更新需要 window。
-pub type OnTrash = Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App) -> anyhow::Result<()>>;
+pub type OnTrash = Rc<dyn Fn(PathBuf, &mut Window, &mut App) -> anyhow::Result<()>>;
 
 /// 在项目内移动文件或目录回调（from, to, overwrite：覆盖已存在目标）。
-pub type OnMove = Rc<dyn Fn(PathBuf, PathBuf, bool, &mut gpui::App) -> anyhow::Result<()>>;
+pub type OnMove = Rc<dyn Fn(PathBuf, PathBuf, bool, &mut App) -> anyhow::Result<()>>;
 
 mod actions;
 mod drag;
@@ -92,7 +95,7 @@ enum RevealTarget {
 }
 
 pub struct ProjectTreePanel {
-    pub focus: gpui::FocusHandle,
+    pub focus: FocusHandle,
     /// 当前项目根目录路径；无 worktree 的空工作区为 None（面板显示空态）。
     root: Option<AbsolutePathBuf>,
     /// 行模型与 git 状态查询（worktree 快照层由 Project 持有）。
@@ -288,7 +291,7 @@ impl ProjectTreePanel {
     }
 
     /// 消费待定 reveal：按实际显示行定位，包含行内新建占位行。
-    fn try_scroll_pending_reveal(&mut self, cx: &gpui::App) {
+    fn try_scroll_pending_reveal(&mut self, cx: &App) {
         let Some(target) = self.pending_reveal.as_ref() else {
             return;
         };
@@ -422,7 +425,7 @@ impl ProjectTreePanel {
         self.workspace = Some(workspace);
     }
 
-    pub(crate) fn report_error(&self, message: String, cx: &mut gpui::App) {
+    pub(crate) fn report_error(&self, message: String, cx: &mut App) {
         if let Some(workspace) = &self.workspace {
             workspace
                 .update(cx, |workspace, cx| {
@@ -526,7 +529,7 @@ impl ProjectTreePanel {
     }
 
     /// 保持键盘选中项可见；仍在视口内时不改变当前滚动位置。
-    fn scroll_to_selection(&self, cx: &gpui::App) {
+    fn scroll_to_selection(&self, cx: &App) {
         let selected = self.state.borrow().selected.clone();
         if let Some(index) = selected.and_then(|path| {
             self.display_rows(cx)
@@ -838,7 +841,7 @@ impl Panel for ProjectTreePanel {
     fn persistent_name() -> &'static str {
         "project-tree"
     }
-    fn focus_handle(&self, _cx: &gpui::App) -> gpui::FocusHandle {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
     }
 }

@@ -2,8 +2,7 @@
 //!
 //! 拖拽移动与剪切粘贴共用同一条 Move + 冲突确认管线（drop 最终调用 `ProjectTreePanel::begin_transfer`，见 mod.rs），本模块只承载与面板状态无关的纯逻辑，便于单测覆盖。
 
-use std::path::Path;
-use std::rc::Rc;
+use std::{path::Path, rc::Rc};
 
 use gpui::{App, Context, Div, FontWeight, Window, div, prelude::*, px};
 use zcv_path::AbsolutePathBuf;

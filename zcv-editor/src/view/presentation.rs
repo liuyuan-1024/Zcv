@@ -5,8 +5,7 @@
 
 use zcv_multi_buffer::{MultiBufferRange, MultiBufferSnapshot};
 
-use std::ops::Range;
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use zcv_text::Utf16Offset;
 

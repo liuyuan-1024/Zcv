@@ -1,21 +1,24 @@
 //! Markdown 预览 Item：观察源码 MultiBuffer，解析后渲染为原生块元素。
 
-use std::any::TypeId;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    any::TypeId,
+    cell::RefCell,
+    collections::HashMap,
+    ops::Range,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 use gpui::{
     AnyElement, AnyEntity, App, Bounds, Context, Corners, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, HighlightStyle, Hsla, Image,
     ImageFormat, InspectorElementId, InteractiveText, LayoutId, ObjectFit, Pixels, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement, StrikethroughStyle, StyledImage,
-    StyledText, Subscription, Task, TextAlign, TextLayout, UnderlineStyle, Window, div, fill, img,
-    point, prelude::*, px,
+    RenderImage, Rgba, SMOOTH_SVG_SCALE_FACTOR, ScrollHandle, SharedString, Size,
+    StatefulInteractiveElement, StrikethroughStyle, StyledImage, StyledText, Subscription,
+    SvgRenderer, Task, TextAlign, TextLayout, UnderlineStyle, Window, div, fill, img, point,
+    prelude::*, px, size,
 };
 use pulldown_cmark::Alignment;
 use zcv_language::{
@@ -44,8 +47,8 @@ const MATH_PLACEHOLDER: char = '\u{00A0}';
 /// 逻辑尺寸用于在文本流中预留宽度，使公式后的文字继续排在同一行而不是整体换行。
 #[derive(Clone)]
 struct MathImage {
-    image: Arc<gpui::RenderImage>,
-    size: gpui::Size<Pixels>,
+    image: Arc<RenderImage>,
+    size: Size<Pixels>,
 }
 
 type MathImages = HashMap<String, Result<MathImage, String>>;
@@ -82,8 +85,8 @@ pub(crate) struct MarkdownPreviewView {
     _document_subscription: Subscription,
     _item_subscription: Subscription,
     math_images: Arc<MathImages>,
-    math_content_size: Option<gpui::Pixels>,
-    math_color: Option<gpui::Rgba>,
+    math_content_size: Option<Pixels>,
+    math_color: Option<Rgba>,
     math_render_task: Option<Task<()>>,
     math_render_generation: u64,
     mermaid_images: Arc<MermaidImages>,
@@ -256,8 +259,8 @@ impl MarkdownPreviewView {
 
     fn ensure_math_render(
         &mut self,
-        content_size: gpui::Pixels,
-        math_color: gpui::Rgba,
+        content_size: Pixels,
+        math_color: Rgba,
         cx: &mut Context<Self>,
     ) {
         if self.math_content_size == Some(content_size) && self.math_color == Some(math_color) {
@@ -651,7 +654,7 @@ fn list_marker_width(
     start: Option<u64>,
     item_count: usize,
     type_scale: typography::Typography,
-) -> gpui::Pixels {
+) -> Pixels {
     let marker_char_count = list_marker_char_count(start, item_count);
     // 标记列按字符数预留，正文与编号之间只保留布局间距。
     type_scale.content_size() * (marker_char_count as f32 * 0.6)
@@ -763,8 +766,8 @@ struct InlineText {
 struct MathPlacement {
     /// 公式占位符在文本中的起始字节偏移。
     byte_offset: usize,
-    image: Arc<gpui::RenderImage>,
-    size: gpui::Size<Pixels>,
+    image: Arc<RenderImage>,
+    size: Size<Pixels>,
     /// 占位符预留宽度；不小于公式宽度，用于把公式居中绘制在占位区域内。
     reserved: Pixels,
 }
@@ -1315,7 +1318,7 @@ fn render_math(
     _display: bool,
     font_size: f64,
     color: ratex_types::color::Color,
-    renderer: gpui::SvgRenderer,
+    renderer: SvgRenderer,
 ) -> Result<MathImage, String> {
     let nodes = ratex_parser::parse(source).map_err(|error| error.to_string())?;
     let layout_options = ratex_layout::LayoutOptions {
@@ -1338,9 +1341,9 @@ fn render_math(
         .map_err(|error| error.to_string())?;
     // SVG 光栅化时按 SMOOTH_SVG_SCALE_FACTOR 放大，逻辑宽度需还原后再用于文本流占位。
     let raw = image.size(0);
-    let size = gpui::size(
-        px(raw.width.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
-        px(raw.height.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
+    let size = size(
+        px(raw.width.0 as f32 / SMOOTH_SVG_SCALE_FACTOR),
+        px(raw.height.0 as f32 / SMOOTH_SVG_SCALE_FACTOR),
     );
     Ok(MathImage { image, size })
 }
@@ -1367,15 +1370,15 @@ fn collect_mermaid_sources(blocks: &[Block]) -> Vec<String> {
     sources
 }
 
-fn render_mermaid(source: &str, renderer: gpui::SvgRenderer) -> Result<MathImage, String> {
+fn render_mermaid(source: &str, renderer: SvgRenderer) -> Result<MathImage, String> {
     let svg = render_mermaid_svg(source)?;
     let image = Image::from_bytes(ImageFormat::Svg, svg.as_bytes().to_vec())
         .to_image_data(renderer)
         .map_err(|error| error.to_string())?;
     let raw = image.size(0);
-    let size = gpui::size(
-        px(raw.width.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
-        px(raw.height.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR),
+    let size = size(
+        px(raw.width.0 as f32 / SMOOTH_SVG_SCALE_FACTOR),
+        px(raw.height.0 as f32 / SMOOTH_SVG_SCALE_FACTOR),
     );
     Ok(MathImage { image, size })
 }
@@ -1553,15 +1556,11 @@ fn code_lines(text: &str) -> impl Iterator<Item = &str> {
     text.strip_suffix('\n').unwrap_or(text).split('\n')
 }
 
-fn heading_size(level: u8, type_scale: typography::Typography) -> gpui::Pixels {
+fn heading_size(level: u8, type_scale: typography::Typography) -> Pixels {
     type_scale.content_size() * heading_scale(level)
 }
 
-fn heading_line_height(
-    level: u8,
-    size: gpui::Pixels,
-    type_scale: typography::Typography,
-) -> gpui::Pixels {
+fn heading_line_height(level: u8, size: Pixels, type_scale: typography::Typography) -> Pixels {
     // 标题继承用户的正文行高比例，但至少为自身字号保留可读的自然行距。
     (type_scale.content_line() * heading_scale(level)).max(size * 1.2)
 }
@@ -1637,7 +1636,7 @@ impl Item for MarkdownPreviewView {
         conflict_policy: zcv_project::FileSaveConflictPolicy,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Task<anyhow::Result<()>> {
+    ) -> Task<anyhow::Result<()>> {
         self.source_item.save(project, conflict_policy, window, cx)
     }
 
@@ -1646,7 +1645,7 @@ impl Item for MarkdownPreviewView {
         project: Entity<Project>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Task<anyhow::Result<()>> {
+    ) -> Task<anyhow::Result<()>> {
         self.source_item
             .reload_conflicted_files(project, window, cx)
     }

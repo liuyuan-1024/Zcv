@@ -2,11 +2,11 @@
 //!
 //! 面板复用编辑区的 Pane，多终端标签栏、tab 切换、关闭与编辑区同构。
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use gpui::{
-    App, ClickEvent, Context, Entity, EntityId, EventEmitter, FocusHandle, Subscription,
-    WeakEntity, Window, prelude::*,
+    App, ClickEvent, Context, Entity, EntityId, EventEmitter, FocusHandle, IntoElement, Render,
+    Subscription, WeakEntity, Window, div, prelude::*,
 };
 use serde::{Deserialize, Serialize};
 use zcv_actions::NewTerminal;
@@ -18,7 +18,7 @@ use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent, ToastKind, Workspace};
 #[derive(Debug, Serialize, Deserialize)]
 struct SerializedTerminal {
     /// 会话保存时的工作目录。
-    cwd: Option<std::path::PathBuf>,
+    cwd: Option<PathBuf>,
 }
 
 use crate::{TerminalBuilder, TerminalView};
@@ -96,7 +96,7 @@ impl TerminalPanel {
     /// 以指定工作目录创建终端（恢复会话时沿用保存的 cwd）。
     fn new_terminal_with_cwd(
         &mut self,
-        cwd: Option<std::path::PathBuf>,
+        cwd: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
@@ -128,7 +128,7 @@ impl TerminalPanel {
     }
 }
 
-fn project_terminal_cwd(project: &Project) -> Option<std::path::PathBuf> {
+fn project_terminal_cwd(project: &Project) -> Option<PathBuf> {
     project.root().map(std::path::Path::to_path_buf)
 }
 
@@ -267,5 +267,3 @@ impl Render for TerminalPanel {
             .child(self.pane.clone())
     }
 }
-
-use gpui::{IntoElement, Render, div};

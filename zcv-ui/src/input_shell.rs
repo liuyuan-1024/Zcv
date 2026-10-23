@@ -1,6 +1,8 @@
 //! 通用输入框外壳。
 
-use gpui::{AnyElement, App, IntoElement, ParentElement, RenderOnce, Window, div, prelude::*};
+use gpui::{
+    AnyElement, App, IntoElement, ParentElement, RenderOnce, ViewElement, Window, div, prelude::*,
+};
 use zcv_theme::{color, scale, typography};
 
 /// 一行 = 一个带边框的输入容器 + 若干个外部插槽(输入容器右侧按钮区);
@@ -35,10 +37,10 @@ impl InputShell {
 }
 
 impl IntoElement for InputShell {
-    type Element = gpui::ViewElement<Self>;
+    type Element = ViewElement<Self>;
 
     fn into_element(self) -> Self::Element {
-        gpui::ViewElement::new(self)
+        ViewElement::new(self)
     }
 }
 

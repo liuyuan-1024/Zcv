@@ -3,7 +3,7 @@
 //! 树中每一项代表一行（含其行终止符）。文本末尾因换行产生的空行不单独成项，因此有效项都至少包含一个字符或换行符，行边界在树中严格递增。
 //! 每项摘要与整棵树摘要都使用同一套拼接语义（`TextSummary`），区间聚合因此只重测首尾不完整行，不扫描中间行。
 
-use std::ops::Range;
+use std::ops::{AddAssign, Range};
 
 use ropey::Rope;
 use sum_tree::{Bias, ContextLessSummary, Dimension, Item, SumTree};
@@ -92,13 +92,13 @@ impl TextSummary {
     }
 }
 
-impl std::ops::AddAssign<&TextSummary> for TextSummary {
+impl AddAssign<&TextSummary> for TextSummary {
     fn add_assign(&mut self, other: &TextSummary) {
         self.join(other);
     }
 }
 
-impl std::ops::AddAssign<TextSummary> for TextSummary {
+impl AddAssign<TextSummary> for TextSummary {
     fn add_assign(&mut self, other: TextSummary) {
         self.join(&other);
     }

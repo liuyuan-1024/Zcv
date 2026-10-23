@@ -1,10 +1,14 @@
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    alloc::{GlobalAlloc, Layout, System},
+    env, fs,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 use serde::Serialize;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System as ProcessSystem, get_current_pid};
@@ -255,12 +259,11 @@ fn main() {
         ));
     }
 
-    let output_dir = std::env::var_os("ZCV_MEMORY_BENCHMARK_HOME")
+    let output_dir = env::var_os("ZCV_MEMORY_BENCHMARK_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".performance/memory"));
     fs::create_dir_all(&output_dir).expect("应创建内存基准结果目录");
-    let label =
-        std::env::var("ZCV_MEMORY_BENCHMARK_LABEL").unwrap_or_else(|_| "current".to_owned());
+    let label = env::var("ZCV_MEMORY_BENCHMARK_LABEL").unwrap_or_else(|_| "current".to_owned());
     assert!(
         label
             .bytes()

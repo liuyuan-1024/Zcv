@@ -6,10 +6,12 @@
 //! 行尾复选框（或空格键）切换条目的暂存/取消暂存：冲突组不提供暂存操作。
 //! 行模型由 GitStore 快照构建，订阅 Repositories/Statuses 事件重建。
 
-use std::cell::RefCell;
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::{
+    cell::RefCell,
+    collections::HashSet,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use gpui::{
     App, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, KeyContext, MouseButton,
@@ -35,10 +37,10 @@ use zcv_workspace::{Panel, PanelEvent, git_status_color};
 use crate::project_diff::ProjectDiffKind;
 
 /// 打开 Git 项目差异并定位文件的回调（弱 Workspace 引用由装配层捕获）。
-pub type OnOpenGitDiff = Rc<dyn Fn(ProjectDiffKind, PathBuf, bool, &mut Window, &mut gpui::App)>;
+pub type OnOpenGitDiff = Rc<dyn Fn(ProjectDiffKind, PathBuf, bool, &mut Window, &mut App)>;
 
 /// 打开版本控制图 Item 的回调（弱 Workspace 引用由装配层捕获）。
-pub type OnOpenGitGraph = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
+pub type OnOpenGitGraph = Rc<dyn Fn(&mut Window, &mut App)>;
 
 // 版本控制快捷键归属于 `VersionControl` 上下文，由统一快捷键注册表加载；组件内不重复注册。
 

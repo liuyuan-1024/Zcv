@@ -3,7 +3,7 @@
 //! 宿主只调用 [`install_status_items`] 完成注册，不直接依赖具体状态项类型；
 //! 状态项在 `set_active_pane_item` 中订阅 Editor 并在没有活动编辑器时隐藏。
 
-use gpui::{Context, Entity, Render, Subscription, Window, div, prelude::*};
+use gpui::{Context, Entity, IntoElement, Render, Subscription, Window, div, prelude::*};
 use zcv_actions::FocusLineColumn;
 use zcv_keymap::display_shortcut;
 use zcv_ui::Button;
@@ -45,7 +45,7 @@ impl StatusItemView for CursorPosition {
 }
 
 impl Render for CursorPosition {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 无活动编辑器时隐藏（终端、空工作区等场景不显示空按钮）。
         if self.cursor_text.is_empty() {
             return div().into_any_element();
@@ -100,7 +100,7 @@ impl StatusItemView for ActiveBufferLanguage {
 }
 
 impl Render for ActiveBufferLanguage {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         // 无活动编辑器或无语言时隐藏（终端、空工作区等场景不显示空按钮）。
         if self.language.is_empty() {
             return div().into_any_element();

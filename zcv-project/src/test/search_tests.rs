@@ -1,9 +1,10 @@
-use crate::Project;
-use crate::search::{FileSearchResult, SearchQuery};
-use crate::test_support::test_project;
+use crate::{
+    Project,
+    search::{FileSearchResult, SearchQuery},
+    test_support::test_project,
+};
 use gpui::{AppContext as _, Entity, TestAppContext};
-use std::path::PathBuf;
-use std::process::Command;
+use std::{fs, path::PathBuf, process::Command};
 use zcv_text::{ByteOffset, TextRange};
 
 /// 收集一次流式搜索的全部命中（直到后台关闭通道）。
@@ -32,10 +33,10 @@ fn match_count(results: &[FileSearchResult]) -> usize {
 async fn file_candidates_share_project_search_exclusions(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");
-    std::fs::create_dir_all(root.join("target")).expect("应创建排除目录");
-    std::fs::create_dir_all(root.join("src")).expect("应创建源码目录");
-    std::fs::write(root.join("target/hidden.rs"), "hidden").expect("应创建排除文件");
-    std::fs::write(root.join("src/main.rs"), "main").expect("应创建源码文件");
+    fs::create_dir_all(root.join("target")).expect("应创建排除目录");
+    fs::create_dir_all(root.join("src")).expect("应创建源码目录");
+    fs::write(root.join("target/hidden.rs"), "hidden").expect("应创建排除文件");
+    fs::write(root.join("src/main.rs"), "main").expect("应创建源码文件");
 
     let project = test_project(root.clone(), cx);
     project.update(cx, |project, _| {
@@ -49,10 +50,10 @@ async fn file_candidates_share_project_search_exclusions(cx: &mut TestAppContext
 async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");
-    std::fs::create_dir_all(root.join("src")).expect("应创建源码目录");
-    std::fs::write(root.join("src/a.rs"), "first\nneedle one\nlast\n").expect("应创建文件");
-    std::fs::write(root.join("src/b.rs"), "needle two\n").expect("应创建文件");
-    std::fs::write(root.join("src/c.rs"), "nothing\n").expect("应创建文件");
+    fs::create_dir_all(root.join("src")).expect("应创建源码目录");
+    fs::write(root.join("src/a.rs"), "first\nneedle one\nlast\n").expect("应创建文件");
+    fs::write(root.join("src/b.rs"), "needle two\n").expect("应创建文件");
+    fs::write(root.join("src/c.rs"), "nothing\n").expect("应创建文件");
 
     let project = test_project(root, cx);
     let results = collect_search(
@@ -88,8 +89,8 @@ async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppCont
 async fn search_results_follow_natural_project_path_order(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");
-    std::fs::write(root.join("file10.txt"), "needle\n").expect("应创建文件");
-    std::fs::write(root.join("file2.txt"), "needle\n").expect("应创建文件");
+    fs::write(root.join("file10.txt"), "needle\n").expect("应创建文件");
+    fs::write(root.join("file2.txt"), "needle\n").expect("应创建文件");
     let project = test_project(root, cx);
 
     let results = collect_search(
@@ -115,9 +116,9 @@ async fn search_results_follow_natural_project_path_order(cx: &mut TestAppContex
 async fn honors_exclusions_and_reports_invalid_regex(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");
-    std::fs::create_dir_all(root.join("target")).expect("应创建排除目录");
-    std::fs::write(root.join("target/hidden.txt"), "needle").expect("应创建文件");
-    std::fs::write(root.join("visible.txt"), "needle").expect("应创建文件");
+    fs::create_dir_all(root.join("target")).expect("应创建排除目录");
+    fs::write(root.join("target/hidden.txt"), "needle").expect("应创建文件");
+    fs::write(root.join("visible.txt"), "needle").expect("应创建文件");
 
     let project = test_project(root, cx);
     project.update(cx, |project, _| {
@@ -156,7 +157,7 @@ async fn search_decodes_unopened_files_through_the_project_boundary(cx: &mut Tes
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");
     let path = root.join("bom.txt");
-    std::fs::write(&path, b"\xEF\xBB\xBFneedle\n").expect("应创建带 BOM 的文件");
+    fs::write(&path, b"\xEF\xBB\xBFneedle\n").expect("应创建带 BOM 的文件");
 
     let project = test_project(root, cx);
     // 搜索是该路径的首个物化者：命中范围必须相对剥离 BOM 后的文本。
@@ -203,10 +204,10 @@ async fn git_search_skips_ignored_build_outputs(cx: &mut TestAppContext) {
             .expect("测试环境应能启动 git")
             .success()
     );
-    std::fs::write(root.join(".gitignore"), "/target/\n").expect("应创建 .gitignore");
-    std::fs::write(root.join("visible.md"), "文本引擎\n").expect("应创建可搜索文件");
-    std::fs::create_dir_all(root.join("target/deep")).expect("应创建忽略目录");
-    std::fs::write(root.join("target/deep/generated.txt"), "生成引擎\n").expect("应创建被忽略文件");
+    fs::write(root.join(".gitignore"), "/target/\n").expect("应创建 .gitignore");
+    fs::write(root.join("visible.md"), "文本引擎\n").expect("应创建可搜索文件");
+    fs::create_dir_all(root.join("target/deep")).expect("应创建忽略目录");
+    fs::write(root.join("target/deep/generated.txt"), "生成引擎\n").expect("应创建被忽略文件");
 
     let project = test_project(root, cx);
     let results = collect_search(

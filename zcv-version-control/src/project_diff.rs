@@ -3,11 +3,13 @@
 //! GitStore 的状态快照决定文件集合，Project/BufferStore 继续拥有真实文件文档，MultiBuffer 只组合这些文档。
 //! 点击版本管理条目时按分组复用对应 Item 并定位文件，不为 Git 状态建立界面侧副本。
 
-use std::any::TypeId;
-use std::collections::{HashMap, HashSet};
-use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    any::TypeId,
+    collections::{HashMap, HashSet},
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use futures::{StreamExt, stream};
 use futures_lite::future::yield_now;

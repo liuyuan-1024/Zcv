@@ -3,16 +3,19 @@
 //! Workspace 管理工作区的根状态、布局和工作区级命令；
 //! 面板、顶栏、状态项与项目相关订阅由应用装配层注入。
 
-use std::collections::HashMap;
-use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    iter,
+    ops::Range,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 use gpui::{
     Action, AnyView, App, AsyncApp, Context, Div, DragMoveEvent, Entity, FocusHandle, Render,
-    SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*,
+    SharedString, Stateful, Subscription, Task, WeakEntity, Window, div, prelude::*,
 };
 use zcv_actions::{
     FocusOrHidePanel, MinimizeWindow, OpenSettings, QuitWindow, Save, ToggleBottomDock,
@@ -24,16 +27,18 @@ use zcv_project::{FileSaveConflictPolicy, Project};
 use zcv_settings::SettingsStore;
 use zcv_theme::{color, typography, typography::Typography};
 
-use crate::dock::{Dock, DockEvent, DockPosition, DockStructure, DraggedDock, render_body};
-use crate::item_provider::{item_provider_for_path, serialized_item_provider_for_kind};
-use crate::layout_state::{self, PanelState, SerializedPane, SerializedPaneItem, WorkspaceLayout};
-use crate::pane::{Pane, PaneEvent};
-use crate::panel::{Panel, PanelEvent, PanelHandle};
-use crate::preview::{PreviewDocument, standalone_provider_for};
-use crate::status_bar::StatusBar;
-use crate::toast::{ToastAction, ToastId, ToastKind, ToastLayer};
-use crate::window_bounds;
-use crate::{ItemHandle, OpenPathCallback};
+use crate::{
+    ItemHandle, OpenPathCallback,
+    dock::{Dock, DockEvent, DockPosition, DockStructure, DraggedDock, render_body},
+    item_provider::{item_provider_for_path, serialized_item_provider_for_kind},
+    layout_state::{self, PanelState, SerializedPane, SerializedPaneItem, WorkspaceLayout},
+    pane::{Pane, PaneEvent},
+    panel::{Panel, PanelEvent, PanelHandle},
+    preview::{PreviewDocument, standalone_provider_for},
+    status_bar::StatusBar,
+    toast::{ToastAction, ToastId, ToastKind, ToastLayer},
+    window_bounds,
+};
 
 const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 const WINDOW_BOUNDS_SAVE_THROTTLE: Duration = Duration::from_millis(100);
@@ -42,8 +47,7 @@ const WINDOW_BOUNDS_SAVE_THROTTLE: Duration = Duration::from_millis(100);
 pub(crate) type SettingsFilesProvider =
     Box<dyn Fn(&mut App) -> anyhow::Result<(PathBuf, PathBuf)> + Send + Sync>;
 
-type WorkspaceAction =
-    Box<dyn Fn(gpui::Stateful<gpui::Div>, &mut Context<Workspace>) -> gpui::Stateful<gpui::Div>>;
+type WorkspaceAction = Box<dyn Fn(Stateful<Div>, &mut Context<Workspace>) -> Stateful<Div>>;
 
 enum ItemNavigation {
     ByteRange(Range<usize>),
@@ -245,10 +249,10 @@ impl Workspace {
             bottom_dock,
             titlebar: None,
             settings_files_provider: None,
-            _subscriptions: std::iter::once(layout_subscription)
+            _subscriptions: iter::once(layout_subscription)
                 .chain(dock_layout_subscriptions)
-                .chain(std::iter::once(focus_lost_subscription))
-                .chain(std::iter::once(window_bounds_subscription))
+                .chain(iter::once(focus_lost_subscription))
+                .chain(iter::once(window_bounds_subscription))
                 .collect(),
             workspace_actions: Vec::new(),
             layout_path,
@@ -482,7 +486,7 @@ impl Workspace {
         &mut self,
         callback: impl Fn(&mut Self, &A, &mut Window, &mut Context<Self>) + 'static,
     ) -> &mut Self {
-        let callback = std::sync::Arc::new(callback);
+        let callback = Arc::new(callback);
         self.workspace_actions.push(Box::new(move |div, cx| {
             let callback = callback.clone();
             div.on_action(cx.listener(move |workspace, event, window, cx| {
@@ -538,7 +542,7 @@ impl Workspace {
                 continue;
             };
             if source_tasks.iter().any(
-                |(path, _): &(PathBuf, gpui::Task<anyhow::Result<Box<dyn ItemHandle>>>)| {
+                |(path, _): &(PathBuf, Task<anyhow::Result<Box<dyn ItemHandle>>>)| {
                     path == &serialized_path
                 },
             ) {
@@ -567,7 +571,7 @@ impl Workspace {
                 }
             }
 
-            let mut restored_items = std::iter::repeat_with(|| None)
+            let mut restored_items = iter::repeat_with(|| None)
                 .take(items.len())
                 .collect::<Vec<Option<Box<dyn ItemHandle>>>>();
             for (index, task) in custom_tasks {
@@ -1263,9 +1267,9 @@ impl Render for Workspace {
 fn render_frame(
     titlebar: Option<&AnyView>,
     status_bar: &Entity<StatusBar>,
-    body: gpui::Div,
+    body: Div,
     toast_layer: &Entity<ToastLayer>,
-    cx: &gpui::App,
+    cx: &App,
 ) -> Div {
     div()
         .relative()
@@ -1278,7 +1282,7 @@ fn render_frame(
         .child(
             titlebar
                 .map(|view| view.clone().into_any_element())
-                .unwrap_or_else(|| gpui::div().into_any_element()),
+                .unwrap_or_else(|| div().into_any_element()),
         )
         // Toast 只覆盖主工作区，以主工作区底边为基准，始终位于状态栏上方。
         .child(

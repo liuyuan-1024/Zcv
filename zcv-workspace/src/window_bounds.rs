@@ -2,9 +2,11 @@
 //!
 //! 项目身份与布局状态共用 persistence 的哈希键控。
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 use gpui::{App, Bounds, DisplayId, Pixels, Window, WindowBounds, point, px, size};

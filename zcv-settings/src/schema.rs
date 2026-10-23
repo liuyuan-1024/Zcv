@@ -2,8 +2,10 @@
 //!
 //! 只描述 JSON 层可表达的内容与解析规则；默认值合并与运行时表示由 `merge` 层负责。
 
-use std::collections::HashMap;
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::{
+    collections::HashMap,
+    num::{NonZeroU32, NonZeroUsize},
+};
 
 use anyhow::{Context as _, Result, ensure};
 use serde::Deserialize;

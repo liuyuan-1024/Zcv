@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Context, IntoElement, Render, TestAppContext, div};
+use gpui::{Context, IntoElement, Render, TestAppContext, div, px};
 
 /// 设置字符串解析：system 与主题文件名 id 各归其位，未知回退 System。
 #[test]
@@ -40,8 +40,8 @@ fn system_theme_matches_window_appearance(cx: &mut TestAppContext) {
 /// 结构刻度的基准是固定设计基准：用户改字号时 token 必须随之同比缩放，不能重新锚定。
 #[test]
 fn structural_tokens_scale_with_rem_size() {
-    let at_default = scale::to_pixels_at(scale::S6, gpui::px(scale::DEFAULT_UI_SIZE));
-    let doubled = scale::to_pixels_at(scale::S6, gpui::px(scale::DEFAULT_UI_SIZE * 2.0));
+    let at_default = scale::to_pixels_at(scale::S6, px(scale::DEFAULT_UI_SIZE));
+    let doubled = scale::to_pixels_at(scale::S6, px(scale::DEFAULT_UI_SIZE * 2.0));
     assert!(
         (f32::from(at_default) - 6.0).abs() < 0.001,
         "在设计基准字号下 S6 应为 6px，实际 {at_default:?}"

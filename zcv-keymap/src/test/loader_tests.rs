@@ -139,7 +139,7 @@ fn all_builtin_keymap_keystrokes_parse() {
         for group in &groups {
             for keys in group.bindings.keys() {
                 for keystroke in keys.split_whitespace() {
-                    gpui::Keystroke::parse(keystroke).unwrap_or_else(|error| {
+                    Keystroke::parse(keystroke).unwrap_or_else(|error| {
                         panic!("{source} 的键位 {keys:?} 无法解析：{error}")
                     });
                 }

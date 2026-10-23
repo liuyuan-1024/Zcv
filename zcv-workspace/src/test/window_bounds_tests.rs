@@ -1,5 +1,6 @@
 use super::*;
 use crate::layout_state;
+use std::fs;
 
 fn windowed(x: f32, y: f32, width: f32, height: f32) -> WindowBounds {
     WindowBounds::Windowed(Bounds {
@@ -78,12 +79,12 @@ fn missing_corrupted_or_foreign_version_returns_none() {
     assert_eq!(load_from(&missing, None), None);
 
     let corrupted = directory.path().join("corrupted.json");
-    std::fs::write(&corrupted, "{不是 JSON").unwrap();
+    fs::write(&corrupted, "{不是 JSON").unwrap();
     assert_eq!(load_from(&corrupted, None), None);
 
     let foreign = directory.path().join("foreign.json");
     save_to(&foreign, None, windowed(1.0, 2.0, 300.0, 400.0), None).unwrap();
-    std::fs::write(&foreign, r#"{"version":999,"default":null,"projects":{}}"#).unwrap();
+    fs::write(&foreign, r#"{"version":999,"default":null,"projects":{}}"#).unwrap();
     assert_eq!(load_from(&foreign, None), None);
 }
 
@@ -95,8 +96,7 @@ fn saving_writes_default_and_project_record_with_shared_identity() {
 
     save_to(&path, Some(root), windowed(1.0, 2.0, 300.0, 400.0), None).unwrap();
 
-    let file: WindowBoundsFile =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let file: WindowBoundsFile = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(file.version, WINDOW_BOUNDS_VERSION);
     assert!(file.default.is_some());
     assert_eq!(

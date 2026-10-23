@@ -1,13 +1,13 @@
 //! 生成用于签署 Zcv 更新清单的 Ed25519 密钥。
 
-use std::fs::OpenOptions;
-use std::io::Write as _;
-use std::path::PathBuf;
+use std::{fs::OpenOptions, io::Write as _, path::PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
 use base64::Engine as _;
-use ring::rand::SystemRandom;
-use ring::signature::{Ed25519KeyPair, KeyPair as _};
+use ring::{
+    rand::SystemRandom,
+    signature::{Ed25519KeyPair, KeyPair as _},
+};
 
 fn main() {
     if let Err(error) = run() {

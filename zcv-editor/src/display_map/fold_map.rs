@@ -7,15 +7,18 @@
 //! 折叠段不再产生投影行，合并行由输出变换自然给出（anchor 文本 + 占位符 + 闭合行尾段）。
 //! 折叠编辑按旧/新变换树映射到精确的输出字节区间，不依赖全局行数守恒锚点。
 
-use std::any::TypeId;
-use std::borrow::Cow;
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
-use std::ops::{Deref, DerefMut, Range};
-use std::sync::Arc;
+use std::{
+    any::TypeId,
+    borrow::Cow,
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+    fmt::{self, Debug, Formatter},
+    mem,
+    ops::{Deref, DerefMut, Range},
+    sync::Arc,
+};
 
-use gpui::prelude::*;
-use gpui::{AnyElement, App, Pixels, div};
+use gpui::{AnyElement, App, Pixels, div, prelude::*};
 use sum_tree::{
     Bias as TreeBias, ContextLessSummary, Cursor, Dimension, Dimensions, Item, SumTree,
 };
@@ -24,8 +27,10 @@ use zcv_multi_buffer::{
 };
 use zcv_text::{Affinity, CoordinateError, Line, LineRange, LogicalColumn, Position};
 
-use super::edit::ProjectionEdit;
-use super::error::{DisplayMapResult, FoldError};
+use super::{
+    edit::ProjectionEdit,
+    error::{DisplayMapResult, FoldError},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FoldId(u64);
@@ -54,8 +59,8 @@ pub(crate) struct ChunkRenderer {
     pub(crate) measured_width: Option<Pixels>,
 }
 
-impl std::fmt::Debug for ChunkRenderer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for ChunkRenderer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ChunkRenderer")
             .field("id", &self.id)
             .field("constrain_width", &self.constrain_width)
@@ -338,8 +343,8 @@ impl Default for FoldPlaceholder {
     }
 }
 
-impl std::fmt::Debug for FoldPlaceholder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for FoldPlaceholder {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("FoldPlaceholder")
             .field("constrain_width", &self.constrain_width)
             .field("collapsed_text", &self.collapsed_text)
@@ -1208,7 +1213,7 @@ impl FoldMap {
         // 文本编辑可能让既有折叠的端点退出可见投影或范围退化；
         // 只检查与本次编辑旧范围相交的折叠，保持树的稳定身份顺序。
         self.drop_folds_broken_by_edits(&input, &buffer_edits);
-        let old_transforms = std::mem::take(&mut self.snapshot.transforms);
+        let old_transforms = mem::take(&mut self.snapshot.transforms);
         let mut new_transforms = SumTree::<Transform>::default();
         let mut cursor = old_transforms.cursor::<InputOffset>(());
         cursor.seek(&InputOffset(MultiBufferOffset::ZERO), TreeBias::Right);
@@ -1872,8 +1877,7 @@ impl FoldMapWriter<'_> {
         );
         let fold =
             Fold::from_text_range(self.0.snapshot.buffer_snapshot(), id, resolved, placeholder);
-        let old_folds =
-            std::mem::replace(&mut self.0.snapshot.folds, SumTree::new(&current_snapshot));
+        let old_folds = mem::replace(&mut self.0.snapshot.folds, SumTree::new(&current_snapshot));
         let mut cursor = old_folds.cursor::<FoldRange>(&current_snapshot);
         let mut folds = SumTree::new(&current_snapshot);
         folds.append(
@@ -1942,8 +1946,7 @@ impl FoldMapWriter<'_> {
             .filter_map(|(index, fold)| ids.contains(&fold.id).then_some(index))
             .collect();
 
-        let old_folds =
-            std::mem::replace(&mut self.0.snapshot.folds, SumTree::new(&current_snapshot));
+        let old_folds = mem::replace(&mut self.0.snapshot.folds, SumTree::new(&current_snapshot));
         let mut cursor = old_folds.cursor::<FoldIndex>(&current_snapshot);
         cursor.seek(&FoldIndex(0), TreeBias::Right);
         let mut folds = SumTree::new(&current_snapshot);

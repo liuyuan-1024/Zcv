@@ -8,8 +8,7 @@ use std::ops::Range;
 
 use zcv_text::{BufferVersion, Snapshot};
 
-use crate::syntax_map::SyntaxSnapshot;
-use crate::tree_sitter_utils::encloses;
+use crate::{syntax_map::SyntaxSnapshot, tree_sitter_utils::encloses};
 
 /// 光标或选区对应的语法节点摘要。
 ///

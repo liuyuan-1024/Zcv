@@ -3,9 +3,11 @@
 //! 标签元数据（标题、路径、脏状态等）全部转发给源码 Item；
 //! [`Item::source_item`] 让 Pane 能在预览与源码之间切换而不依赖具体视图类型。
 
-use std::any::TypeId;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    any::TypeId,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use gpui::{
     AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Image, ImageFormat,

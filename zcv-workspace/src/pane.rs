@@ -4,21 +4,25 @@
 //! 渲染标签栏和编辑器内容，处理键盘事件。
 //! Pane 通过 [`ItemHandle`] trait 统操作标签页，不依赖具体视图类型。
 
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use gpui::{
-    AnyElement, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Render, ScrollHandle,
-    Window, div, prelude::*, px,
+    AnyElement, App, Context, Entity, EntityId, EventEmitter, Fill, FocusHandle, IntoElement,
+    Pixels, Render, ScrollHandle, StyleRefinement, Window, div, prelude::*, px,
 };
 use zcv_actions::{CloseTab, NextTab, PrevTab, TogglePreview};
 use zcv_theme::{FileIcons, color};
 use zcv_ui::{Button, SvgIcon, Tab};
 
-use crate::layout_state::{SerializedPane, SerializedPaneItem};
-use crate::preview::{OpenPathCallback, PreviewDocument, source_provider_for};
-use crate::tab_bar::{TabBar, TabBarTrailing};
-use crate::{ItemEvent, ItemHandle, Toolbar};
+use crate::{
+    ItemEvent, ItemHandle, Toolbar,
+    layout_state::{SerializedPane, SerializedPaneItem},
+    preview::{OpenPathCallback, PreviewDocument, source_provider_for},
+    tab_bar::{TabBar, TabBarTrailing},
+};
 
 // ═══ Pane 事件 ════════════════════════════════════════════════════════
 
@@ -793,11 +797,7 @@ struct TabBarRenderParams<'a> {
     trailing: Option<TabBarTrailing>,
 }
 
-fn render_tab_bar(
-    params: TabBarRenderParams<'_>,
-    window: &Window,
-    cx: &App,
-) -> impl gpui::IntoElement {
+fn render_tab_bar(params: TabBarRenderParams<'_>, window: &Window, cx: &App) -> impl IntoElement {
     let children: Vec<AnyElement> = params
         .tabs
         .iter()
@@ -872,10 +872,10 @@ fn render_tab(
     ix: usize,
     is_active: bool,
     is_transient: bool,
-    pane_entity: &gpui::Entity<Pane>,
-    ui_size: gpui::Pixels,
+    pane_entity: &Entity<Pane>,
+    ui_size: Pixels,
     cx: &App,
-) -> impl gpui::IntoElement {
+) -> impl IntoElement {
     let item_id = item.item_id();
     let activate_entity = pane_entity.clone();
     let close_entity = pane_entity.clone();
@@ -918,9 +918,9 @@ fn render_tab(
             |tab, _, _, cx| cx.new(|_| tab.clone()),
         )
         .drag_over::<DraggedTab>(
-            move |mut tab: gpui::StyleRefinement, dragged: &DraggedTab, _, cx| {
+            move |mut tab: StyleRefinement, dragged: &DraggedTab, _, cx| {
                 if ix != dragged.ix {
-                    tab.background = Some(gpui::Fill::from(color::current(cx).element_hover));
+                    tab.background = Some(Fill::from(color::current(cx).element_hover));
                 }
                 tab
             },
@@ -937,20 +937,18 @@ fn render_tab(
 
 /// 标签栏末尾的放置目标：将标签拖到所有标签末尾时接受放置。
 fn render_tab_bar_drop_target(
-    pane_entity: &gpui::Entity<Pane>,
+    pane_entity: &Entity<Pane>,
     tab_count: usize,
     _cx: &App,
-) -> impl gpui::IntoElement {
+) -> impl IntoElement {
     let pane = pane_entity.clone();
     div()
         .id("tab-bar-drop-target")
         .flex_grow(1.0)
-        .drag_over::<DraggedTab>(
-            |mut tab: gpui::StyleRefinement, _dragged: &DraggedTab, _, cx| {
-                tab.background = Some(gpui::Fill::from(color::current(cx).element_hover));
-                tab
-            },
-        )
+        .drag_over::<DraggedTab>(|mut tab: StyleRefinement, _dragged: &DraggedTab, _, cx| {
+            tab.background = Some(Fill::from(color::current(cx).element_hover));
+            tab
+        })
         .on_drop(move |dragged: &DraggedTab, window, cx| {
             pane.update(cx, |this, cx| {
                 this.handle_tab_drop(dragged, tab_count, window, cx);
@@ -958,7 +956,7 @@ fn render_tab_bar_drop_target(
         })
 }
 
-fn item_icon(item: Option<&dyn ItemHandle>, cx: &App) -> impl gpui::IntoElement {
+fn item_icon(item: Option<&dyn ItemHandle>, cx: &App) -> impl IntoElement {
     // Item 自定义图标优先（终端等无文件路径的 Item 提供自己的图标）。
     if let Some(icon) = item.and_then(|item| item.tab_icon(cx)) {
         return SvgIcon::new(icon);
@@ -977,18 +975,14 @@ fn is_preview_item(item: &dyn ItemHandle, cx: &App) -> bool {
 }
 
 /// 标签关闭按钮。
-fn close_button(
-    pane_entity: &gpui::Entity<Pane>,
-    item_id: EntityId,
-    cx: &App,
-) -> impl gpui::IntoElement {
+fn close_button(pane_entity: &Entity<Pane>, item_id: EntityId, cx: &App) -> impl IntoElement {
     let entity = pane_entity.clone();
     Button::icon(("tab-close", item_id), "icons/close.svg")
         .no_occlude()
         .label("关闭")
         .shortcut(zcv_keymap::display_shortcut(&CloseTab, cx))
         .on_click(
-            move |_: &gpui::ClickEvent, window: &mut gpui::Window, cx: &mut gpui::App| {
+            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
                 // 焦点归还在 close_tab 内统一处理（点击时焦点在 Pane 内）。
                 entity.update(cx, |pane, cx| pane.close_tab(item_id, window, cx));
                 window.refresh();
@@ -1018,11 +1012,11 @@ fn tab_end_state(is_dirty: bool, is_preview: bool) -> TabEndState {
 /// 三种状态共用同一槽结构（图标位 + 关闭按钮位），高度恒为图标尺寸：
 /// 状态切换（圆点/眼睛 ↔ 关闭叉）只改透明度，不改变槽位高度，tab 高度稳定不抖动。
 fn tab_end_button(
-    pane_entity: &gpui::Entity<Pane>,
+    pane_entity: &Entity<Pane>,
     item_id: EntityId,
     is_dirty: bool,
     is_preview: bool,
-    ui_size: gpui::Pixels,
+    ui_size: Pixels,
     cx: &App,
 ) -> AnyElement {
     let state = tab_end_state(is_dirty, is_preview);
@@ -1091,7 +1085,7 @@ fn render_content(
     active_item_id: Option<EntityId>,
     active_item: Option<&dyn ItemHandle>,
     cx: &App,
-) -> impl gpui::IntoElement {
+) -> impl IntoElement {
     if active_item_id.is_none() {
         return div().flex_1().into_any_element();
     }

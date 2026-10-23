@@ -1,8 +1,6 @@
 //! 可复用于不同滚动容器的滚动条。
 
-use std::any::Any;
-use std::cell::Cell;
-use std::rc::Rc;
+use std::{any::Any, cell::Cell, rc::Rc};
 
 use gpui::{
     AnyElement, App, Bounds, Corners, CursorStyle, DispatchPhase, Element, ElementId,

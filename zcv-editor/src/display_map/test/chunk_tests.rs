@@ -1,4 +1,5 @@
 use super::*;
+use gpui::{TextRun, font, red};
 
 /// 行文本的 chunk 迭代器（128 字节对齐）。
 pub(crate) struct TextChunks<'a> {
@@ -68,7 +69,7 @@ fn expand_tabs(text: &str, tab_width: usize, start_column: usize) -> Vec<Chunk<'
     TabChunks::from_chunks(TextChunks::new(text), tab_width, start_column).collect()
 }
 
-fn chunks_to_runs(chunks: &[Chunk<'_>], base: gpui::TextRun) -> Vec<gpui::TextRun> {
+fn chunks_to_runs(chunks: &[Chunk<'_>], base: TextRun) -> Vec<TextRun> {
     chunks
         .iter()
         .map(|chunk| chunk_to_run(chunk, base.clone()))
@@ -144,7 +145,7 @@ fn text_chunks_split_at_utf8_boundary() {
 fn style_coordinates_never_become_text_slice_offsets() {
     let text = "abc机def";
     let style = HighlightStyle {
-        color: Some(gpui::red()),
+        color: Some(red()),
         ..Default::default()
     };
     let line = render_line_chunks(
@@ -215,7 +216,7 @@ fn tab_expanded_chunks_pass_through_without_tabs() {
 #[test]
 fn chunk_pipeline_splits_styles_before_tab_expansion() {
     let style = HighlightStyle {
-        color: Some(gpui::red()),
+        color: Some(red()),
         ..Default::default()
     };
     let line = render_line_chunks(
@@ -292,9 +293,9 @@ fn chunks_to_runs_preserves_unicode_lengths_and_marked_style() {
     );
     let runs = chunks_to_runs(
         &line.chunks,
-        gpui::TextRun {
+        TextRun {
             len: 0,
-            font: gpui::font("Helvetica"),
+            font: font("Helvetica"),
             color: Default::default(),
             background_color: None,
             underline: None,
@@ -327,9 +328,9 @@ fn chunks_to_runs_fades_dimmed_ranges() {
     );
     let runs = chunks_to_runs(
         &line.chunks,
-        gpui::TextRun {
+        TextRun {
             len: 0,
-            font: gpui::font("Helvetica"),
+            font: font("Helvetica"),
             color: gpui::white(),
             background_color: None,
             underline: None,
@@ -346,7 +347,7 @@ fn chunks_to_runs_fades_dimmed_ranges() {
 fn chunk_pipeline_clips_span_boundaries_to_line() {
     // span 端点 clip 到行内：行外 span 不产生额外切分。
     let style = HighlightStyle {
-        color: Some(gpui::red()),
+        color: Some(red()),
         ..Default::default()
     };
     let line = render_line_chunks(

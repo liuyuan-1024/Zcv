@@ -4,16 +4,17 @@
 //! 偏移辅助函数只负责构造稳定的测试坐标，另有两个事件级冒烟测试验证 element.rs 的事件接线。
 
 use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, point, px};
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 use zcv_text::{Buffer, BufferConfig};
 
 use super::common::{buffer_text, focus_editor, scrolling_text, test_buffer};
 use super::*;
-use crate::display_map::{DisplayColumn, DisplayPoint, DisplayRow};
-use crate::selection::{Selection, SelectionSet};
+use crate::{
+    display_map::{DisplayColumn, DisplayPoint, DisplayRow},
+    selection::{Selection, SelectionSet},
+};
 
 /// 字节偏移构造辅助（测试文本均为 ASCII，字节数即字符数）。
 fn b(value: usize) -> MultiBufferOffset {

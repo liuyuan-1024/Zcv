@@ -1,15 +1,18 @@
 //! Editor View 的跨帧状态与交互。
 
-use std::cell::Cell;
-use std::num::NonZeroUsize;
-use std::ops::Range;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Instant;
+use std::{
+    cell::Cell,
+    num::NonZeroUsize,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 use gpui::{
-    AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement,
-    KeyContext, Pixels, Point, Render, Styled, TextRun, TouchPhase, Window, div, point, prelude::*,
+    AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Font,
+    IntoElement, KeyContext, Pixels, Point, Render, Styled, TextRun, TouchPhase, Window, div,
+    point, prelude::*, px,
 };
 use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
@@ -37,16 +40,18 @@ use zcv_workspace::typography_for_window;
 
 use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerState};
 
-use super::blink_manager::BlinkManager;
-use super::cursor_animation::{CursorAnimation, CursorViewport};
-use super::display_map::{
-    ChunkRendererId, DisplayMap, DisplayPoint, DisplayRow, DisplayRowEvent, DisplaySnapshot,
-    EditorHunk, FoldBias, FoldPlaceholder, HighlightStyles, HunkControlTarget,
-};
-use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
-use super::scroll::{ScrollManager, ScrollViewport, ScrollbarThumbState};
-use super::selection::{
-    EditOutcome, EditPlan, Selection, SelectionHistory, SelectionSet, replace_selections,
+use super::{
+    blink_manager::BlinkManager,
+    cursor_animation::{CursorAnimation, CursorViewport},
+    display_map::{
+        ChunkRendererId, DisplayMap, DisplayPoint, DisplayRow, DisplayRowEvent, DisplaySnapshot,
+        EditorHunk, FoldBias, FoldPlaceholder, HighlightStyles, HunkControlTarget,
+    },
+    element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout},
+    scroll::{ScrollManager, ScrollViewport, ScrollbarThumbState},
+    selection::{
+        EditOutcome, EditPlan, Selection, SelectionHistory, SelectionSet, replace_selections,
+    },
 };
 
 mod indent_guides;
@@ -526,9 +531,9 @@ impl Editor {
     /// 由渲染层每帧调用：把文本区宽度与当前字体交给 DisplayMap，变化时启动预算内重排。
     pub(crate) fn set_wrap_width(
         &mut self,
-        wrap_width: Option<gpui::Pixels>,
-        font: gpui::Font,
-        font_size: gpui::Pixels,
+        wrap_width: Option<Pixels>,
+        font: Font,
+        font_size: Pixels,
         cx: &mut Context<Self>,
     ) -> bool {
         let text_system = cx.text_system().clone();
@@ -553,7 +558,7 @@ impl Editor {
     /// 返回是否变化，供渲染层决定是否用新快照重新布局本帧。
     pub(crate) fn update_renderer_widths(
         &mut self,
-        widths: impl IntoIterator<Item = (ChunkRendererId, gpui::Pixels)>,
+        widths: impl IntoIterator<Item = (ChunkRendererId, Pixels)>,
         cx: &mut Context<Self>,
     ) -> bool {
         let changed = self
@@ -609,7 +614,7 @@ impl Editor {
     /// 应用 Git diff 视图装配的新 excerpts，并按事件提供的工作区范围局部同步。
     pub fn update_diff_excerpt_ranges(
         &mut self,
-        display_path: &std::path::Path,
+        display_path: &Path,
         excerpt_ranges: DiffExcerptRanges,
         changed_range: Option<Range<zcv_text::Anchor>>,
         cx: &mut Context<Self>,
@@ -622,7 +627,7 @@ impl Editor {
     }
 
     /// 移除指定显示路径的 diff。
-    pub fn remove_diff(&mut self, path: &std::path::Path, cx: &mut Context<Self>) -> bool {
+    pub fn remove_diff(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
         let rebuilt = self
             .multi_buffer
             .update(cx, |buffer, cx| buffer.remove_diff(path, cx));
@@ -640,7 +645,7 @@ impl Editor {
     }
 
     /// 当前已挂接 diff 的显示路径集合（按组合文档顺序）。
-    pub fn diff_paths(&self, cx: &App) -> Vec<std::path::PathBuf> {
+    pub fn diff_paths(&self, cx: &App) -> Vec<PathBuf> {
         self.multi_buffer.read(cx).diff_paths()
     }
 
@@ -988,7 +993,7 @@ impl Editor {
     pub(super) fn longest_line_width(
         &mut self,
         row: DisplayRow,
-        font: gpui::Font,
+        font: Font,
         font_size: Pixels,
         window: &mut Window,
         cx: &App,
@@ -2197,7 +2202,7 @@ impl Editor {
                                 })?;
                         // 持久目标是塑形后的像素 x，而非显示列。
                         let goal_x = match selection.goal() {
-                            Some(x) => gpui::px(x as f32),
+                            Some(x) => px(x as f32),
                             None => display_snapshot
                                 .x_for_display_point(
                                     point,
@@ -2843,7 +2848,7 @@ impl Editor {
 fn layout_line_width(
     display_snapshot: &DisplaySnapshot,
     row: DisplayRow,
-    font: &gpui::Font,
+    font: &Font,
     font_size: Pixels,
     window: &mut Window,
 ) -> Pixels {
@@ -2968,7 +2973,7 @@ impl Render for Editor {
                         .top(position.y)
                         .w(width)
                         .h(line_height)
-                        .p(gpui::px(0.))
+                        .p(px(0.))
                         .rounded_sm()
                         .child(input),
                 )

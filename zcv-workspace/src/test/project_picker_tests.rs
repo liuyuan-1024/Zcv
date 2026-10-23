@@ -1,7 +1,9 @@
-use std::cell::Cell;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    cell::Cell,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use gpui::{AppContext, Context, TestAppContext, div, prelude::*, px, size};
 use zcv_fs_watch::{FsEventStream, Watcher};
@@ -42,7 +44,7 @@ impl Render for TestView {
 }
 
 #[gpui::test]
-fn confirm_invokes_on_selected(cx: &mut gpui::TestAppContext) {
+fn confirm_invokes_on_selected(cx: &mut TestAppContext) {
     let triggered = Rc::new(Cell::new(None::<String>));
     let on_selected: OnProjectSelected = {
         let triggered = triggered.clone();

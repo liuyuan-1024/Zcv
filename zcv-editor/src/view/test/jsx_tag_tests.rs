@@ -2,9 +2,9 @@
 //!
 //! 每个样例同时校验输入后的文本与光标；撤销、重做、重复触发与手动闭合另列专测。
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
-use gpui::{AppContext, EntityInputHandler, TestAppContext, VisualTestContext};
+use gpui::{AppContext, Entity, EntityInputHandler, TestAppContext, VisualTestContext};
 use zcv_actions::Backspace;
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferOffset, MultiBufferRange};
@@ -45,8 +45,8 @@ pub(super) fn editor_with_state<'a>(
     path: &'static str,
     marked: &str,
 ) -> (
-    gpui::Entity<LanguageBuffer>,
-    gpui::Entity<Editor>,
+    Entity<LanguageBuffer>,
+    Entity<Editor>,
     &'a mut VisualTestContext,
 ) {
     let (text, carets) = parse_state(marked);
@@ -55,7 +55,7 @@ pub(super) fn editor_with_state<'a>(
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from(path)),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -71,7 +71,7 @@ pub(super) fn editor_with_state<'a>(
     (language_buffer, editor.0, editor.1)
 }
 
-pub(super) fn buffer_text(buffer: &gpui::Entity<LanguageBuffer>, cx: &VisualTestContext) -> String {
+pub(super) fn buffer_text(buffer: &Entity<LanguageBuffer>, cx: &VisualTestContext) -> String {
     cx.read_entity(buffer, |language_buffer, _| {
         let snapshot = language_buffer.text_snapshot();
         snapshot
@@ -82,7 +82,7 @@ pub(super) fn buffer_text(buffer: &gpui::Entity<LanguageBuffer>, cx: &VisualTest
     })
 }
 
-pub(super) fn state_text(editor: &gpui::Entity<Editor>, cx: &VisualTestContext) -> String {
+pub(super) fn state_text(editor: &Entity<Editor>, cx: &VisualTestContext) -> String {
     cx.read_entity(editor, |editor, cx| {
         let snapshot = editor.display_snapshot(cx).buffer_snapshot().clone();
         let selections = editor.selections(cx);
@@ -115,13 +115,13 @@ pub(super) fn state_text(editor: &gpui::Entity<Editor>, cx: &VisualTestContext) 
     })
 }
 
-pub(super) fn type_text(editor: &gpui::Entity<Editor>, cx: &mut VisualTestContext, text: &str) {
+pub(super) fn type_text(editor: &Entity<Editor>, cx: &mut VisualTestContext, text: &str) {
     cx.update_entity(editor, |editor, cx| {
         editor.replace_text(None, text, cx);
     });
 }
 
-pub(super) fn backspace(editor: &gpui::Entity<Editor>, cx: &mut VisualTestContext) {
+pub(super) fn backspace(editor: &Entity<Editor>, cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
             editor.handle_backspace(&Backspace, window, cx);
@@ -296,7 +296,7 @@ fn tsx_tag_autoclose_is_rejected_in_read_only_excerpt(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn tsx_tag_autoclose_applies_per_excerpt_in_composite_document(cx: &mut TestAppContext) {
-    let registry = std::sync::Arc::new(LanguageRegistry::new());
+    let registry = Arc::new(LanguageRegistry::new());
     let first = cx.new({
         let registry = registry.clone();
         move |cx| {

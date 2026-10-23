@@ -4,6 +4,7 @@
 //! 同步器保留未变的变换前后缀，只重算输入编辑覆盖的区间，并通过旧、新变换的输出摘要生成显示层消费的同一批输出编辑。
 
 use super::*;
+use gpui::EntityId;
 
 #[derive(Clone, Debug)]
 pub(super) struct InputEdit {
@@ -44,7 +45,7 @@ impl SeekTarget<'_, ExcerptSummary, ExcerptSummary> for ExcerptOffset {
 
 struct SourceFrame<'a> {
     sources: &'a [ExcerptSource],
-    previous: Option<(gpui::EntityId, &'a Snapshot)>,
+    previous: Option<(EntityId, &'a Snapshot)>,
 }
 
 impl SourceTexts for SourceFrame<'_> {
@@ -175,7 +176,7 @@ impl MultiBuffer {
         &mut self,
         before: &ProjectionTrees,
         edits: Vec<InputEdit>,
-        old_source: Option<(gpui::EntityId, &Snapshot)>,
+        old_source: Option<(EntityId, &Snapshot)>,
         cx: &App,
     ) -> Vec<(TextRange, TextRange)> {
         let sources = SourceFrame {

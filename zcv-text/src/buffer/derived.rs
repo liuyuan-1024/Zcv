@@ -4,8 +4,7 @@
 //! 规划阶段在克隆的存储、日志、坐标索引与历史上完成全部可失败步骤，不推进主文档；
 //! 安装阶段在版本校验通过后整体换入派生状态，并发布订阅批次。
 
-use super::Buffer;
-use super::transaction_pipeline::prepared::DerivedBufferState;
+use super::{Buffer, transaction_pipeline::prepared::DerivedBufferState};
 use crate::{
     BufferVersion, Snapshot, TextResult,
     errors::TransactionError,

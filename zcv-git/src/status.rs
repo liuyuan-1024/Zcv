@@ -1,7 +1,6 @@
 //! git 输出解析：`git status --porcelain=v1` 与 `git diff --numstat`。
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf, str};
 
 use anyhow::{Context as _, Result};
 use zcv_path::RelativePathBuf;
@@ -203,7 +202,7 @@ pub struct GitStatus {
 
 /// 解析分支头行（去掉 `## ` 前缀后的内容），失败返回 None（保守跳过，不阻断 status 解析）。
 fn parse_branch_header(header: &[u8]) -> Option<BranchStatus> {
-    let text = std::str::from_utf8(header).ok()?;
+    let text = str::from_utf8(header).ok()?;
     // 无 `...` → 无 upstream（`## main`、`## HEAD (no branch)`、`## No commits yet on main`）。
     let Some(upstream) = text.split_once("...").map(|(_, upstream)| upstream) else {
         return Some(BranchStatus {
@@ -381,7 +380,7 @@ pub(crate) fn parse_numstat(output: &[u8]) -> HashMap<PathBuf, DiffStat> {
 
 /// numstat 的计数可能是 `-`（二进制文件），此时按 0 处理。
 fn parse_count(bytes: &[u8]) -> Result<u64> {
-    let text = std::str::from_utf8(bytes).context("numstat 计数非 UTF-8")?;
+    let text = str::from_utf8(bytes).context("numstat 计数非 UTF-8")?;
     if text == "-" {
         Ok(0)
     } else {

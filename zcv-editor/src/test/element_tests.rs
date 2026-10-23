@@ -1,4 +1,7 @@
-use crate::display_map::{DiffDecorationSnapshot, FoldPlaceholder, SearchDecorationInput};
+use crate::display_map::{
+    DiffDecorationSnapshot, DisplayMap, DisplaySnapshot, FoldPlaceholder, SearchDecorationInput,
+    test_support::{WrapRowKind, projected_line_text},
+};
 
 use super::*;
 
@@ -54,7 +57,7 @@ fn cursor_shapes_use_character_width_and_row_height() {
 
 #[test]
 fn word_diff_background_has_character_geometry_inside_a_ligature() {
-    let text_system = gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(
+    let text_system = WindowTextSystem::new(Arc::new(TextSystem::new(Arc::new(
         ligature_text_system::LigatureTextSystem,
     ))));
     let text = "条件 <= limit";
@@ -62,7 +65,7 @@ fn word_diff_background_has_character_geometry_inside_a_ligature() {
     let run = TextRun {
         len: text.len(),
         font: typography::content_font(),
-        color: gpui::rgba(0x44ccccff).into(),
+        color: rgba(0x44ccccff).into(),
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -95,8 +98,8 @@ fn word_diff_background_has_character_geometry_inside_a_ligature() {
             0,
             &backgrounds,
             ContrastStyle {
-                editor_background: gpui::rgba(0x282c33ff),
-                selection_background: gpui::rgba(0x485369ff),
+                editor_background: rgba(0x282c33ff),
+                selection_background: rgba(0x485369ff),
                 minimum: 45.0,
             },
             px(16.),
@@ -126,10 +129,10 @@ fn word_diff_background_has_character_geometry_inside_a_ligature() {
 
 #[test]
 fn inline_highlight_adjusts_only_text_with_insufficient_contrast() {
-    let editor_background = gpui::rgba(0xfafafaff);
-    let selection_background = gpui::rgba(0x5c78e23d);
-    let deleted_word = gpui::rgba(0xe06c76cc);
-    let foreground = gpui::rgba(0xe06c76ff).into();
+    let editor_background = rgba(0xfafafaff);
+    let selection_background = rgba(0x5c78e23d);
+    let deleted_word = rgba(0xe06c76cc);
+    let foreground = rgba(0xe06c76ff).into();
     let run = TextRun {
         len: 3,
         font: typography::content_font(),
@@ -166,7 +169,7 @@ fn inline_highlight_adjusts_only_text_with_insufficient_contrast() {
         Some(composite_background(deleted_word, selection_background)),
         "选区应半透明叠加在词级背景上"
     );
-    let run_background = gpui::rgba(0x3377aa66);
+    let run_background = rgba(0x3377aa66);
     let contrast = ContrastStyle {
         editor_background,
         selection_background,
@@ -224,7 +227,7 @@ fn inline_highlight_adjusts_only_text_with_insufficient_contrast() {
 
 #[test]
 fn selection_background_splits_multibyte_text_before_shaping() {
-    let text_system = gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(
+    let text_system = WindowTextSystem::new(Arc::new(TextSystem::new(Arc::new(
         ligature_text_system::LigatureTextSystem,
     ))));
     let text = "a世界b";
@@ -232,7 +235,7 @@ fn selection_background_splits_multibyte_text_before_shaping() {
     let run = TextRun {
         len: text.len(),
         font: typography::content_font(),
-        color: gpui::rgba(0x58585aff).into(),
+        color: rgba(0x58585aff).into(),
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -248,8 +251,8 @@ fn selection_background_splits_multibyte_text_before_shaping() {
         0,
         &backgrounds,
         ContrastStyle {
-            editor_background: gpui::rgba(0xfafafaff),
-            selection_background: gpui::rgba(0xd4d9f3ff),
+            editor_background: rgba(0xfafafaff),
+            selection_background: rgba(0xd4d9f3ff),
             minimum: 45.0,
         },
         px(16.),
@@ -317,11 +320,13 @@ fn layout_visible_lines(
     )
 }
 
-use crate::display_map::test_support::{WrapRowKind, projected_line_text};
-use crate::display_map::{DisplayMap, DisplaySnapshot};
-use gpui::{AppContext, Empty, TestAppContext};
+use gpui::{AppContext, Empty, TestAppContext, TextSystem, WindowTextSystem, rgba};
 
-use std::path::{Path, PathBuf};
+use std::{
+    iter,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 use zcv_buffer_diff::DiffHunkStaging;
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DisplayHunk, ExcerptRange, MultiBuffer, ResolvedDiffHunk, WordDiffs};
@@ -476,7 +481,7 @@ fn word_diff_background_keeps_changed_operator_out_of_adjacent_ligatures(cx: &mu
                 if scroll_columns > 0. {
                     assert!(line.window_start_column > 0, "必须实际覆盖水平窗口化的布局");
                 }
-                let selection_color = gpui::rgba(0x334477ff);
+                let selection_color = rgba(0x334477ff);
                 let backgrounds = layout_line_background_fragments(line, &[], selection_color);
                 assert_eq!(backgrounds.len(), 1, "词级背景应进入统一合成管线");
                 let expected_color = if deleted {
@@ -583,12 +588,7 @@ fn search_scrollbar_markers_render_from_search_decorations(cx: &mut TestAppConte
     let source = cx.new(|cx| {
         let buffer = Buffer::from_text("first\n项目\nlast".to_owned(), BufferConfig::default())
             .expect("应创建组合文档搜索 marker 测试 Buffer");
-        LanguageBuffer::new(
-            buffer,
-            None,
-            std::sync::Arc::new(LanguageRegistry::new()),
-            cx,
-        )
+        LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx)
     });
     let combined = cx.new(MultiBuffer::empty);
     let source_len = cx.read_entity(&source, |source, _| source.text_snapshot().len_bytes());
@@ -701,7 +701,7 @@ fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("README.md")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -758,7 +758,7 @@ fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
             let line = &layout.lines[0];
             assert_eq!(line.backgrounds.highlights.len(), 2, "两个匹配都应进入独立高亮层");
             // 每个搜索高亮的片段像素区间必须与“行原点 + 字形偏移”一致。
-            let fragments = layout_line_background_fragments(line, &[], gpui::rgba(0xff0000ff));
+            let fragments = layout_line_background_fragments(line, &[], rgba(0xff0000ff));
             assert_eq!(fragments.len(), line.backgrounds.highlights.len());
             for (fragment, (byte_range, _)) in fragments.iter().zip(&line.backgrounds.highlights) {
                 let expected_start =
@@ -949,7 +949,7 @@ fn multibuffer_header_can_start_above_viewport(cx: &mut TestAppContext) {
             LanguageBuffer::new(
                 source_text,
                 Some(PathBuf::from("文档/引擎.md")),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }
@@ -1035,7 +1035,7 @@ fn sticky_buffer_header_follows_visible_excerpts(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             first_buffer,
             Some(PathBuf::from("src/a.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1047,7 +1047,7 @@ fn sticky_buffer_header_follows_visible_excerpts(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             second_buffer,
             Some(PathBuf::from("src/b.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1068,7 +1068,7 @@ fn sticky_buffer_header_follows_visible_excerpts(cx: &mut TestAppContext) {
     let snapshot = cx.update_entity(&combined, |combined, cx| combined.snapshot(cx));
     let display = project_display_snapshot(cx, snapshot);
     let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
-    let rows: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+    let rows: Vec<_> = iter::from_fn(|| cursor.next()).collect();
     let blocks = rows
         .iter()
         .filter_map(|row| {
@@ -1130,7 +1130,7 @@ fn wrapped_unicode_markdown_queries_highlights_from_source_chunks(cx: &mut TestA
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("README.md")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1164,7 +1164,7 @@ fn wrapped_unicode_markdown_queries_highlights_from_source_chunks(cx: &mut TestA
                 });
                 let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
                 let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
-                let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+                let viewport: Vec<_> = iter::from_fn(|| cursor.next()).collect();
                 offending_row = viewport.iter().find_map(|row| {
                     let WrapRowKind::Text {
                         byte_range,
@@ -1455,7 +1455,7 @@ fn folded_element_participates_in_cross_fragment_coordinates(cx: &mut TestAppCon
     .snapshot();
     let map = new_display_map(cx, snapshot.clone());
     let placeholder = FoldPlaceholder {
-        render: std::sync::Arc::new(|_, _, _| div().w(px(30.)).h(px(10.)).into_any_element()),
+        render: Arc::new(|_, _, _| div().w(px(30.)).h(px(10.)).into_any_element()),
         constrain_width: false,
         ..FoldPlaceholder::default()
     };
@@ -1548,8 +1548,8 @@ fn folded_element_participates_in_cross_fragment_coordinates(cx: &mut TestAppCon
 
 /// 记录 gpui 布局阶段的可用宽度与 prepaint 原点的测试元素。
 struct RecordingElement {
-    available: std::sync::Arc<std::sync::Mutex<Option<Size<AvailableSpace>>>>,
-    prepaint_origin: std::sync::Arc<std::sync::Mutex<Option<Point<Pixels>>>>,
+    available: Arc<Mutex<Option<Size<AvailableSpace>>>>,
+    prepaint_origin: Arc<Mutex<Option<Point<Pixels>>>>,
 }
 
 impl Element for RecordingElement {
@@ -1622,7 +1622,7 @@ impl IntoElement for RecordingElement {
 fn constrain_width_bounds_element_fragment(cx: &mut TestAppContext) {
     let mut available = [None; 2];
     for (constrain_width, slot) in [(true, 0usize), (false, 1usize)] {
-        let recorded = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let recorded = Arc::new(Mutex::new(None));
         let snapshot = Buffer::from_text(
             "anchor\nhidden one\nafter".to_owned(),
             BufferConfig::default(),
@@ -1633,10 +1633,10 @@ fn constrain_width_bounds_element_fragment(cx: &mut TestAppContext) {
         let placeholder = FoldPlaceholder {
             render: {
                 let recorded = recorded.clone();
-                std::sync::Arc::new(move |_, _, _| {
+                Arc::new(move |_, _, _| {
                     RecordingElement {
                         available: recorded.clone(),
-                        prepaint_origin: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                        prepaint_origin: Arc::new(Mutex::new(None)),
                     }
                     .into_any_element()
                 })
@@ -1713,7 +1713,7 @@ fn constrain_width_bounds_element_fragment(cx: &mut TestAppContext) {
 /// 平移布局后 prepaint 原点跟随行原点。
 #[gpui::test]
 fn inline_element_prepaints_at_the_final_translated_origin(cx: &mut TestAppContext) {
-    let recorded = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let recorded = Arc::new(Mutex::new(None));
     let snapshot = Buffer::from_text(
         "anchor\nhidden one\nafter".to_owned(),
         BufferConfig::default(),
@@ -1724,9 +1724,9 @@ fn inline_element_prepaints_at_the_final_translated_origin(cx: &mut TestAppConte
     let placeholder = FoldPlaceholder {
         render: {
             let recorded = recorded.clone();
-            std::sync::Arc::new(move |_, _, _| {
+            Arc::new(move |_, _, _| {
                 RecordingElement {
-                    available: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                    available: Arc::new(Mutex::new(None)),
                     prepaint_origin: recorded.clone(),
                 }
                 .into_any_element()
@@ -1987,7 +1987,7 @@ fn multibuffer_excerpt_uses_the_same_text_selection_geometry_as_a_single_buffer(
         LanguageBuffer::new(
             source_buffer,
             Some(PathBuf::from("src/example.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -2711,12 +2711,7 @@ fn editor_element_projects_cursor_marker(cx: &mut TestAppContext) {
     let source = cx.new(|cx| {
         let buffer = Buffer::from_text("one\ntwo\nthree\n".to_owned(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
-        LanguageBuffer::new(
-            buffer,
-            None,
-            std::sync::Arc::new(LanguageRegistry::new()),
-            cx,
-        )
+        LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx)
     });
     let editor = cx.new(|cx| {
         let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));

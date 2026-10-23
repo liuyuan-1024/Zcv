@@ -1,7 +1,9 @@
 //! `BufferDiff` 后台任务所有权与输入版本门控的定向测试。
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use gpui::{AppContext as _, Entity, Task, TestAppContext};
 use zcv_language::{LanguageBuffer, LanguageRegistry};

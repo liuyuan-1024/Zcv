@@ -8,8 +8,10 @@ use std::borrow::Cow;
 use ropey::Rope;
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
-use super::TextRead;
-use super::line_index::{LineIndex, TextSummary};
+use super::{
+    TextRead,
+    line_index::{LineIndex, TextSummary},
+};
 use crate::{
     errors::{CoordinateError, EditError, StorageError, TextResult},
     transaction::EditList,

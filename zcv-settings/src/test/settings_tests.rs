@@ -1,8 +1,10 @@
 use std::fs;
 
 use super::*;
-use crate::file::ensure_settings_file;
-use crate::schema::{TerminalShellSetting, parse_builtin_settings, parse_user_settings};
+use crate::{
+    file::ensure_settings_file,
+    schema::{TerminalShellSetting, parse_builtin_settings, parse_user_settings},
+};
 
 #[test]
 fn missing_user_settings_file_contains_only_overrides() {

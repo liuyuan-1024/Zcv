@@ -1,8 +1,7 @@
 use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use gpui::{AppContext as _, TestAppContext, TestDispatcher};
 mod common;
@@ -30,7 +29,7 @@ fn projection_setup(
                 LanguageBuffer::new(
                     buffer,
                     Some(PathBuf::from(format!("src/source_{index}.rs"))),
-                    std::sync::Arc::new(LanguageRegistry::new()),
+                    Arc::new(LanguageRegistry::new()),
                     cx,
                 )
             })
@@ -84,7 +83,7 @@ fn materialize_excerpts(c: &mut Criterion) {
 fn source_range_fixture(source_count: usize) -> MultiBufferSnapshot {
     let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
     let multi_buffer = cx.new(MultiBuffer::empty);
-    let registry = std::sync::Arc::new(LanguageRegistry::new());
+    let registry = Arc::new(LanguageRegistry::new());
     for index in 0..source_count {
         let source = cx.new(|cx| {
             LanguageBuffer::new(

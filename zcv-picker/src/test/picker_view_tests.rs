@@ -1,5 +1,4 @@
-use std::cell::Cell;
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use crate::{PickerHost, PickerLayer};
 use gpui::{

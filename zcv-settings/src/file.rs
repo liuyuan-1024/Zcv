@@ -2,16 +2,19 @@
 //!
 //! 路径从 `config_dir()` 派生；用户配置只保存覆盖值，参考文件随内置配置更新。
 
-use std::fs::{self, OpenOptions};
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write as _,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use anyhow::{Context as _, Result};
 
 use super::{INITIAL_USER_SETTINGS, config_dir};
 
 pub(crate) fn settings_file() -> &'static Path {
-    static SETTINGS_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    static SETTINGS_FILE: OnceLock<PathBuf> = OnceLock::new();
     SETTINGS_FILE
         .get_or_init(|| config_dir().join("settings.json"))
         .as_path()

@@ -1,7 +1,6 @@
 //! 使用 CI 中的 Ed25519 PKCS#8 私钥签署更新清单。
 
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
 use base64::Engine as _;

@@ -1,12 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use gpui::{AnyElement, ClipboardItem, Context, Entity, Render, Window, div, prelude::*};
+use gpui::{
+    AnyElement, ClipboardItem, Context, Entity, Render, SharedString, Window, div, prelude::*,
+};
 use zcv_project::Project;
 use zcv_theme::color;
 use zcv_ui::{ButtonLike, TooltipSpec};
 
-use crate::ItemHandle;
-use crate::typography_for_window;
+use crate::{ItemHandle, typography_for_window};
 
 const MAX_SEGMENTS: usize = 12;
 
@@ -116,7 +117,7 @@ fn absolute_path(path: PathBuf, project_root: Option<&Path>) -> Option<PathBuf> 
         .or_else(|| project_root.map(|root| root.join(path)))
 }
 
-fn collapse_middle_segments(mut segments: Vec<gpui::SharedString>) -> Vec<gpui::SharedString> {
+fn collapse_middle_segments(mut segments: Vec<SharedString>) -> Vec<SharedString> {
     let prefix_end = segments.len().min(MAX_SEGMENTS / 2);
     let suffix_start = prefix_end.max(segments.len().saturating_sub(MAX_SEGMENTS / 2));
     if suffix_start > prefix_end {

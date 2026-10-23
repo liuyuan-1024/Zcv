@@ -1,7 +1,7 @@
-use gpui::{Context, Render, TestAppContext};
-use gpui::{ScrollDelta, ScrollHandle, ScrollWheelEvent, point, px};
-use std::cell::Cell;
-use std::rc::Rc;
+use gpui::{
+    Context, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, TestAppContext, point, px,
+};
+use std::{cell::Cell, rc::Rc};
 
 use super::*;
 use zcv_theme::scale;

@@ -1,18 +1,17 @@
-use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{
+    cell::{Cell, RefCell},
+    path::PathBuf,
+    rc::Rc,
+    sync::Arc,
+};
 
 use gpui::{
-    App, AppContext, Context, FocusHandle, Render, TestAppContext, Window, div, prelude::*, px,
+    App, AppContext, Context, Entity, EventEmitter, FocusHandle, Modifiers, Render, Task,
+    TestAppContext, Window, div, prelude::*, px,
 };
 
 use super::{DockPosition, LAYOUT_SAVE_THROTTLE, Workspace};
-use crate::Item;
-use crate::dock::DockData;
-use crate::panel::PanelEvent;
-use crate::{Panel, layout_state};
-use gpui::EventEmitter;
+use crate::{Item, Panel, dock::DockData, layout_state, panel::PanelEvent};
 use zcv_actions::{FocusOrHidePanel, Save};
 use zcv_language::LanguageRegistry;
 use zcv_project::{FileSaveConflictPolicy, Project};
@@ -65,32 +64,32 @@ impl Item for ConflictItem {
 
     fn save(
         &mut self,
-        _project: gpui::Entity<Project>,
+        _project: Entity<Project>,
         conflict_policy: FileSaveConflictPolicy,
         _window: &mut Window,
         _cx: &mut Context<Self>,
-    ) -> gpui::Task<anyhow::Result<()>> {
+    ) -> Task<anyhow::Result<()>> {
         self.saves.borrow_mut().push(conflict_policy);
         self.conflicted.set(false);
-        gpui::Task::ready(Ok(()))
+        Task::ready(Ok(()))
     }
 
     fn reload_conflicted_files(
         &mut self,
-        _project: gpui::Entity<Project>,
+        _project: Entity<Project>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
-    ) -> gpui::Task<anyhow::Result<()>> {
+    ) -> Task<anyhow::Result<()>> {
         self.restores.set(self.restores.get() + 1);
         self.conflicted.set(false);
-        gpui::Task::ready(Ok(()))
+        Task::ready(Ok(()))
     }
 }
 
 #[gpui::test]
 fn lost_window_focus_returns_to_the_active_pane(cx: &mut TestAppContext) {
     struct FocusLossHost {
-        workspace: gpui::Entity<Workspace>,
+        workspace: Entity<Workspace>,
         temporary: FocusHandle,
         show_temporary: bool,
     }
@@ -159,7 +158,7 @@ fn saving_a_conflicted_item_shows_one_persistent_choice_toast(cx: &mut TestAppCo
     let overwrite = cx.debug_bounds("toast-action-0-0").expect("覆盖按钮应显示");
     let restore = cx.debug_bounds("toast-action-0-1").expect("还原按钮应显示");
     assert!(overwrite.left() < restore.left());
-    cx.simulate_click(overwrite.center(), gpui::Modifiers::default());
+    cx.simulate_click(overwrite.center(), Modifiers::default());
     cx.run_until_parked();
     assert_eq!(*saves.borrow(), vec![FileSaveConflictPolicy::Overwrite]);
     assert_eq!(restores.get(), 0);
@@ -172,7 +171,7 @@ fn saving_a_conflicted_item_shows_one_persistent_choice_toast(cx: &mut TestAppCo
     let restore = cx
         .debug_bounds("toast-action-1-1")
         .expect("还原按钮应再次显示");
-    cx.simulate_click(restore.center(), gpui::Modifiers::default());
+    cx.simulate_click(restore.center(), Modifiers::default());
     cx.run_until_parked();
     assert_eq!(restores.get(), 1);
     assert!(!conflicted.get());

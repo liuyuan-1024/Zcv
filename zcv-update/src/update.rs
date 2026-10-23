@@ -4,10 +4,12 @@
 //! 在应用退出后完成原子切换。
 //! 该 crate 不持有 GPUI 状态，也不决定检查策略。
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Component, Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context as _, Result, ensure};
 use async_zip::base::read::mem::ZipFileReader;

@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use gpui::{Context, div, prelude::*};
+use gpui::{Context, TestAppContext, div, prelude::*};
 
 use super::*;
 
@@ -65,7 +65,7 @@ fn empty_query_selects_current_branch() {
 }
 
 #[gpui::test]
-fn delete_shortcut_reports_selected_branch_to_workspace(cx: &mut gpui::TestAppContext) {
+fn delete_shortcut_reports_selected_branch_to_workspace(cx: &mut TestAppContext) {
     let requested = Rc::new(Cell::new(None::<GitBranchAction>));
     let on_select: OnBranchSelected = {
         let requested = requested.clone();
@@ -142,7 +142,7 @@ fn no_match_shows_create_row() {
 }
 
 #[gpui::test]
-fn confirm_create_invokes_callback(cx: &mut gpui::TestAppContext) {
+fn confirm_create_invokes_callback(cx: &mut TestAppContext) {
     let triggered = Rc::new(Cell::new(None::<GitBranchAction>));
     let on_select: OnBranchSelected = {
         let triggered = triggered.clone();
@@ -162,7 +162,7 @@ fn confirm_create_invokes_callback(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn confirm_create_row_works_alongside_fuzzy_matches(cx: &mut gpui::TestAppContext) {
+fn confirm_create_row_works_alongside_fuzzy_matches(cx: &mut TestAppContext) {
     let triggered = Rc::new(Cell::new(None::<GitBranchAction>));
     let on_select: OnBranchSelected = {
         let triggered = triggered.clone();
@@ -189,7 +189,7 @@ fn confirm_create_row_works_alongside_fuzzy_matches(cx: &mut gpui::TestAppContex
 }
 
 #[gpui::test]
-fn confirm_checkout_invokes_callback(cx: &mut gpui::TestAppContext) {
+fn confirm_checkout_invokes_callback(cx: &mut TestAppContext) {
     let triggered = Rc::new(Cell::new(None::<GitBranchAction>));
     let on_select: OnBranchSelected = {
         let triggered = triggered.clone();

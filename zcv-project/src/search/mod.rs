@@ -5,9 +5,7 @@
 //! 命中文件随扫描进度逐文件通过通道流出，UI 线程按批装配进 MultiBuffer ordered excerpts。
 //! 接收方放弃通道（新搜索取代或视图关闭）时，后台在下次发送时感知并提前结束扫描。
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use async_channel::{Receiver, Sender};
 use futures::{StreamExt, stream};
@@ -17,8 +15,10 @@ use zcv_language::LanguageRegistry;
 use zcv_path::{AbsolutePathBuf, compare_natural_paths};
 use zcv_text::{ByteOffset, Line, Snapshot, TextRange, WordBoundaryPolicy};
 
-use crate::buffer_store::load_buffer;
-use crate::worktree::{WorktreeSearchPlan, discover_git_repository};
+use crate::{
+    buffer_store::load_buffer,
+    worktree::{WorktreeSearchPlan, discover_git_repository},
+};
 
 mod buffer_search;
 mod error;

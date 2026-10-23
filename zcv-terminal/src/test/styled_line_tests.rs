@@ -4,7 +4,7 @@ use alacritty_terminal::{
     term::cell::Flags,
     vte::ansi::{Color, NamedColor, Rgb},
 };
-use gpui::{Context, div};
+use gpui::{Context, TestAppContext, div};
 use zcv_theme::ThemeChoice;
 
 #[derive(Default)]
@@ -87,7 +87,7 @@ fn terminal_style_maps_directly_to_text_run() {
 /// 宽字符渲染：force_width 强制每字形 1 格宽（CJK 字形 advance 恰好 1 格），宽字符占 2 格的间距由段起始列号 × 格宽定位补足（不补空格）。
 /// "中"（列 0）"文"（列 2）"a"（列 4）三段渲染总宽应等于 5 格。
 #[gpui::test]
-fn wide_char_force_width_aligns_render_width(cx: &mut gpui::TestAppContext) {
+fn wide_char_force_width_aligns_render_width(cx: &mut TestAppContext) {
     cx.update(|cx| {
         zcv_assets::Assets.load_fonts(cx).expect("内置字体应能加载");
     });
@@ -184,7 +184,7 @@ fn row_fingerprint_is_stable_and_sensitive() {
 
 /// 宽字符：占位格不产生文本；跨列切段并记录段起始列号（渲染按列定位），背景仍按格绘制。
 #[gpui::test]
-fn wide_char_spacer_skips_text_not_background(cx: &mut gpui::TestAppContext) {
+fn wide_char_spacer_skips_text_not_background(cx: &mut TestAppContext) {
     let (_, cx) = cx.add_window_view(|window, cx| {
         ThemeChoice::System.apply(cx, Some(window));
         EmptyView
@@ -228,7 +228,7 @@ fn wide_char_spacer_skips_text_not_background(cx: &mut gpui::TestAppContext) {
 
 /// 相邻同样式格合并为一段；样式变化分段；尾随空格不参与 shaping。
 #[gpui::test]
-fn row_to_styled_line_merges_same_style_and_trims_trailing_spaces(cx: &mut gpui::TestAppContext) {
+fn row_to_styled_line_merges_same_style_and_trims_trailing_spaces(cx: &mut TestAppContext) {
     let (_, cx) = cx.add_window_view(|window, cx| {
         ThemeChoice::System.apply(cx, Some(window));
         EmptyView

@@ -1,5 +1,4 @@
-use std::time::Duration;
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, thread, time::Duration};
 
 use gpui::{AppContext, TestAppContext};
 
@@ -117,11 +116,11 @@ fn new_toast_appears_below_and_moves_older_toast_up(cx: &mut TestAppContext) {
     });
     let old_start = cx.debug_bounds("toast-0").expect("旧提示应保持原位置");
     assert!(old_before.top() - old_start.top() < gpui::px(16.0));
-    std::thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(100));
     cx.update(|window, cx| window.simulate_next_frame(cx));
     cx.run_until_parked();
     let old_mid = cx.debug_bounds("toast-0").expect("旧提示应正在上移");
-    std::thread::sleep(Duration::from_millis(250));
+    thread::sleep(Duration::from_millis(250));
     cx.update(|window, cx| window.simulate_next_frame(cx));
     cx.run_until_parked();
     let old_after = cx.debug_bounds("toast-0").expect("旧提示仍应显示");
@@ -159,7 +158,7 @@ fn tall_toast_pushes_older_toast_by_its_measured_height(cx: &mut TestAppContext)
     assert!(tall_start.size.height > old_start.size.height);
     assert!((old_start.top() - old_before.top()).abs() < gpui::px(2.0));
 
-    std::thread::sleep(Duration::from_millis(350));
+    thread::sleep(Duration::from_millis(350));
     cx.update(|window, cx| window.simulate_next_frame(cx));
     cx.run_until_parked();
     let old_after = cx.debug_bounds("toast-0").expect("旧提示仍应显示");
@@ -179,7 +178,7 @@ fn rapid_toasts_continue_rising_without_jumping(cx: &mut TestAppContext) {
         layer.show(ToastKind::Info, "第二条", vec![], None, cx);
     });
     assert!(cx.debug_bounds("toast-1").is_some());
-    std::thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(100));
     cx.update(|window, cx| window.simulate_next_frame(cx));
     cx.run_until_parked();
     let before_third = cx.debug_bounds("toast-0").expect("第一条应显示");
@@ -225,7 +224,7 @@ fn closing_newest_toast_does_not_replay_entrance(cx: &mut TestAppContext) {
 
     layer.update(cx, |layer, cx| layer.hide(newest, cx));
     let after_close = cx.debug_bounds("toast-0").expect("已有提示应显示");
-    std::thread::sleep(Duration::from_millis(350));
+    thread::sleep(Duration::from_millis(350));
     cx.update(|window, cx| window.simulate_next_frame(cx));
     cx.run_until_parked();
     let after_wait = cx.debug_bounds("toast-0").expect("已有提示仍应显示");

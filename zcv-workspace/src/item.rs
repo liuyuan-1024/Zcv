@@ -5,20 +5,20 @@
 //! 工具项显隐与 git 投影由装配层按活动 Item 的类型与能力决定，不作为 Item 的能力标志。
 //! 预览视图等可选能力通过 [`Item::as_preview_item`] 桥接获取，不占用 Item 主接口。
 
-use std::any::TypeId;
-use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::{
+    any::TypeId,
+    ops::Range,
+    path::{Path, PathBuf},
+};
 
 use gpui::{
-    AnyEntity, AnyView, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
+    AnyEntity, AnyView, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable, Font,
     Render, SharedString, Subscription, Task, Window,
 };
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::{FileSaveConflictPolicy, Project};
 
-use crate::SerializedPaneItem;
-use crate::preview::PreviewItemHandle;
-use crate::searchable::SearchableItemHandle;
+use crate::{SerializedPaneItem, preview::PreviewItemHandle, searchable::SearchableItemHandle};
 
 /// Item 向 Pane/Workspace 上报的工作区事件。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -78,7 +78,7 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         &self,
         _project_root: Option<&Path>,
         _cx: &App,
-    ) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
+    ) -> Option<(Vec<SharedString>, Option<Font>)> {
         None
     }
 
@@ -213,7 +213,7 @@ pub trait ItemHandle: Send + 'static {
         &self,
         project_root: Option<&Path>,
         cx: &App,
-    ) -> Option<(Vec<SharedString>, Option<gpui::Font>)>;
+    ) -> Option<(Vec<SharedString>, Option<Font>)>;
 }
 
 impl dyn ItemHandle {
@@ -355,7 +355,7 @@ impl<T: Item> ItemHandle for Entity<T> {
         &self,
         project_root: Option<&Path>,
         cx: &App,
-    ) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
+    ) -> Option<(Vec<SharedString>, Option<Font>)> {
         self.read(cx).breadcrumbs(project_root, cx)
     }
 }

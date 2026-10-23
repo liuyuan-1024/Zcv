@@ -1,13 +1,19 @@
-use std::cell::RefCell;
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::{
+    cell::RefCell,
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Result, bail};
 
-use crate::helper::{parse_helper_args, run_apply};
-use crate::platform::{APP_DIRECTORY_NAME, ApplyBackend, StagedUpdate, StartedProcess};
-use crate::{UpdateTransaction, update_result_path};
+use crate::{
+    UpdateTransaction,
+    helper::{parse_helper_args, run_apply},
+    platform::{APP_DIRECTORY_NAME, ApplyBackend, StagedUpdate, StartedProcess},
+    update_result_path,
+};
 
 #[test]
 fn required_arguments_are_parsed() {
@@ -102,7 +108,7 @@ impl ApplyBackend for FakeBackend {
         if let Some((_, ack_path)) = update
             && !self.ack_timeout
         {
-            std::fs::write(ack_path, b"{}").unwrap();
+            fs::write(ack_path, b"{}").unwrap();
         }
         Ok(Box::new(FakeProcess { exited: false }))
     }
@@ -118,11 +124,11 @@ impl ApplyBackend for FakeBackend {
 
 fn transaction(root: &Path) -> UpdateTransaction {
     let updates = root.join("updates");
-    std::fs::create_dir_all(&updates).unwrap();
+    fs::create_dir_all(&updates).unwrap();
     let install = root.join(APP_DIRECTORY_NAME);
-    std::fs::create_dir_all(&install).unwrap();
+    fs::create_dir_all(&install).unwrap();
     let staged = root.join("staged").join(APP_DIRECTORY_NAME);
-    std::fs::create_dir_all(&staged).unwrap();
+    fs::create_dir_all(&staged).unwrap();
     UpdateTransaction::new(
         "1.0.0".parse().unwrap(),
         "1.0.1".parse().unwrap(),

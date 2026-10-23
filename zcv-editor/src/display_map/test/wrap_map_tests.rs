@@ -1,13 +1,10 @@
-use super::{WrapEdit, WrapPatch};
+use super::{super::DisplayMap, MultiBufferOffset, WrapEdit, WrapMap, WrapPatch};
 use std::{ops::Range, sync::Arc};
 
 use gpui::{AppContext as _, Entity, TestAppContext, font, px};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Affinity, Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
-
-use super::super::DisplayMap;
-use super::{MultiBufferOffset, WrapMap};
 
 fn reflow_fixture(cx: &mut TestAppContext) -> (Buffer, Entity<DisplayMap>, Entity<WrapMap>) {
     let text = (0..220)

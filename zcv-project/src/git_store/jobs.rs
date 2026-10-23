@@ -3,8 +3,7 @@
 //! GitJob 按 key 去重（同 key 排队中/执行中时丢弃新 job），经 channel 交后台执行；
 //! 阶段状态（Queued/Running/Cancelling/Reconciling）与在途标记在此维护。
 
-use std::ops::Range;
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use gpui::{Context, Entity};
 use zcv_buffer_diff::BufferDiff;

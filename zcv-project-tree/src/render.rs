@@ -1,11 +1,10 @@
 //! 行模型渲染：可见行列表、行元素（背景/拖拽/点击交互）与渲染上下文。
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    App, Div, ElementId, Entity, ExternalPaths, MouseButton, UniformListScrollHandle, WeakEntity,
-    Window, div, prelude::*, uniform_list,
+    App, Div, ElementId, Entity, ExternalPaths, Fill, MouseButton, StyleRefinement,
+    UniformListScrollHandle, WeakEntity, Window, div, prelude::*, uniform_list,
 };
 use zcv_editor::Editor;
 use zcv_path::AbsolutePathBuf;
@@ -16,9 +15,11 @@ use zcv_ui::{
 };
 use zcv_workspace::git_status_color;
 
-use super::drag::{DraggedEntryView, TreeDrag, drop_target_dir, filter_movable_sources};
-use super::editing::{EditOperation, EditState};
-use super::{ProjectTreePanel, ProjectTreeRow};
+use super::{
+    ProjectTreePanel, ProjectTreeRow,
+    drag::{DraggedEntryView, TreeDrag, drop_target_dir, filter_movable_sources},
+    editing::{EditOperation, EditState},
+};
 
 impl ProjectTreePanel {
     pub(super) fn drag_marked_snapshot(&mut self) -> Rc<[AbsolutePathBuf]> {
@@ -37,7 +38,7 @@ impl ProjectTreePanel {
         Rc::clone(&self.drag_marked)
     }
 
-    pub(super) fn display_rows(&self, cx: &gpui::App) -> Rc<[ProjectTreeRow]> {
+    pub(super) fn display_rows(&self, cx: &App) -> Rc<[ProjectTreeRow]> {
         let Some(EditState {
             operation: EditOperation::Create { parent },
             ..
@@ -233,21 +234,21 @@ pub(super) fn render_row(
         // 落点候选行高亮（主题悬停色）：仅对存在可移动项的落点提示，移入自身子树、落回原目录等非法落点不亮。
         .drag_over::<TreeDrag>({
             let path = path.clone();
-            move |mut style: gpui::StyleRefinement, dragged: &TreeDrag, _, cx| {
+            move |mut style: StyleRefinement, dragged: &TreeDrag, _, cx| {
                 let droppable = drop_target_dir(&path, is_dir).is_some_and(|target| {
                     !filter_movable_sources(&dragged.items(), &target).is_empty()
                 });
                 if droppable {
-                    style.background = Some(gpui::Fill::from(color::current(cx).element_hover));
+                    style.background = Some(Fill::from(color::current(cx).element_hover));
                 }
                 style
             }
         })
         .drag_over::<ExternalPaths>({
             let path = path.clone();
-            move |mut style: gpui::StyleRefinement, dragged: &ExternalPaths, _, cx| {
+            move |mut style: StyleRefinement, dragged: &ExternalPaths, _, cx| {
                 if !dragged.paths().is_empty() && drop_target_dir(&path, is_dir).is_some() {
-                    style.background = Some(gpui::Fill::from(color::current(cx).element_hover));
+                    style.background = Some(Fill::from(color::current(cx).element_hover));
                 }
                 style
             }

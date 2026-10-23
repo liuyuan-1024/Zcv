@@ -11,11 +11,14 @@
 //!                       用于复现真实「边加载组合文档边滚动」的场景（默认等于 FILES，即全部预置）
 //!   ZCV_PROBE_STAGED    true/1 使用只读暂存组合文档（默认未暂存可编辑）
 
-use std::cell::Cell;
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    cell::Cell,
+    env,
+    path::PathBuf,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gpui::{
     App, AppContext as _, Application, AsyncApp, Bounds, Context, DispatchPhase, Entity,
@@ -69,14 +72,14 @@ impl Render for ProbeRoot {
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
+    env::var(name)
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
 }
 
 fn env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name).ok().map_or(default, |value| {
+    env::var(name).ok().map_or(default, |value| {
         value == "1" || value.eq_ignore_ascii_case("true")
     })
 }

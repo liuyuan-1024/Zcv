@@ -2,8 +2,7 @@
 //!
 //! item_provider（文件 Item 工厂）与 preview（格式预览工厂）共用同一套注册/查找语义，此处收敛为单一实现，消费方只保留 trait 与包装函数。
 
-use std::any::TypeId;
-use std::sync::Arc;
+use std::{any::TypeId, sync::Arc};
 
 use gpui::{App, BorrowAppContext, Global};
 

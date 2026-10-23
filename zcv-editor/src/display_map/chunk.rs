@@ -10,23 +10,24 @@
 //! 基础文本 chunk 经样式与 tab 变换，产出带样式与 is_tab 标记的渲染 chunk；
 //! 渲染端逐 chunk 生成 TextRun 后统一 shape。
 
-use std::borrow::Cow;
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use gpui::{HighlightStyle, UnderlineStyle, px};
+use gpui::{HighlightStyle, Rgba, TextRun, UnderlineStyle, px};
 use zcv_language::HighlightSpan;
 use zcv_multi_buffer::{
     DiffRowStatus, ExcerptSnapshot, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
 };
 use zcv_text::Line;
 
-use super::block_map::{BlockRow, BlockRows, DisplayBlock};
-use super::fold_map::{ChunkRenderer, FoldRowSegment, FoldRowSegmentKind, ProjectedLineIndex};
-use super::tab_map::advance_display_column;
-use super::wrap_map::WrapRowKind;
-use super::{DisplayRow, DisplaySnapshot};
+use super::{
+    DisplayRow, DisplaySnapshot,
+    block_map::{BlockRow, BlockRows, DisplayBlock},
+    fold_map::{ChunkRenderer, FoldRowSegment, FoldRowSegmentKind, ProjectedLineIndex},
+    tab_map::advance_display_column,
+    wrap_map::WrapRowKind,
+};
 
 /// chunk 文本字节上限。
 pub(crate) const CHUNK_SIZE: usize = 128;
@@ -48,7 +49,7 @@ pub(crate) struct Chunk<'a> {
     pub(crate) renderer: Option<ChunkRenderer>,
     pub(crate) style: Option<HighlightStyle>,
     /// 背景覆盖层命中色（搜索高亮等；优先于 style 的背景）。
-    pub(crate) background: Option<gpui::Rgba>,
+    pub(crate) background: Option<Rgba>,
     /// 选区标记（下划线渲染）。
     pub(crate) marked: bool,
     /// 局部重命名期间淡化原名称及其引用。
@@ -219,7 +220,7 @@ pub(crate) struct HighlightStyles<'a> {
     pub(crate) spans: &'a [HighlightSpan],
     pub(crate) styles: &'a [HighlightStyle],
     /// 独立背景覆盖层；绘制时叠加在语法样式背景之上。
-    pub(crate) backgrounds: &'a [(Range<usize>, gpui::Rgba)],
+    pub(crate) backgrounds: &'a [(Range<usize>, Rgba)],
     pub(crate) marked: &'a [MultiBufferRange],
     /// 局部重命名期间需要淡化的文本范围。
     pub(crate) dimmed: &'a [Range<usize>],
@@ -289,7 +290,7 @@ pub(crate) struct ChunkSource<'a> {
 struct ChunkStyle {
     style: Option<HighlightStyle>,
     /// 背景覆盖层命中色（搜索高亮等；优先于 style 的背景）。
-    background: Option<gpui::Rgba>,
+    background: Option<Rgba>,
     marked: bool,
     dimmed: bool,
 }
@@ -917,8 +918,8 @@ pub(crate) struct RenderedWhitespace {
     pub(crate) display_column: usize,
 }
 
-pub(crate) fn chunk_to_run(chunk: &Chunk<'_>, base: gpui::TextRun) -> gpui::TextRun {
-    let mut run = gpui::TextRun {
+pub(crate) fn chunk_to_run(chunk: &Chunk<'_>, base: TextRun) -> TextRun {
+    let mut run = TextRun {
         len: chunk.text.len(),
         ..base
     };

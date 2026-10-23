@@ -1,6 +1,7 @@
 use super::*;
 use crate::display_map::DisplayMap;
 use gpui::{AppContext, Empty, Entity, TestAppContext, px};
+use std::slice;
 use zcv_multi_buffer::{DiffHunkSource, DisplayHunk, MultiBufferSnapshot, ResolvedDiffHunk};
 use zcv_text::{Buffer, BufferConfig, BufferId};
 
@@ -120,7 +121,7 @@ fn folded_deleted_hunk_anchor_covers_all_wrapped_subrows(cx: &mut TestAppContext
             };
             let rendered = hunk_rendering(
                 &snapshot,
-                resolved_hunks(std::slice::from_ref(&hunk), &[false], &[None], &[]).into_iter(),
+                resolved_hunks(slice::from_ref(&hunk), &[false], &[None], &[]).into_iter(),
             );
             assert_eq!(
                 rendered.hit_regions,
@@ -188,7 +189,7 @@ fn folded_deleted_hunk_before_wrapped_row_anchors_to_wrapped_first_subrow(cx: &m
             };
             let rendered = hunk_rendering(
                 &snapshot,
-                resolved_hunks(std::slice::from_ref(&hunk), &[false], &[None], &[]).into_iter(),
+                resolved_hunks(slice::from_ref(&hunk), &[false], &[None], &[]).into_iter(),
             );
             // 删除点行是单行 [del_start, del_start+1)，三角在该行行尾 = 软换行第一子行行首。
             assert_eq!(
@@ -275,7 +276,7 @@ fn materialized_modified_hunk_uses_real_old_and_new_document_rows(cx: &mut TestA
 
     let rendered = hunk_rendering(
         &snapshot,
-        resolved_hunks(std::slice::from_ref(&hunk), &[true], &old_ranges, &[]).into_iter(),
+        resolved_hunks(slice::from_ref(&hunk), &[true], &old_ranges, &[]).into_iter(),
     );
 
     assert_eq!(
@@ -370,7 +371,7 @@ fn word_diff_highlights_stay_on_their_side_across_soft_wraps(cx: &mut TestAppCon
             &[hunk],
             &[true],
             &[Some(1..3)],
-            std::slice::from_ref(&highlights),
+            slice::from_ref(&highlights),
         ),
         &[],
     );

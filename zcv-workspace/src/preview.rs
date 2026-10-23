@@ -4,11 +4,13 @@
 //! 格式 crate 实现 [`PreviewProvider`]，并创建一个直接实现 Item 协议的具体预览视图。
 //! 预览视图自身通过 [`PreviewItem`] 暴露与源码 Item 的关联，经 `Item::as_preview_item` 桥接获取，不占用 Item 主接口。
 
-use std::any::TypeId;
-use std::cell::Cell;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{
+    any::TypeId,
+    cell::Cell,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+};
 
 use gpui::{
     AnyElement, App, Bounds, Context, Element, ElementId, Entity, EventEmitter, FocusHandle,
@@ -20,11 +22,13 @@ use zcv_multi_buffer::MultiBuffer;
 use zcv_theme::{color, scale};
 use zcv_ui::Button;
 
-use crate::breadcrumbs::Breadcrumbs;
-use crate::item::{Item, ItemEvent, ItemHandle};
-use crate::pane::Pane;
-use crate::provider_registry::ProviderRegistry;
-use crate::toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
+use crate::{
+    breadcrumbs::Breadcrumbs,
+    item::{Item, ItemEvent, ItemHandle},
+    pane::Pane,
+    provider_registry::ProviderRegistry,
+    toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView},
+};
 
 /// 预览内容请求打开工作区文件时使用的宿主能力。
 pub type OpenPathCallback = Rc<dyn Fn(PathBuf, &mut Window, &mut App)>;

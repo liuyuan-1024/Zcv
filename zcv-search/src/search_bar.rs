@@ -10,6 +10,7 @@ use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, KeyContext, ParentElement, Styled, Subscription,
     Window, div, prelude::*,
 };
+use std::sync::Arc;
 use zcv_actions::{
     Backtab, ClearSearch, DeployBufferSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext,
     SelectAll, Tab, ToggleCaseSensitive, ToggleRegex, ToggleReplace, ToggleWholeWord,
@@ -74,10 +75,10 @@ impl SearchBar {
     /// `language_registry` 由装配层注入：搜索输入框不自建注册表。
     pub fn new(
         config: SearchBarConfig,
-        language_registry: std::sync::Arc<LanguageRegistry>,
+        language_registry: Arc<LanguageRegistry>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let query_registry = std::sync::Arc::clone(&language_registry);
+        let query_registry = Arc::clone(&language_registry);
         let query_input = cx.new(move |cx| Editor::auto_height(1, Some(4), query_registry, cx));
         let replace_input =
             cx.new(move |cx| Editor::auto_height(1, Some(4), language_registry, cx));

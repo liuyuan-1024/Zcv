@@ -1,8 +1,7 @@
 //! 内置资源的编译期嵌入与统一读取入口。
 //! 此文件是 `zcv-assets` crate 的公共入口。
 
-use std::borrow::Cow;
-use std::str;
+use std::{borrow::Cow, str};
 
 use anyhow::{Context as _, Result as AnyhowResult};
 use gpui::{App, AssetSource, Result, SharedString};

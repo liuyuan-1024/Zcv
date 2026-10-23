@@ -1,8 +1,8 @@
 //! Editor 选区编辑行为测试。
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
-use gpui::{AppContext, TestAppContext};
+use gpui::{AppContext, Entity, TestAppContext};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferOffset};
 use zcv_text::{Buffer, BufferConfig};
@@ -14,17 +14,11 @@ fn editor_with_text(
     cx: &mut TestAppContext,
     text: &str,
     selections: SelectionSet,
-) -> (gpui::Entity<LanguageBuffer>, gpui::Entity<Editor>) {
+) -> (Entity<LanguageBuffer>, Entity<Editor>) {
     let buffer =
         Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建");
-    let language_buffer = cx.new(move |cx| {
-        LanguageBuffer::new(
-            buffer,
-            None,
-            std::sync::Arc::new(LanguageRegistry::new()),
-            cx,
-        )
-    });
+    let language_buffer =
+        cx.new(move |cx| LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx));
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
         move |cx| {
@@ -36,7 +30,7 @@ fn editor_with_text(
     (language_buffer, editor)
 }
 
-fn buffer_text(buffer: &gpui::Entity<LanguageBuffer>, cx: &TestAppContext) -> String {
+fn buffer_text(buffer: &Entity<LanguageBuffer>, cx: &TestAppContext) -> String {
     cx.read_entity(buffer, |language_buffer, _| {
         let snapshot = language_buffer.text_snapshot();
         snapshot
@@ -56,7 +50,7 @@ fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("rename.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -88,7 +82,7 @@ fn rename_local_at_rejects_ambiguous_binding(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("ambiguous.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -116,7 +110,7 @@ fn rename_local_at_rejects_unresolved_reference(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("unresolved.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -195,16 +189,16 @@ fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &m
     let first = cx.new(|cx| {
         LanguageBuffer::new(
             first,
-            Some(std::path::PathBuf::from("src/first.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Some(PathBuf::from("src/first.rs")),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
     let second = cx.new(|cx| {
         LanguageBuffer::new(
             second,
-            Some(std::path::PathBuf::from("src/second.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Some(PathBuf::from("src/second.rs")),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });

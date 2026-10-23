@@ -2,7 +2,12 @@
 //!
 //! `zcv-text::Buffer` 在接收文本时统一换行；保存直接写入权威快照。
 
-use std::io::{self, Write};
+use std::{
+    error::Error,
+    fmt::{self, Display, Formatter},
+    io::{self, Write},
+    str,
+};
 
 use zcv_text::{
     BufferVersion, ByteOffset, Snapshot, TextError, TextRange, TextRead, TransactionError,
@@ -39,8 +44,8 @@ impl From<TextError> for BufferLoadError {
     }
 }
 
-impl std::fmt::Display for BufferLoadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for BufferLoadError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(f, "文件加载 IO 失败：{error}"),
             Self::Binary => write!(f, "二进制文件不能作为文本打开"),
@@ -56,8 +61,8 @@ impl std::fmt::Display for BufferLoadError {
     }
 }
 
-impl std::error::Error for BufferLoadError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl Error for BufferLoadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
             Self::Text(error) => Some(error),
@@ -92,8 +97,8 @@ impl From<TextError> for BufferSaveError {
     }
 }
 
-impl std::fmt::Display for BufferSaveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for BufferSaveError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(f, "文件保存 IO 失败：{error}"),
             Self::Text(error) => write!(f, "文件保存校验失败：{error}"),
@@ -102,8 +107,8 @@ impl std::fmt::Display for BufferSaveError {
     }
 }
 
-impl std::error::Error for BufferSaveError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl Error for BufferSaveError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
             Self::Text(error) => Some(error),
@@ -151,7 +156,7 @@ pub(crate) fn decode_to_string<R: io::Read>(mut reader: R) -> Result<String, Buf
         let valid = classify_utf8(&buffer[..fill_idx]);
         if valid.valid_count > 0 {
             // SAFETY: 上一行已通过 `std::str::from_utf8` / `classify_utf8` 校验过这段字节是合法 UTF-8。
-            let text = unsafe { std::str::from_utf8_unchecked(&buffer[..valid.valid_count]) };
+            let text = unsafe { str::from_utf8_unchecked(&buffer[..valid.valid_count]) };
             output.push_str(text);
             consumed_bytes += valid.valid_count;
         }
@@ -239,7 +244,7 @@ enum TailKind {
 mod tests;
 
 fn classify_utf8(bytes: &[u8]) -> ValidPrefix {
-    match std::str::from_utf8(bytes) {
+    match str::from_utf8(bytes) {
         Ok(_) => ValidPrefix {
             valid_count: bytes.len(),
             tail_kind: TailKind::AllValid,

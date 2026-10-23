@@ -1,25 +1,28 @@
-use std::fs;
-use std::os::windows::ffi::OsStrExt as _;
-use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    fs, iter,
+    os::windows::ffi::OsStrExt as _,
+    path::{Path, PathBuf},
+    ptr, thread,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context as _, Result, ensure};
 use async_zip::base::read::mem::ZipFileReader;
 use futures::io::AsyncWriteExt as _;
 use semver::Version;
-use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_SUCCESS, GetLastError,
-    WAIT_OBJECT_0,
-};
-use windows_sys::Win32::Storage::FileSystem::{
-    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-};
-use windows_sys::Win32::System::RestartManager::{
-    CCH_RM_SESSION_KEY, RmEndSession, RmGetList, RmRegisterResources, RmShutdown, RmStartSession,
-};
-use windows_sys::Win32::System::Threading::{
-    INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+use windows_sys::Win32::{
+    Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_SUCCESS, GetLastError,
+        WAIT_OBJECT_0,
+    },
+    Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW},
+    System::{
+        RestartManager::{
+            CCH_RM_SESSION_KEY, RmEndSession, RmGetList, RmRegisterResources, RmShutdown,
+            RmStartSession,
+        },
+        Threading::{INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+    },
 };
 
 use super::{ApplyBackend, StagedUpdate, UpdateInstallation};
@@ -85,7 +88,7 @@ fn release_file_handles(app: &Path) -> Result<()> {
         .map(|path| {
             path.as_os_str()
                 .encode_wide()
-                .chain(std::iter::once(0))
+                .chain(iter::once(0))
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
@@ -109,9 +112,9 @@ fn release_file_handles(app: &Path) -> Result<()> {
                 resource_paths.len() as u32,
                 resource_paths.as_ptr(),
                 0,
-                std::ptr::null(),
+                ptr::null(),
                 0,
-                std::ptr::null(),
+                ptr::null(),
             )
         };
         ensure!(
@@ -127,7 +130,7 @@ fn release_file_handles(app: &Path) -> Result<()> {
                 session,
                 &mut needed,
                 &mut listed,
-                std::ptr::null_mut(),
+                ptr::null_mut(),
                 &mut reboot_reasons,
             )
         };
@@ -154,13 +157,13 @@ pub fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
     let temporary = temporary
         .as_os_str()
         .encode_wide()
-        .chain(std::iter::once(0))
+        .chain(iter::once(0))
         .collect::<Vec<_>>();
     let destination_path = destination.to_path_buf();
     let destination = destination
         .as_os_str()
         .encode_wide()
-        .chain(std::iter::once(0))
+        .chain(iter::once(0))
         .collect::<Vec<_>>();
     let replaced = unsafe {
         MoveFileExW(
@@ -180,8 +183,7 @@ pub fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
 
 pub fn verify_app(app: &Path, expected_version: &Version) -> Result<()> {
     validate_extracted_app(app)?;
-    let version =
-        std::fs::read_to_string(app.join("version.txt")).context("无法读取更新应用版本")?;
+    let version = fs::read_to_string(app.join("version.txt")).context("无法读取更新应用版本")?;
     ensure!(
         version.trim() == expected_version.to_string(),
         "更新应用版本与清单目标版本不一致"

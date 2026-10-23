@@ -1,18 +1,21 @@
 //! 语言注册与查询。
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use tree_sitter::Query;
 use zcv_text::{BufferVersion, WordBoundaryPolicy};
 
-use crate::available_languages::{
-    LanguageQuerySources, LanguageSpec, LanguageSupport as LanguageSupportSpec, builtin_languages,
-};
 use crate::{
     AutoClosePair, BlockCommentConfig, JsxTagAutoCloseConfig, LanguageInputConfig,
     OrderedListConfig, TaskListConfig,
+    available_languages::{
+        LanguageQuerySources, LanguageSpec, LanguageSupport as LanguageSupportSpec,
+        builtin_languages,
+    },
 };
 
 /// 一门已加载语言。

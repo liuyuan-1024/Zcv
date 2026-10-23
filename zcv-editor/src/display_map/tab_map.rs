@@ -3,19 +3,19 @@
 //! Tab 层不保存逐行宽度或变换树。
 //! 读取 chunk 时由当前行的 Tab 点即时展开，因而同一行中的后续 Tab 总是以其真实的前置显示列计算。
 
-use std::borrow::Cow;
-use std::num::NonZeroUsize;
-use std::ops::Range;
+use std::{borrow::Cow, num::NonZeroUsize, ops::Range};
 
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::Line;
 
-use super::display_width::char_width;
-use super::edit::ProjectionEdit;
-use super::fold_map::{
-    FoldBias, FoldEdit, FoldPoint, FoldSnapshot, ProjectedLineIndex, ProjectedPoint,
-    StreamProjectedKind,
+use super::{
+    display_width::char_width,
+    edit::ProjectionEdit,
+    fold_map::{
+        FoldBias, FoldEdit, FoldPoint, FoldSnapshot, ProjectedLineIndex, ProjectedPoint,
+        StreamProjectedKind,
+    },
 };
 
 /// Tab 层的本层点。行表示投影行，列表示展开硬 Tab 后的显示列。

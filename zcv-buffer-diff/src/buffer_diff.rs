@@ -4,9 +4,11 @@
 //! 源文本变化与修订输入提交共用唯一计算任务；修订快照和 hunk 结果在版本校验后整体安装，投影层只消费结果。
 //! hunk 的暂存语义统一相对 index 参照判定，所有视图共用同一套；展开/折叠与显示路径由 `MultiBuffer` 的 diff 投影持有。
 
-use std::ops::Range;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use futures::join;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Subscription, Task};
@@ -18,9 +20,8 @@ use zcv_language::{
 use zcv_text::{
     Anchor, Buffer as TextBuffer, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot,
     TextRange, TextResult, normalize_arc_to_lf,
+    word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges},
 };
-
-use zcv_text::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
 
 /// hunk 变化类型（判定规则：旧侧空→Added、新侧空→Deleted）。
 ///
@@ -517,7 +518,7 @@ fn prepare_revision(
     source: Option<Entity<LanguageBuffer>>,
     text: Option<Arc<str>>,
     unchanged: bool,
-    path: &std::path::Path,
+    path: &Path,
     registry: &Arc<LanguageRegistry>,
     cx: &mut Context<BufferDiff>,
 ) -> Option<RevisionPreparation> {
@@ -545,7 +546,7 @@ fn prepare_revision(
 
 /// 由修订文本创建语言缓冲；None 表示该侧不存在。
 fn empty_revision_buffer(
-    path: &std::path::Path,
+    path: &Path,
     registry: &Arc<LanguageRegistry>,
     cx: &mut Context<BufferDiff>,
 ) -> Entity<LanguageBuffer> {

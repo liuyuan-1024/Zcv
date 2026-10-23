@@ -1,7 +1,6 @@
 use super::*;
-use gpui::{Context, MouseButton, Render, TestAppContext};
-use std::cell::Cell;
-use std::rc::Rc;
+use gpui::{Context, Modifiers, MouseButton, Render, TestAppContext};
+use std::{cell::Cell, rc::Rc};
 
 struct TreeRowHost {
     toggles: Rc<Cell<usize>>,
@@ -74,11 +73,11 @@ fn tree_rows_align_labels_and_isolate_disclosure_clicks(cx: &mut TestAppContext)
     assert!(child.left() > branch.left(), "子节点标题应进一步缩进");
 
     let disclosure = cx.debug_bounds("disclosure").expect("折叠控件应参与布局");
-    cx.simulate_click(disclosure.center(), gpui::Modifiers::default());
+    cx.simulate_click(disclosure.center(), Modifiers::default());
     assert_eq!(toggles.get(), 1);
     assert_eq!(row_clicks.get(), 0, "点击折叠控件不能触发行导航");
 
-    cx.simulate_click(branch.center(), gpui::Modifiers::default());
+    cx.simulate_click(branch.center(), Modifiers::default());
     assert_eq!(row_clicks.get(), 1);
 }
 

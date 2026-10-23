@@ -1,5 +1,7 @@
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::{
+    alloc::{GlobalAlloc, Layout, System},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
 

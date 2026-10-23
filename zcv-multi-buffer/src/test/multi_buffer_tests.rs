@@ -1,8 +1,10 @@
-use std::iter;
-use std::path::{Path, PathBuf};
+use std::{
+    iter,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use gpui::{AppContext as _, TestAppContext};
-use std::sync::Arc;
+use gpui::{AppContext as _, Context, Entity, TestAppContext};
 
 use crate::{DiffFile, DisplayHunk};
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging, DiffOperations};
@@ -44,12 +46,12 @@ fn group_excerpts_by_path(excerpts: Vec<ExcerptRange>, cx: &App) -> Vec<Vec<Exce
 
 /// 测试辅助：按可选 base/index 文本建立独立 diff 实体（供直接读取快照的测试使用）。
 fn test_diff_entity(
-    working: gpui::Entity<LanguageBuffer>,
+    working: Entity<LanguageBuffer>,
     path: &str,
     base: Option<&str>,
     index: Option<&str>,
     cx: &mut impl gpui::AppContext,
-) -> gpui::Entity<BufferDiff> {
+) -> Entity<BufferDiff> {
     let native_path = PathBuf::from(path);
     cx.new(|cx| {
         BufferDiff::new(
@@ -69,7 +71,7 @@ fn test_diff_entity(
 
 /// 测试用的 diff 注入描述；由 `inject_diffs` 转成预创建的 `DiffFile`。
 struct TestDiff {
-    working: gpui::Entity<LanguageBuffer>,
+    working: Entity<LanguageBuffer>,
     path: PathBuf,
     base_text: Option<Arc<str>>,
     index_text: Option<Arc<str>>,
@@ -79,7 +81,7 @@ struct TestDiff {
 
 impl MultiBuffer {
     /// 测试辅助：按描述预创建 `BufferDiff`，再以 `DiffFile` 注入。
-    fn inject_diffs(&mut self, files: Option<Vec<TestDiff>>, cx: &mut gpui::Context<Self>) -> bool {
+    fn inject_diffs(&mut self, files: Option<Vec<TestDiff>>, cx: &mut Context<Self>) -> bool {
         let Some(files) = files else {
             return false;
         };
@@ -109,7 +111,7 @@ impl MultiBuffer {
 }
 
 /// 测试辅助：构造一个注入用 diff 描述。
-fn test_diff(working: gpui::Entity<LanguageBuffer>, path: &str, base: &str) -> TestDiff {
+fn test_diff(working: Entity<LanguageBuffer>, path: &str, base: &str) -> TestDiff {
     TestDiff {
         working,
         path: PathBuf::from(path),
@@ -122,10 +124,10 @@ fn test_diff(working: gpui::Entity<LanguageBuffer>, path: &str, base: &str) -> T
 
 /// 测试辅助：构造一个可直接 add_diff 的 DiffFile。
 fn test_diff_file(
-    working: gpui::Entity<LanguageBuffer>,
+    working: Entity<LanguageBuffer>,
     path: &str,
     base: &str,
-    cx: &mut gpui::Context<MultiBuffer>,
+    cx: &mut Context<MultiBuffer>,
 ) -> DiffFile {
     let native_path = PathBuf::from(path);
     DiffFile {
@@ -680,7 +682,7 @@ fn relative_display_paths_stay_consistent_across_middle_edit(cx: &mut TestAppCon
 
 /// 读取投影的可观察状态（显示路径顺序 + 显示 hunk）。
 fn read_diff_state(
-    buffer: &gpui::Entity<MultiBuffer>,
+    buffer: &Entity<MultiBuffer>,
     cx: &mut TestAppContext,
 ) -> (Vec<String>, Vec<DisplayHunk>) {
     cx.read_entity(buffer, |buffer, _| {
@@ -1117,7 +1119,7 @@ fn line_cursor_clips_to_excerpt_source_range(cx: &mut TestAppContext) {
     }
 }
 
-fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<LanguageBuffer> {
+fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> Entity<LanguageBuffer> {
     let buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建测试 Buffer");
     cx.new(|cx| {
@@ -1406,11 +1408,7 @@ fn source_range_projection_uses_its_snapshot_after_source_edits(cx: &mut TestApp
 }
 
 /// 测试辅助：在小阈值大文件策略下构造自动只读的源，用于多源编辑预检。
-fn read_only_singleton(
-    path: &str,
-    text: &str,
-    cx: &mut TestAppContext,
-) -> gpui::Entity<LanguageBuffer> {
+fn read_only_singleton(path: &str, text: &str, cx: &mut TestAppContext) -> Entity<LanguageBuffer> {
     let config = BufferConfig {
         large_file: LargeFilePolicy {
             large_file_threshold_bytes: 1,
@@ -5188,7 +5186,7 @@ fn composite_splits_cross_excerpt_edits_across_source_buffers(cx: &mut TestAppCo
         assert!(buffer.end_transaction(cx).is_some());
     });
 
-    let read = |buffer: &gpui::Entity<LanguageBuffer>, cx: &TestAppContext| {
+    let read = |buffer: &Entity<LanguageBuffer>, cx: &TestAppContext| {
         cx.read_entity(buffer, |buffer, _| {
             let snapshot = buffer.text_snapshot();
             snapshot
@@ -5250,7 +5248,7 @@ fn multi_source_edit_does_not_partially_commit_when_a_source_advanced(cx: &mut T
         "失败必须是版本不匹配，而不是第一源提交后第二源越界：{error:?}"
     );
 
-    let read = |buffer: &gpui::Entity<LanguageBuffer>, cx: &TestAppContext| {
+    let read = |buffer: &Entity<LanguageBuffer>, cx: &TestAppContext| {
         cx.read_entity(buffer, |buffer, _| {
             let snapshot = buffer.text_snapshot();
             snapshot
@@ -5311,7 +5309,7 @@ fn multi_source_edit_does_not_partially_commit_when_a_source_is_read_only(cx: &m
         "失败必须是只读拒绝，而不是第一源提交后第二源才失败：{error:?}"
     );
 
-    let read = |buffer: &gpui::Entity<LanguageBuffer>, cx: &TestAppContext| {
+    let read = |buffer: &Entity<LanguageBuffer>, cx: &TestAppContext| {
         cx.read_entity(buffer, |buffer, _| {
             let snapshot = buffer.text_snapshot();
             snapshot

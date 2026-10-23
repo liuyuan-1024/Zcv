@@ -3,14 +3,15 @@
 //! 每个语法层独立解析作用域，引用不会跨注入语言绑定。
 //! 查询可以接收子范围，但解析仍在完整语法树上进行，以保留范围外参数和外层定义。
 
-use std::collections::HashSet;
-use std::ops::Range;
+use std::{collections::HashSet, ops::Range};
 
 use tree_sitter::StreamingIterator;
 use zcv_text::{BufferVersion, Snapshot};
 
-use crate::syntax_map::SyntaxSnapshot;
-use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider, encloses, node_text};
+use crate::{
+    syntax_map::SyntaxSnapshot,
+    tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider, encloses, node_text},
+};
 
 /// 当前语法快照内一个可确定归属的局部名称。
 ///

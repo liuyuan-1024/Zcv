@@ -3,8 +3,10 @@ use std::collections::{BTreeMap, HashMap};
 use zcv_git::{DiffStat, FileStatus, RealGitRepository};
 
 use super::*;
-use crate::git_store::{RepositorySnapshot, StatusEntry};
-use crate::test_support::{run_git, test_git_repo};
+use crate::{
+    git_store::{RepositorySnapshot, StatusEntry},
+    test_support::{run_git, test_git_repo},
+};
 
 fn relative(path: &str) -> RelativePathBuf {
     RelativePathBuf::from_path(std::path::Path::new(path)).expect("测试路径应为有效的仓库相对路径")

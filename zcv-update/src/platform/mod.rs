@@ -4,9 +4,11 @@
 //! 平台模块负责当前进程定位、应用布局、产物解压和应用校验等系统差异，
 //! 并实现 helper 在应用退出后所需的 `ApplyBackend` 原语。
 
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result};
 

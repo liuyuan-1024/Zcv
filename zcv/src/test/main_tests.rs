@@ -1,5 +1,4 @@
-use std::ffi::OsString;
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 use gpui::TestAppContext;
 

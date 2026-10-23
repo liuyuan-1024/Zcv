@@ -1,5 +1,8 @@
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    mem,
+};
 use zcv_language::SnippetHighlights;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -246,7 +249,7 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
             }
             Event::End(TagEnd::TableRow) => {
                 if let Some(table) = state.table.as_mut() {
-                    let row = std::mem::take(&mut table.row);
+                    let row = mem::take(&mut table.row);
                     if table.in_header {
                         table.header = row;
                     } else {
@@ -257,7 +260,7 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
             Event::End(TagEnd::TableHead) => {
                 if let Some(table) = state.table.as_mut() {
                     if table.header.is_empty() && !table.row.is_empty() {
-                        table.header = std::mem::take(&mut table.row);
+                        table.header = mem::take(&mut table.row);
                     }
                     table.in_header = false;
                 }
@@ -559,7 +562,7 @@ fn push_math_paragraph(blocks: &mut Vec<Block>, content: &mut Vec<Inline>, trim_
         content.pop();
     }
     if !content.is_empty() {
-        blocks.push(Block::Paragraph(std::mem::take(content)));
+        blocks.push(Block::Paragraph(mem::take(content)));
     }
 }
 
@@ -615,7 +618,7 @@ fn finish_active(
     let Some(active) = active.take() else {
         return;
     };
-    let content = std::mem::take(active_content);
+    let content = mem::take(active_content);
     if content.is_empty() {
         return;
     }

@@ -1,8 +1,10 @@
 //! 自动闭合配对行为测试：自动补全闭合符、跳过已存在闭合符、包裹选区、退格删除整对与撤销回放。
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
-use gpui::{AppContext, BorrowAppContext, EntityInputHandler, TestAppContext, VisualTestContext};
+use gpui::{
+    AppContext, BorrowAppContext, Entity, EntityInputHandler, TestAppContext, VisualTestContext,
+};
 use zcv_actions::Backspace;
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferOffset, MultiBufferRange};
@@ -10,6 +12,7 @@ use zcv_text::{Buffer, BufferConfig};
 
 use super::Editor;
 use crate::selection::{Selection, SelectionSet};
+use zcv_settings::SettingsStore;
 
 /// 按路径识别语言的窗口化编辑器。
 fn editor_with_path<'a>(
@@ -18,8 +21,8 @@ fn editor_with_path<'a>(
     text: &str,
     selections: SelectionSet,
 ) -> (
-    gpui::Entity<LanguageBuffer>,
-    gpui::Entity<Editor>,
+    Entity<LanguageBuffer>,
+    Entity<Editor>,
     &'a mut VisualTestContext,
 ) {
     let buffer =
@@ -28,7 +31,7 @@ fn editor_with_path<'a>(
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from(path)),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -48,8 +51,8 @@ fn editor_with_rust<'a>(
     text: &str,
     selections: SelectionSet,
 ) -> (
-    gpui::Entity<LanguageBuffer>,
-    gpui::Entity<Editor>,
+    Entity<LanguageBuffer>,
+    Entity<Editor>,
     &'a mut VisualTestContext,
 ) {
     editor_with_path(cx, "test.rs", text, selections)
@@ -61,20 +64,14 @@ fn editor_without_language<'a>(
     text: &str,
     selections: SelectionSet,
 ) -> (
-    gpui::Entity<LanguageBuffer>,
-    gpui::Entity<Editor>,
+    Entity<LanguageBuffer>,
+    Entity<Editor>,
     &'a mut VisualTestContext,
 ) {
     let buffer =
         Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建");
-    let language_buffer = cx.new(move |cx| {
-        LanguageBuffer::new(
-            buffer,
-            None,
-            std::sync::Arc::new(LanguageRegistry::new()),
-            cx,
-        )
-    });
+    let language_buffer =
+        cx.new(move |cx| LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx));
     let editor = cx.add_window_view({
         let language_buffer = language_buffer.clone();
         move |_, cx| {
@@ -86,7 +83,7 @@ fn editor_without_language<'a>(
     (language_buffer, editor.0, editor.1)
 }
 
-fn buffer_text(buffer: &gpui::Entity<LanguageBuffer>, cx: &VisualTestContext) -> String {
+fn buffer_text(buffer: &Entity<LanguageBuffer>, cx: &VisualTestContext) -> String {
     cx.read_entity(buffer, |language_buffer, _| {
         let snapshot = language_buffer.text_snapshot();
         snapshot
@@ -97,13 +94,13 @@ fn buffer_text(buffer: &gpui::Entity<LanguageBuffer>, cx: &VisualTestContext) ->
     })
 }
 
-fn primary_head(editor: &gpui::Entity<Editor>, cx: &VisualTestContext) -> MultiBufferOffset {
+fn primary_head(editor: &Entity<Editor>, cx: &VisualTestContext) -> MultiBufferOffset {
     cx.read_entity(editor, |editor, cx| editor.selections(cx).primary().head())
 }
 
 fn assert_newline_roundtrip(
-    buffer: &gpui::Entity<LanguageBuffer>,
-    editor: &gpui::Entity<Editor>,
+    buffer: &Entity<LanguageBuffer>,
+    editor: &Entity<Editor>,
     cx: &mut VisualTestContext,
     original: &str,
     expected: &str,
@@ -124,13 +121,13 @@ fn assert_newline_roundtrip(
     assert_eq!(primary_head(editor, cx), MultiBufferOffset::new(after));
 }
 
-fn type_text(editor: &gpui::Entity<Editor>, cx: &mut VisualTestContext, text: &str) {
+fn type_text(editor: &Entity<Editor>, cx: &mut VisualTestContext, text: &str) {
     cx.update_entity(editor, |editor, cx| {
         editor.replace_text(None, text, cx);
     });
 }
 
-fn backspace(editor: &gpui::Entity<Editor>, cx: &mut VisualTestContext) {
+fn backspace(editor: &Entity<Editor>, cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
             editor.handle_backspace(&Backspace, window, cx);
@@ -145,7 +142,7 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
             Buffer::from_text("x ".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建"),
             None,
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -154,7 +151,7 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
             Buffer::from_text("y ".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建"),
             Some(PathBuf::from("test.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -232,7 +229,7 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
 
 #[gpui::test]
 fn composite_rust_selections_use_each_sources_current_scope(cx: &mut TestAppContext) {
-    let registry = std::sync::Arc::new(LanguageRegistry::new());
+    let registry = Arc::new(LanguageRegistry::new());
     let first = cx.new({
         let registry = registry.clone();
         move |cx| {
@@ -850,10 +847,8 @@ fn newline_in_markdown_injected_rust_uses_the_injected_scope(cx: &mut TestAppCon
 #[gpui::test]
 fn newline_settings_can_disable_comment_and_list_continuation(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        cx.set_global(zcv_settings::SettingsStore::new(
-            zcv_settings::UserSettings::default(),
-        ));
-        cx.update_global::<zcv_settings::SettingsStore, _>(|settings, _| {
+        cx.set_global(SettingsStore::new(zcv_settings::UserSettings::default()));
+        cx.update_global::<SettingsStore, _>(|settings, _| {
             settings
                 .set_user_settings(
                     r#"{
@@ -1007,7 +1002,7 @@ fn newline_at_composite_excerpt_boundary_does_not_borrow_next_scope(cx: &mut Tes
         LanguageBuffer::new(
             Buffer::from_text("- item".to_owned(), BufferConfig::default()).unwrap(),
             Some(PathBuf::from("README.md")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1015,7 +1010,7 @@ fn newline_at_composite_excerpt_boundary_does_not_borrow_next_scope(cx: &mut Tes
         LanguageBuffer::new(
             Buffer::from_text("fn main() {}".to_owned(), BufferConfig::default()).unwrap(),
             Some(PathBuf::from("z.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });

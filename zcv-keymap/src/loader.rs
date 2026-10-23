@@ -3,8 +3,10 @@
 //! 内置平台快捷键经 GPUI action registry 解析为 [`KeyBindings`]，供应用注册和 UI 反向查询。
 //! keymap 文件按 JSONC 解析。
 
-use std::collections::{BTreeMap, HashMap};
-use std::rc::Rc;
+use std::{
+    collections::{BTreeMap, HashMap},
+    rc::Rc,
+};
 
 use anyhow::{Context as _, Result, anyhow};
 use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate};

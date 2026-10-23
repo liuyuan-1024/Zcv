@@ -1,6 +1,10 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Arc;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    slice,
+    sync::Arc,
+};
 
 use gpui::{AppContext as _, Entity, TestAppContext};
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
@@ -48,8 +52,8 @@ fn project_with_repo(cx: &mut TestAppContext) -> (tempfile::TempDir, PathBuf, En
     run_git(&root, &["init", "-q", "-b", "master"]);
     run_git(&root, &["config", "user.email", "test@example.com"]);
     run_git(&root, &["config", "user.name", "Test User"]);
-    std::fs::write(root.join("tracked.txt"), "原始内容\n").expect("应写入已跟踪文件");
-    std::fs::write(root.join(".gitignore"), "ignored.txt\n").expect("应写入忽略规则");
+    fs::write(root.join("tracked.txt"), "原始内容\n").expect("应写入已跟踪文件");
+    fs::write(root.join(".gitignore"), "ignored.txt\n").expect("应写入忽略规则");
     run_git(&root, &["add", "tracked.txt", ".gitignore"]);
     run_git(&root, &["commit", "-q", "-m", "initial"]);
     let watcher: Arc<dyn Watcher> = Arc::new(PassiveWatcher(FsWatcher::new()));
@@ -77,10 +81,10 @@ fn editor_for_file(
 fn untracked_file_uses_the_same_git_projection_before_and_after_staging(cx: &mut TestAppContext) {
     let (_directory, root, project) = project_with_repo(cx);
     let path = root.join("new.txt");
-    std::fs::write(&path, "新增第一行\n新增第二行\n").expect("应写入新文件");
+    fs::write(&path, "新增第一行\n新增第二行\n").expect("应写入新文件");
     let store = project.read_with(cx, |project, _| project.git_store());
     store.update(cx, |store, cx| {
-        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+        store.refresh_statuses_for_paths(slice::from_ref(&path), cx)
     });
     cx.run_until_parked();
     assert_eq!(
@@ -100,7 +104,7 @@ fn untracked_file_uses_the_same_git_projection_before_and_after_staging(cx: &mut
 
     run_git(&root, &["add", "new.txt"]);
     store.update(cx, |store, cx| {
-        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+        store.refresh_statuses_for_paths(slice::from_ref(&path), cx)
     });
     cx.run_until_parked();
     let hunks = editor.read_with(cx, |editor, cx| editor.diff_hunks(cx));
@@ -114,10 +118,10 @@ fn clean_tracked_file_and_ignored_file_have_distinct_diff_eligibility(cx: &mut T
     let (_directory, root, project) = project_with_repo(cx);
     let clean_path = root.join("tracked.txt");
     let ignored_path = root.join("ignored.txt");
-    std::fs::write(&ignored_path, "忽略内容\n").expect("应写入忽略文件");
+    fs::write(&ignored_path, "忽略内容\n").expect("应写入忽略文件");
     let store = project.read_with(cx, |project, _| project.git_store());
     store.update(cx, |store, cx| {
-        store.refresh_statuses_for_paths(std::slice::from_ref(&ignored_path), cx)
+        store.refresh_statuses_for_paths(slice::from_ref(&ignored_path), cx)
     });
     cx.run_until_parked();
     assert!(store.read_with(cx, |store, _| store.status_for_path(&clean_path).is_none()));

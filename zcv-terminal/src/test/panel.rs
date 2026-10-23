@@ -6,11 +6,10 @@ use gpui::{AppContext as _, TestAppContext};
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::LanguageRegistry;
 use zcv_project::Project;
-use zcv_workspace::Workspace;
+use zcv_workspace::{DockPosition, Workspace};
 
 use super::{TerminalPanel, project_terminal_cwd};
 use crate::{TerminalBuilder, TerminalView, test::support::display_only_terminal};
-use zcv_workspace::DockPosition;
 
 /// 测试项目不注册真实文件系统监听，避免 OS 监听线程向 GPUI 测试调度器投递事件。
 struct PassiveWatcher(FsWatcher);

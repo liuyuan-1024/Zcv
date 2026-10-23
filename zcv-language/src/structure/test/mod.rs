@@ -3,8 +3,10 @@
 //! 测试通过公开的 `SyntaxSnapshot` 查询验证坐标、注入层、作用域和折叠边界，不依赖各模块的内部实现细节。
 
 use super::NewlineIndent;
-use crate::HighlightCache;
-use crate::test::{parsed_syntax, rust_buffer};
+use crate::{
+    HighlightCache,
+    test::{parsed_syntax, rust_buffer},
+};
 use zcv_text::{Affinity, ByteOffset, Edit, TransactionMetadata};
 
 /// 测试辅助：把折叠锚点按快照解析为字节范围，便于直接按文本切片断言。

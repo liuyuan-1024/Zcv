@@ -2,7 +2,7 @@
 //!
 //! 仅在终端开启鼠标报告模式（MOUSE_MODE）时生成报告字节；否则返回 None，交给应用自身的选择/滚动逻辑。
 
-use gpui::{MouseButton, Pixels, Point};
+use gpui::{Modifiers, MouseButton, Pixels, Point};
 
 use crate::{Modes, Point as GridPoint, SelectionSide};
 
@@ -61,7 +61,7 @@ pub(crate) fn grid_point_and_side(
 /// 鼠标报告字节（按下/释放）：SGR 或普通格式。
 pub(crate) fn mouse_button_report(
     button: MouseButton,
-    modifiers: &gpui::Modifiers,
+    modifiers: &Modifiers,
     point: GridPoint,
     display_offset: usize,
     screen_lines: usize,
@@ -104,7 +104,7 @@ pub(crate) fn mouse_button_report(
 /// 鼠标移动报告（MOTION/DRAG 模式）。
 pub(crate) fn mouse_moved_report(
     button: Option<MouseButton>,
-    modifiers: &gpui::Modifiers,
+    modifiers: &Modifiers,
     point: GridPoint,
     display_offset: usize,
     screen_lines: usize,
@@ -214,7 +214,7 @@ fn viewport_line(point: GridPoint, display_offset: usize, screen_lines: usize) -
 }
 
 /// 鼠标报告修饰符码：shift=4、alt=8、ctrl=16。
-fn mouse_modifier_code(modifiers: &gpui::Modifiers) -> u32 {
+fn mouse_modifier_code(modifiers: &Modifiers) -> u32 {
     let mut code = 0;
     if modifiers.shift {
         code += 4;

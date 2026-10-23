@@ -37,8 +37,7 @@ pub(super) fn requires_poll_watcher(path: &Path) -> bool {
 
 #[cfg(target_os = "macos")]
 fn path_case_sensitive(path: &Path) -> Result<bool> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt as _;
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
 
     let c_path = CString::new(path.as_os_str().as_bytes())
         .with_context(|| format!("文件系统路径包含无效字节：{}", path.display()))?;
@@ -57,11 +56,13 @@ fn path_case_sensitive(path: &Path) -> Result<bool> {
 #[cfg(target_os = "windows")]
 fn path_case_sensitive(path: &Path) -> Result<bool> {
     use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_CASE_SENSITIVE_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileCaseSensitiveInfo,
-        GetFileInformationByHandleEx, OPEN_EXISTING,
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::{
+            CreateFileW, FILE_CASE_SENSITIVE_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            FileCaseSensitiveInfo, GetFileInformationByHandleEx, OPEN_EXISTING,
+        },
     };
 
     const FILE_CS_FLAG_CASE_SENSITIVE_DIR: u32 = 0x0000_0001;
@@ -119,10 +120,14 @@ fn path_case_sensitive(path: &Path) -> Result<bool> {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn path_case_sensitive(path: &Path) -> Result<bool> {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
-    use std::os::unix::fs::MetadataExt as _;
-    use std::path::PathBuf;
+    use std::{
+        ffi::OsString,
+        os::unix::{
+            ffi::{OsStrExt as _, OsStringExt as _},
+            fs::MetadataExt as _,
+        },
+        path::PathBuf,
+    };
 
     let existing_path = std::fs::canonicalize(path)
         .with_context(|| format!("无法规范化文件系统路径：{}", path.display()))?;
@@ -183,8 +188,7 @@ fn path_case_sensitive(path: &Path) -> Result<bool> {
 
 #[cfg(target_os = "linux")]
 fn requires_poll_linux(path: &Path) -> bool {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt as _;
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
 
     let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
         return false;

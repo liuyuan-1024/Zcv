@@ -1,6 +1,8 @@
 use super::*;
-use crate::transaction::{Edit, EditList};
-use crate::types::{ByteOffset, TextRange};
+use crate::{
+    transaction::{Edit, EditList},
+    types::{ByteOffset, TextRange},
+};
 
 fn edit_list(edits: Vec<Edit>) -> EditList {
     EditList::new(edits).expect("测试编辑必须合法")

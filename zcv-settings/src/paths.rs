@@ -1,7 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 pub(super) fn config_dir() -> &'static Path {
-    static CONFIG_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
     CONFIG_DIR.get_or_init(|| home_dir().join(".zcv")).as_path()
 }
 

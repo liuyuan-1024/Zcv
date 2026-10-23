@@ -8,8 +8,10 @@ use std::ops::Range;
 use tree_sitter::StreamingIterator;
 use zcv_text::Snapshot;
 
-use crate::syntax_map::SyntaxSnapshot;
-use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider};
+use crate::{
+    syntax_map::SyntaxSnapshot,
+    tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider},
+};
 
 /// 语法查询识别出的开闭范围。
 #[derive(Clone, Debug, PartialEq, Eq)]

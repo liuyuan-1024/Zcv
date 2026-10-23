@@ -18,7 +18,9 @@ mod test;
 use std::{
     borrow::Cow,
     collections::HashMap,
+    mem,
     path::{Path, PathBuf},
+    process::ExitStatus,
     sync::Arc,
     time::Duration,
 };
@@ -30,7 +32,8 @@ use alacritty_terminal::{
 use anyhow::{Context as _, Result};
 use async_channel::{Receiver, unbounded};
 use gpui::{
-    App, BackgroundExecutor, Context, EventEmitter, MouseButton, Pixels, Size, Task, Window,
+    App, BackgroundExecutor, ClipboardItem, Context, EventEmitter, MouseButton, Pixels, Size, Task,
+    TouchPhase, Window,
 };
 pub use panel::TerminalPanel;
 pub(crate) use view::TerminalView;
@@ -362,7 +365,7 @@ pub(crate) enum PtyEvent {
     Wakeup,
     Bell,
     Exit,
-    ChildExit(std::process::ExitStatus),
+    ChildExit(ExitStatus),
 }
 
 /// 主线程待处理事件队列。
@@ -379,7 +382,7 @@ pub(crate) enum InternalEvent {
     Scroll(Scroll),
     SetSelection(Option<Selection>),
     UpdateSelection(SelectionPoint),
-    ChildExit(std::process::ExitStatus),
+    ChildExit(ExitStatus),
     Exit,
 }
 
@@ -600,7 +603,7 @@ impl PtyResources {
 
     /// 关闭事件循环并标记资源已释放；重复调用是空操作。
     fn release(&mut self) -> anyhow::Result<()> {
-        match std::mem::replace(self, Self::Released) {
+        match mem::replace(self, Self::Released) {
             Self::Active(pty_tx) => pty_tx.shutdown(),
             Self::Released => Ok(()),
         }
@@ -672,7 +675,7 @@ impl Terminal {
                 }
                 if this
                     .update(cx, |terminal, cx| {
-                        terminal.push_pty_events(std::mem::take(&mut batch), cx)
+                        terminal.push_pty_events(mem::take(&mut batch), cx)
                     })
                     .is_err()
                 {
@@ -771,7 +774,7 @@ impl Terminal {
                     cx.emit(Event::TitleChanged(title));
                 }
                 InternalEvent::ClipboardStore(text) => {
-                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
                 InternalEvent::ClipboardLoad(formatter) => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
@@ -838,16 +841,16 @@ impl Terminal {
     /// 慢滚时每次增量小，累积跨事件进行，保证手感连续。
     pub(crate) fn scroll_px(
         &mut self,
-        phase: gpui::TouchPhase,
+        phase: TouchPhase,
         delta: Pixels,
         line_height: Pixels,
         cx: &mut Context<Self>,
     ) {
         match phase {
-            gpui::TouchPhase::Started => {
+            TouchPhase::Started => {
                 self.scroll_px = Pixels::ZERO;
             }
-            gpui::TouchPhase::Moved => {
+            TouchPhase::Moved => {
                 self.scroll_px += delta;
                 let lines = (f32::from(self.scroll_px) / f32::from(line_height)) as i32;
                 if lines != 0 {
@@ -857,7 +860,7 @@ impl Terminal {
                     self.scroll_lines(lines, cx);
                 }
             }
-            gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled => {}
+            TouchPhase::Ended | TouchPhase::Cancelled => {}
         }
     }
 
@@ -1029,7 +1032,7 @@ impl Terminal {
         let line_height = drag.geometry.line_height;
         let position = drag.position;
         let geometry = drag.geometry;
-        self.scroll_px(gpui::TouchPhase::Moved, delta, line_height, cx);
+        self.scroll_px(TouchPhase::Moved, delta, line_height, cx);
         self.update_selection(geometry.point_for(position, &self.last_content), cx);
         self.schedule_selection_autoscroll(cx);
     }
@@ -1044,7 +1047,7 @@ impl Terminal {
     /// 把选择复制到系统剪贴板。
     pub(crate) fn copy(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self.selection_text() {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
 

@@ -3,8 +3,7 @@
 //! Tree-sitter 查询由 `zcv-language` 负责，`DisplayMap` 负责把组合文档坐标投影到查询结果。
 //! 本模块只把这些结果转换为编辑器级的筛选、导航和编辑操作。
 
-use std::ops::Range;
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use super::{Editor, NAVIGATION_TOP_OFFSET};
 use gpui::{App, Context, HighlightStyle};

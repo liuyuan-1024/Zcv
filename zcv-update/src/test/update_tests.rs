@@ -1,6 +1,8 @@
 use super::*;
-use ring::rand::SystemRandom;
-use ring::signature::{Ed25519KeyPair, KeyPair as _};
+use ring::{
+    rand::SystemRandom,
+    signature::{Ed25519KeyPair, KeyPair as _},
+};
 
 fn manifest(version: &str) -> ReleaseManifest {
     ReleaseManifest {

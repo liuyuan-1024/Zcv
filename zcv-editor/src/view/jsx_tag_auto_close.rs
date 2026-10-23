@@ -10,8 +10,7 @@ use gpui::Context;
 use zcv_multi_buffer::MultiBufferOffset;
 use zcv_text::Edit;
 
-use super::Editor;
-use super::input::input_metadata;
+use super::{Editor, input::input_metadata};
 use crate::selection::{Selection, SelectionSet, apply_edits};
 
 impl Editor {

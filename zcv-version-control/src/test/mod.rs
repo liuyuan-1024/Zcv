@@ -1,8 +1,10 @@
 //! 版本控制视图测试共用的无事件项目装配。
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use gpui::{AppContext as _, Entity, TestAppContext};
 use zcv_fs_watch::{FsEventStream, Watcher};

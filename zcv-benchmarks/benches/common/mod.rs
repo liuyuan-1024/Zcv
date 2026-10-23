@@ -2,8 +2,10 @@
 //!
 //! 每个 bench 通过 `mod common;` 引入，避免为仅测量使用的 helper 保留生产 lib target。
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 /// 用固定块重复填充到目标字节数，尾部补一行注释对齐边界。
 ///

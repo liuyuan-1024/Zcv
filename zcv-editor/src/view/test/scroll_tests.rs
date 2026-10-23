@@ -2,7 +2,7 @@ use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer, M
 
 use gpui::{
     Context, Entity, IntoElement, Modifiers, MouseButton, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, TestAppContext, TouchPhase, Window, point, px,
+    ScrollWheelEvent, TestAppContext, TouchPhase, Window, point, px, size,
 };
 
 /// 测试包装：把预先创建的 Editor 实体作为窗口视图（布局由窗口首帧触发）。
@@ -16,14 +16,18 @@ impl Render for EditorInWindow {
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
 use zcv_text::{Line, LogicalColumn, Position};
 
-use super::common::focus_editor;
+use super::common::{
+    focus_editor, inject_editor_diff, scrollbar_geometry, scrolling_text, test_buffer,
+};
 
-use super::common::{inject_editor_diff, scrollbar_geometry, scrolling_text, test_buffer};
 use super::*;
-use crate::display_map::EditorHunkMarkerKind;
-use crate::scroll::ScrollbarThumbState;
-use crate::scrollbar::{ScrollbarMarkerKind, marker_geometry};
-use crate::selection::SelectionSet;
+use crate::{
+    display_map::EditorHunkMarkerKind,
+    scroll::ScrollbarThumbState,
+    scrollbar::{ScrollbarMarkerKind, marker_geometry},
+    selection::SelectionSet,
+};
+use std::{cell::Cell, rc::Rc};
 
 #[gpui::test]
 fn composite_document_refreshes_scrollbar_markers(cx: &mut TestAppContext) {
@@ -35,7 +39,7 @@ fn composite_document_refreshes_scrollbar_markers(cx: &mut TestAppContext) {
         buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..40, cx)], cx);
     });
     let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
-    let track = Bounds::new(point(px(0.), px(0.)), gpui::size(px(15.), px(200.)));
+    let track = Bounds::new(point(px(0.), px(0.)), size(px(15.), px(200.)));
     cx.update_entity(&editor, |editor, cx| {
         let snapshot = editor.display_snapshot(cx);
         editor.refresh_scrollbar_markers(snapshot, track, 1., px(20.), cx);
@@ -99,7 +103,7 @@ fn new_file_diff_reaches_the_git_scrollbar_marker(cx: &mut TestAppContext) {
         "没有末尾换行时，整文件新增应覆盖最后一行"
     );
 
-    let track = Bounds::new(point(px(0.), px(0.)), gpui::size(px(15.), px(200.)));
+    let track = Bounds::new(point(px(0.), px(0.)), size(px(15.), px(200.)));
     editor.update(cx, |editor, cx| {
         let snapshot = editor.display_snapshot(cx);
         editor.refresh_scrollbar_markers(snapshot, track, 0., px(20.), cx);
@@ -875,7 +879,7 @@ fn batch_file_folding_publishes_one_semantic_change(cx: &mut TestAppContext) {
         });
     }
     let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
-    let events = std::rc::Rc::new(std::cell::Cell::new(0));
+    let events = Rc::new(Cell::new(0));
     cx.run_until_parked();
     let observed = events.clone();
     let _subscription = cx.update(|cx| {
@@ -961,7 +965,7 @@ fn scrolling_does_not_invalidate_outline_but_editing_does(cx: &mut TestAppContex
     cx.run_until_parked();
     cx.refresh().expect("测试窗口应可刷新");
 
-    let document_changes = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let document_changes = Rc::new(Cell::new(0usize));
     let observed = document_changes.clone();
     let _document_subscription = cx.cx.update(|cx| {
         cx.subscribe(&editor, move |_, event: &EditorEvent, _| {

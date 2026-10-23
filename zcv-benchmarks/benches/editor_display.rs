@@ -5,10 +5,12 @@
 //! diff 滚动基准使用 GPUI 测试文本系统，默认关闭软换行；
 //! 输入到绘制不包含系统输入队列或 GPU 呈现。软换行测量见本 crate 的 README。
 
-use std::ops::Range;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    ops::Range,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use gpui::{
@@ -390,7 +392,7 @@ fn multi_excerpt_scroll_frame(c: &mut Criterion) {
                         delta: ScrollDelta::Pixels(point(px(0.), px(24.))),
                         ..Default::default()
                     });
-                    let started = std::time::Instant::now();
+                    let started = Instant::now();
                     cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
                     elapsed += started.elapsed();
                     black_box(editor.entity_id());
@@ -597,7 +599,7 @@ fn diff_scroll_frame_scenarios(
                                     )),
                                     ..Default::default()
                                 });
-                                let started = std::time::Instant::now();
+                                let started = Instant::now();
                                 cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
                                 elapsed += started.elapsed();
                                 black_box(editor.entity_id());
@@ -612,7 +614,7 @@ fn diff_scroll_frame_scenarios(
                         b.iter_custom(|iterations| {
                             let mut elapsed = Duration::ZERO;
                             for frame in 0..iterations {
-                                let started = std::time::Instant::now();
+                                let started = Instant::now();
                                 cx.simulate_event(ScrollWheelEvent {
                                     position: point(px(600.), px(400.)),
                                     delta: ScrollDelta::Pixels(point(
@@ -644,7 +646,7 @@ fn diff_scroll_frame_scenarios(
                                     cx.draw(origin, space, |_, _cx| {
                                         editor.clone().into_any_element()
                                     });
-                                    let started = std::time::Instant::now();
+                                    let started = Instant::now();
                                     cx.simulate_event(ScrollWheelEvent {
                                         position: point(px(600.), px(400.)),
                                         delta: ScrollDelta::Lines(point(0., -(target_row as f32))),
@@ -674,7 +676,7 @@ fn diff_scroll_frame_scenarios(
                             b.iter_custom(|iterations| {
                                 let mut elapsed = Duration::ZERO;
                                 for frame in 0..iterations {
-                                    let started = std::time::Instant::now();
+                                    let started = Instant::now();
                                     cx.simulate_event(ScrollWheelEvent {
                                         position: gutter_position,
                                         delta: ScrollDelta::Pixels(point(

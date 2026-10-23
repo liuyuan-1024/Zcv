@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{env, path::Path};
 
 use zcv_path::AbsolutePathBuf;
 
@@ -13,7 +13,7 @@ fn recent_project_rejects_root_relative_and_missing_paths() {
 
 #[test]
 fn recent_project_canonicalizes_parent_components() {
-    let current = AbsolutePathBuf::canonicalize(&std::env::current_dir().expect("应有当前目录"))
+    let current = AbsolutePathBuf::canonicalize(&env::current_dir().expect("应有当前目录"))
         .expect("当前目录应可规范化")
         .into_path_buf();
     let with_parent = current
@@ -24,7 +24,7 @@ fn recent_project_canonicalizes_parent_components() {
 
 #[test]
 fn first_valid_project_skips_stale_entries() {
-    let current = std::env::current_dir().expect("应有当前目录");
+    let current = env::current_dir().expect("应有当前目录");
     let entries = vec![
         ProjectEntry {
             path: "/definitely/missing/zcv-project".into(),

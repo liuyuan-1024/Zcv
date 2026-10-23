@@ -10,8 +10,10 @@ use zcv_text::{
     WordBoundaryPolicy,
 };
 
-use super::error::{SearchError, SearchTextResult};
-use super::versioned::VersionedResult;
+use super::{
+    error::{SearchError, SearchTextResult},
+    versioned::VersionedResult,
+};
 
 /// 与宿主和搜索范围无关的统一文本查询。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

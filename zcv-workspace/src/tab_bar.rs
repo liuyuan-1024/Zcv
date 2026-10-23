@@ -43,7 +43,7 @@ impl TabBar {
     /// 设置外层容器样式并填入子元素，然后渲染。
     pub(crate) fn with_bar(
         self,
-        cx: &gpui::App,
+        cx: &App,
         window: &Window,
         f: impl FnOnce(Div) -> Div,
         children: impl IntoIterator<Item = AnyElement>,

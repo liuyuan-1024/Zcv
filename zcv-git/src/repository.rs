@@ -3,14 +3,20 @@
 //! 仓库发现（沿祖先查找 / 项目树内遍历）是项目管理层的决策，由 worktree 快照层负责（发现逻辑在 worktree crate，git crate 只做命令封装与输出解析）。
 //! 所有方法同步阻塞执行，由调用方负责移入后台线程。
 
-use std::collections::HashMap;
-use std::io::{BufRead as _, BufReader, Read, Write as _};
-use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    fs,
+    io::{BufRead as _, BufReader, Read, Write as _},
+    ops::Range,
+    path::{Path, PathBuf},
+    process::{Command, Output, Stdio},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result, bail};
 use gpui_util::new_std_command;
@@ -18,8 +24,10 @@ use zcv_path::AbsolutePathBuf;
 
 mod platform;
 
-use crate::paths::{self, revision_path};
-use crate::status::{DiffStat, GitStatus, parse_numstat};
+use crate::{
+    paths::{self, revision_path},
+    status::{DiffStat, GitStatus, parse_numstat},
+};
 
 /// 可作为差异文本来源的 Git 修订。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -136,8 +144,8 @@ impl GitCancellation {
     fn begin_termination(&self, process_id: u32) {
         platform::interrupt(process_id);
         let inner = Arc::clone(&self.inner);
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(1500));
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(1500));
             if inner.process_id.load(Ordering::Acquire) == process_id {
                 platform::kill(process_id);
             }
@@ -391,9 +399,9 @@ impl RealGitRepository {
 
         let stdout = child.stdout.take().context("无法读取 git 标准输出")?;
         let stderr = child.stderr.take().context("无法读取 git 错误输出")?;
-        let stdout_reader = std::thread::spawn(move || read_stream(stdout, None));
+        let stdout_reader = thread::spawn(move || read_stream(stdout, None));
         let progress = cancellation.clone();
-        let stderr_reader = std::thread::spawn(move || read_stream(stderr, Some(progress)));
+        let stderr_reader = thread::spawn(move || read_stream(stderr, Some(progress)));
 
         let status = child.wait().context("等待 git 命令结束失败")?;
         let stdout = stdout_reader
@@ -640,7 +648,7 @@ impl GitRepository for RealGitRepository {
         let current = working_snapshot.bytes().to_vec();
         let current = String::from_utf8_lossy(&current);
         let restored = apply_hunk_edits_to_text(&current, edits);
-        std::fs::write(
+        fs::write(
             self.working_directory.join(relative_path.as_path()),
             restored,
         )
@@ -995,7 +1003,7 @@ fn parse_commit_graph(stdout: &[u8]) -> Vec<GraphCommit> {
 /// init 前不存在仓库对象，故为自由函数而非 trait 方法；
 /// 同步阻塞，由调用方负责移入后台线程。
 pub fn init(working_directory: &Path, fallback_branch: &str) -> Result<()> {
-    std::fs::create_dir_all(working_directory)?;
+    fs::create_dir_all(working_directory)?;
     let branch = resolve_branch(configured_default_branch()?.as_deref(), fallback_branch);
     let output = new_std_command("git")
         .current_dir(working_directory)

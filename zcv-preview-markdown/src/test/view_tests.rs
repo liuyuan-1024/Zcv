@@ -1,7 +1,9 @@
-use std::cell::RefCell;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+};
 
 use gpui::{
     AppContext, Context, IntoElement, Modifiers, ParentElement, Render, ScrollHandle,

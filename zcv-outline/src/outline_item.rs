@@ -1,9 +1,11 @@
 //! 大纲面板的树行视图：目录、文件与符号行。
 
-use std::hash::{Hash, Hasher};
-use std::ops::Range;
-use std::path::Path;
-use std::sync::Arc;
+use std::{
+    hash::{Hash, Hasher},
+    ops::Range,
+    path::Path,
+    sync::Arc,
+};
 
 use gpui::{
     AnyElement, App, HighlightStyle, IntoElement, MouseButton, StyledText, Window, prelude::*,

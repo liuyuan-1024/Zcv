@@ -2,6 +2,7 @@
 //!
 //! **坐标系唯一真理**：文本内核内部以 `ByteOffset(usize)` 为核心位置；
 //! `CharOffset` / `Utf16Offset` 仅作为边界处的"投影"类型暴露给外部协议。
+use core::fmt::{self, Display, Formatter};
 
 /// 字节偏移量 —— 文本内核核心位置类型。
 ///
@@ -46,8 +47,8 @@ impl From<ByteOffset> for usize {
     }
 }
 
-impl core::fmt::Display for ByteOffset {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for ByteOffset {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
@@ -79,8 +80,8 @@ impl CharOffset {
     }
 }
 
-impl core::fmt::Display for CharOffset {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for CharOffset {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
@@ -104,8 +105,8 @@ impl Utf16Offset {
     }
 }
 
-impl core::fmt::Display for Utf16Offset {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for Utf16Offset {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }

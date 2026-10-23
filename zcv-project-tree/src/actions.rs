@@ -8,8 +8,7 @@ use zcv_actions::{
     TreeSelectPrevExtend, TreeTrash,
 };
 
-use super::transfer::sanitize_selection;
-use super::{ProjectTreePanel, ProjectTreeRow};
+use super::{ProjectTreePanel, ProjectTreeRow, transfer::sanitize_selection};
 
 impl ProjectTreePanel {
     pub(super) fn handle_tree_select_prev(

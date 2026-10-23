@@ -1,8 +1,7 @@
 use super::*;
-use std::cell::Cell;
-use std::sync::Arc;
+use std::{cell::Cell, fs, path::Path, sync::Arc, time::Duration};
 
-use gpui::{KeyBinding, TestAppContext, VisualTestContext, point, px};
+use gpui::{KeyBinding, Modifiers, TestAppContext, VisualTestContext, point, px};
 use tempfile::TempDir;
 
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
@@ -26,7 +25,7 @@ fn snapshot(entries: &[(&str, FileStatus)]) -> RepositorySnapshot {
             .iter()
             .map(|(path, status)| {
                 (
-                    RelativePathBuf::from_path(std::path::Path::new(path))
+                    RelativePathBuf::from_path(Path::new(path))
                         .expect("测试路径应为有效的仓库相对路径"),
                     StatusEntry {
                         status: *status,
@@ -65,7 +64,7 @@ fn absolute(path: PathBuf) -> AbsolutePathBuf {
 }
 
 fn relative(path: &str) -> RelativePathBuf {
-    RelativePathBuf::from_path(std::path::Path::new(path)).expect("测试路径应为有效的仓库相对路径")
+    RelativePathBuf::from_path(Path::new(path)).expect("测试路径应为有效的仓库相对路径")
 }
 
 fn build_rows(root: &Path, repos: &[(&Path, &RepositorySnapshot)]) -> Vec<GitRow> {
@@ -335,10 +334,10 @@ fn test_repo() -> (PathBuf, TempDir) {
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
     run_in(&root, &["git", "config", "user.email", "test@example.com"]);
     run_in(&root, &["git", "config", "user.name", "Test User"]);
-    std::fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
+    fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
     run_in(&root, &["git", "add", "tracked.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-    std::fs::write(root.join("tracked.txt"), "修改后的内容\n").expect("应修改文件");
+    fs::write(root.join("tracked.txt"), "修改后的内容\n").expect("应修改文件");
     (root, temp_dir)
 }
 
@@ -378,7 +377,7 @@ impl Watcher for PassiveWatcher {
         Ok(())
     }
 
-    fn watch(&self, latency: std::time::Duration) -> FsEventStream {
+    fn watch(&self, latency: Duration) -> FsEventStream {
         self.watcher.watch(latency)
     }
 }
@@ -409,7 +408,7 @@ fn empty_state_initializes_repository_and_builds_section_tree(cx: &mut TestAppCo
     let bounds = cx
         .debug_bounds("version-control-init")
         .expect("初始化仓库按钮应可定位");
-    cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+    cx.simulate_click(bounds.center(), Modifiers::default());
     cx.run_until_parked(); // init job 完成
     cx.run_until_parked(); // 其触发的重扫落地 → Repositories 事件 → 重建行模型
 
@@ -476,7 +475,7 @@ fn first_click_on_unfocused_panel_focuses_and_opens(cx: &mut TestAppContext) {
         // 冲突组固定在顶部后再经过两个冲突行。
         cx.simulate_click(
             point(px(100.), px(f32::from(row_height) * 6.5)),
-            gpui::Modifiers::default(),
+            Modifiers::default(),
         );
         cx.run_until_parked();
     };
@@ -586,8 +585,8 @@ fn section_entries(panel: &VersionControlPanel) -> Vec<(GitSection, String)> {
 fn directories_expand_by_default(cx: &mut TestAppContext) {
     // 目录下有变更文件：首次构建后目录默认展开，子文件可见。
     let (root, _temp) = test_repo();
-    std::fs::create_dir_all(root.join("src")).expect("应创建目录");
-    std::fs::write(root.join("src/a.txt"), "改动\n").expect("应写入文件");
+    fs::create_dir_all(root.join("src")).expect("应创建目录");
+    fs::write(root.join("src/a.txt"), "改动\n").expect("应写入文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -609,8 +608,8 @@ fn directories_expand_by_default(cx: &mut TestAppContext) {
 #[gpui::test]
 fn new_directories_expand_by_default_while_manually_collapsed_stay(cx: &mut TestAppContext) {
     let (root, _temp) = test_repo();
-    std::fs::create_dir_all(root.join("src")).expect("应创建目录");
-    std::fs::write(root.join("src/a.txt"), "改动\n").expect("应写入文件");
+    fs::create_dir_all(root.join("src")).expect("应创建目录");
+    fs::write(root.join("src/a.txt"), "改动\n").expect("应写入文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -638,8 +637,8 @@ fn new_directories_expand_by_default_while_manually_collapsed_stay(cx: &mut Test
     );
 
     // 新目录 src2 出现：增量刷新 GitStore（fs watch 是真实线程，测试里走公开刷新入口）→ Statuses 事件 → 面板重建。
-    std::fs::create_dir_all(root.join("src2")).expect("应创建目录");
-    std::fs::write(root.join("src2/b.txt"), "改动\n").expect("应写入文件");
+    fs::create_dir_all(root.join("src2")).expect("应创建目录");
+    fs::write(root.join("src2/b.txt"), "改动\n").expect("应写入文件");
     let git_store = cx.read_entity(&panel, |panel, cx| {
         panel.project.read(cx).git_store().clone()
     });
@@ -663,7 +662,7 @@ fn new_directories_expand_by_default_while_manually_collapsed_stay(cx: &mut Test
 #[gpui::test]
 fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppContext) {
     let (root, _temp) = test_repo();
-    std::fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
+    fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -690,7 +689,7 @@ fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppCon
                 px(14.),
                 px(f32::from(row_height) * (header_index as f32 + 1.5)),
             ),
-            gpui::Modifiers::default(),
+            Modifiers::default(),
         );
         cx.run_until_parked();
     };
@@ -712,7 +711,7 @@ fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppCon
 fn collapsed_section_keeps_header_checkbox_and_select_all(cx: &mut TestAppContext) {
     // 分组折叠只隐藏条目行；只要该组仍有文件，标题行全选复选框就必须常驻且可整组暂存。
     let (root, _temp) = test_repo();
-    std::fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
+    fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -745,8 +744,8 @@ fn collapsed_section_keeps_header_checkbox_and_select_all(cx: &mut TestAppContex
 fn header_checkbox_selects_all_entries_in_section(cx: &mut TestAppContext) {
     // 两个未暂存文件：header 全选 → 全部暂存，未暂存组清空、已暂存组出现两项。
     let (root, _temp) = test_repo();
-    std::fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
-    std::fs::write(root.join("second.txt"), "第二个文件\n").expect("应写入文件");
+    fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
+    fs::write(root.join("second.txt"), "第二个文件\n").expect("应写入文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -916,7 +915,7 @@ fn selection_border_only_shows_when_changes_tree_is_focused(cx: &mut TestAppCont
 ///
 /// 测试时钟不会自动推进：手动拨过 500ms tooltip 显示延迟后再渲染一帧。
 /// 顶部统计行占一行高度，行坐标加 1 行偏移。
-fn assert_hover_tooltip(cx: &mut gpui::VisualTestContext, row_index: usize) {
+fn assert_hover_tooltip(cx: &mut VisualTestContext, row_index: usize) {
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     cx.simulate_mouse_move(
         point(
@@ -924,10 +923,9 @@ fn assert_hover_tooltip(cx: &mut gpui::VisualTestContext, row_index: usize) {
             px(f32::from(row_height) * (row_index as f32 + 1.5)),
         ),
         None,
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(600));
+    cx.executor().advance_clock(Duration::from_millis(600));
     cx.run_until_parked();
     let _ = cx.refresh();
     cx.update(|_, _| {}); // 触发一帧渲染，tooltip 请求进入 frame
@@ -958,7 +956,7 @@ fn hovering_checkbox_shows_tooltip_with_many_rows(cx: &mut TestAppContext) {
     // 复现真实场景：大量变更文件（行数超过可视区域，触发 uniform_list 虚拟化）。
     let (root, _temp) = test_repo();
     for index in 0..40 {
-        std::fs::write(
+        fs::write(
             root.join(format!("file-{index:02}.txt")),
             format!("内容 {index}\n"),
         )
@@ -975,13 +973,8 @@ fn hovering_checkbox_shows_tooltip_with_many_rows(cx: &mut TestAppContext) {
     // 悬停可视区第 5 行（未暂存组的一个文件）行尾复选框；顶部统计行占一行，坐标加偏移。
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let hover_y = f32::from(row_height) * 7.5;
-    cx.simulate_mouse_move(
-        point(px(1907.), px(hover_y)),
-        None,
-        gpui::Modifiers::default(),
-    );
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(600));
+    cx.simulate_mouse_move(point(px(1907.), px(hover_y)), None, Modifiers::default());
+    cx.executor().advance_clock(Duration::from_millis(600));
     cx.run_until_parked();
     let _ = cx.refresh();
     cx.update(|_, _| {});
@@ -997,7 +990,7 @@ fn hover_tooltip_survives_row_rebuild(cx: &mut TestAppContext) {
     // 复现真实场景：行重建（git 操作/滚动后 rebuild_rows）后再次 hover 复选框，
     // tooltip 应仍然显示。
     let (root, _temp) = test_repo();
-    std::fs::write(root.join("second.txt"), "第二个文件\n").expect("应写入文件");
+    fs::write(root.join("second.txt"), "第二个文件\n").expect("应写入文件");
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
     let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
@@ -1011,10 +1004,9 @@ fn hover_tooltip_survives_row_rebuild(cx: &mut TestAppContext) {
     cx.simulate_mouse_move(
         point(px(1907.), px(f32::from(row_height) * 6.5)),
         None,
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(600));
+    cx.executor().advance_clock(Duration::from_millis(600));
     cx.run_until_parked();
     let _ = cx.refresh();
     cx.update(|_, _| {});
@@ -1041,16 +1033,15 @@ fn hover_tooltip_survives_row_rebuild(cx: &mut TestAppContext) {
     cx.simulate_mouse_move(
         point(px(100.), px(f32::from(row_height) * 6.5)),
         None,
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
     cx.run_until_parked();
     cx.simulate_mouse_move(
         point(px(1907.), px(f32::from(row_height) * 6.5)),
         None,
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(600));
+    cx.executor().advance_clock(Duration::from_millis(600));
     cx.run_until_parked();
     let _ = cx.refresh();
     cx.update(|_, _| {});
@@ -1066,9 +1057,9 @@ fn hover_tooltip_with_partially_staged_file(cx: &mut TestAppContext) {
     // 部分暂存（MM）：文件同时出现在已暂存与未暂存两组，两个复选框 id 相同
     // （按 path 生成）——验证两组的 tooltip 是否互相干扰。
     let (root, _temp) = test_repo();
-    std::fs::write(root.join("tracked.txt"), "第一次修改\n").expect("应修改文件");
+    fs::write(root.join("tracked.txt"), "第一次修改\n").expect("应修改文件");
     run_in(&root, &["git", "add", "tracked.txt"]);
-    std::fs::write(root.join("tracked.txt"), "第二次修改\n").expect("应再次修改文件");
+    fs::write(root.join("tracked.txt"), "第二次修改\n").expect("应再次修改文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -1085,10 +1076,9 @@ fn hover_tooltip_with_partially_staged_file(cx: &mut TestAppContext) {
     cx.simulate_mouse_move(
         point(px(1907.), px(f32::from(row_height) * 6.5)),
         None,
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(600));
+    cx.executor().advance_clock(Duration::from_millis(600));
     cx.run_until_parked();
     let _ = cx.refresh();
     cx.update(|_, _| {});
@@ -1151,7 +1141,7 @@ fn checkbox_click_stages_file_without_opening_it(cx: &mut TestAppContext) {
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     cx.simulate_click(
         point(px(1907.), px(f32::from(row_height) * 6.5)),
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
     cx.run_until_parked();
     cx.run_until_parked();
@@ -1198,7 +1188,7 @@ fn commit_button_commits_without_panel_focus(cx: &mut TestAppContext) {
     let bounds = cx
         .debug_bounds("version-control-commit-button")
         .expect("提交按钮应可定位");
-    cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+    cx.simulate_click(bounds.center(), Modifiers::default());
     cx.run_until_parked(); // commit job 完成
     cx.run_until_parked(); // 重扫落地 → Head/Statuses 事件
 
@@ -1307,7 +1297,7 @@ fn commit_shortcut_submits_staged_changes_from_editor(cx: &mut TestAppContext) {
 #[gpui::test]
 fn commit_without_staged_changes_is_ignored(cx: &mut TestAppContext) {
     let (root, _temp) = test_repo();
-    std::fs::write(root.join("untracked.txt"), "新文件\n").expect("应创建未跟踪文件");
+    fs::write(root.join("untracked.txt"), "新文件\n").expect("应创建未跟踪文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -1367,13 +1357,13 @@ fn commit_without_staged_changes_is_ignored(cx: &mut TestAppContext) {
 fn uncommit_restores_previous_message_into_editor(cx: &mut TestAppContext) {
     let (root, _temp) = test_repo();
     // 第二次提交：多行消息（subject + 空行 + body），随后制造未暂存改动。
-    std::fs::write(root.join("tracked.txt"), "第二次内容\n").expect("应修改文件");
+    fs::write(root.join("tracked.txt"), "第二次内容\n").expect("应修改文件");
     run_in(&root, &["git", "add", "tracked.txt"]);
     run_in(
         &root,
         &["git", "commit", "-q", "-m", "第二次提交", "-m", "详细说明"],
     );
-    std::fs::write(root.join("tracked.txt"), "第三次内容\n").expect("应再次修改文件");
+    fs::write(root.join("tracked.txt"), "第三次内容\n").expect("应再次修改文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -1407,13 +1397,13 @@ fn uncommit_restores_previous_message_into_editor(cx: &mut TestAppContext) {
 fn uncommit_button_restores_message_without_panel_focus(cx: &mut TestAppContext) {
     // 回归：焦点不在版本控制面板时，点击"撤销"按钮也应生效（与 commit 按钮同理：不依赖焦点链派发）。
     let (root, _temp) = test_repo();
-    std::fs::write(root.join("tracked.txt"), "第二次内容\n").expect("应修改文件");
+    fs::write(root.join("tracked.txt"), "第二次内容\n").expect("应修改文件");
     run_in(&root, &["git", "add", "tracked.txt"]);
     run_in(
         &root,
         &["git", "commit", "-q", "-m", "第二次提交", "-m", "详细说明"],
     );
-    std::fs::write(root.join("tracked.txt"), "第三次内容\n").expect("应再次修改文件");
+    fs::write(root.join("tracked.txt"), "第三次内容\n").expect("应再次修改文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -1431,7 +1421,7 @@ fn uncommit_button_restores_message_without_panel_focus(cx: &mut TestAppContext)
     let bounds = cx
         .debug_bounds("version-control-uncommit-button")
         .expect("撤销按钮应可定位");
-    cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+    cx.simulate_click(bounds.center(), Modifiers::default());
     cx.run_until_parked(); // uncommit job 完成
     cx.run_until_parked(); // 重扫落地 → Head 事件
 

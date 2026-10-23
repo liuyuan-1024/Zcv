@@ -4,20 +4,24 @@
 //! 批次命中 settings.json 或配置目录 Rescan 时读取文件并写入 SettingsStore global。
 //! 订阅与读取都使用规范化路径，避免 macOS 等后端返回的规范化事件路径无法与前缀匹配。
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use futures::StreamExt as _;
 use gpui::{App, AppContext as _, Global, Task};
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 
-use super::config_dir;
-use super::file::{ensure_settings_files, settings_file};
-use super::merge::UserSettings;
-use super::schema::parse_user_settings;
-use super::store::{GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore};
+use super::{
+    config_dir,
+    file::{ensure_settings_files, settings_file},
+    merge::UserSettings,
+    schema::parse_user_settings,
+    store::{GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore},
+};
 
 const SETTINGS_RELOAD_DEBOUNCE: Duration = Duration::from_millis(75);
 
@@ -134,7 +138,7 @@ pub fn init(cx: &mut App) {
 }
 
 fn canonical_or_original(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// 只有设置文件本身的变更，或配置目录的 Rescan，才需要重读设置。

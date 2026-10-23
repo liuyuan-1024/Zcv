@@ -50,8 +50,7 @@ impl ProcessIdGetter {
 pub(super) fn terminate_process_tree(pid: u32, executor: &BackgroundExecutor) -> Result<()> {
     #[cfg(unix)]
     {
-        use std::io;
-        use std::time::Duration;
+        use std::{io, time::Duration};
 
         const PROCESS_KILL_GRACE_PERIOD: Duration = Duration::from_millis(100);
         let pid = pid as i32;

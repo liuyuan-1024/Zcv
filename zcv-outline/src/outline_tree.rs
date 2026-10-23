@@ -4,9 +4,11 @@
 //! 本模块把它按 display_path 组织成树，并计算折叠后的可见行。
 //! 单文件文档保持扁平符号列表，多文件文档才出现目录与文件节点。
 
-use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use zcv_editor::OutlineEntry;
 use zcv_fuzzy::Matcher;

@@ -6,11 +6,12 @@
 mod picker_host;
 mod picker_view;
 
+use gpui::{Pixels, px};
 pub use picker_host::{PickerHost, PickerLayer};
 pub use picker_view::{Picker, PickerDelegate, picker_divider};
 
 /// 浮层默认宽度，宿主不指定时统一取此值。
-pub const PICKER_WIDTH: gpui::Pixels = gpui::px(360.0);
+pub const PICKER_WIDTH: Pixels = px(360.0);
 
 /// 浮层高度上限（内容超出时列表滚动）。
-pub(crate) const PICKER_MAX_HEIGHT: gpui::Pixels = gpui::px(420.0);
+pub(crate) const PICKER_MAX_HEIGHT: Pixels = px(420.0);

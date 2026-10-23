@@ -3,18 +3,22 @@
 //! 平台后端只提供路径布局、原子切换/回滚原语和进程退出等待；
 //! 暂存校验、切换顺序、启动确认、清理与结果落盘在这里统一实现。
 
-use std::ffi::OsString;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+    thread,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::platform::{ApplyBackend, StartedProcess};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::{UpdateResult, UpdateResultStatus, atomic_write_json, read_transaction};
-use crate::{UpdateTransaction, acknowledgement_path};
+use crate::{
+    UpdateTransaction, acknowledgement_path,
+    platform::{ApplyBackend, StartedProcess},
+};
 
 /// helper 的命令行参数。
 pub(crate) struct HelperArgs {

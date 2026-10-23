@@ -3,11 +3,13 @@
 //! `Project` 管理项目根、目录快照（Worktree）、文件 Buffer 生命周期和文件系统监听。
 //! 窗口布局、Pane、Dock 与其他界面状态仍由 `Workspace` 管理。
 
-use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions};
-use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet},
+    fs::{self, File, OpenOptions},
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::Context as _;
 use futures::StreamExt as _;
@@ -25,11 +27,13 @@ use crate::search::SearchQuery;
 
 mod platform;
 
-use super::buffer_store::{BufferStore, load_buffer};
-use super::git_store::{GitStatusSnapshot, GitStore};
-use super::search::{self, SearchResults};
-use super::text_file::{BufferLoadError, BufferSaveError, decode_to_string, write_buffer_to};
-use super::worktree::{Worktree, WorktreeEntry, collect_visible_entries};
+use super::{
+    buffer_store::{BufferStore, load_buffer},
+    git_store::{GitStatusSnapshot, GitStore},
+    search::{self, SearchResults},
+    text_file::{BufferLoadError, BufferSaveError, decode_to_string, write_buffer_to},
+    worktree::{Worktree, WorktreeEntry, collect_visible_entries},
+};
 
 /// 项目文件监听的合并窗口；对齐 Zed worktree 的 FS_WATCH_LATENCY。
 const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
@@ -717,7 +721,7 @@ impl Project {
             .parent()
             .and_then(|parent| to.file_name().map(|name| parent.join(name)))
             .ok_or_else(|| anyhow::anyhow!("无法确定重命名目标路径"))?;
-        std::fs::rename(&from, &to)?;
+        fs::rename(&from, &to)?;
         self.buffer_store
             .rename_path(indexed_from.as_path(), &indexed_to);
 
@@ -772,9 +776,9 @@ impl Project {
             .ok_or_else(|| anyhow::anyhow!("条目没有父目录"))?;
         anyhow::ensure!(!path.exists(), "目标已存在：{}", path.display());
 
-        std::fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent)?;
         if is_dir {
-            std::fs::create_dir(path)?;
+            fs::create_dir(path)?;
         } else {
             OpenOptions::new().write(true).create_new(true).open(path)?;
         }
@@ -836,15 +840,15 @@ impl Project {
         let indexed_to = AbsolutePathBuf::canonicalize(parent)?.as_path().join(name);
         // 优先直接 rename：同文件系统上 POSIX rename 原子替换文件/空目录目标，没有「先删后写」的危险中间态；
         // 仅当失败且目标是非空目录（rename 无法原地替换的唯一情形）才退化为「删目标再 rename」，最终失败经 Result 向上传播。
-        if let Err(error) = std::fs::rename(&from, &to) {
-            let is_nonempty_dir = to.is_dir()
-                && std::fs::read_dir(&to).is_ok_and(|mut entries| entries.next().is_some());
+        if let Err(error) = fs::rename(&from, &to) {
+            let is_nonempty_dir =
+                to.is_dir() && fs::read_dir(&to).is_ok_and(|mut entries| entries.next().is_some());
             if !(overwrite && is_nonempty_dir) {
                 return Err(error)
                     .with_context(|| format!("移动失败：{} → {}", from.display(), to.display()));
             }
             remove_entry(&to)?;
-            std::fs::rename(&from, &to)
+            fs::rename(&from, &to)
                 .with_context(|| format!("移动失败：{} → {}", from.display(), to.display()))?;
         }
         self.buffer_store.rename_path(&indexed_from, &indexed_to);
@@ -1091,11 +1095,11 @@ fn write_buffer_to_path(snapshot: &Snapshot, path: &Path) -> Result<(), BufferSa
 ///
 /// 用 `symlink_metadata` 判断类型：符号链接删除链接本身（`remove_dir_all` 对链接会失败）。
 fn remove_entry(path: &Path) -> anyhow::Result<()> {
-    let metadata = std::fs::symlink_metadata(path)?;
+    let metadata = fs::symlink_metadata(path)?;
     if metadata.is_dir() {
-        std::fs::remove_dir_all(path)?;
+        fs::remove_dir_all(path)?;
     } else {
-        std::fs::remove_file(path)?;
+        fs::remove_file(path)?;
     }
     Ok(())
 }
@@ -1124,7 +1128,7 @@ fn copy_entry_overwrite(source: &Path, destination: &Path) -> anyhow::Result<()>
 }
 
 fn copy_entry_overwrite_inner(source: &Path, destination: &Path, tmp: &Path) -> anyhow::Result<()> {
-    let metadata = std::fs::symlink_metadata(source)
+    let metadata = fs::symlink_metadata(source)
         .with_context(|| format!("读取源条目失败：{}", source.display()))?;
     if metadata.file_type().is_dir() {
         // 目录：整树复制到临时目录 → 删除旧目标 → rename 入位。
@@ -1132,7 +1136,7 @@ fn copy_entry_overwrite_inner(source: &Path, destination: &Path, tmp: &Path) -> 
         if destination.exists() {
             remove_entry(destination)?;
         }
-        std::fs::rename(tmp, destination)
+        fs::rename(tmp, destination)
             .with_context(|| format!("临时目录入位失败：{}", destination.display()))?;
     } else {
         // 文件与符号链接：先写临时文件再 rename 入位（POSIX rename 原子替换文件目标）。
@@ -1141,12 +1145,12 @@ fn copy_entry_overwrite_inner(source: &Path, destination: &Path, tmp: &Path) -> 
         if destination.exists() && !destination.is_file() {
             remove_entry(destination)?;
         }
-        if std::fs::rename(tmp, destination).is_err() {
+        if fs::rename(tmp, destination).is_err() {
             // 兜底：个别平台 rename 不自动替换已存在文件目标，删除后重试一次。
             if destination.exists() {
                 remove_entry(destination)?;
             }
-            std::fs::rename(tmp, destination)
+            fs::rename(tmp, destination)
                 .with_context(|| format!("临时文件入位失败：{}", destination.display()))?;
         }
     }
@@ -1162,11 +1166,11 @@ fn copy_single_entry(
     file_type: std::fs::FileType,
 ) -> anyhow::Result<()> {
     if file_type.is_symlink() {
-        let target = std::fs::read_link(source)
+        let target = fs::read_link(source)
             .with_context(|| format!("读取符号链接失败：{}", source.display()))?;
         platform::create_symlink(source, &target, destination, file_type)?;
     } else {
-        std::fs::copy(source, destination)
+        fs::copy(source, destination)
             .with_context(|| format!("复制文件失败：{}", source.display()))?;
     }
     Ok(())
@@ -1176,22 +1180,22 @@ fn copy_single_entry(
 ///
 /// 类型判断基于 `symlink_metadata`：符号链接按链接本身复制，不跟随链接目标，避免指向祖先目录的链接环引发无限递归。
 fn copy_entry_recursive(source: &Path, destination: &Path) -> anyhow::Result<()> {
-    let metadata = std::fs::symlink_metadata(source)
+    let metadata = fs::symlink_metadata(source)
         .with_context(|| format!("读取源条目失败：{}", source.display()))?;
     let file_type = metadata.file_type();
     if file_type.is_symlink() {
         copy_single_entry(source, destination, file_type)?;
     } else if file_type.is_dir() {
-        std::fs::create_dir_all(destination)
+        fs::create_dir_all(destination)
             .with_context(|| format!("创建目录失败：{}", destination.display()))?;
-        for entry in std::fs::read_dir(source)
-            .with_context(|| format!("读取目录失败：{}", source.display()))?
+        for entry in
+            fs::read_dir(source).with_context(|| format!("读取目录失败：{}", source.display()))?
         {
             let entry = entry?;
             copy_entry_recursive(&entry.path(), &destination.join(entry.file_name()))?;
         }
     } else {
-        std::fs::copy(source, destination)
+        fs::copy(source, destination)
             .with_context(|| format!("复制文件失败：{}", source.display()))?;
     }
     Ok(())

@@ -1,9 +1,8 @@
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
-use crate::registry::LanguageRegistry;
-use crate::syntax_map::SyntaxMap;
-use crate::tree_sitter_utils::ParseCancellation;
+use crate::{
+    registry::LanguageRegistry, syntax_map::SyntaxMap, tree_sitter_utils::ParseCancellation,
+};
 use zcv_text::{Buffer, BufferConfig, Line};
 
 /// 按 Rust 文件解析文本，返回 Buffer 与已安装解析结果的语法映射。

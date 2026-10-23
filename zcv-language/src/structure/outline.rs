@@ -3,16 +3,16 @@
 //! 查询只消费语言注册的 `outline.scm`，不通过文本扫描猜测符号。
 //! 主语言和注入语言分别查询，再按源坐标的范围包含关系计算层级。
 
-use std::ops::Range;
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use tree_sitter::StreamingIterator;
 use zcv_text::{Affinity, Anchor, ByteOffset, Snapshot};
 
-use crate::HighlightCache;
-
-use crate::syntax_map::SyntaxSnapshot;
-use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider, encloses, node_text};
+use crate::{
+    HighlightCache,
+    syntax_map::SyntaxSnapshot,
+    tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider, encloses, node_text},
+};
 
 /// 大纲生成期间的标签片段与源代码对应关系。
 #[derive(Clone, Debug, PartialEq, Eq)]

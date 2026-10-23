@@ -6,8 +6,8 @@ use crate::{
     test::support::{display_only_terminal, write_output},
 };
 use gpui::{
-    Context, Entity, EntityInputHandler, IntoElement, MouseButton, Render, TestAppContext,
-    VisualTestContext, Window, div, point, prelude::*, px, size,
+    Context, Entity, EntityInputHandler, IntoElement, Modifiers, MouseButton, Render,
+    TestAppContext, VisualTestContext, Window, div, point, prelude::*, px, size,
 };
 
 #[derive(Default)]
@@ -224,7 +224,7 @@ async fn selection_starts_before_terminal_output(cx: &mut TestAppContext) {
             let event = gpui::MouseDownEvent {
                 button: MouseButton::Left,
                 position: point(px(16.), px(16.)),
-                modifiers: gpui::Modifiers::default(),
+                modifiers: Modifiers::default(),
                 click_count: 1,
                 first_mouse: true,
             };
@@ -263,22 +263,22 @@ async fn releasing_selection_outside_the_terminal_ends_the_pointer_gesture(
         )
     });
 
-    cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::default());
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     cx.refresh().expect("按下后应能刷新选择锚点");
-    cx.simulate_mouse_move(outside, Some(MouseButton::Left), gpui::Modifiers::default());
+    cx.simulate_mouse_move(outside, Some(MouseButton::Left), Modifiers::default());
     cx.refresh().expect("拖出视口后应能刷新选择");
     let selection_before_release = cx
         .read_entity(&terminal, |terminal, _| terminal.last_content().selection)
         .expect("拖拽后应存在选择范围");
 
-    cx.simulate_mouse_up(outside, MouseButton::Left, gpui::Modifiers::default());
+    cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
     cx.run_until_parked();
     assert!(
         !cx.read_entity(&terminal, |terminal, _| terminal.selection_started()),
         "视口外释放也应结束终端指针手势"
     );
 
-    cx.simulate_mouse_move(return_to_terminal, None, gpui::Modifiers::default());
+    cx.simulate_mouse_move(return_to_terminal, None, Modifiers::default());
     cx.refresh().expect("无按键移动后应能刷新");
     let selection_after_return = cx
         .read_entity(&terminal, |terminal, _| terminal.last_content().selection)

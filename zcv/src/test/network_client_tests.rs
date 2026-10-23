@@ -1,7 +1,9 @@
 use super::*;
 
-use std::io::{BufRead as _, BufReader, Write as _};
-use std::net::TcpListener;
+use std::{
+    io::{BufRead as _, BufReader, Write as _},
+    net::TcpListener,
+};
 
 #[test]
 fn follows_redirects_and_streams_response() {

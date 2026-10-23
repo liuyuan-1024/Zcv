@@ -6,8 +6,7 @@
 use gpui::{AnyElement, App, Context, Div, Entity, Render, Subscription, Window, div, prelude::*};
 use zcv_theme::{color, scale};
 
-use crate::ItemHandle;
-use crate::pane::Pane;
+use crate::{ItemHandle, pane::Pane};
 
 // ═══ StatusItemView trait ═══════════════════════════════════════════
 

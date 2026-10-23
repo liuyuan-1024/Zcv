@@ -1,8 +1,8 @@
 use zcv_text::{Buffer, BufferConfig, Edit, TextSubscription, TransactionMetadata};
 
-use super::super::buffer_edits_from_batch;
-use super::super::error::DisplayMapError;
+use super::super::{buffer_edits_from_batch, error::DisplayMapError};
 use super::*;
+use gpui::px;
 
 fn text_range(start: usize, end: usize) -> MultiBufferRange {
     MultiBufferRange::new(MultiBufferOffset::new(start), MultiBufferOffset::new(end)).unwrap()
@@ -68,11 +68,11 @@ fn updating_fold_widths_rewrites_renderer_and_skips_unchanged() {
     let id = ChunkRendererId::Fold(snapshot.folds.iter().next().expect("应存在折叠").id);
     assert_eq!(snapshot.fold_width(id), None, "初始实测宽度必须为空");
 
-    let (snapshot, edits) = map.write().update_fold_widths([(id, gpui::px(40.))]);
+    let (snapshot, edits) = map.write().update_fold_widths([(id, px(40.))]);
     assert!(!edits.is_empty(), "宽度变化必须产生显示编辑");
     assert_eq!(snapshot.fold_width(id), Some(gpui::px(40.)));
 
-    let (snapshot, edits) = map.write().update_fold_widths([(id, gpui::px(40.))]);
+    let (snapshot, edits) = map.write().update_fold_widths([(id, px(40.))]);
     assert!(edits.is_empty(), "相同宽度不应产生显示编辑");
     assert_eq!(snapshot.fold_width(id), Some(gpui::px(40.)));
 }
@@ -303,7 +303,7 @@ fn multibyte_adjacent_folds_remain_aligned_after_merge_and_followup_edits() {
             .expect("合并后仍应保留折叠身份")
             .id,
     );
-    let (resized, _) = map.write().update_fold_widths([(fold_id, gpui::px(32.))]);
+    let (resized, _) = map.write().update_fold_widths([(fold_id, px(32.))]);
     assert_eq!(
         resized.transforms.summary().input.len,
         resized.buffer_snapshot().len_bytes().get(),

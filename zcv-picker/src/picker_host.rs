@@ -3,9 +3,11 @@
 //! ProjectPicker / BranchPicker 各自持有数据源与按钮内容，共用的开关交互、焦点管理、全屏拦截与浮层样式链收敛到这里。
 //! 打开状态与互斥由同一顶栏持有的 `PickerLayer` 管理，常驻输入入口也复用它的焦点会话。
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use gpui::{
     Anchor, App, Entity, FocusHandle, MouseButton, Pixels, WeakFocusHandle, Window, anchored,
@@ -13,8 +15,7 @@ use gpui::{
 };
 use zcv_theme::{color, scale};
 
-use crate::picker_view::OnDismiss;
-use crate::{Picker, PickerDelegate};
+use crate::{Picker, PickerDelegate, picker_view::OnDismiss};
 
 /// 浮层身份：同身份重复打开 = 关闭（toggle 语义）。
 #[derive(Clone, Copy, PartialEq, Eq)]

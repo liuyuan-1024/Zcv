@@ -7,10 +7,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, Font,
+    App, Bounds, ClipboardItem, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Font,
     InteractiveElement, IntoElement, IsZero, MouseButton, PathBuilder, Pixels, Render, Rgba,
     ScrollHandle, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription,
-    TextRun, UniformListScrollHandle, WeakEntity, Window, canvas, div, point, prelude::*, px,
+    Task, TextRun, UniformListScrollHandle, WeakEntity, Window, canvas, div, point, prelude::*, px,
     uniform_list,
 };
 use regex::RegexBuilder;
@@ -23,8 +23,10 @@ use zcv_git::GraphCommit;
 use crate::graph::{GraphLayoutState, GraphLine, GraphRowLayout};
 use zcv_project::{GitStoreEvent, Project, SearchQuery};
 use zcv_search::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
-use zcv_theme::color::{self, ThemeColors};
-use zcv_theme::{fixed, scale, typography};
+use zcv_theme::{
+    color::{self, ThemeColors},
+    fixed, scale, typography,
+};
 use zcv_ui::{ButtonLike, Scrollbar, TooltipSpec};
 use zcv_workspace::{
     Direction, Item, ItemHandle, SearchEvent, SearchableItem, SearchableItemHandle,
@@ -684,7 +686,7 @@ impl SerializedItemProvider for GitGraphSerializedItemProvider {
         project: Entity<Project>,
         _window: &mut Window,
         cx: &mut Context<Workspace>,
-    ) -> gpui::Task<anyhow::Result<Box<dyn ItemHandle>>> {
+    ) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
         let view = cx.new(|cx| GitGraphView::new(project, cx));
         let query = state
             .get("query")
@@ -702,7 +704,7 @@ impl SerializedItemProvider for GitGraphSerializedItemProvider {
             let search_bar = view.search_bar.clone();
             search_bar.update(cx, |bar, cx| bar.restore(query, options, cx));
         });
-        gpui::Task::ready(Ok(Box::new(view) as Box<dyn ItemHandle>))
+        Task::ready(Ok(Box::new(view) as Box<dyn ItemHandle>))
     }
 }
 
@@ -996,7 +998,7 @@ fn draw_commit_circle(center_x: Pixels, center_y: Pixels, color: Rgba, window: &
 }
 
 /// 渲染单行：左侧图形画布 + 右侧文本区；点击选中高亮。
-fn graph_column(width: Pixels, colors: &ThemeColors, with_right_border: bool) -> gpui::Div {
+fn graph_column(width: Pixels, colors: &ThemeColors, with_right_border: bool) -> Div {
     let mut column = div().w(width).h_full().flex().items_center().flex_none();
     if with_right_border {
         column = column.border_r_1().border_color(colors.border);
@@ -1273,7 +1275,7 @@ fn render_commit_column(
     colors: &ThemeColors,
     accent: Rgba,
     width: Pixels,
-) -> gpui::Div {
+) -> Div {
     let subject = commit.subject.clone();
     let mut column = graph_column(width, colors, true)
         .flex_1()
@@ -1308,7 +1310,7 @@ fn render_commit_column(
 }
 
 /// 作者列：独立列宽，内容不足时通过 tooltip 查看完整值。
-fn render_author_column(author: &str, oid: &str, colors: &ThemeColors, width: Pixels) -> gpui::Div {
+fn render_author_column(author: &str, oid: &str, colors: &ThemeColors, width: Pixels) -> Div {
     let author = author.to_string();
     graph_column(width, colors, true)
         .min_w_0()
@@ -1336,7 +1338,7 @@ fn render_author_column(author: &str, oid: &str, colors: &ThemeColors, width: Pi
 }
 
 /// 相对时间列：独立列宽，并为完整显示值提供 tooltip。
-fn render_time_column(timestamp: i64, oid: &str, colors: &ThemeColors, width: Pixels) -> gpui::Div {
+fn render_time_column(timestamp: i64, oid: &str, colors: &ThemeColors, width: Pixels) -> Div {
     let time = relative_time(timestamp);
     graph_column(width, colors, true)
         .min_w_0()
@@ -1364,7 +1366,7 @@ fn render_time_column(timestamp: i64, oid: &str, colors: &ThemeColors, width: Pi
 }
 
 /// 短哈希列：展示短值，tooltip 保留完整 OID。
-fn render_sha_column(oid: &str, colors: &ThemeColors, width: Pixels) -> gpui::Div {
+fn render_sha_column(oid: &str, colors: &ThemeColors, width: Pixels) -> Div {
     let oid = oid.to_string();
     let short_sha = oid.get(..7).unwrap_or(&oid).to_string();
     graph_column(width, colors, false)
@@ -1443,7 +1445,7 @@ fn parse_refs(refs: &[String]) -> Vec<CommitRef> {
 
 /// 渲染单个分支/tag 标签：配色取自该 commit 的 lane 颜色 `accent`，用同色的半透明背景 + 边框 + 文字呈现，使标签与图中圆点/连线颜色呼应；
 /// HEAD（当前分支）用更高的背景与边框不透明度突出。
-fn render_ref_chip(reference: &CommitRef, accent: Rgba) -> gpui::Div {
+fn render_ref_chip(reference: &CommitRef, accent: Rgba) -> Div {
     let (bg_alpha, border_alpha) = match reference.kind {
         RefKind::Head => (0.20, 0.70),
         RefKind::Tag => (0.10, 0.34),

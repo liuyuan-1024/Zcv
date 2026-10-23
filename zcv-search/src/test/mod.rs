@@ -1,9 +1,12 @@
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{
+    any::TypeId,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use gpui::{
-    App, Context, EventEmitter, FocusHandle, Focusable, Render, TestAppContext, Window, div,
-    prelude::*,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString,
+    TestAppContext, Window, div, prelude::*,
 };
 use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
@@ -49,7 +52,7 @@ impl Render for TestItem {
 impl Item for TestItem {
     type Event = SearchEvent;
 
-    fn tab_content_text(&self, _cx: &App) -> gpui::SharedString {
+    fn tab_content_text(&self, _cx: &App) -> SharedString {
         "测试文档".into()
     }
 
@@ -59,7 +62,7 @@ impl Item for TestItem {
 
     fn as_searchable(
         &self,
-        self_handle: &gpui::Entity<Self>,
+        self_handle: &Entity<Self>,
         _cx: &App,
     ) -> Option<Box<dyn SearchableItemHandle>> {
         self.exposes_search
@@ -109,7 +112,7 @@ impl SearchableItem for TestItem {
 /// 组合 Item：通过 `act_as_type` 暴露内层编辑器，但自身不是编辑器。
 struct CompositeItem {
     focus: FocusHandle,
-    inner_editor: gpui::Entity<Editor>,
+    inner_editor: Entity<Editor>,
 }
 
 impl EventEmitter<SearchEvent> for CompositeItem {}
@@ -129,13 +132,13 @@ impl Render for CompositeItem {
 impl Item for CompositeItem {
     type Event = SearchEvent;
 
-    fn tab_content_text(&self, _cx: &App) -> gpui::SharedString {
+    fn tab_content_text(&self, _cx: &App) -> SharedString {
         "组合文档".into()
     }
 
     fn as_searchable(
         &self,
-        _self_handle: &gpui::Entity<Self>,
+        _self_handle: &Entity<Self>,
         _cx: &App,
     ) -> Option<Box<dyn SearchableItemHandle>> {
         Some(Box::new(self.inner_editor.clone()))
@@ -143,13 +146,13 @@ impl Item for CompositeItem {
 
     fn act_as_type(
         &self,
-        type_id: std::any::TypeId,
-        self_handle: &gpui::Entity<Self>,
+        type_id: TypeId,
+        self_handle: &Entity<Self>,
         _cx: &App,
     ) -> Option<gpui::AnyEntity> {
-        if type_id == std::any::TypeId::of::<Self>() {
+        if type_id == TypeId::of::<Self>() {
             Some(self_handle.clone().into())
-        } else if type_id == std::any::TypeId::of::<Editor>() {
+        } else if type_id == TypeId::of::<Editor>() {
             Some(self.inner_editor.clone().into())
         } else {
             None
@@ -157,11 +160,10 @@ impl Item for CompositeItem {
     }
 }
 
-fn document_toolbar(cx: &mut TestAppContext) -> gpui::Entity<DocumentToolbar> {
+fn document_toolbar(cx: &mut TestAppContext) -> Entity<DocumentToolbar> {
     let pane = cx.new(Pane::new);
     let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
-    let root =
-        AbsolutePathBuf::canonicalize(std::path::Path::new(".")).expect("测试项目目录应可规范化");
+    let root = AbsolutePathBuf::canonicalize(Path::new(".")).expect("测试项目目录应可规范化");
     let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
     let language_registry = cx.read_entity(&project, |project, _| project.language_registry());
     let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
@@ -211,8 +213,7 @@ fn buffer_search_does_not_use_a_path_as_search_capability(cx: &mut TestAppContex
 fn document_toolbar_is_visible_for_editor_and_hidden_for_other_items(cx: &mut TestAppContext) {
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
-        let editor =
-            cx.new(|cx| Editor::single_line(std::sync::Arc::new(LanguageRegistry::new()), cx));
+        let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
         let editor_location = bar.update(cx, |bar, cx| {
             bar.set_active_pane_item(Some(&editor as &dyn ItemHandle), window, cx)
         });
@@ -237,8 +238,7 @@ fn document_toolbar_is_visible_for_editor_and_hidden_for_other_items(cx: &mut Te
 fn document_toolbar_is_hidden_for_composite_items_that_expose_an_editor(cx: &mut TestAppContext) {
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
-        let inner_editor =
-            cx.new(|cx| Editor::single_line(std::sync::Arc::new(LanguageRegistry::new()), cx));
+        let inner_editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
         let composite = cx.new(|cx| CompositeItem {
             focus: cx.focus_handle(),
             inner_editor,
@@ -292,8 +292,7 @@ fn hidden_document_search_does_not_search_a_composite_editor(cx: &mut TestAppCon
 /// 项目搜索结果仍走 Editor 管线，但当前 Item 的搜索目标是项目搜索本身。
 #[gpui::test]
 fn project_search_view_acts_as_editor_and_owns_its_toolbar(cx: &mut TestAppContext) {
-    let root =
-        AbsolutePathBuf::canonicalize(std::path::Path::new(".")).expect("测试项目目录应可规范化");
+    let root = AbsolutePathBuf::canonicalize(Path::new(".")).expect("测试项目目录应可规范化");
     let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
     let view = cx.new(|cx| crate::project_search::ProjectSearchView::new(project, cx));
     let bar = document_toolbar(cx);

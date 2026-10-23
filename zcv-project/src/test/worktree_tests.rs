@@ -3,6 +3,7 @@ use zcv_path::AbsolutePathBuf;
 
 use super::*;
 use crate::test_support::{run_git, test_git_repo};
+use std::fs;
 
 fn absolute(path: &Path) -> AbsolutePathBuf {
     AbsolutePathBuf::new(path.to_path_buf()).expect("测试工作区路径应为绝对路径")
@@ -17,9 +18,9 @@ fn canonical_path(path: &Path) -> PathBuf {
 #[test]
 fn children_return_sorted_static_entries() {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    std::fs::create_dir_all(directory.path().join("zebra_dir")).expect("应创建目录");
-    std::fs::write(directory.path().join("apple.rs"), "fn main() {}").expect("应创建文件");
-    std::fs::write(directory.path().join("banana.rs"), "fn main() {}").expect("应创建文件");
+    fs::create_dir_all(directory.path().join("zebra_dir")).expect("应创建目录");
+    fs::write(directory.path().join("apple.rs"), "fn main() {}").expect("应创建文件");
+    fs::write(directory.path().join("banana.rs"), "fn main() {}").expect("应创建文件");
 
     let worktree = Worktree::new(absolute(directory.path()));
     let entries = children_sorted(directory.path(), directory.path(), &worktree.filter());
@@ -46,9 +47,9 @@ fn children_return_sorted_static_entries() {
 #[test]
 fn children_use_tree_order_for_mixed_case_and_numbers() {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    std::fs::create_dir(directory.path().join("Zoo")).expect("应创建目录");
+    fs::create_dir(directory.path().join("Zoo")).expect("应创建目录");
     for name in ["file10.rs", "File3.rs", "file2.rs"] {
-        std::fs::write(directory.path().join(name), name).expect("应创建文件");
+        fs::write(directory.path().join(name), name).expect("应创建文件");
     }
     let worktree = Worktree::new(absolute(directory.path()));
     let entries = children_sorted(directory.path(), directory.path(), &worktree.filter());
@@ -65,10 +66,10 @@ fn children_use_tree_order_for_mixed_case_and_numbers() {
 fn file_scan_exclusions_hide_entries_and_their_children() {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let target = directory.path().join("target");
-    std::fs::create_dir_all(target.join("debug")).expect("应创建排除目录");
-    std::fs::write(target.join("debug").join("app"), "binary").expect("应创建排除文件");
+    fs::create_dir_all(target.join("debug")).expect("应创建排除目录");
+    fs::write(target.join("debug").join("app"), "binary").expect("应创建排除文件");
     let visible = directory.path().join("main.rs");
-    std::fs::write(&visible, "fn main() {}").expect("应创建可见文件");
+    fs::write(&visible, "fn main() {}").expect("应创建可见文件");
 
     let mut worktree = Worktree::new(absolute(directory.path()));
     worktree.set_exclusions(&["**/target".to_string()]);
@@ -94,9 +95,9 @@ fn file_scan_exclusions_hide_entries_and_their_children() {
 fn collect_visible_entries_returns_root_then_expanded_descendants() {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let src = directory.path().join("src");
-    std::fs::create_dir_all(src.join("feature")).expect("应创建嵌套目录");
-    std::fs::write(src.join("feature").join("mod.rs"), "x").expect("应创建文件");
-    std::fs::write(directory.path().join("root.rs"), "x").expect("应创建文件");
+    fs::create_dir_all(src.join("feature")).expect("应创建嵌套目录");
+    fs::write(src.join("feature").join("mod.rs"), "x").expect("应创建文件");
+    fs::write(directory.path().join("root.rs"), "x").expect("应创建文件");
     let mut worktree = Worktree::new(absolute(directory.path()));
     worktree.set_exclusions(&["**/root.rs".to_string()]);
 
@@ -201,7 +202,7 @@ fn new_entry_destination_uses_a_trailing_slash_for_nested_directories() {
 fn discovers_repository_from_any_ancestor() {
     let (root, _temp) = test_git_repo();
     let nested = root.join("src/deep/nested");
-    std::fs::create_dir_all(&nested).expect("应创建嵌套目录");
+    fs::create_dir_all(&nested).expect("应创建嵌套目录");
 
     let repo = discover_git_repository(&nested)
         .expect("discover 应成功")
@@ -224,8 +225,8 @@ fn discover_returns_none_outside_repository() {
 fn discover_skips_submodule_git_file() {
     let (root, _temp) = test_git_repo();
     let submodule = root.join("submodule");
-    std::fs::create_dir_all(&submodule).expect("应创建子模块目录");
-    std::fs::write(
+    fs::create_dir_all(&submodule).expect("应创建子模块目录");
+    fs::write(
         submodule.join(".git"),
         "gitdir: ../.git/modules/submodule\n",
     )
@@ -240,9 +241,9 @@ fn discover_skips_submodule_git_file() {
 #[test]
 fn find_git_repositories_finds_nested_repos_and_skips_heavy_dirs() {
     let (root, _temp) = test_git_repo();
-    std::fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
+    fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
     run_git(&root.join("nested"), &["init", "-q"]);
-    std::fs::create_dir_all(root.join("node_modules/pkg")).expect("应创建依赖目录");
+    fs::create_dir_all(root.join("node_modules/pkg")).expect("应创建依赖目录");
     run_git(&root.join("node_modules/pkg"), &["init", "-q"]);
 
     let repos = find_git_repositories(&root).expect("find 应成功");
@@ -259,9 +260,9 @@ fn find_git_repositories_finds_nested_repos_and_skips_heavy_dirs() {
 #[test]
 fn discover_repositories_finds_root_and_nested() {
     let (root, _temp) = test_git_repo();
-    std::fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
+    fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
     run_git(&root.join("nested"), &["init", "-q"]);
-    std::fs::create_dir_all(root.join("node_modules/pkg")).expect("应创建依赖目录");
+    fs::create_dir_all(root.join("node_modules/pkg")).expect("应创建依赖目录");
     run_git(&root.join("node_modules/pkg"), &["init", "-q"]);
 
     let repos = discover_repositories(&root).expect("discover 应成功");
@@ -278,8 +279,8 @@ fn discover_repositories_prepends_ancestor() {
     // root 不是仓库，但位于外层仓库内，且自身包含嵌套仓库。
     let (outer, _temp) = test_git_repo();
     let root = outer.join("proj");
-    std::fs::create_dir_all(&root).expect("应创建项目目录");
-    std::fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
+    fs::create_dir_all(&root).expect("应创建项目目录");
+    fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
     run_git(&root.join("nested"), &["init", "-q"]);
 
     let repos = discover_repositories(&root).expect("discover 应成功");

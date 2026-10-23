@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ClickEvent, DefiniteLength, ElementId, IntoElement, MouseButton, MouseUpEvent,
+    AnyElement, App, ClickEvent, DefiniteLength, ElementId, IntoElement, MouseButton, MouseUpEvent,
     ParentElement, RenderOnce, ViewElement, Window, div, prelude::*,
 };
 use zcv_theme::{color, scale};
@@ -23,7 +23,7 @@ pub struct ButtonLike {
     tooltip: TooltipSpec,
     on_click: Option<ClickHandler>,
     on_right_click: Option<RightClickHandler>,
-    children: Vec<gpui::AnyElement>,
+    children: Vec<AnyElement>,
 }
 
 impl ButtonLike {
@@ -76,7 +76,7 @@ impl ButtonLike {
 }
 
 impl ParentElement for ButtonLike {
-    fn extend(&mut self, elements: impl IntoIterator<Item = gpui::AnyElement>) {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
         self.children.extend(elements);
     }
 }

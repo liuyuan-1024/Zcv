@@ -1,6 +1,5 @@
 use super::*;
-use crate::ByteOffset;
-use crate::PositionMap;
+use crate::{ByteOffset, PositionMap};
 
 fn map_offset(edits: &[Edit], offset: usize) -> usize {
     let position_map = PositionMap::from_edits(edits);

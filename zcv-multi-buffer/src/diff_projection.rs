@@ -8,12 +8,14 @@
 //! hunk 身份随输出变换节点承载，输出坐标由游标推导；
 //! 展开/折叠与显示路径归本层所有，不进入 diff 快照。
 
-use std::collections::{HashMap, HashSet};
-use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use gpui::{App, Context, Entity, Subscription};
+use gpui::{App, Context, Entity, EntityId, Subscription};
 use sum_tree::{Bias, ContextLessSummary, Dimension, Item, KeyedItem, SumTree};
 use zcv_text::{Anchor, BufferId, ByteOffset, Line, Snapshot, TextChangeBatch, TextRange};
 
@@ -252,7 +254,7 @@ impl DiffDisplaySnapshot {
     fn index_of(
         &self,
         path: &PathKey,
-        working: gpui::EntityId,
+        working: EntityId,
         hunk_start: Option<Anchor>,
     ) -> Option<usize> {
         let mut cursor = self.segments.cursor::<PathKey>(());
@@ -327,7 +329,7 @@ impl MultiBufferSnapshot {
     }
 }
 
-type DiffHunkKey = (gpui::EntityId, Option<Anchor>);
+type DiffHunkKey = (EntityId, Option<Anchor>);
 
 /// 将组合输出中的半开文本范围换算为 hunk 所覆盖的行。
 /// 零长度变换仍以边界所在行参与可见查询，供删除 hunk 定位。
@@ -361,7 +363,7 @@ fn resolved_diff_hunks_in_lines(
         return Vec::new();
     }
 
-    let mut candidates = HashMap::<(PathKey, gpui::EntityId, Option<Anchor>), Vec<usize>>::new();
+    let mut candidates = HashMap::<(PathKey, EntityId, Option<Anchor>), Vec<usize>>::new();
     let mut cursor = MultiBufferCursor::new(excerpts, transforms, sources);
     cursor.seek_output_line(lines.start, Bias::Left);
     if cursor.item().is_none() {
@@ -600,7 +602,7 @@ struct HunkExpansionOverride {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DisplayHunkSource {
     /// 稳定文件键：working 源实体，不随组合文档序号变化。
-    working: gpui::EntityId,
+    working: EntityId,
     /// hunk 起点的工作区 Anchor；无 hunk 身份的合成节点为 None。
     hunk_start: Option<Anchor>,
     kind: DiffHunkKind,
@@ -664,7 +666,7 @@ impl HunkAccum {
 
 /// 一个 hunk 节点携带的身份与显示元数据。
 fn hunk_info(
-    working: gpui::EntityId,
+    working: EntityId,
     side: DiffTransformHunkSide,
     hunk: &ResolvedHunk,
     expanded: bool,
@@ -1162,7 +1164,7 @@ impl MultiBuffer {
     /// 拥有指定源的 diff；源不属于任何已挂接 diff 时返回 None。
     ///
     /// working、base 与 index 是一个 diff 的全部文本输入，三者的变化都必须回到该 diff，不能按普通组合文档源各自处理。
-    fn diff_source(&self, source_id: gpui::EntityId, cx: &App) -> Option<Entity<BufferDiff>> {
+    fn diff_source(&self, source_id: EntityId, cx: &App) -> Option<Entity<BufferDiff>> {
         self.diff.as_ref()?;
         self.diffs.iter().find_map(|file| {
             let diff = file.diff.read(cx);
@@ -1182,7 +1184,7 @@ impl MultiBuffer {
         })
     }
 
-    pub(crate) fn diff_source_sync_ready(&self, source_id: gpui::EntityId, cx: &App) -> bool {
+    pub(crate) fn diff_source_sync_ready(&self, source_id: EntityId, cx: &App) -> bool {
         let Some(diff) = self.diff_source(source_id, cx) else {
             return true;
         };
@@ -1196,7 +1198,7 @@ impl MultiBuffer {
     /// BufferDiff 事件入口：只有当前物化结果落后于 diff 版本时才重建。
     fn diff_changed(
         &mut self,
-        diff_id: gpui::EntityId,
+        diff_id: EntityId,
         changed_range: Option<Range<Anchor>>,
         cx: &mut Context<Self>,
     ) {
@@ -1216,7 +1218,7 @@ impl MultiBuffer {
 
     fn diff_changed_inner(
         &mut self,
-        diff_id: gpui::EntityId,
+        diff_id: EntityId,
         changed_range: Option<Range<Anchor>>,
         cx: &mut Context<Self>,
     ) -> bool {

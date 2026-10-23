@@ -4,9 +4,7 @@
 //! 用户设置 JSON 经 fs watcher 监听，变更防抖重载后写入 SettingsStore global；
 //! 默认值与各领域设置由本模块统一提供；具体的运行时类型转换由消费方完成。
 
-use std::borrow::Cow;
-use std::path::Path;
-use std::sync::LazyLock;
+use std::{borrow::Cow, path::Path, sync::LazyLock};
 
 mod file;
 mod merge;

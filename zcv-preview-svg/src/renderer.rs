@@ -1,5 +1,7 @@
-use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::{
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+};
 
 const SVG_PREVIEW_MAX_RASTER_EDGE: f32 = 2048.0;
 pub(crate) const SVG_PREVIEW_MIN_DISPLAY_EDGE: f32 = 32.0;

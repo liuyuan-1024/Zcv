@@ -8,12 +8,7 @@
 //! 变换树在装配时保持规范形：相邻同构段必须归并，由 `push_isomorphic` 与 `append_canonical` 统一维护并在 `check_invariants` 中校验。
 //! 折叠与换行是正交的两层变换：折叠先塌缩文本，换行再按像素宽度切分。
 
-use std::borrow::Cow;
-use std::collections::VecDeque;
-use std::mem;
-use std::ops::Range;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{borrow::Cow, collections::VecDeque, mem, ops::Range, sync::Arc, time::Duration};
 
 use futures_lite::future::yield_now;
 use gpui::{
@@ -27,18 +22,20 @@ use zcv_multi_buffer::{
 };
 use zcv_text::{CoordinateError, Line, LogicalColumn};
 
-use super::chunk::{Chunk, ChunkText, FoldChunks, HighlightStyles, StyledChunks};
-use super::display_width::DisplayColumn;
-use super::error::DisplayMapResult;
-use super::fold_map::{
-    ChunkRendererId, FoldBias, FoldOffset, FoldRowSegment, FoldRowSegmentKind, FoldRows,
-    LogicalPoint, LogicalRange, ProjectedLineIndex, ProjectedPoint, StreamProjectedKind,
+use super::{
+    WrapPoint, WrapRange, WrapRow,
+    chunk::{Chunk, ChunkText, FoldChunks, HighlightStyles, StyledChunks},
+    display_width::DisplayColumn,
+    error::DisplayMapResult,
+    fold_map::{
+        ChunkRendererId, FoldBias, FoldOffset, FoldRowSegment, FoldRowSegmentKind, FoldRows,
+        LogicalPoint, LogicalRange, ProjectedLineIndex, ProjectedPoint, StreamProjectedKind,
+    },
+    tab_map::{
+        TabEdit, TabPoint, TabPointMapping, TabSnapshot, advance_display_column,
+        byte_for_display_column, line_content,
+    },
 };
-use super::tab_map::{
-    TabEdit, TabPoint, TabPointMapping, TabSnapshot, advance_display_column,
-    byte_for_display_column, line_content,
-};
-use super::{WrapPoint, WrapRange, WrapRow};
 
 const WRAP_YIELD_ROW_INTERVAL: usize = 100;
 const FULL_REWRAP_BUDGET: Duration = Duration::from_millis(5);
@@ -1022,7 +1019,7 @@ impl WrapPatch {
 
     fn invert(&mut self) -> &mut Self {
         for edit in &mut self.edits {
-            std::mem::swap(&mut edit.old, &mut edit.new);
+            mem::swap(&mut edit.old, &mut edit.new);
         }
         self
     }
@@ -1586,7 +1583,7 @@ impl WrapWorker {
         let mut fold_rows = tab_snapshot.fold_snapshot().rows(edits[0].1.start);
         let mut line_cursor = None;
         let measure = self.snapshot.transforms.clone();
-        let old_transforms = std::mem::replace(&mut self.snapshot.transforms, SumTree::new(()));
+        let old_transforms = mem::replace(&mut self.snapshot.transforms, SumTree::new(()));
         let mut cursor = old_transforms.cursor::<TabPoint>(());
         let mut new_tree = SumTree::new(());
         let mut measured = Vec::with_capacity(edits.len());

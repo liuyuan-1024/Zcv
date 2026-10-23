@@ -2,16 +2,16 @@
 //!
 //! 具体文件类型（如文本编辑器）的 Item 构造由各 crate 注册，框架打开文件时经注册表分发，不依赖具体视图类型。
 
-use std::any::TypeId;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    any::TypeId,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use gpui::{App, Context, Entity, Task, Window};
 use zcv_project::Project;
 
-use crate::Workspace;
-use crate::item::ItemHandle;
-use crate::provider_registry::ProviderRegistry;
+use crate::{Workspace, item::ItemHandle, provider_registry::ProviderRegistry};
 
 /// 文件路径 → Workspace Item 的工厂接口。
 pub trait ItemProvider: Send + Sync + 'static {

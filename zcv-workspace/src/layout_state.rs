@@ -2,15 +2,16 @@
 //!
 //! 键控与写盘复用 persistence 共享原语，与窗口边界保持同一项目身份。
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use zcv_settings::config_dir;
 
-use crate::dock::DockStructure;
-use crate::persistence;
+use crate::{dock::DockStructure, persistence};
 
 pub(crate) const LAYOUT_VERSION: u32 = 4;
 

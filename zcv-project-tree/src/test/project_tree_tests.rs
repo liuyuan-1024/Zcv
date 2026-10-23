@@ -1,10 +1,19 @@
-use std::cell::RefCell;
-use std::collections::HashSet;
-use std::path::Path;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashSet,
+    fs::{self, File},
+    path::{Path, PathBuf},
+    process::Command,
+    rc::Rc,
+    slice,
+    sync::Arc,
+};
 
-use gpui::{Context, Window, div, prelude::*};
+use gpui::{
+    App, AppContext, AvailableSpace, ClipboardEntry, ClipboardItem, Context, Entity, ExternalPaths,
+    FileDropEvent, FocusHandle, KeyBinding, Modifiers, MouseButton, Render, TestAppContext,
+    VisualTestContext, Window, div, point, prelude::*, px,
+};
 use zcv_actions::{
     TreeActivate, TreeCancelConflict, TreeCancelEdit, TreeClearClipboard, TreeConfirmEdit,
     TreeCopy, TreeCut, TreeNewEntry, TreePaste, TreeRename, TreeSelectNextExtend, TreeTrash,
@@ -17,15 +26,10 @@ use zcv_path::AbsolutePathBuf;
 use zcv_project::Project;
 use zcv_ui::{ConfirmAnswer, tree_row_height};
 
-use super::editing::EditOperation;
-use super::execute::HOVER_EXPAND_DELAY;
-use super::transfer::{TransferMode, TreeClipboard};
-
-use std::cell::Cell;
-
-use gpui::{
-    AppContext, ClipboardEntry, ClipboardItem, Entity, ExternalPaths, FileDropEvent, FocusHandle,
-    KeyBinding, Modifiers, MouseButton, Render, TestAppContext, VisualTestContext, point, px,
+use super::{
+    editing::EditOperation,
+    execute::HOVER_EXPAND_DELAY,
+    transfer::{TransferMode, TreeClipboard},
 };
 
 use super::*;
@@ -62,14 +66,14 @@ fn test_languages() -> Arc<LanguageRegistry> {
     Arc::new(LanguageRegistry::new())
 }
 
-fn test_project(root: std::path::PathBuf, cx: &mut TestAppContext) -> gpui::Entity<Project> {
+fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
     cx.new(|cx| {
         Project::new_with_watcher(root, Arc::new(TestWatcher::new()), test_languages(), cx)
             .expect("测试项目根目录应可规范化")
     })
 }
 
-fn abs(path: impl Into<std::path::PathBuf>) -> AbsolutePathBuf {
+fn abs(path: impl Into<PathBuf>) -> AbsolutePathBuf {
     let path = path.into();
     AbsolutePathBuf::canonicalize(&path)
         .or_else(|_| AbsolutePathBuf::new(path))
@@ -97,7 +101,7 @@ impl Render for TreeFocusHost {
     }
 }
 
-fn focus_tree(tree: &gpui::Entity<ProjectTreePanel>, cx: &mut VisualTestContext) {
+fn focus_tree(tree: &Entity<ProjectTreePanel>, cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         let focus = tree.read(cx).focus.clone();
         window.focus(&focus, cx);
@@ -140,8 +144,8 @@ fn project_tree_visible_render_cost(cx: &mut TestAppContext) {
         visual.draw(
             point(px(0.), px(0.)),
             gpui::size(
-                gpui::AvailableSpace::Definite(px(400.)),
-                gpui::AvailableSpace::Definite(px(600.)),
+                AvailableSpace::Definite(px(400.)),
+                AvailableSpace::Definite(px(600.)),
             ),
             |_, _| tree.clone().into_any_element(),
         );
@@ -167,7 +171,7 @@ fn rows_are_cached_until_rebuild_reinjects_them() {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let file = root.join("cached.txt");
-    std::fs::write(&file, "content").expect("应创建测试文件");
+    fs::write(&file, "content").expect("应创建测试文件");
     let mut state = TreeState::new(|row: &ProjectTreeRow| Some(row.path.clone()));
     let rows = vec![
         ProjectTreeRow {
@@ -195,7 +199,7 @@ fn rows_are_cached_until_rebuild_reinjects_them() {
     state.replace_rows(rows);
 
     // 渲染读取的是注入的缓存：文件系统变化不影响行模型。
-    std::fs::remove_file(&file).expect("应删除测试文件");
+    fs::remove_file(&file).expect("应删除测试文件");
     assert!(state.rows().iter().any(|row| row.path.as_path() == file));
 
     // 只有显式重建（由 ProjectTreePanel 调 worktree 遍历）才会反映文件系统。
@@ -218,9 +222,9 @@ fn revealing_active_file_expands_ancestors_and_keeps_mark_separate_from_selectio
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let nested = root.join("src").join("feature");
-    std::fs::create_dir_all(&nested).expect("应创建嵌套目录");
+    fs::create_dir_all(&nested).expect("应创建嵌套目录");
     let file = nested.join("mod.rs");
-    std::fs::write(&file, "content").expect("应创建测试文件");
+    fs::write(&file, "content").expect("应创建测试文件");
     let project = test_project(root.clone(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
 
@@ -264,7 +268,7 @@ fn revealing_active_file_expands_ancestors_and_keeps_mark_separate_from_selectio
 fn revealing_path_outside_project_clears_active_mark(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let file = directory.path().join("active.txt");
-    std::fs::write(&file, "content").expect("应创建测试文件");
+    fs::write(&file, "content").expect("应创建测试文件");
     let project = test_project(directory.path().to_path_buf(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
 
@@ -285,8 +289,8 @@ fn applying_directory_rename_migrates_tree_paths(cx: &mut TestAppContext) {
     let root = abs(directory.path()).into_path_buf();
     let old_directory = root.join("old");
     let old_file = old_directory.join("mod.rs");
-    std::fs::create_dir(&old_directory).expect("应创建待重命名目录");
-    std::fs::write(&old_file, "content").expect("应创建测试文件");
+    fs::create_dir(&old_directory).expect("应创建待重命名目录");
+    fs::write(&old_file, "content").expect("应创建测试文件");
     let project = test_project(root.clone(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
 
@@ -296,7 +300,7 @@ fn applying_directory_rename_migrates_tree_paths(cx: &mut TestAppContext) {
     });
 
     let new_directory = root.join("new");
-    std::fs::rename(&old_directory, &new_directory).expect("应重命名测试目录");
+    fs::rename(&old_directory, &new_directory).expect("应重命名测试目录");
     tree.update(cx, |tree, cx| {
         tree.apply_rename(&old_directory, &new_directory, cx)
     });
@@ -331,7 +335,7 @@ fn space_edits_the_name_instead_of_activating_the_row_while_renaming(cx: &mut Te
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let file = root.join("old.txt");
-    std::fs::write(&file, "content").expect("应创建测试文件");
+    fs::write(&file, "content").expect("应创建测试文件");
     let project_root = root;
     let selected_file = file.clone();
     let open_count = Rc::new(Cell::new(0));
@@ -374,7 +378,7 @@ fn first_click_on_unfocused_tree_focuses_and_opens(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project_root = abs(directory.path()).into_path_buf();
     let file = project_root.join("a.txt");
-    std::fs::write(&file, "hello").expect("应创建测试文件");
+    fs::write(&file, "hello").expect("应创建测试文件");
 
     // 记录每次打开回调的 focus_opened_item：单击临时打开应为 false，双击激活应为 true。
     let open_count = Rc::new(Cell::new(0));
@@ -402,7 +406,7 @@ fn first_click_on_unfocused_tree_focuses_and_opens(cx: &mut TestAppContext) {
     let click = |cx: &mut VisualTestContext| {
         cx.simulate_click(
             point(px(10.), px(f32::from(row_height) + 1.)),
-            gpui::Modifiers::default(),
+            Modifiers::default(),
         );
         cx.run_until_parked();
     };
@@ -431,12 +435,12 @@ fn rename_actions_edit_and_confirm_the_selected_row(cx: &mut TestAppContext) {
     let root = abs(directory.path()).into_path_buf();
     let old_path = root.join("old.txt");
     let new_path = root.join("new.txt");
-    std::fs::write(&old_path, "content").expect("应创建测试文件");
+    fs::write(&old_path, "content").expect("应创建测试文件");
     let project = test_project(root, cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     tree.update(cx, |tree, _| {
         tree.set_on_rename(Rc::new(|from, to, _| {
-            std::fs::rename(from, to)?;
+            fs::rename(from, to)?;
             Ok(())
         }));
         tree.state.borrow_mut().select(abs(old_path.clone()));
@@ -470,7 +474,7 @@ fn canceling_tree_edit_keeps_focus_that_already_moved_elsewhere(cx: &mut TestApp
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let path = root.join("entry.txt");
-    std::fs::write(&path, "content").expect("应创建测试文件");
+    fs::write(&path, "content").expect("应创建测试文件");
     let project = test_project(root, cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project, cx));
     tree.update(cx, |tree, _| tree.state.borrow_mut().select(abs(path)));
@@ -497,9 +501,9 @@ fn creating_entry_reveals_the_name_editor_outside_the_viewport(cx: &mut TestAppC
     let root = abs(directory.path()).into_path_buf();
     let parent = root.join("zz-target");
     for index in 0..80 {
-        std::fs::create_dir(root.join(format!("dir-{index:03}"))).expect("应创建测试目录");
+        fs::create_dir(root.join(format!("dir-{index:03}"))).expect("应创建测试目录");
     }
-    std::fs::create_dir(&parent).expect("应创建目标目录");
+    fs::create_dir(&parent).expect("应创建目标目录");
     let project = test_project(root.clone(), cx);
     let (tree, visual) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
     visual.run_until_parked();
@@ -555,11 +559,11 @@ fn one_create_action_infers_nested_files_and_directories_from_the_path(cx: &mut 
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     tree.update(cx, |tree, _| {
         tree.set_on_create(Rc::new(|path, is_dir, _| {
-            std::fs::create_dir_all(path.parent().unwrap())?;
+            fs::create_dir_all(path.parent().unwrap())?;
             if is_dir {
-                std::fs::create_dir(path)?;
+                fs::create_dir(path)?;
             } else {
-                std::fs::File::create(path)?;
+                File::create(path)?;
             }
             Ok(())
         }));
@@ -623,7 +627,7 @@ fn creating_file_leaves_focus_in_the_opened_editor(cx: &mut TestAppContext) {
             tree.update(cx, |tree, _| {
                 tree.set_on_create(Rc::new(|path, is_dir, _| {
                     assert!(!is_dir);
-                    std::fs::File::create(path)?;
+                    File::create(path)?;
                     Ok(())
                 }));
                 let editor_focus = editor_focus.clone();
@@ -689,15 +693,15 @@ fn trash_action_moves_the_selected_row_to_trash_and_selects_the_next_row(cx: &mu
     let root = abs(directory.path()).into_path_buf();
     let trashed_file = root.join("trash-me.txt");
     let kept_file = root.join("keep.txt");
-    std::fs::write(&trashed_file, "content").expect("应创建测试文件");
-    std::fs::write(&kept_file, "content").expect("应创建测试文件");
+    fs::write(&trashed_file, "content").expect("应创建测试文件");
+    fs::write(&kept_file, "content").expect("应创建测试文件");
     let project = test_project(root, cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     let trashed = Rc::new(RefCell::new(None));
     let trashed_path = Rc::clone(&trashed);
     tree.update(cx, |tree, _| {
         tree.set_on_trash(Rc::new(move |path, _, _| {
-            std::fs::remove_file(&path)?;
+            fs::remove_file(&path)?;
             *trashed_path.borrow_mut() = Some(path);
             Ok(())
         }));
@@ -758,12 +762,12 @@ fn trash_action_selects_the_last_row_after_deleting_the_final_entry(cx: &mut Tes
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let only_file = root.join("only.txt");
-    std::fs::write(&only_file, "content").expect("应创建测试文件");
+    fs::write(&only_file, "content").expect("应创建测试文件");
     let project = test_project(root.clone(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     tree.update(cx, |tree, _| {
         tree.set_on_trash(Rc::new(|path, _, _| {
-            std::fs::remove_file(path)?;
+            fs::remove_file(path)?;
             Ok(())
         }));
         tree.state.borrow_mut().select(abs(only_file.clone()));
@@ -796,10 +800,10 @@ fn git_status_events_update_row_colors(cx: &mut TestAppContext) {
 
     // 修改文件 → git 增量刷新 → StatusesChanged 事件 → 行颜色更新。
     let file = root.join("tracked.txt");
-    std::fs::write(&file, "已修改\n").expect("应修改文件");
+    fs::write(&file, "已修改\n").expect("应修改文件");
     project.update(cx, |project, cx| {
         project.git_store().update(cx, |store, cx| {
-            store.refresh_statuses_for_paths(std::slice::from_ref(&file), cx);
+            store.refresh_statuses_for_paths(slice::from_ref(&file), cx);
         });
     });
     cx.run_until_parked();
@@ -823,11 +827,11 @@ fn git_status_events_color_directories_with_changed_children(cx: &mut TestAppCon
     let (root, _temp) = test_git_repo();
     // 建子目录并提交一个文件。
     let src = root.join("src");
-    std::fs::create_dir_all(&src).expect("应创建目录");
+    fs::create_dir_all(&src).expect("应创建目录");
     let src_file = src.join("main.rs");
-    std::fs::write(&src_file, "fn main() {}\n").expect("应创建文件");
+    fs::write(&src_file, "fn main() {}\n").expect("应创建文件");
     let run = |args: &[&str]| {
-        let output = std::process::Command::new("git")
+        let output = Command::new("git")
             .args(args)
             .current_dir(&root)
             .output()
@@ -842,10 +846,10 @@ fn git_status_events_color_directories_with_changed_children(cx: &mut TestAppCon
     cx.run_until_parked();
 
     // 修改目录内文件 → 增量刷新 → 目录行聚合为 modified。
-    std::fs::write(&src_file, "fn main() { println!(); }\n").expect("应修改文件");
+    fs::write(&src_file, "fn main() { println!(); }\n").expect("应修改文件");
     project.update(cx, |project, cx| {
         project.git_store().update(cx, |store, cx| {
-            store.refresh_statuses_for_paths(std::slice::from_ref(&src_file), cx);
+            store.refresh_statuses_for_paths(slice::from_ref(&src_file), cx);
         });
     });
     cx.run_until_parked();
@@ -869,9 +873,9 @@ fn expanding_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
     // 回归：展开目录产生的新行此前未查询过，git 状态缓存需在展开时补齐。
     let (root, _temp) = test_git_repo();
     let sub = root.join("sub");
-    std::fs::create_dir_all(&sub).expect("应创建目录");
+    fs::create_dir_all(&sub).expect("应创建目录");
     let sub_file = sub.join("untracked.txt");
-    std::fs::write(&sub_file, "x\n").expect("应创建文件");
+    fs::write(&sub_file, "x\n").expect("应创建文件");
 
     let project = test_project(root.clone(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
@@ -905,9 +909,9 @@ fn activating_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
     // 展开后的新行 git 状态需在激活时补齐。
     let (root, _temp) = test_git_repo();
     let sub = root.join("sub");
-    std::fs::create_dir_all(&sub).expect("应创建目录");
+    fs::create_dir_all(&sub).expect("应创建目录");
     let sub_file = sub.join("untracked.txt");
-    std::fs::write(&sub_file, "x\n").expect("应创建文件");
+    fs::write(&sub_file, "x\n").expect("应创建文件");
 
     let project = test_project(root.clone(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
@@ -943,7 +947,7 @@ fn test_git_repo() -> (PathBuf, tempfile::TempDir) {
     let temp_dir = tempfile::tempdir().expect("应创建临时目录");
     let root = abs(temp_dir.path()).into_path_buf();
     let run = |args: &[&str]| {
-        let output = std::process::Command::new("git")
+        let output = Command::new("git")
             .args(args)
             .current_dir(&root)
             .output()
@@ -958,7 +962,7 @@ fn test_git_repo() -> (PathBuf, tempfile::TempDir) {
     run(&["init", "-q", "-b", "master"]);
     run(&["config", "user.email", "test@example.com"]);
     run(&["config", "user.name", "Test User"]);
-    std::fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
+    fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
     run(&["add", "tracked.txt"]);
     run(&["commit", "-q", "-m", "initial"]);
     (root, temp_dir)
@@ -970,11 +974,11 @@ fn test_git_repo() -> (PathBuf, tempfile::TempDir) {
 #[gpui::test]
 fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
-    std::fs::write(root.join(".gitignore"), "tmp/\n").expect("应写入 .gitignore");
+    fs::write(root.join(".gitignore"), "tmp/\n").expect("应写入 .gitignore");
     let tmp = root.join("tmp");
     let child = tmp.join("cordis-tutorial");
-    std::fs::create_dir_all(&child).expect("应创建 tmp/子目录");
-    std::fs::write(child.join("note.md"), "x\n").expect("应创建文件");
+    fs::create_dir_all(&child).expect("应创建 tmp/子目录");
+    fs::write(child.join("note.md"), "x\n").expect("应创建文件");
 
     let project = test_project(root.clone(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
@@ -1028,8 +1032,8 @@ fn rapid_clicks_toggle_directory_each_click(cx: &mut TestAppContext) {
     // 快速连点：每次点击目录都切换展开/折叠（click_count 递增，不能吞掉 2+ 次点击）。
     let (root, _temp) = test_git_repo();
     let sub = root.join("sub");
-    std::fs::create_dir_all(&sub).expect("应创建目录");
-    std::fs::write(sub.join("file.txt"), "x\n").expect("应创建文件");
+    fs::create_dir_all(&sub).expect("应创建目录");
+    fs::write(sub.join("file.txt"), "x\n").expect("应创建文件");
 
     let project = test_project(root.clone(), cx);
     let (tree, cx) = cx.add_window_view({
@@ -1038,7 +1042,7 @@ fn rapid_clicks_toggle_directory_each_click(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    let click = |tree: &gpui::Entity<ProjectTreePanel>, cx: &mut VisualTestContext| {
+    let click = |tree: &Entity<ProjectTreePanel>, cx: &mut VisualTestContext| {
         cx.update(|window, cx| {
             tree.update(cx, |tree, _| {
                 tree.state.borrow_mut().select(abs(sub.clone()))
@@ -1073,7 +1077,7 @@ fn three_file_project(
     cx: &mut TestAppContext,
 ) -> (
     tempfile::TempDir,
-    gpui::Entity<Project>,
+    Entity<Project>,
     PathBuf,
     PathBuf,
     PathBuf,
@@ -1083,9 +1087,9 @@ fn three_file_project(
     let file_a = root.join("a.txt");
     let file_b = root.join("b.txt");
     let file_c = root.join("c.txt");
-    std::fs::write(&file_a, "a").expect("应创建测试文件");
-    std::fs::write(&file_b, "b").expect("应创建测试文件");
-    std::fs::write(&file_c, "c").expect("应创建测试文件");
+    fs::write(&file_a, "a").expect("应创建测试文件");
+    fs::write(&file_b, "b").expect("应创建测试文件");
+    fs::write(&file_c, "c").expect("应创建测试文件");
     let project = test_project(root.clone(), cx);
     (directory, project, file_a, file_b, file_c)
 }
@@ -1112,13 +1116,13 @@ fn shift_click_extends_selection_range(cx: &mut TestAppContext) {
     // 先普通点击 a.txt（行 1）建立单选锚点。
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 1.0 + 1.)),
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
     cx.run_until_parked();
     // shift 点击 c.txt（行 3）：区间扩展为 {a, b, c}。
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 3.0 + 1.)),
-        gpui::Modifiers {
+        Modifiers {
             shift: true,
             ..Default::default()
         },
@@ -1161,16 +1165,16 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
     // 普通点击 a.txt（行 1）建立单选。
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 1.0 + 1.)),
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
     // secondary 点击 b.txt（行 2）与 c.txt（行 3）：逐项加入集合。
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 2.0 + 1.)),
-        gpui::Modifiers::secondary_key(),
+        Modifiers::secondary_key(),
     );
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 3.0 + 1.)),
-        gpui::Modifiers::secondary_key(),
+        Modifiers::secondary_key(),
     );
     cx.run_until_parked();
 
@@ -1196,7 +1200,7 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
     // 再次 secondary 点击 c.txt：移除标记，游标留在该行，并入的首项保留。
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 3.0 + 1.)),
-        gpui::Modifiers::secondary_key(),
+        Modifiers::secondary_key(),
     );
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
@@ -1255,7 +1259,7 @@ fn trash_action_deletes_multiple_selected_rows(cx: &mut TestAppContext) {
     let recorded = Rc::clone(&trashed_paths);
     tree.update(cx, |tree, _| {
         tree.set_on_trash(Rc::new(move |path, _, _| {
-            std::fs::remove_file(&path)?;
+            fs::remove_file(&path)?;
             recorded.borrow_mut().push(path);
             Ok(())
         }));
@@ -1298,7 +1302,7 @@ fn scheduled_refresh_coalesces_rapid_entries_changed_events(cx: &mut TestAppCont
 
     // 批量新建文件后连发两次 EntriesChanged（模拟事件风暴）。
     let file = abs(temp.path()).into_path_buf().join("new.txt");
-    std::fs::write(&file, "content").expect("应创建测试文件");
+    fs::write(&file, "content").expect("应创建测试文件");
     tree.update(cx, |tree, cx| tree.schedule_refresh(cx));
     tree.update(cx, |tree, cx| tree.schedule_refresh(cx));
     cx.run_until_parked();
@@ -1329,7 +1333,7 @@ fn paste_project(
     cx: &mut TestAppContext,
 ) -> (
     tempfile::TempDir,
-    gpui::Entity<Project>,
+    Entity<Project>,
     PathBuf,
     PathBuf,
     PathBuf,
@@ -1340,9 +1344,9 @@ fn paste_project(
     let file_a = root.join("a.txt");
     let file_b = root.join("b.txt");
     let target = root.join("dst");
-    std::fs::write(&file_a, "a").expect("应创建测试文件");
-    std::fs::write(&file_b, "b").expect("应创建测试文件");
-    std::fs::create_dir(&target).expect("应创建目标目录");
+    fs::write(&file_a, "a").expect("应创建测试文件");
+    fs::write(&file_b, "b").expect("应创建测试文件");
+    fs::create_dir(&target).expect("应创建目标目录");
     let project = test_project(root.clone(), cx);
     (directory, project, root, file_a, file_b, target)
 }
@@ -1352,7 +1356,7 @@ fn pasting_external_file_uses_selected_directory(cx: &mut TestAppContext) {
     let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
     let external = tempfile::tempdir().expect("应创建外部目录");
     let source = external.path().join("外部.txt");
-    std::fs::write(&source, "导入内容").expect("应创建外部文件");
+    fs::write(&source, "导入内容").expect("应创建外部文件");
     let selected = target.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project, cx);
@@ -1388,8 +1392,8 @@ fn external_paste_conflict_uses_existing_confirmation(cx: &mut TestAppContext) {
     let (_temp, project, _root, _file_a, _file_b, target) = paste_project(cx);
     let external = tempfile::tempdir().expect("应创建外部目录");
     let source = external.path().join("a.txt");
-    std::fs::write(&source, "新内容").expect("应创建外部文件");
-    std::fs::write(target.join("a.txt"), "旧内容").expect("应创建目标文件");
+    fs::write(&source, "新内容").expect("应创建外部文件");
+    fs::write(target.join("a.txt"), "旧内容").expect("应创建目标文件");
     let selected = target.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let tree = ProjectTreePanel::new(project, cx);
@@ -1437,7 +1441,7 @@ fn drag_project(
     cx: &mut TestAppContext,
 ) -> (
     tempfile::TempDir,
-    gpui::Entity<Project>,
+    Entity<Project>,
     PathBuf,
     PathBuf,
     PathBuf,
@@ -1450,10 +1454,10 @@ fn drag_project(
     let file_b = root.join("b.txt");
     let file_c = root.join("c.txt");
     let target = root.join("dst");
-    std::fs::write(&file_a, "a").expect("应创建测试文件");
-    std::fs::write(&file_b, "b").expect("应创建测试文件");
-    std::fs::write(&file_c, "c").expect("应创建测试文件");
-    std::fs::create_dir(&target).expect("应创建目标目录");
+    fs::write(&file_a, "a").expect("应创建测试文件");
+    fs::write(&file_b, "b").expect("应创建测试文件");
+    fs::write(&file_c, "c").expect("应创建测试文件");
+    fs::create_dir(&target).expect("应创建目标目录");
     let project = test_project(root.clone(), cx);
     (directory, project, root, file_a, file_b, file_c, target)
 }
@@ -1601,10 +1605,10 @@ fn copy_paste_recurses_into_directories_with_chinese_names(cx: &mut TestAppConte
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().to_path_buf();
     let source_dir = root.join("源码");
-    std::fs::create_dir_all(source_dir.join("嵌套")).expect("应创建嵌套目录");
-    std::fs::write(source_dir.join("嵌套").join("中文文件.txt"), "内容").expect("应创建测试文件");
+    fs::create_dir_all(source_dir.join("嵌套")).expect("应创建嵌套目录");
+    fs::write(source_dir.join("嵌套").join("中文文件.txt"), "内容").expect("应创建测试文件");
     let target = root.join("备份");
-    std::fs::create_dir(&target).expect("应创建目标目录");
+    fs::create_dir(&target).expect("应创建目标目录");
     let project = test_project(root.clone(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
@@ -1641,7 +1645,7 @@ fn cut_paste_moves_file_and_degrades_clipboard(cx: &mut TestAppContext) {
     let project_for_move = project.clone();
     tree.update(cx, |tree, _| {
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -1686,9 +1690,9 @@ fn paste_into_file_row_targets_parent_directory(cx: &mut TestAppContext) {
     let root = directory.path().to_path_buf();
     let anchor = root.join("a.txt");
     let source = root.join("src").join("x.txt");
-    std::fs::write(&anchor, "anchor").expect("应创建测试文件");
-    std::fs::create_dir_all(root.join("src")).expect("应创建源目录");
-    std::fs::write(&source, "x").expect("应创建测试文件");
+    fs::write(&anchor, "anchor").expect("应创建测试文件");
+    fs::create_dir_all(root.join("src")).expect("应创建源目录");
+    fs::write(&source, "x").expect("应创建测试文件");
     let project = test_project(root.clone(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
@@ -1713,8 +1717,8 @@ fn paste_into_file_row_targets_parent_directory(cx: &mut TestAppContext) {
 fn paste_conflict_confirm_overwrites_target_item_by_item(cx: &mut TestAppContext) {
     let (_temp, project, _root, file_a, file_b, target) = paste_project(cx);
     // 预置两个同名冲突目标。
-    std::fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
-    std::fs::write(target.join("b.txt"), "旧 b").expect("应创建冲突目标");
+    fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
+    fs::write(target.join("b.txt"), "旧 b").expect("应创建冲突目标");
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
 
@@ -1777,7 +1781,7 @@ fn paste_conflict_confirm_overwrites_target_item_by_item(cx: &mut TestAppContext
 fn conflict_session_defers_clean_items_until_resolved(cx: &mut TestAppContext) {
     let (_temp, project, _root, file_a, file_b, target) = paste_project(cx);
     // 仅 b.txt 与目标同名冲突；a.txt 为非冲突项。
-    std::fs::write(target.join("b.txt"), "旧 b").expect("应创建冲突目标");
+    fs::write(target.join("b.txt"), "旧 b").expect("应创建冲突目标");
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
 
@@ -1823,7 +1827,7 @@ fn conflict_session_defers_clean_items_until_resolved(cx: &mut TestAppContext) {
 #[gpui::test]
 fn paste_conflict_skip_keeps_both_sides(cx: &mut TestAppContext) {
     let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
-    std::fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
+    fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
 
@@ -1860,7 +1864,7 @@ fn paste_conflict_skip_keeps_both_sides(cx: &mut TestAppContext) {
 #[gpui::test]
 fn paste_conflict_cancel_changes_nothing(cx: &mut TestAppContext) {
     let (_temp, project, _root, file_a, file_b, target) = paste_project(cx);
-    std::fs::write(target.join("b.txt"), "旧 b").expect("应创建冲突目标");
+    fs::write(target.join("b.txt"), "旧 b").expect("应创建冲突目标");
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
 
@@ -1925,7 +1929,7 @@ fn paste_without_clipboard_is_noop(cx: &mut TestAppContext) {
 #[gpui::test]
 fn escape_keystroke_cancels_conflict_session(cx: &mut TestAppContext) {
     let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
-    std::fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
+    fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
 
     // 面板作为窗口根视图（key_context 才能进入按键分发链），
     // 同时注册 escape 绑定（keymap 的 ProjectTree && conflict 分组）。
@@ -2104,7 +2108,7 @@ fn escape_without_clipboard_is_noop(cx: &mut TestAppContext) {
 #[gpui::test]
 fn escape_during_conflict_cancels_conflict_and_keeps_clipboard(cx: &mut TestAppContext) {
     let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
-    std::fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
+    fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
 
     // 与 keymap 一致的分组与顺序：not_editing 先注册、conflict 后注册，
     // 同深度命中时后注册者优先——冲突态下 escape 仍取消冲突而非清空剪贴板。
@@ -2189,7 +2193,7 @@ fn dragging_external_file_into_directory_copies_it(cx: &mut TestAppContext) {
     let (_temp, project, _root, _file_a, _file_b, target) = paste_project(cx);
     let external = tempfile::tempdir().expect("应创建外部目录");
     let source = external.path().join("拖入.txt");
-    std::fs::write(&source, "拖入内容").expect("应创建外部文件");
+    fs::write(&source, "拖入内容").expect("应创建外部文件");
     let (_tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
     cx.run_until_parked();
 
@@ -2213,7 +2217,7 @@ fn dragging_external_file_into_directory_copies_it(cx: &mut TestAppContext) {
 fn external_drag_keeps_scrolling_at_edge_and_stops_on_exit(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建项目目录");
     for index in 0..100 {
-        std::fs::write(
+        fs::write(
             directory.path().join(format!("file-{index:03}.txt")),
             "内容",
         )
@@ -2221,7 +2225,7 @@ fn external_drag_keeps_scrolling_at_edge_and_stops_on_exit(cx: &mut TestAppConte
     }
     let external = tempfile::tempdir().expect("应创建外部目录");
     let source = external.path().join("外部.txt");
-    std::fs::write(&source, "外部内容").expect("应创建外部文件");
+    fs::write(&source, "外部内容").expect("应创建外部文件");
     let project = test_project(directory.path().to_path_buf(), cx);
     let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
     cx.run_until_parked();
@@ -2295,7 +2299,7 @@ fn external_drag_keeps_scrolling_at_edge_and_stops_on_exit(cx: &mut TestAppConte
 fn internal_drag_keeps_scrolling_at_edge(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建项目目录");
     for index in 0..100 {
-        std::fs::write(
+        fs::write(
             directory.path().join(format!("file-{index:03}.txt")),
             "内容",
         )
@@ -2347,7 +2351,7 @@ fn drag_file_into_directory_moves_it_via_move_pipeline(cx: &mut TestAppContext) 
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         // 装配层注入的真实回调：转发数据层 move_path。
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -2389,7 +2393,7 @@ fn drag_from_marked_row_moves_the_whole_multi_selection(cx: &mut TestAppContext)
     let (_tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -2428,7 +2432,7 @@ fn drag_does_not_open_file_preview_and_keeps_selection(cx: &mut TestAppContext) 
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -2446,8 +2450,8 @@ fn drag_does_not_open_file_preview_and_keeps_selection(cx: &mut TestAppContext) 
     // 记录打开次数后从 a 行拖起放到 dst。
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
-    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
+    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
     cx.run_until_parked();
     let opened_before_drag = open_count.get();
     simulate_drag(cx, 2, 1);
@@ -2467,14 +2471,14 @@ fn drag_directory_row_does_not_toggle_expansion(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().to_path_buf();
     let src = root.join("src");
-    std::fs::create_dir(&src).expect("应创建源目录");
-    std::fs::write(src.join("inner.txt"), "x").expect("应创建测试文件");
+    fs::create_dir(&src).expect("应创建源目录");
+    fs::write(src.join("inner.txt"), "x").expect("应创建测试文件");
     let project = test_project(root.clone(), cx);
     let project_for_move = project.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -2511,7 +2515,7 @@ fn drag_after_cmd_click_multi_selection_moves_all_items(cx: &mut TestAppContext)
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -2525,9 +2529,9 @@ fn drag_after_cmd_click_multi_selection_moves_all_items(cx: &mut TestAppContext)
     // 行序 [根, dst, a, b, c]：真实点击序列——普通点击 a 后逐个 cmd 点击 b、c。
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
-    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
-    cx.simulate_click(point(px(10.), row_y(4)), gpui::Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
+    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(4)), Modifiers::secondary_key());
     cx.run_until_parked();
 
     // 从首个点选行（a，行 2）拖起放到 dst（行 1）：a 必须仍在多选集合内。
@@ -2560,7 +2564,7 @@ fn drag_uses_updated_selection_with_same_item_count(cx: &mut TestAppContext) {
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -2573,12 +2577,12 @@ fn drag_uses_updated_selection_with_same_item_count(cx: &mut TestAppContext) {
 
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
-    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
+    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
     cx.run_until_parked();
 
-    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::secondary_key());
-    cx.simulate_click(point(px(10.), row_y(4)), gpui::Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(4)), Modifiers::secondary_key());
     cx.run_until_parked();
     simulate_drag(cx, 3, 1);
 
@@ -2603,7 +2607,7 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -2617,8 +2621,8 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     // 普通点击 a（行 2）+ cmd 点击 b（行 3）：建立多选 {a, b} 并完成渲染。
-    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
+    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
         assert_eq!(
@@ -2632,17 +2636,17 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
     cx.simulate_mouse_down(
         point(px(10.), row_y(2)),
         MouseButton::Left,
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
     cx.simulate_mouse_move(
         point(px(14.), row_y(2)),
         MouseButton::Left,
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
     cx.simulate_mouse_move(
         point(px(10.), row_y(1)),
         MouseButton::Left,
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
     cx.run_until_parked();
 
@@ -2657,7 +2661,7 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
     cx.simulate_mouse_up(
         point(px(10.), row_y(1)),
         MouseButton::Left,
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
     cx.run_until_parked();
 
@@ -2679,7 +2683,7 @@ fn drag_after_unfocused_first_cmd_click_moves_all_items(cx: &mut TestAppContext)
     let (_tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -2691,8 +2695,8 @@ fn drag_after_unfocused_first_cmd_click_moves_all_items(cx: &mut TestAppContext)
     // 不预先聚焦，模拟用户从编辑器转向项目树的真实入口。
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
-    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::secondary_key());
-    cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
     cx.run_until_parked();
 
     // 从首项 a（行 2）拖起放到 dst（行 1）：a、b 都应被移动。
@@ -2716,7 +2720,7 @@ fn drag_after_shift_range_selection_moves_all_items(cx: &mut TestAppContext) {
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -2730,10 +2734,10 @@ fn drag_after_shift_range_selection_moves_all_items(cx: &mut TestAppContext) {
     // 普通点击 a（行 2）建立锚点，shift 点击 c（行 4）扩展区间 {a, b, c}。
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
-    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
     cx.simulate_click(
         point(px(10.), row_y(4)),
-        gpui::Modifiers {
+        Modifiers {
             shift: true,
             ..Default::default()
         },
@@ -2764,7 +2768,7 @@ fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAp
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -2778,8 +2782,8 @@ fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAp
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     // 第一轮：普通点击 a（行 2）+ cmd 点击 b（行 3），拖到 dst（行 1）。
-    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
+    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
     cx.run_until_parked();
     simulate_drag(cx, 2, 1);
     assert!(
@@ -2794,8 +2798,8 @@ fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAp
 
     // 第二轮：行序变为 [根, dst, dst/a.txt, dst/b.txt]（目录子项紧随目录）；
     // 点选两个已移入文件再多选，拖回根目录行（行 0），不得受首轮状态残留影响。
-    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
+    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
     cx.run_until_parked();
     simulate_drag(cx, 3, 0);
 
@@ -2815,8 +2819,8 @@ fn drag_directory_into_its_own_subtree_is_rejected(cx: &mut TestAppContext) {
     let root = directory.path().to_path_buf();
     let src = root.join("src");
     let inner = src.join("inner.txt");
-    std::fs::create_dir(&src).expect("应创建源目录");
-    std::fs::write(&inner, "inner").expect("应创建测试文件");
+    fs::create_dir(&src).expect("应创建源目录");
+    fs::write(&inner, "inner").expect("应创建测试文件");
     let project = test_project(root.clone(), cx);
     let move_called = Rc::new(Cell::new(false));
     let callback_called = Rc::clone(&move_called);
@@ -2854,7 +2858,7 @@ fn drag_hovering_folded_directory_expands_it_after_delay(cx: &mut TestAppContext
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -2923,7 +2927,7 @@ fn clicking_blank_area_below_rows_keeps_selection_and_focuses_panel(cx: &mut Tes
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let file = root.join("a.txt");
-    std::fs::write(&file, "hello").expect("应创建测试文件");
+    fs::write(&file, "hello").expect("应创建测试文件");
     let project = test_project(root, cx);
     let (tree, cx) = cx.add_window_view({
         let project = project.clone();
@@ -2998,7 +3002,7 @@ fn blank_click_between_multi_selection_and_drag_keeps_set(cx: &mut TestAppContex
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_move(Rc::new(
-            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
                 project_for_move.update(cx, |project, cx| {
                     project.move_path(&from, &to, overwrite, cx)
                 })
@@ -3012,14 +3016,14 @@ fn blank_click_between_multi_selection_and_drag_keeps_set(cx: &mut TestAppContex
     // 行序 [根, dst, a, b, c]：普通点击 a（行 2）+ cmd 点击 b（行 3）建立多选。
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
-    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
+    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
     cx.run_until_parked();
 
     // 点击行下方空白（共 5 行，y 明显越过 5×行高）。
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 5. + 10.)),
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
     cx.run_until_parked();
 
@@ -3054,7 +3058,7 @@ fn clicking_blank_area_without_prior_row_click_keeps_fallback_selection(cx: &mut
     // 本用例锁定：该兜底之外，空白点击自身不产生任何额外的选中写入。
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let file = directory.path().join("a.txt");
-    std::fs::write(&file, "hello").expect("应创建测试文件");
+    fs::write(&file, "hello").expect("应创建测试文件");
     let project = test_project(directory.path().to_path_buf(), cx);
     let (tree, cx) = cx.add_window_view({
         let project = project.clone();

@@ -4,16 +4,16 @@ use zcv_multi_buffer::{
 };
 
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
-use std::path::PathBuf;
+use std::{iter, path::PathBuf, rc::Rc, sync::Arc};
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging, PendingHunk};
 use zcv_language::LanguageRegistry;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
 
 use super::common::{buffer_text, focus_editor, inject_editor_diff, inject_file_diff, test_buffer};
 use super::*;
-use crate::display_map::test_support::{WrapRowKind, projected_line_text};
 use crate::display_map::{
     DisplayColumn, DisplayPoint, DisplayRow, DisplayRowEvent, HighlightStyles, hunk_rendering,
+    test_support::{WrapRowKind, projected_line_text},
 };
 
 /// 由绝对坐标切片构造按段解析输入，供渲染单元测试调用。
@@ -372,7 +372,7 @@ fn staging_one_hunk_preserves_the_remaining_hunk_decoration(cx: &mut TestAppCont
     editor.update(cx, |editor, cx| {
         editor.update_diff_excerpt_ranges(
             PathBuf::from("src/a.rs").as_path(),
-            DiffExcerptRanges::Windows(std::iter::once(20..30).collect()),
+            DiffExcerptRanges::Windows(iter::once(20..30).collect()),
             Some(first_range),
             cx,
         );
@@ -621,7 +621,7 @@ fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext)
         LanguageBuffer::new(
             raw_buffer,
             Some(PathBuf::from("default-macos.json")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -652,7 +652,7 @@ fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext)
     });
     cx.simulate_click(
         point(click.x + px(1.), click.y + line_height * 0.5),
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
 
     cx.read_entity(&editor, |editor, cx| {
@@ -945,7 +945,7 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1062,7 +1062,7 @@ fn toggling_crease_renders_ellipsis_element(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1094,7 +1094,7 @@ fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppC
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1110,7 +1110,7 @@ fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppC
     });
 
     // 默认测试字体下，首行 crease 位于 gutter 右侧的折叠指示列中心。
-    cx.simulate_click(point(px(54.), px(12.)), gpui::Modifiers::default());
+    cx.simulate_click(point(px(54.), px(12.)), Modifiers::default());
 
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
@@ -1215,7 +1215,7 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1276,7 +1276,7 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1334,7 +1334,7 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1398,7 +1398,7 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
         LanguageBuffer::new(
             raw_buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1452,7 +1452,7 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
             origin.x + click.x + (next.x - click.x) * 0.25,
             origin.y + click.y + line_height * 0.5,
         ),
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
@@ -1483,7 +1483,7 @@ fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1658,7 +1658,7 @@ fn plain_editor_batched_edits_and_reload_keep_display_aligned(cx: &mut TestAppCo
                     let boundaries: Vec<_> = expected
                         .char_indices()
                         .map(|(offset, _)| offset)
-                        .chain(std::iter::once(expected.len()))
+                        .chain(iter::once(expected.len()))
                         .collect();
                     let start_index = state as usize % boundaries.len();
                     let end_index = start_index
@@ -1827,7 +1827,7 @@ fn soft_wrap_renders_continuation_rows_and_click_hits_fragment(cx: &mut TestAppC
 
     // 点击第二个显示行（行高约 26px），光标应落在续行片段起点。
     // x 越过 gutter（约 60px）进入文本区，落在第二个显示行内。
-    cx.simulate_click(point(px(80.), px(30.)), gpui::Modifiers::default());
+    cx.simulate_click(point(px(80.), px(30.)), Modifiers::default());
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
             editor.selections(cx).primary().head(),
@@ -2137,7 +2137,7 @@ fn long_line_highlight_query_is_clipped_to_render_budget(cx: &mut TestAppContext
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -2173,7 +2173,7 @@ fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppCo
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -3163,7 +3163,7 @@ fn test_file_buffer(cx: &mut TestAppContext, path: &str, text: &str) -> Entity<L
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from(path)),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     })
@@ -3327,7 +3327,7 @@ fn folding_a_section_with_soft_wrap_enabled_keeps_wrap_map_invariant(cx: &mut Te
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("docs/架构决策记录.md")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -3366,8 +3366,8 @@ fn toggling_a_diff_hunk_emits_expansion_changed_once(cx: &mut TestAppContext) {
     let source = buffer.clone();
     cx.run_until_parked();
 
-    let events = std::rc::Rc::new(std::cell::Cell::new(0usize));
-    let observed = std::rc::Rc::clone(&events);
+    let events = Rc::new(std::cell::Cell::new(0usize));
+    let observed = Rc::clone(&events);
     let _subscription = cx.update(|_window, cx| {
         cx.subscribe(&editor, move |_, event: &EditorEvent, _| {
             if matches!(event, EditorEvent::DiffHunksExpandedChanged) {

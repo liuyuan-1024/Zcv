@@ -1,6 +1,4 @@
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::LazyLock;
+use std::{collections::BTreeMap, path::Path, sync::LazyLock};
 
 use serde::Deserialize;
 

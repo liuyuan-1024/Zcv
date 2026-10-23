@@ -1,7 +1,4 @@
-use std::cell::RefCell;
-use std::fs;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{cell::RefCell, fs, rc::Rc, sync::Arc};
 
 use gpui::{AppContext as _, Empty, TestAppContext};
 use zcv_language::LanguageRegistry;
@@ -84,7 +81,7 @@ fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("临时目录应可规范化");
     let path = root.join("source.txt");
-    std::fs::write(&path, "旧内容\n").expect("应创建源文件");
+    fs::write(&path, "旧内容\n").expect("应创建源文件");
     let project_root = AbsolutePathBuf::new(root).expect("测试项目根目录应为绝对路径");
     let project = cx.new(|cx| Project::new(project_root, Arc::new(LanguageRegistry::new()), cx));
     let source = project.update(cx, |project, cx| {

@@ -2,8 +2,7 @@
 //!
 //! 布局状态与窗口边界共用同一套键控与提交机制，保证两个文件域中的项目身份一致。
 
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 use anyhow::{Context as _, Result};
 use zcv_path::stable_identity;

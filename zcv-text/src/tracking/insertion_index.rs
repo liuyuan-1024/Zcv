@@ -9,11 +9,8 @@ use std::collections::BTreeSet;
 
 use sum_tree::{Bias, ContextLessSummary, Dimension, Item, SumTree, TreeMap};
 
-use super::anchor::Anchor;
-use super::locator::Locator;
-use crate::position_map::Affinity;
-use crate::transaction::EditList;
-use crate::types::BufferVersion;
+use super::{anchor::Anchor, locator::Locator};
+use crate::{position_map::Affinity, transaction::EditList, types::BufferVersion};
 
 /// 一次插入的稳定身份；0 保留给空文档。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]

@@ -4,8 +4,11 @@
 //! git 状态由项目树从 `GitStore` 的不可变快照按需派生。
 //! 本层只提供静态目录查询（`children`），展开、深度与可见行是项目树视图状态，由 UI 层自行构建。
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use zcv_git::{GitRepository, RealGitRepository};
@@ -107,7 +110,7 @@ impl TreeFilter {
 ///
 /// `collect_visible_entries` 逐层递归复用本函数，排序与排除规则天然一致。
 fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<WorktreeEntry> {
-    let mut entries: Vec<_> = match std::fs::read_dir(dir) {
+    let mut entries: Vec<_> = match fs::read_dir(dir) {
         Ok(rd) => rd
             .filter_map(|entry| {
                 let path = entry.ok()?.path();
@@ -206,7 +209,7 @@ pub(crate) fn find_git_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRe
         if dot_git.is_dir() {
             repositories.push(RealGitRepository::open(&dot_git)?);
         }
-        for entry in std::fs::read_dir(dir)? {
+        for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             // 找到仓库后不再深入其 .git 子树（objects/refs 等）。

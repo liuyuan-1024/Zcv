@@ -4,9 +4,11 @@
 //! 这里把 GitStore 持有的 HEAD/index 修订文档和当前工作区文本注入统一 diff 实体，并把工作区文本中的冲突标记映射为编辑器 hunk。
 //! app 只负责在 git/pane/editor 事件上注册订阅。
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use gpui::{App, Entity};
 use zcv_buffer_diff::BufferDiffInput;

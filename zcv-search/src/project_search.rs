@@ -3,13 +3,12 @@
 //! 与文件内搜索复用 SearchBar 会话和快捷键；本 Item 负责跨项目搜索，
 //! 并把按路径排序的 excerpts 写入 MultiBuffer。
 
-use std::any::TypeId;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{any::TypeId, path::PathBuf, time::Duration};
 
 use gpui::{
-    AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, ParentElement, Render,
-    SharedString, Styled, Subscription, Task, WeakEntity, Window, div, prelude::*,
+    AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
+    prelude::*,
 };
 use zcv_actions::{DeployBufferSearch, DeployProjectSearch};
 use zcv_editor::{Editor, EditorEvent};
@@ -378,7 +377,7 @@ impl Focusable for ProjectSearchView {
 }
 
 impl Render for ProjectSearchView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = color::current(cx);
         let (match_count, _) = SearchableItem::search_count(self, cx);
         let has_results = match_count > 0;
@@ -658,7 +657,7 @@ impl StatusItemView for ProjectSearchButton {
 }
 
 impl Render for ProjectSearchButton {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = self.workspace.clone();
         Button::icon("search-button", "icons/magnifying_glass.svg")
             .label("项目搜索")

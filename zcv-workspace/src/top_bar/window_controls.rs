@@ -1,16 +1,13 @@
 //! 窗口控制 —— 自绘 macOS 风格三色圆点。
 
-use gpui::{Window, div, prelude::*, px, rgb, svg};
+use gpui::{Div, Rgba, Stateful, Window, div, prelude::*, px, rgb, svg};
 use zcv_theme::scale;
 
 use crate::Workspace;
 
 const PIP_GROUP: &str = "window-controls.pips";
 
-pub(super) fn render(
-    window: &Window,
-    workspace: gpui::WeakEntity<Workspace>,
-) -> gpui::Stateful<gpui::Div> {
+pub(super) fn render(window: &Window, workspace: gpui::WeakEntity<Workspace>) -> Stateful<Div> {
     let active = window.is_window_active();
 
     div()
@@ -42,7 +39,7 @@ pub(super) fn render(
 
 // ── 私有渲染辅助函数 ─────────────────────────────────────────────────
 
-fn pip(pip: Pip, active: bool) -> gpui::Stateful<gpui::Div> {
+fn pip(pip: Pip, active: bool) -> Stateful<Div> {
     let id = match pip {
         Pip::Close => "window-controls.close",
         Pip::Minimize => "window-controls.minimize",
@@ -90,7 +87,7 @@ enum Pip {
 }
 
 impl Pip {
-    fn palette(self, active: bool) -> (gpui::Rgba, gpui::Rgba) {
+    fn palette(self, active: bool) -> (Rgba, Rgba) {
         if !active {
             return (rgb(0x6f7378), rgb(0x5c6066));
         }
@@ -110,7 +107,7 @@ impl Pip {
     }
 
     /// 悬停符号色（近似 macOS 交通灯：按钮色的深色调，红按钮深红褐、黄按钮深黄褐、绿按钮深绿）。
-    fn symbol_color(self) -> gpui::Rgba {
+    fn symbol_color(self) -> Rgba {
         match self {
             Pip::Close => rgb(0x460804),
             Pip::Minimize => rgb(0x90591d),

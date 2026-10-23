@@ -4,11 +4,14 @@
 //! 安装阶段只做 move 换入与订阅发布。EditList 归一化、存储实现和 public edit 入口不在这里定义。
 
 use super::prepared::{DerivedBufferState, PreparedTransaction};
-use crate::buffer::Buffer;
-use crate::buffer::history::{
-    HistoryEntry, HistoryState, TransactionSession, push_history_into, truncate_edit_history,
-};
 use crate::{
+    buffer::{
+        Buffer,
+        history::{
+            HistoryEntry, HistoryState, TransactionSession, push_history_into,
+            truncate_edit_history,
+        },
+    },
     config::LargeTransactionPolicy,
     errors::{EditError, TextError, TextResult, TransactionError},
     text_changes::TextPatch,

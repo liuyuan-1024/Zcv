@@ -3,9 +3,11 @@
 //! 本层位于 WrapMap 之上：文本换行坐标保持不变，文件标题和同文件片段分隔线作为不属于文本的虚拟显示块插入。
 //! 这样搜索、diff、诊断等宿主只负责提供 excerpts，滚动、命中测试、选区和通用文件标题都由 Editor 复用同一条管线。
 
-use std::collections::{BTreeSet, HashSet};
-use std::ops::Range;
-use std::sync::Arc;
+use std::{
+    collections::{BTreeSet, HashSet},
+    ops::Range,
+    sync::Arc,
+};
 
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_multi_buffer::{
@@ -14,10 +16,12 @@ use zcv_multi_buffer::{
 };
 use zcv_text::{Affinity, BufferId, CoordinateError, Line};
 
-use super::error::DisplayMapResult;
-use super::fold_map::{FoldBias, ProjectedLineIndex};
-use super::wrap_map::{WrapEdit, WrapRowKind, WrapRows, WrapSnapshot};
-use super::{DisplayColumn, DisplayPoint, DisplayRange, DisplayRow, WrapPoint, WrapRow};
+use super::{
+    DisplayColumn, DisplayPoint, DisplayRange, DisplayRow, WrapPoint, WrapRow,
+    error::DisplayMapResult,
+    fold_map::{FoldBias, ProjectedLineIndex},
+    wrap_map::{WrapEdit, WrapRowKind, WrapRows, WrapSnapshot},
+};
 
 pub(crate) const FILE_HEADER_HEIGHT: usize = 2;
 pub(super) const EXCERPT_BOUNDARY_HEIGHT: usize = 1;

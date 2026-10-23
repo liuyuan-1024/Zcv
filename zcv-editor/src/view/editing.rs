@@ -2,8 +2,7 @@
 //!
 //! 所有文本修改统一经 `Editor::change` 族提交编辑事务，handler 仅做参数翻译。
 
-use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use gpui::{App, ClipboardItem, Context, Window};
 use zcv_language::InputScope;

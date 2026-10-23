@@ -3,9 +3,11 @@
 //! 宿主事件只负责唤醒消费者；消费者读取当前 Snapshot，并消费自己的`TextChangeBatch`。
 //! 不同订阅者互不争抢，也不依赖 Buffer 上的全局待消费队列。
 
-use std::mem;
-use std::ops::Range;
-use std::sync::{Arc, Mutex, Weak};
+use std::{
+    mem,
+    ops::Range,
+    sync::{Arc, Mutex, Weak},
+};
 
 use crate::{
     position_map::PositionMap,

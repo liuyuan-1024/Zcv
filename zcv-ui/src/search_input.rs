@@ -7,14 +7,13 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, AnyElement, App, Div, IntoElement, ParentElement, SharedString, Window, div, prelude::*,
+    Action, AnyElement, App, Div, IntoElement, ParentElement, SharedString, ViewElement, Window,
+    div, prelude::*,
 };
 use zcv_actions::{FindNext, FindPrevious, ToggleCaseSensitive, ToggleRegex, ToggleWholeWord};
 use zcv_theme::{color, scale};
 
-use crate::button::Button;
-use crate::input_shell::InputShell;
-use crate::tooltip::ShortcutResolver;
+use crate::{button::Button, input_shell::InputShell, tooltip::ShortcutResolver};
 
 /// 匹配选项的当前状态,决定选项按钮是否高亮;会话侧可直接以它为状态字段。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -184,10 +183,10 @@ impl SearchInput {
 }
 
 impl IntoElement for SearchInput {
-    type Element = gpui::ViewElement<Self>;
+    type Element = ViewElement<Self>;
 
     fn into_element(self) -> Self::Element {
-        gpui::ViewElement::new(self)
+        ViewElement::new(self)
     }
 }
 

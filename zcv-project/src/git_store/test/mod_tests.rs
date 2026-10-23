@@ -1,8 +1,8 @@
-use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 #[cfg(unix)]
 use std::time::{Duration, Instant};
+use std::{fs, slice};
 
 use super::*;
 use crate::test_support::{rev_parse, run_git, test_git_repo};
@@ -99,7 +99,7 @@ fn failed_git_status_scan_keeps_last_valid_snapshot(cx: &mut gpui::TestAppContex
 fn total_diff_stat_merges_staged_and_unstaged(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     // 先做一次未暂存修改（1 增 1 删：改写第二行内容）。
-    std::fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n").expect("应写入文件");
+    fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n").expect("应写入文件");
     let git_store =
         cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
@@ -109,7 +109,7 @@ fn total_diff_stat_merges_staged_and_unstaged(cx: &mut gpui::TestAppContext) {
 
     // 暂存后再次修改：staged 与 unstaged 各计一份，合并计数。
     run_git(&root, &["add", "tracked.txt"]);
-    std::fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n第三行\n").expect("应写入文件");
+    fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n第三行\n").expect("应写入文件");
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     let total = cx.read_entity(&git_store, |store, _| store.total_diff_stat());
@@ -287,7 +287,7 @@ fn load_revision_text_returns_index_content(cx: &mut gpui::TestAppContext) {
     run_git(&root, &["add", "tracked.txt"]);
     fs::write(&path, "第二版工作区\n").expect("应更新工作区版本");
     cx.update_entity(&git_store, |store, cx| {
-        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+        store.refresh_statuses_for_paths(slice::from_ref(&path), cx)
     });
     cx.run_until_parked();
     assert_eq!(
@@ -597,7 +597,7 @@ fn revision_diff_source_survives_missing_and_present_transitions(cx: &mut gpui::
             }
         }
         store.update(cx, |store, cx| {
-            store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+            store.refresh_statuses_for_paths(slice::from_ref(&path), cx)
         });
         cx.run_until_parked();
         store.update(cx, |store, cx| {
@@ -654,7 +654,7 @@ fn binary_revision_is_not_installed_as_text_and_recovers_after_restage(
     fs::write(&path, "文本修订\n").unwrap();
     run_git(&root, &["add", "tracked.txt"]);
     store.update(cx, |store, cx| {
-        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+        store.refresh_statuses_for_paths(slice::from_ref(&path), cx)
     });
     cx.run_until_parked();
     store.read_with(cx, |store, cx| {
@@ -1100,7 +1100,7 @@ fn stage_paths_moves_file_between_sections(cx: &mut gpui::TestAppContext) {
 fn stage_paths_expands_directory_to_matching_files(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     // src 下的已跟踪修改 + 未跟踪新文件 + 子目录文件。
-    std::fs::create_dir_all(root.join("src/sub")).expect("应创建目录");
+    fs::create_dir_all(root.join("src/sub")).expect("应创建目录");
     fs::write(root.join("src/a.txt"), "改动的 a\n").expect("应写入文件");
     fs::write(root.join("src/new.txt"), "新文件\n").expect("应写入文件");
     fs::write(root.join("src/sub/b.txt"), "改动的 b\n").expect("应写入文件");
@@ -1204,7 +1204,7 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
     // index 文本变化：必须在同一实体上增量安装，而不是丢弃缓存另建实体。
     run_git(&root, &["add", "tracked.txt"]);
     cx.update_entity(&git_store, |store, cx| {
-        store.refresh_statuses_for_paths(std::slice::from_ref(&native_path), cx)
+        store.refresh_statuses_for_paths(slice::from_ref(&native_path), cx)
     });
     cx.run_until_parked();
     let third = git_store.update(cx, |store, cx| {

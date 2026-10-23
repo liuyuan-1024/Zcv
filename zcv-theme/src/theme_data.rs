@@ -4,8 +4,10 @@
 //!
 //! 新增内置主题只需提供主题描述符并登记到 `THEMES`，其余模块无需改动。
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+};
 
 use gpui::{
     FontStyle, FontWeight, HighlightStyle, Hsla, Rgba, StrikethroughStyle, UnderlineStyle,
@@ -79,7 +81,7 @@ fn parse_appearance(root: &toml::Table) -> Option<WindowAppearance> {
 /// 解析 `[colors]` 语义色。
 /// 全量必填：任一 key 缺失或色值非法即解析失败。
 fn parse_colors(colors: &toml::Table, appearance: WindowAppearance) -> Option<ThemeColors> {
-    let parse = |key: &str| -> Option<gpui::Rgba> {
+    let parse = |key: &str| -> Option<Rgba> {
         let hex = colors.get(key)?.as_str()?;
         parse_hex(hex)
     };

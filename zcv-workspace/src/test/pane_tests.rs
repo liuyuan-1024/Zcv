@@ -1,17 +1,18 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    AppContext, Context, EventEmitter, Pixels, Point, Render, TestAppContext, Window, div,
-    prelude::*,
+    AppContext, Context, EventEmitter, FocusHandle, Focusable, Pixels, Point, Render, SharedString,
+    TestAppContext, Window, div, prelude::*,
 };
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::MultiBuffer;
 use zcv_text::{Buffer, BufferConfig};
 
 use super::*;
-use crate::toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
-use crate::{Item, PreviewItem, PreviewItemHandle, PreviewProvider, register};
+use crate::{
+    Item, PreviewItem, PreviewItemHandle, PreviewProvider, register,
+    toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView},
+};
 
 /// 辅助视图类型，仅用于测试中创建窗口。
 struct TestView;
@@ -150,7 +151,7 @@ struct TestSourceItem {
     multi_buffer: Entity<MultiBuffer>,
     path: PathBuf,
     dirty: bool,
-    focus: gpui::FocusHandle,
+    focus: FocusHandle,
 }
 
 #[derive(Clone, Copy)]
@@ -178,8 +179,8 @@ impl TestSourceItem {
 
 impl EventEmitter<TestEvent> for TestSourceItem {}
 
-impl gpui::Focusable for TestSourceItem {
-    fn focus_handle(&self, _cx: &App) -> gpui::FocusHandle {
+impl Focusable for TestSourceItem {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
     }
 }
@@ -193,7 +194,7 @@ impl Render for TestSourceItem {
 impl Item for TestSourceItem {
     type Event = TestEvent;
 
-    fn tab_content_text(&self, _cx: &App) -> gpui::SharedString {
+    fn tab_content_text(&self, _cx: &App) -> SharedString {
         self.path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -226,7 +227,7 @@ struct TestCompositeItem {
 
 impl EventEmitter<TestEvent> for TestCompositeItem {}
 
-impl gpui::Focusable for TestCompositeItem {
+impl Focusable for TestCompositeItem {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
     }
@@ -241,7 +242,7 @@ impl Render for TestCompositeItem {
 impl Item for TestCompositeItem {
     type Event = TestEvent;
 
-    fn tab_content_text(&self, _cx: &App) -> gpui::SharedString {
+    fn tab_content_text(&self, _cx: &App) -> SharedString {
         "组合文档".into()
     }
 
@@ -256,13 +257,13 @@ impl Item for TestCompositeItem {
 /// 测试专用的假预览 Item：转发源码 Item 元数据，展示键为 Preview("fake")。
 struct FakePreviewItem {
     source_item: Box<dyn ItemHandle>,
-    focus: gpui::FocusHandle,
+    focus: FocusHandle,
 }
 
 impl EventEmitter<()> for FakePreviewItem {}
 
-impl gpui::Focusable for FakePreviewItem {
-    fn focus_handle(&self, _cx: &App) -> gpui::FocusHandle {
+impl Focusable for FakePreviewItem {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
     }
 }
@@ -276,7 +277,7 @@ impl Render for FakePreviewItem {
 impl Item for FakePreviewItem {
     type Event = ();
 
-    fn tab_content_text(&self, cx: &App) -> gpui::SharedString {
+    fn tab_content_text(&self, cx: &App) -> SharedString {
         self.source_item.tab_content_text(cx)
     }
 
@@ -292,7 +293,7 @@ impl Item for FakePreviewItem {
         &self,
         project_root: Option<&Path>,
         cx: &App,
-    ) -> Option<(Vec<gpui::SharedString>, Option<gpui::Font>)> {
+    ) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
         self.source_item.breadcrumbs(project_root, cx)
     }
 

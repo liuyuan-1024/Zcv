@@ -1,7 +1,6 @@
 //! 剪贴板与传输执行：复制/剪切/粘贴、拖拽放置、冲突确认会话与批量移动/复制。
 
-use std::collections::HashSet;
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use gpui::{ClipboardEntry, ClipboardItem, Context, ExternalPaths, Window};
 
@@ -9,11 +8,13 @@ use zcv_actions::{TreeCancelConflict, TreeClearClipboard, TreeCopy, TreeCut, Tre
 use zcv_path::AbsolutePathBuf;
 use zcv_ui::ConfirmAnswer;
 
-use super::ProjectTreePanel;
-use super::drag::{TreeDrag, drop_target_dir, filter_movable_sources};
-use super::transfer::{
-    ConflictDecision, ConflictSession, TransferMode, TreeClipboard, paste_target_dir,
-    sanitize_selection,
+use super::{
+    ProjectTreePanel,
+    drag::{TreeDrag, drop_target_dir, filter_movable_sources},
+    transfer::{
+        ConflictDecision, ConflictSession, TransferMode, TreeClipboard, paste_target_dir,
+        sanitize_selection,
+    },
 };
 
 /// 拖拽悬停自动展开延迟：拖拽中悬停折叠目录行约 500ms 后展开。

@@ -8,8 +8,7 @@ use zcv_path::simplify_native;
 use zcv_project::{FileSaveConflictPolicy, Project};
 use zcv_workspace::{Item, ItemEvent, SearchableItemHandle};
 
-use crate::view::NAVIGATION_TOP_OFFSET;
-use crate::{Editor, EditorEvent};
+use crate::{Editor, EditorEvent, view::NAVIGATION_TOP_OFFSET};
 
 impl Item for Editor {
     type Event = EditorEvent;

@@ -1,10 +1,13 @@
 //! 块投影层的白盒测试：验证显式换行 patch 推进后，块变换始终只覆盖当前快照。
 
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{
+    collections::HashSet,
+    iter,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use gpui::{AppContext as _, TestAppContext};
+use gpui::{AppContext as _, TestAppContext, font, px};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Buffer, BufferConfig};
@@ -48,7 +51,7 @@ fn assert_current_projection(snapshot: &BlockSnapshot) {
     let fresh = BlockSnapshot::new(snapshot.wrap_snapshot.clone(), &snapshot.folded_buffers);
     let rows = |snapshot: &BlockSnapshot| {
         let mut cursor = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
-        std::iter::from_fn(|| cursor.next()).collect::<Vec<_>>()
+        iter::from_fn(|| cursor.next()).collect::<Vec<_>>()
     };
     assert_eq!(rows(snapshot), rows(&fresh), "增量显示行必须与当前快照一致");
     let buffer = snapshot.wrap_snapshot.buffer_snapshot();
@@ -193,9 +196,9 @@ fn coalesced_edits_keep_text_folded_blocks_and_async_wraps_consistent(cx: &mut T
                 if soft_wrap {
                     display.update(cx, |map, cx| {
                         map.set_wrap_width(
-                            Some(gpui::px(120.)),
-                            gpui::font("Helvetica"),
-                            gpui::px(16.),
+                            Some(px(120.)),
+                            font("Helvetica"),
+                            px(16.),
                             &cx.text_system().clone(),
                             cx,
                         );
@@ -465,7 +468,7 @@ fn block_patch_preserves_unaffected_headers_after_edit_and_removal(cx: &mut Test
         "局部源编辑必须保留未变化的后缀块"
     );
     multi.update(cx, |buffer, cx| {
-        buffer.remove_excerpts_for_path(std::path::Path::new("src/a.rs"), cx)
+        buffer.remove_excerpts_for_path(Path::new("src/a.rs"), cx)
     });
     let removed = display.update(cx, |map, cx| map.snapshot(cx));
     let removed_header = block_placements(&removed.block_snapshot)
@@ -488,7 +491,7 @@ fn block_patch_preserves_unaffected_headers_after_edit_and_removal(cx: &mut Test
     let fresh = BlockSnapshot::new(removed.wrap_snapshot().clone(), &Arc::new(HashSet::new()));
     let rows = |snapshot: &BlockSnapshot| {
         let mut cursor = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
-        std::iter::from_fn(|| cursor.next()).collect::<Vec<_>>()
+        iter::from_fn(|| cursor.next()).collect::<Vec<_>>()
     };
     assert_eq!(
         rows(&removed.block_snapshot),
@@ -532,9 +535,9 @@ fn block_patches_cover_disjoint_edits_wraps_and_window_changes(cx: &mut TestAppC
     cx.background_executor.set_block_on_ticks(0..=0);
     display.update(cx, |map, cx| {
         map.set_wrap_width(
-            Some(gpui::px(120.)),
-            gpui::font("Helvetica"),
-            gpui::px(16.),
+            Some(px(120.)),
+            font("Helvetica"),
+            px(16.),
             &cx.text_system().clone(),
             cx,
         );
@@ -546,7 +549,7 @@ fn block_patches_cover_disjoint_edits_wraps_and_window_changes(cx: &mut TestAppC
         let fresh = BlockSnapshot::new(snapshot.wrap_snapshot().clone(), &current.folded_buffers);
         let rows = |snapshot: &BlockSnapshot| {
             let mut cursor = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
-            std::iter::from_fn(|| cursor.next()).collect::<Vec<_>>()
+            iter::from_fn(|| cursor.next()).collect::<Vec<_>>()
         };
         assert_eq!(
             rows(current),
@@ -590,7 +593,7 @@ fn block_patches_cover_disjoint_edits_wraps_and_window_changes(cx: &mut TestAppC
     }
     check(cx);
     multi.update(cx, |buffer, cx| {
-        buffer.remove_excerpts_for_path(std::path::Path::new("src/0.rs"), cx);
+        buffer.remove_excerpts_for_path(Path::new("src/0.rs"), cx);
         buffer.set_excerpts_for_path(
             vec![ExcerptRange::line_range(sources[1].clone(), 3..12, cx)],
             cx,

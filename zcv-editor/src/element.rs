@@ -1,19 +1,22 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
-use std::cell::RefCell;
-use std::collections::BTreeSet;
-use std::ops::Range;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    cell::RefCell,
+    collections::BTreeSet,
+    mem,
+    ops::Range,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gpui::{
-    AnyElement, App, AvailableSpace, BorderStyle, Bounds, ContentMask, Context, DispatchPhase,
-    Element, ElementId, ElementInputHandler, Entity, GlobalElementId, HitboxBehavior,
-    InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent,
-    ShapedLine, Size, Style, TextRun, Window, div, fill, outline, point, prelude::*, px, relative,
-    size,
+    AnyElement, App, AvailableSpace, BorderStyle, Bounds, ContentMask, Context, CursorStyle,
+    DispatchPhase, Element, ElementId, ElementInputHandler, Entity, GlobalElementId, Hitbox,
+    HitboxBehavior, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, PathBuilder, Pixels,
+    Point, Rgba, ScrollDelta, ScrollWheelEvent, ShapedLine, Size, Style, TextAlign, TextRun,
+    Window, div, fill, outline, point, prelude::*, px, relative, size,
 };
 use zcv_actions::OpenExcerpts;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
@@ -29,24 +32,25 @@ use zcv_ui::{
     Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta, ensure_minimum_contrast,
 };
 
-use crate::cursor_animation::CursorViewport;
-use crate::selection::SelectionSet;
+use crate::{cursor_animation::CursorViewport, selection::SelectionSet};
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::display_map::{
-    ChunkRenderer, ChunkRendererId, DiffDecorationSnapshot, DisplayBlock, DisplayBlockKind,
-    DisplayColumn, DisplayPoint, DisplayRange, DisplayRow, DisplayRowEvent, DisplaySnapshot,
-    EditorHunkMarkerKind, FILE_HEADER_HEIGHT, HighlightStyles, HunkControlTarget,
-    RenderedWhitespace, SearchDecorationSnapshot, StickyBufferHeader, byte_for_display_column,
-    chunk_to_run, display_column_for_byte, is_hollow_hunk,
+use super::{
+    display_map::{
+        ChunkRenderer, ChunkRendererId, DiffDecorationSnapshot, DisplayBlock, DisplayBlockKind,
+        DisplayColumn, DisplayPoint, DisplayRange, DisplayRow, DisplayRowEvent, DisplaySnapshot,
+        EditorHunkMarkerKind, FILE_HEADER_HEIGHT, HighlightStyles, HunkControlTarget,
+        RenderedWhitespace, SearchDecorationSnapshot, StickyBufferHeader, byte_for_display_column,
+        chunk_to_run, display_column_for_byte, is_hollow_hunk,
+    },
+    gutter::{GutterDimensions, GutterLayout, GutterRow},
+    scroll::ScrollbarThumbState,
+    scrollbar::{
+        SCROLLBAR_WIDTH, ScrollbarLayout, ScrollbarMarkerKind, cursor_marker_geometry,
+        marker_column_x_range_at,
+    },
+    view::{Editor, EditorMode, EditorPresentation, SoftWrap},
 };
-use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
-use super::scroll::ScrollbarThumbState;
-use super::scrollbar::{
-    SCROLLBAR_WIDTH, ScrollbarLayout, ScrollbarMarkerKind, cursor_marker_geometry,
-    marker_column_x_range_at,
-};
-use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
 
 const CARET_WIDTH: Pixels = px(2.);
 
@@ -267,8 +271,8 @@ fn flush_text_piece(pieces: &mut Vec<RowPiece>, text: &mut String, runs: &mut Ve
         return;
     }
     pieces.push(RowPiece::Text {
-        text: std::mem::take(text),
-        runs: std::mem::take(runs),
+        text: mem::take(text),
+        runs: mem::take(runs),
     });
 }
 
@@ -293,18 +297,18 @@ struct LayoutLine {
 /// 当前行索引空间中的背景范围；层级为文本样式 → 搜索高亮 → 词级差异 → 选区。
 #[derive(Default)]
 struct LineBackgrounds {
-    diffs: Vec<(Range<usize>, gpui::Rgba)>,
-    highlights: Vec<(Range<usize>, gpui::Rgba)>,
-    runs: Vec<(Range<usize>, gpui::Rgba)>,
+    diffs: Vec<(Range<usize>, Rgba)>,
+    highlights: Vec<(Range<usize>, Rgba)>,
+    runs: Vec<(Range<usize>, Rgba)>,
     selections: Vec<Range<usize>>,
 }
 
 impl LineBackgrounds {
-    fn ranges(&self) -> impl Iterator<Item = &(Range<usize>, gpui::Rgba)> {
+    fn ranges(&self) -> impl Iterator<Item = &(Range<usize>, Rgba)> {
         self.diffs.iter().chain(&self.highlights).chain(&self.runs)
     }
 
-    fn contrast_color_at(&self, byte: usize, style: ContrastStyle) -> Option<gpui::Hsla> {
+    fn contrast_color_at(&self, byte: usize, style: ContrastStyle) -> Option<Hsla> {
         if style.editor_background.a < 1.0 {
             return None;
         }
@@ -326,18 +330,18 @@ impl LineBackgrounds {
 
 #[derive(Clone, Copy)]
 struct ContrastStyle {
-    editor_background: gpui::Rgba,
-    selection_background: gpui::Rgba,
+    editor_background: Rgba,
+    selection_background: Rgba,
     minimum: f32,
 }
 
 /// 半透明背景按绘制顺序合成，保留底层行背景透出的比例。
-fn composite_background(bottom: gpui::Rgba, top: gpui::Rgba) -> gpui::Rgba {
+fn composite_background(bottom: Rgba, top: Rgba) -> Rgba {
     let alpha = top.a + bottom.a * (1.0 - top.a);
     if alpha == 0.0 {
         return gpui::rgba(0x00000000);
     }
-    gpui::Rgba {
+    Rgba {
         r: (top.r * top.a + bottom.r * bottom.a * (1.0 - top.a)) / alpha,
         g: (top.g * top.a + bottom.g * bottom.a * (1.0 - top.a)) / alpha,
         b: (top.b * top.a + bottom.b * bottom.a * (1.0 - top.a)) / alpha,
@@ -347,21 +351,17 @@ fn composite_background(bottom: gpui::Rgba, top: gpui::Rgba) -> gpui::Rgba {
 
 /// 行内背景的层叠顺序与 Zed 绘制一致；整行 Git 背景不参与字色修正。
 fn inline_background_color(
-    runs: impl IntoIterator<Item = gpui::Rgba>,
-    diffs: impl IntoIterator<Item = gpui::Rgba>,
-    selections: impl IntoIterator<Item = gpui::Rgba>,
-) -> Option<gpui::Rgba> {
+    runs: impl IntoIterator<Item = Rgba>,
+    diffs: impl IntoIterator<Item = Rgba>,
+    selections: impl IntoIterator<Item = Rgba>,
+) -> Option<Rgba> {
     runs.into_iter()
         .chain(diffs)
         .chain(selections)
         .reduce(composite_background)
 }
 
-fn text_run_with_contrast(
-    mut run: TextRun,
-    background: Option<gpui::Hsla>,
-    minimum: f32,
-) -> TextRun {
+fn text_run_with_contrast(mut run: TextRun, background: Option<Hsla>, minimum: f32) -> TextRun {
     if let Some(background) = background {
         run.color = ensure_minimum_contrast(run.color, background, minimum);
     }
@@ -453,7 +453,7 @@ impl LayoutLine {
                         .paint(
                             point(x, origin.y),
                             line_height,
-                            gpui::TextAlign::Left,
+                            TextAlign::Left,
                             None,
                             window,
                             cx,
@@ -746,8 +746,8 @@ pub(super) struct PrepaintState {
     selected_whitespace: Option<SelectedWhitespaceMarkers>,
     carets: Vec<CursorPaint>,
     ime_caret_bounds: Option<Bounds<Pixels>>,
-    hitbox: gpui::Hitbox,
-    gutter_hitbox: Option<gpui::Hitbox>,
+    hitbox: Hitbox,
+    gutter_hitbox: Option<Hitbox>,
     /// hunk 色带 hitbox（起点行可见时插入；点击切换折叠/展开；类型 + 展开态标志）。
     deleted_hunk_hitboxes: Arc<Vec<HunkHitbox>>,
     /// 由宿主提供内容、Editor 定位到 hunk 右上角并按整块悬停显隐的操作栏。
@@ -755,7 +755,7 @@ pub(super) struct PrepaintState {
     /// crease 折叠开关（已按 gutter 绝对坐标布局；自带点击与 tooltip）。
     crease_toggles: Vec<Option<AnyElement>>,
     /// 折叠占位符点击 hitbox（合并行占位符段；点击展开）。
-    placeholder_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
+    placeholder_hitboxes: Arc<Vec<(Hitbox, Line)>>,
     /// hunk 竖条范围与状态色（竖条色不随展开变化；已暂存仅描边，行背景按行状态另行绘制）。
     hunk_strips: Arc<Vec<(Range<usize>, DiffHunkKind, DiffHunkStaging)>>,
     /// 展开的未暂存（hollow）连续块：边框按块边界合并绘制，颜色取块首 / 末行的行背景色。
@@ -769,7 +769,7 @@ pub(super) struct PrepaintState {
 }
 
 /// hunk 色带 hitbox：命中区域 + 点击目标范围 + 类型 + 展开态标志。
-type HunkHitbox = (gpui::Hitbox, usize, DiffHunkKind, bool);
+type HunkHitbox = (Hitbox, usize, DiffHunkKind, bool);
 
 struct DiffHunkControls {
     hunk_index: usize,
@@ -832,7 +832,7 @@ struct SelectionLineSegment {
 struct BackgroundFragment {
     start_x: Pixels,
     end_x: Pixels,
-    color: gpui::Rgba,
+    color: Rgba,
     /// 是否选区源；其余片段可由词级差异或文本样式背景产生。
     selection: bool,
     corners: [Corner; 4],
@@ -866,7 +866,7 @@ impl BackgroundFragment {
         }
 
         // 顺时针：左上 → 顶边 → 右上 → 右边 → 右下 → 底边 → 左下 → 左边。
-        let mut builder = gpui::PathBuilder::fill();
+        let mut builder = PathBuilder::fill();
         builder.move_to(match top_left_corner.style {
             CornerStyle::Round | CornerStyle::Concave => {
                 top_left + point(top_left_corner.width, Pixels::ZERO)
@@ -1017,14 +1017,7 @@ impl SelectedWhitespaceMarkers {
         for origin in &self.origins {
             if self
                 .symbol
-                .paint(
-                    *origin,
-                    self.line_height,
-                    gpui::TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                )
+                .paint(*origin, self.line_height, TextAlign::Left, None, window, cx)
                 .is_err()
             {}
         }
@@ -2171,18 +2164,18 @@ impl Element for EditorElement {
                 ));
             }
             if let Some(hitbox) = &prepaint.gutter_hitbox {
-                window.set_cursor_style(gpui::CursorStyle::IBeam, hitbox);
+                window.set_cursor_style(CursorStyle::IBeam, hitbox);
             }
             // hunk 色带可点击：hover 时手型光标。
             for (hitbox, _, _, _) in prepaint.deleted_hunk_hitboxes.iter() {
                 if hitbox.is_hovered(window) {
-                    window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
+                    window.set_cursor_style(CursorStyle::PointingHand, hitbox);
                 }
             }
             // 折叠占位符可点击：hover 时手型光标（crease 箭头由 Button 自带 cursor_pointer）。
             for (hitbox, _) in prepaint.placeholder_hitboxes.iter() {
                 if hitbox.is_hovered(window) {
-                    window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
+                    window.set_cursor_style(CursorStyle::PointingHand, hitbox);
                 }
             }
         }
@@ -2288,7 +2281,7 @@ impl Element for EditorElement {
                 if *kind == DiffHunkKind::Deleted && !expanded {
                     let bounds = hitbox.bounds;
                     let [top, bottom, tip] = deleted_hunk_triangle_points(bounds, strip_width);
-                    let mut triangle = gpui::PathBuilder::fill();
+                    let mut triangle = PathBuilder::fill();
                     triangle.move_to(top);
                     triangle.line_to(bottom);
                     triangle.line_to(tip);
@@ -2310,7 +2303,7 @@ impl Element for EditorElement {
                     .paint(
                         row.origin,
                         gutter.line_height,
-                        gpui::TextAlign::Left,
+                        TextAlign::Left,
                         None,
                         window,
                         cx,
@@ -2437,14 +2430,8 @@ impl Element for EditorElement {
                         window.paint_quad(quad);
                         if let Some((text, origin)) = caret.block_text {
                             let origin = point(origin.x + delta.x, origin.y + delta.y);
-                            let _ = text.paint(
-                                origin,
-                                line_height,
-                                gpui::TextAlign::Left,
-                                None,
-                                window,
-                                cx,
-                            );
+                            let _ =
+                                text.paint(origin, line_height, TextAlign::Left, None, window, cx);
                         }
                     }
                 }
@@ -2515,9 +2502,9 @@ impl Element for EditorElement {
                 window.paint_quad(fill(thumb_bounds, thumb_color));
                 // 拖动中整窗用 Arrow（指针可能已移出轨道），否则仅轨道内 Arrow。
                 if scrollbar.thumb_state == ScrollbarThumbState::Dragging {
-                    window.set_window_cursor_style(gpui::CursorStyle::Arrow);
+                    window.set_window_cursor_style(CursorStyle::Arrow);
                 } else {
-                    window.set_cursor_style(gpui::CursorStyle::Arrow, &scrollbar.hitbox);
+                    window.set_cursor_style(CursorStyle::Arrow, &scrollbar.hitbox);
                 }
             }
         }
@@ -2654,7 +2641,7 @@ fn diff_hunk_background_color(
     colors: &color::ThemeColors,
     kind: DiffHunkKind,
     staging: DiffHunkStaging,
-) -> Option<gpui::Rgba> {
+) -> Option<Rgba> {
     match (kind, is_hollow_hunk(staging)) {
         (DiffHunkKind::Added, true) => Some(colors.editor_diff_added_hollow_background),
         (DiffHunkKind::Added, false) => Some(colors.editor_diff_added_background),
@@ -2665,7 +2652,7 @@ fn diff_hunk_background_color(
 }
 
 /// 已暂存（hollow）块的水平边框色：比行背景更实，勾出空心块轮廓。
-fn diff_hollow_border_color(colors: &color::ThemeColors, kind: DiffHunkKind) -> Option<gpui::Rgba> {
+fn diff_hollow_border_color(colors: &color::ThemeColors, kind: DiffHunkKind) -> Option<Rgba> {
     match kind {
         DiffHunkKind::Added => Some(colors.editor_diff_added_hollow_border),
         DiffHunkKind::Deleted => Some(colors.editor_diff_deleted_hollow_border),
@@ -2674,7 +2661,7 @@ fn diff_hollow_border_color(colors: &color::ThemeColors, kind: DiffHunkKind) -> 
 }
 
 /// hunk 类型对应的 version control 色（gutter 竖条用）。
-fn version_control_hunk_color(colors: &color::ThemeColors, kind: DiffHunkKind) -> gpui::Rgba {
+fn version_control_hunk_color(colors: &color::ThemeColors, kind: DiffHunkKind) -> Rgba {
     match kind {
         DiffHunkKind::Added => colors.version_control_added,
         DiffHunkKind::Modified => colors.version_control_modified,
@@ -2683,7 +2670,7 @@ fn version_control_hunk_color(colors: &color::ThemeColors, kind: DiffHunkKind) -
 }
 
 /// 注入 hunk 的正文背景色：内容差异语义与普通 diff 共用主题颜色。
-fn editor_hunk_background_color(colors: &color::ThemeColors, kind: DiffHunkKind) -> gpui::Rgba {
+fn editor_hunk_background_color(colors: &color::ThemeColors, kind: DiffHunkKind) -> Rgba {
     match kind {
         DiffHunkKind::Added => colors.editor_diff_added_background,
         DiffHunkKind::Deleted => colors.editor_diff_deleted_background,
@@ -2692,7 +2679,7 @@ fn editor_hunk_background_color(colors: &color::ThemeColors, kind: DiffHunkKind)
 }
 
 /// 注入 hunk 的 gutter 与滚动条颜色：状态标记语义独立于正文背景语义。
-fn editor_hunk_marker_color(colors: &color::ThemeColors, kind: EditorHunkMarkerKind) -> gpui::Rgba {
+fn editor_hunk_marker_color(colors: &color::ThemeColors, kind: EditorHunkMarkerKind) -> Rgba {
     match kind {
         EditorHunkMarkerKind::Diff(kind) => version_control_hunk_color(colors, kind),
         EditorHunkMarkerKind::Conflict => colors.status_conflict,
@@ -2781,7 +2768,7 @@ fn paint_hollow_block_outline(
     line_height: Pixels,
     left: Pixels,
     right: Pixels,
-    color: gpui::Rgba,
+    color: Rgba,
 ) {
     let Some((top, bottom, start_visible, end_visible)) =
         visible_block_extent(lines, block, line_height)
@@ -2813,7 +2800,7 @@ fn paint_horizontal_block_edges(
     bounds: Bounds<Pixels>,
     start_visible: bool,
     end_visible: bool,
-    color: gpui::Rgba,
+    color: Rgba,
 ) {
     let thickness = px(1.);
     if start_visible {
@@ -2983,7 +2970,7 @@ fn layout_visible_lines_from_viewport(
     let visible_byte_range = visible_source_lines
         .as_ref()
         .and_then(|range| source_line_byte_range(display_snapshot, range));
-    let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> =
+    let search_backgrounds: Vec<(Range<usize>, Rgba)> =
         match search_decorations.zip(visible_byte_range) {
             Some((decorations, visible_range)) => {
                 let colors = color::current(cx);
@@ -3054,7 +3041,7 @@ fn layout_visible_lines_from_viewport(
                          gutter_line: Option<Line>,
                          gutter_number: Option<usize>,
                          pieces: Vec<RowPiece>,
-                         highlights: Vec<(Range<usize>, gpui::Rgba)>,
+                         highlights: Vec<(Range<usize>, Rgba)>,
                          text: String,
                          utf16_start: usize,
                          whitespaces: Vec<RenderedWhitespace>,
@@ -3692,7 +3679,7 @@ fn layout_background_fragments(
 fn layout_line_background_fragments(
     line: &LayoutLine,
     selection_segments: &[SelectionLineSegment],
-    selection_background: gpui::Rgba,
+    selection_background: Rgba,
 ) -> Vec<BackgroundFragment> {
     // 按所有背景源的边界切分，再合并相邻同色段。
     let mut boundaries = Vec::with_capacity(
@@ -3727,7 +3714,7 @@ fn layout_line_background_fragments(
         let selection = selection_segments
             .iter()
             .find(|segment| segment.start_x <= start_x && end_x <= segment.end_x);
-        let covers = |(byte_range, _): &(Range<usize>, gpui::Rgba)| {
+        let covers = |(byte_range, _): &(Range<usize>, Rgba)| {
             let run_start = line.origin.x + line.line.x_for_index(byte_range.start);
             let run_end = line.origin.x + line.line.x_for_index(byte_range.end);
             run_start <= start_x && end_x <= run_end
@@ -3828,7 +3815,7 @@ fn layout_projected_range_quad(
     range: DisplayRange,
     layout: &EditorLayout,
     line_height: Pixels,
-    background: gpui::Rgba,
+    background: Rgba,
     selection_quads: &mut Vec<PaintQuad>,
 ) {
     let start = range.start();

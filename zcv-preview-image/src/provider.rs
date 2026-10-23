@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use gpui::{App, AppContext};
+use gpui::{App, AppContext, ImageFormat};
 use zcv_workspace::{
     ItemHandle, PreviewDocument, PreviewMode, PreviewPresentation, PreviewProvider,
 };
@@ -31,17 +31,17 @@ impl PreviewProvider for ImagePreviewProvider {
     }
 }
 
-pub(crate) fn image_format_for_path(path: &Path) -> Option<gpui::ImageFormat> {
+pub(crate) fn image_format_for_path(path: &Path) -> Option<ImageFormat> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     let format = match extension.as_str() {
-        "png" => gpui::ImageFormat::Png,
-        "jpg" | "jpeg" => gpui::ImageFormat::Jpeg,
-        "webp" => gpui::ImageFormat::Webp,
-        "gif" => gpui::ImageFormat::Gif,
-        "bmp" => gpui::ImageFormat::Bmp,
-        "tif" | "tiff" => gpui::ImageFormat::Tiff,
-        "ico" => gpui::ImageFormat::Ico,
-        "pbm" | "pgm" | "ppm" | "pnm" => gpui::ImageFormat::Pnm,
+        "png" => ImageFormat::Png,
+        "jpg" | "jpeg" => ImageFormat::Jpeg,
+        "webp" => ImageFormat::Webp,
+        "gif" => ImageFormat::Gif,
+        "bmp" => ImageFormat::Bmp,
+        "tif" | "tiff" => ImageFormat::Tiff,
+        "ico" => ImageFormat::Ico,
+        "pbm" | "pgm" | "ppm" | "pnm" => ImageFormat::Pnm,
         _ => return None,
     };
     Some(format)

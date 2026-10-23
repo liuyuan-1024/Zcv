@@ -2,17 +2,21 @@
 
 mod network_client;
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Stdio,
+    result,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result, ensure};
-use gpui::http_client::{AsyncBody, HttpClient};
 use gpui::{
     App, AppContext as _, BackgroundExecutor, Context, Entity, Global, Render, Subscription, Task,
-    WeakEntity, Window, div, prelude::*,
+    WeakEntity, Window, div,
+    http_client::{AsyncBody, HttpClient},
+    prelude::*,
 };
 use gpui_util::new_std_command;
 use semver::Version;
@@ -142,11 +146,11 @@ fn update_result_notification(result: &UpdateResult) -> Option<Arc<str>> {
 }
 
 pub(crate) fn acknowledge_started_update() -> Result<()> {
-    let Some(ack_path) = std::env::var_os("ZCV_UPDATE_ACK_PATH").map(PathBuf::from) else {
+    let Some(ack_path) = env::var_os("ZCV_UPDATE_ACK_PATH").map(PathBuf::from) else {
         return Ok(());
     };
     let transaction_id =
-        std::env::var("ZCV_UPDATE_TRANSACTION_ID").context("缺少 ZCV_UPDATE_TRANSACTION_ID")?;
+        env::var("ZCV_UPDATE_TRANSACTION_ID").context("缺少 ZCV_UPDATE_TRANSACTION_ID")?;
     write_acknowledgement(&updates_dir(), &transaction_id, &ack_path)
 }
 
@@ -336,7 +340,7 @@ async fn check_and_stage(
     client: Arc<dyn HttpClient>,
     executor: BackgroundExecutor,
     mut on_progress: impl FnMut(Version, u8),
-) -> std::result::Result<CheckOutcome, CheckFailure> {
+) -> result::Result<CheckOutcome, CheckFailure> {
     let manifest = fetch_limited(
         &client,
         &config.manifest_url,
@@ -382,7 +386,7 @@ async fn fetch_limited(
     url: &str,
     limit: usize,
     label: &str,
-) -> std::result::Result<Vec<u8>, CheckFailure> {
+) -> result::Result<Vec<u8>, CheckFailure> {
     let mut response = client
         .get(url, AsyncBody::empty(), true)
         .await
@@ -416,7 +420,7 @@ async fn download_release(
     release: &SelectedRelease,
     archive_path: &Path,
     on_progress: &mut impl FnMut(Version, u8),
-) -> std::result::Result<(), CheckFailure> {
+) -> result::Result<(), CheckFailure> {
     if archive_path.is_file() && verify_downloaded_asset(archive_path, &release.asset).is_ok() {
         on_progress(release.version.clone(), 100);
         return Ok(());

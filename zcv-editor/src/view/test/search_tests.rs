@@ -4,7 +4,7 @@ use zcv_multi_buffer::{
     ExcerptRange, MultiBuffer, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
 };
 
-use gpui::{AppContext, TestAppContext, VisualTestContext};
+use gpui::{AppContext, Rgba, TestAppContext, VisualTestContext};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_project::SearchQuery;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, TextRange};
@@ -13,10 +13,11 @@ use zcv_workspace::{Direction, SearchableItem};
 
 use super::common::test_buffer;
 use super::*;
-use crate::display_map::test_support::{WrapRowKind, projected_line_text};
 use crate::display_map::{
     ChunkSource, ChunkText, DisplayMap, DisplayRow, DisplaySnapshot, HighlightStyles, WrapChunks,
+    test_support::{WrapRowKind, projected_line_text},
 };
+use std::{iter, sync::Arc};
 
 fn new_display_map(
     cx: &mut impl AppContext,
@@ -82,7 +83,7 @@ fn external_search_ranges_append_without_resetting_active_match(cx: &mut TestApp
             LanguageBuffer::new(
                 Buffer::from_text("abc\n".into(), BufferConfig::default()).unwrap(),
                 Some(path.into()),
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         })
@@ -407,7 +408,7 @@ fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -445,11 +446,11 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
         let engine_snapshot = editor.read(cx).render_snapshot(cx);
         let display = project_display_snapshot(cx, engine_snapshot.clone());
         let mut cursor = display.rows(DisplayRow::new(0), 1);
-        let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+        let viewport: Vec<_> = iter::from_fn(|| cursor.next()).collect();
         // 与 element.rs 相同的背景层构建。
         let search_highlights = editor.read(cx).search_highlights().unwrap();
         let colors = color::current(cx);
-        let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> = search_highlights
+        let search_backgrounds: Vec<(Range<usize>, Rgba)> = search_highlights
             .0
             .iter()
             .enumerate()
@@ -510,7 +511,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
         // 渲染全部 4 行，统计带背景的 chunk。
         let search_highlights = editor.read(cx).search_highlights().unwrap();
         let colors = color::current(cx);
-        let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> = search_highlights
+        let search_backgrounds: Vec<(Range<usize>, Rgba)> = search_highlights
             .0
             .iter()
             .enumerate()
@@ -526,7 +527,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
             })
             .collect();
         let mut cursor = display.rows(DisplayRow::new(0), 4);
-        let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+        let viewport: Vec<_> = iter::from_fn(|| cursor.next()).collect();
         let mut with_bg = 0usize;
         for row in &viewport {
             let WrapRowKind::Text {
@@ -589,7 +590,7 @@ zcv final
         LanguageBuffer::new(
             buffer,
             Some(std::path::PathBuf::from("search_fixture.md")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -611,7 +612,7 @@ zcv final
             "Markdown 夹具中的 zcv 应全部匹配"
         );
         let colors = color::current(cx);
-        let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> = search_highlights
+        let search_backgrounds: Vec<(Range<usize>, Rgba)> = search_highlights
             .0
             .iter()
             .enumerate()
@@ -628,7 +629,7 @@ zcv final
             .collect();
         // 渲染全部行，统计带背景的 chunk（应与匹配数一致）。
         let mut cursor = display.rows(DisplayRow::new(0), line_count);
-        let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+        let viewport: Vec<_> = iter::from_fn(|| cursor.next()).collect();
         let source_ranges = display
             .rows(DisplayRow::new(0), line_count)
             .source_line_ranges();

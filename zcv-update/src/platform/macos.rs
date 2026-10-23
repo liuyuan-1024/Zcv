@@ -1,10 +1,13 @@
-use std::ffi::{CString, OsStr};
-use std::fs;
-use std::os::unix::ffi::OsStrExt as _;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::thread;
-use std::time::Duration;
+use std::{
+    ffi::{CString, OsStr},
+    fs,
+    io::Error,
+    os::unix::ffi::OsStrExt as _,
+    path::{Path, PathBuf},
+    process::{self, Stdio},
+    thread,
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result, ensure};
 use semver::Version;
@@ -77,7 +80,7 @@ pub fn verify_app(app: &Path, expected_version: &Version) -> Result<()> {
         app.join(APP_EXECUTABLE_RELATIVE_PATH).is_file(),
         "更新应用缺少可执行文件"
     );
-    let verify = std::process::Command::new("/usr/bin/codesign")
+    let verify = process::Command::new("/usr/bin/codesign")
         .args(["--verify", "--strict"])
         .arg(app)
         .output()
@@ -88,7 +91,7 @@ pub fn verify_app(app: &Path, expected_version: &Version) -> Result<()> {
         String::from_utf8_lossy(&verify.stderr).trim()
     );
 
-    let version = std::process::Command::new("/usr/libexec/PlistBuddy")
+    let version = process::Command::new("/usr/libexec/PlistBuddy")
         .args(["-c", "Print:CFBundleShortVersionString"])
         .arg(app.join("Contents/Info.plist"))
         .output()
@@ -141,7 +144,7 @@ impl ApplyBackend for MacosBackend {
     fn wait_for_process_exit(&self, pid: u32) -> Result<()> {
         loop {
             let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
-            if result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            if result != 0 && Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
                 break;
             }
             thread::sleep(Duration::from_millis(100));
@@ -157,7 +160,7 @@ impl ApplyBackend for MacosBackend {
                 .with_context(|| format!("无法清理旧更新候选目录 {}", candidate_path.display()))?;
         }
 
-        let copy = std::process::Command::new("/usr/bin/ditto")
+        let copy = process::Command::new("/usr/bin/ditto")
             .arg(&transaction.staged_app_path)
             .arg(&candidate_path)
             .output()
@@ -228,7 +231,7 @@ fn strip_download_metadata(root: &Path) -> Result<()> {
             let c_attribute = CString::new(attribute).context("属性名包含空字节")?;
             let result = unsafe { libc::removexattr(c_path.as_ptr(), c_attribute.as_ptr(), 0) };
             if result != 0 {
-                let error = std::io::Error::last_os_error();
+                let error = Error::last_os_error();
                 if error.raw_os_error() != Some(libc::ENOATTR) {
                     return Err(error).with_context(|| {
                         format!("无法移除 {} 的属性 {attribute}", path.display())
@@ -264,7 +267,7 @@ fn atomic_swap(first: &Path, second: &Path) -> Result<()> {
     let second = CString::new(second.as_os_str().as_bytes()).context("候选路径包含空字节")?;
     let result = unsafe { libc::renamex_np(first.as_ptr(), second.as_ptr(), libc::RENAME_SWAP) };
     if result != 0 {
-        return Err(std::io::Error::last_os_error()).context("renamex_np(RENAME_SWAP) 失败");
+        return Err(Error::last_os_error()).context("renamex_np(RENAME_SWAP) 失败");
     }
     Ok(())
 }

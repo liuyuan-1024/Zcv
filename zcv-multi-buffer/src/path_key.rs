@@ -4,10 +4,12 @@
 //! 有文件路径时按路径标识；顺序由组合文档在创建时固定。
 //! 匿名 Buffer 则以稳定 buffer_id 作路径标识，与 Zed 的 PathKey::for_buffer 用 remote_id 承担同一职责。
 
-use std::cmp::Ordering;
-use std::fmt;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    cmp::Ordering,
+    fmt,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use zcv_path::{compare_natural_paths, compare_tree_entries};
 use zcv_text::BufferId;

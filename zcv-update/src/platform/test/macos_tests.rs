@@ -1,15 +1,15 @@
 use super::*;
+use std::fs;
 
 #[test]
 fn download_metadata_is_stripped_recursively() {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt as _;
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
 
     let root = tempfile::tempdir().unwrap();
     let nested = root.path().join("nested");
-    std::fs::create_dir(&nested).unwrap();
+    fs::create_dir(&nested).unwrap();
     let file = nested.join("file.txt");
-    std::fs::write(&file, "content").unwrap();
+    fs::write(&file, "content").unwrap();
 
     for path in [root.path(), &nested, &file] {
         let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
@@ -52,10 +52,10 @@ fn atomic_swap_exchanges_complete_directories() {
     let root = tempfile::tempdir().unwrap();
     let first = root.path().join("first");
     let second = root.path().join("second");
-    std::fs::create_dir(&first).unwrap();
-    std::fs::create_dir(&second).unwrap();
-    std::fs::write(first.join("version"), "old").unwrap();
-    std::fs::write(second.join("version"), "new").unwrap();
+    fs::create_dir(&first).unwrap();
+    fs::create_dir(&second).unwrap();
+    fs::write(first.join("version"), "old").unwrap();
+    fs::write(second.join("version"), "new").unwrap();
 
     atomic_swap(&first, &second).unwrap();
 

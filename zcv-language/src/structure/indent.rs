@@ -8,8 +8,10 @@ use std::ops::Range;
 use tree_sitter::StreamingIterator;
 use zcv_text::{ByteOffset, Line, Snapshot, TextResult};
 
-use crate::syntax_map::SyntaxSnapshot;
-use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider};
+use crate::{
+    syntax_map::SyntaxSnapshot,
+    tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider},
+};
 
 /// 语法结构产生的缩进范围。
 #[derive(Clone, Debug, PartialEq, Eq)]

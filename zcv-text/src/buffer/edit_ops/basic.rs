@@ -1,8 +1,8 @@
 //! Buffer 本地编辑入口：一次接收完整编辑批次并进入事务与历史管线。
 
-use crate::buffer::Buffer;
 use crate::{
     TextResult,
+    buffer::Buffer,
     transaction::{Edit, Transaction, TransactionMetadata},
 };
 

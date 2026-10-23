@@ -1,7 +1,7 @@
 use super::*;
 use std::{cell::Cell, rc::Rc};
 
-use gpui::{Context, Render, TestAppContext, Window, div, prelude::*};
+use gpui::{Context, Modifiers, Render, TestAppContext, Window, div, prelude::*};
 
 #[derive(Clone)]
 struct TestScrollHandle {
@@ -57,19 +57,19 @@ fn dragging_the_scrollbar_thumb_updates_its_handle(cx: &mut TestAppContext) {
 
     let (right, top) = cx.update(|window, _| (window.bounds().right(), window.bounds().top()));
     let thumb = point(right - px(4.), top + px(10.));
-    cx.simulate_mouse_down(thumb, MouseButton::Left, gpui::Modifiers::default());
+    cx.simulate_mouse_down(thumb, MouseButton::Left, Modifiers::default());
     assert!(handle.drag_started.get(), "按下滑块应开始拖拽");
     cx.refresh().expect("按下滑块后应刷新");
     cx.simulate_mouse_move(
         point(thumb.x, thumb.y + px(120.)),
         Some(MouseButton::Left),
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
     let first_offset = handle.requested_offset.get();
     cx.simulate_mouse_move(
         point(thumb.x, thumb.y + px(240.)),
         Some(MouseButton::Left),
-        gpui::Modifiers::default(),
+        Modifiers::default(),
     );
 
     assert!(

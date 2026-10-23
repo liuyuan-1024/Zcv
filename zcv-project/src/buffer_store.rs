@@ -2,18 +2,16 @@
 //!
 //! Store 只保留弱引用；只要还有 Editor 或 View 持有文档，它就能按路径复用，最后一个使用者释放后，整条文档实体链也随之结束。
 
-use std::collections::HashMap;
-use std::fs::File;
-use std::path::Path;
-use std::sync::Arc;
+use std::{collections::HashMap, fs::File, path::Path, sync::Arc};
 
-use crate::translate_path;
+use crate::{
+    text_file::{BufferLoadError, decode_to_string},
+    translate_path,
+};
 use gpui::{App, AppContext, Entity, EntityId, WeakEntity};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_text::{Buffer, BufferConfig, Snapshot};
-
-use crate::text_file::{BufferLoadError, decode_to_string};
 
 /// 从磁盘读取并解码文件，创建文本 `Buffer`。
 ///

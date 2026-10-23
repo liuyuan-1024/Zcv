@@ -1,10 +1,11 @@
 use std::{
+    iter,
     num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use gpui::{AppContext, TestAppContext, font, px};
+use gpui::{AppContext, Pixels, TestAppContext, TextRun, font, px};
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer, MultiBufferOffset};
@@ -51,9 +52,9 @@ fn set_tab_width(cx: &mut TestAppContext, map: &Entity<DisplayMap>, tab_width: N
 fn set_wrap_width(
     cx: &mut TestAppContext,
     map: &Entity<DisplayMap>,
-    wrap_width: Option<gpui::Pixels>,
+    wrap_width: Option<Pixels>,
     font: gpui::Font,
-    font_size: gpui::Pixels,
+    font_size: Pixels,
 ) {
     let text_system = cx.text_system().clone();
     cx.update_entity(map, |map, cx| {
@@ -74,7 +75,7 @@ fn display_snapshot_resolves_syntax_styles_from_current_theme(cx: &mut TestAppCo
         LanguageBuffer::new(
             source_buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -198,7 +199,7 @@ fn display_pipeline_receives_the_source_transaction_batch(cx: &mut TestAppContex
         LanguageBuffer::new(
             source_buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -250,7 +251,7 @@ fn block_boundaries_reclassify_when_their_file_changes(cx: &mut TestAppContext) 
             Buffer::from_text("a0\na1\n".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建"),
             Some(PathBuf::from("src/a.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -259,7 +260,7 @@ fn block_boundaries_reclassify_when_their_file_changes(cx: &mut TestAppContext) 
             Buffer::from_text("b0\n".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建"),
             Some(PathBuf::from("src/b.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -279,7 +280,7 @@ fn block_boundaries_reclassify_when_their_file_changes(cx: &mut TestAppContext) 
     let block_kinds = |cx: &mut TestAppContext| {
         let snapshot = display_snapshot(cx, &display);
         let mut rows = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
-        std::iter::from_fn(|| rows.next())
+        iter::from_fn(|| rows.next())
             .filter_map(|row| {
                 row.block().map(|block| {
                     (
@@ -391,7 +392,7 @@ fn anonymous_buffers_keep_distinct_header_identities(cx: &mut TestAppContext) {
                 Buffer::from_text(text.to_owned(), BufferConfig::default())
                     .expect("测试 Buffer 应能创建"),
                 None,
-                std::sync::Arc::new(LanguageRegistry::new()),
+                Arc::new(LanguageRegistry::new()),
                 cx,
             )
         })
@@ -408,7 +409,7 @@ fn anonymous_buffers_keep_distinct_header_identities(cx: &mut TestAppContext) {
     let display = cx.new(|cx| DisplayMap::new(snapshot, cx));
     let display = display_snapshot(cx, &display);
     let mut rows = display.rows(DisplayRow::ZERO, display.line_count());
-    let headers = std::iter::from_fn(|| rows.next())
+    let headers = iter::from_fn(|| rows.next())
         .filter_map(|row| row.block().cloned())
         .filter(|block| block.kind == DisplayBlockKind::BufferHeader)
         .map(|block| block.excerpt.buffer_id())
@@ -565,7 +566,7 @@ fn folding_changes_display_rows_and_viewport_contents(cx: &mut TestAppContext) {
         snapshot.buffer_snapshot().version()
     );
     let mut cursor = snapshot.rows(DisplayRow::ZERO, 8);
-    let rows: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+    let rows: Vec<_> = iter::from_fn(|| cursor.next()).collect();
     assert_eq!(rows.len(), 2);
     assert!(matches!(rows[1].kind(), WrapRowKind::Text { .. }));
 }
@@ -721,7 +722,7 @@ fn point_converter_preserves_tabs_unicode_and_wrap_across_repeated_ranges(cx: &m
     let boundaries = text
         .char_indices()
         .map(|(offset, _)| offset)
-        .chain(std::iter::once(text.len()))
+        .chain(iter::once(text.len()))
         .collect::<Vec<_>>();
     let mut ranges = boundaries
         .windows(2)
@@ -765,7 +766,7 @@ fn point_converter_preserves_rows_across_wrapped_and_unwrapped_spans(cx: &mut Te
     let boundaries = text
         .char_indices()
         .map(|(offset, _)| offset)
-        .chain(std::iter::once(text.len()))
+        .chain(iter::once(text.len()))
         .collect::<Vec<_>>();
     let mut ranges = boundaries
         .windows(2)
@@ -1134,7 +1135,7 @@ fn soft_wrap_splits_wide_lines_into_display_rows(cx: &mut TestAppContext) {
 
     let snapshot = display_snapshot(cx, &map);
     let mut cursor = snapshot.rows(DisplayRow::ZERO, display_snapshot(cx, &map).line_count());
-    let rows: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+    let rows: Vec<_> = iter::from_fn(|| cursor.next()).collect();
     assert_eq!(rows.len(), display_snapshot(cx, &map).line_count());
     assert_eq!(rows[0].index(), DisplayRow::ZERO);
 
@@ -1157,10 +1158,10 @@ fn soft_wrap_mixed_commit_message_rows_fit_the_shaped_width(cx: &mut TestAppCont
     let map = wrap_map(message, 420., cx);
     let snapshot = display_snapshot(cx, &map);
     let mut cursor = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
-    let rows: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+    let rows: Vec<_> = iter::from_fn(|| cursor.next()).collect();
     let text_system = gpui::WindowTextSystem::new(cx.text_system().clone());
     let font = font("Helvetica");
-    let run = gpui::TextRun {
+    let run = TextRun {
         len: message.len(),
         font,
         ..Default::default()
@@ -1176,7 +1177,7 @@ fn soft_wrap_mixed_commit_message_rows_fit_the_shaped_width(cx: &mut TestAppCont
         let text = projected_line_text(&snapshot, *projected_line).expect("显示行文本应可解析");
         let mut rendered = " ".repeat(*indent);
         rendered.push_str(&text.as_ref()[byte_range.clone()]);
-        let run = gpui::TextRun {
+        let run = TextRun {
             len: rendered.len(),
             font: run.font.clone(),
             ..run.clone()
@@ -1195,7 +1196,7 @@ fn soft_wrap_without_leading_whitespace_has_zero_indent(cx: &mut TestAppContext)
     let map = wrap_map("aa bbb cccc ddddd eeee\nshort", 72., cx);
     let snapshot = display_snapshot(cx, &map);
     let mut cursor = snapshot.rows(DisplayRow::ZERO, display_snapshot(cx, &map).line_count());
-    let rows: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+    let rows: Vec<_> = iter::from_fn(|| cursor.next()).collect();
     let WrapRowKind::Text { indent, .. } = rows[1].kind();
     assert_eq!(*indent, 0, "无前导空白的行不应产生缩进");
 }
@@ -1434,7 +1435,7 @@ fn soft_wrap_with_fold_collapses_hidden_rows(cx: &mut TestAppContext) {
 
     let snapshot = display_snapshot(cx, &map);
     let mut cursor = snapshot.rows(DisplayRow::ZERO, 10);
-    let rows: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+    let rows: Vec<_> = iter::from_fn(|| cursor.next()).collect();
     assert_eq!(rows.len(), 2, "折叠后仅剩 anchor 与 after 两行");
     // 折叠隐藏区域的位置映射到 anchor 是现状语义（roundtrip 不可逆），
     // 只对可见文本字节做双向验证。

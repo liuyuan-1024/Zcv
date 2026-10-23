@@ -3,8 +3,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AnyView, App, Div, Entity, Subscription, WeakEntity, Window, WindowControlArea,
-    div, prelude::*,
+    AnyElement, AnyView, App, Context, Div, Entity, Subscription, WeakEntity, Window,
+    WindowControlArea, div, prelude::*,
 };
 use zcv_actions::OpenSettings;
 use zcv_picker::PickerLayer;
@@ -14,10 +14,12 @@ use zcv_project::{
 use zcv_theme::{color, scale};
 use zcv_ui::Button;
 
-use crate::branch_picker::{BranchPicker, OnBranchSelected};
-use crate::project_picker::ProjectPicker;
-use crate::quick_access::QuickAccess;
-use crate::{OnProjectSelected, Workspace};
+use crate::{
+    OnProjectSelected, Workspace,
+    branch_picker::{BranchPicker, OnBranchSelected},
+    project_picker::ProjectPicker,
+    quick_access::QuickAccess,
+};
 
 mod window_controls;
 
@@ -54,7 +56,7 @@ impl TopBar {
         on_branch: OnBranchSelected,
         callbacks: TopBarCallbacks,
         window: &mut Window,
-        cx: &mut gpui::Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Self {
         let git_store = project.read(cx).git_store();
         let picker_layer = PickerLayer::default();
@@ -93,7 +95,7 @@ impl TopBar {
         }
     }
 
-    pub fn set_update_control(&mut self, update_control: AnyView, cx: &mut gpui::Context<Self>) {
+    pub fn set_update_control(&mut self, update_control: AnyView, cx: &mut Context<Self>) {
         self.update_control = Some(update_control);
         cx.notify();
     }
@@ -116,11 +118,7 @@ impl TopBar {
 }
 
 impl gpui::Render for TopBar {
-    fn render(
-        &mut self,
-        window: &mut Window,
-        cx: &mut gpui::Context<Self>,
-    ) -> impl gpui::IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         bar_frame(cx)
             .id("top-bar")
             .child(
@@ -152,7 +150,7 @@ impl gpui::Render for TopBar {
     }
 }
 
-fn bar_frame(cx: &gpui::App) -> Div {
+fn bar_frame(cx: &App) -> Div {
     div()
         .window_control_area(WindowControlArea::Drag)
         .relative()
@@ -272,7 +270,7 @@ fn remote_operation_label(state: RemoteOperationState) -> Option<&'static str> {
 fn trailing_slots(
     update_control: Option<&AnyView>,
     workspace: WeakEntity<Workspace>,
-    cx: &gpui::App,
+    cx: &App,
 ) -> Vec<AnyElement> {
     let mut out = Vec::new();
     if let Some(update_control) = update_control {

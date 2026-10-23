@@ -1,5 +1,4 @@
-use std::ops::Range;
-use std::time::Duration;
+use std::{ops::Range, time::Duration};
 
 use gpui::{App, AppContext as _, Context, Task, Window};
 use zcv_actions::ToggleIndentGuides;

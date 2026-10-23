@@ -3,18 +3,19 @@
 //! Tree-sitter 绑定解析由 `zcv-language` 提供；
 //! 本模块拥有重命名会话、事务入口和输入框定位，让语法查询、编辑状态与界面绘制保持各自的职责边界。
 
-use std::ops::Range;
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
-use gpui::{App, AppContext, Context, Entity, Focusable, Pixels, Point, point, px};
+use gpui::{App, AppContext, Context, Entity, Focusable, Pixels, Point, Window, point, px};
 use zcv_actions::{CancelLocalRename, ConfirmLocalRename, RenameLocal};
 use zcv_language::LocalBinding;
 use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferSnapshot};
 use zcv_text::Affinity;
 
 use super::{Editor, EditorEvent, EditorMode, edit_metadata};
-use crate::element::EditorInputLayout;
-use crate::selection::{Selection, SelectionSet, replace_selections};
+use crate::{
+    element::EditorInputLayout,
+    selection::{Selection, SelectionSet, replace_selections},
+};
 
 /// 行内局部重命名输入会话。
 ///
@@ -101,7 +102,7 @@ impl Editor {
     pub(crate) fn handle_rename_local(
         &mut self,
         _: &RenameLocal,
-        window: &mut gpui::Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.mode != EditorMode::Full {
@@ -200,7 +201,7 @@ impl Editor {
     pub(crate) fn handle_confirm_local_rename(
         &mut self,
         _: &ConfirmLocalRename,
-        window: &mut gpui::Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(state) = self.local_rename.as_ref() else {
@@ -248,7 +249,7 @@ impl Editor {
     pub(crate) fn handle_cancel_local_rename(
         &mut self,
         _: &CancelLocalRename,
-        window: &mut gpui::Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.local_rename.is_none() {
@@ -258,7 +259,7 @@ impl Editor {
         self.finish_local_rename(window, cx);
     }
 
-    fn finish_local_rename(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn finish_local_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(state) = self.local_rename.take() else {
             return;
         };

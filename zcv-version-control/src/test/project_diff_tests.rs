@@ -233,6 +233,85 @@ fn staged_diff_tracks_revision_text_support_changes(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn conflict_projection_shows_only_conflicts_with_context(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = canonical_root(directory.path());
+    let path = root.join("conflicted.rs");
+    let conflict = "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> theirs\n";
+    let mut content = (0..10)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    content.push_str(conflict);
+    content.extend((10..30).map(|line| format!("line {line}\n")));
+    content.push_str(conflict);
+    content.extend((30..40).map(|line| format!("line {line}\n")));
+    fs::write(&path, content).expect("应写入冲突文件");
+
+    let project = test_project(root, cx);
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Conflict, project, cx));
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        view.files = vec![GitChangeFile {
+            path: path.clone(),
+            status: FileStatus::Unmerged,
+        }];
+        view.sync_conflict_projection(cx);
+    });
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        let source = view.conflict_files[&path].source.clone();
+        let text = source.read(cx).text_snapshot();
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let excerpts = snapshot.excerpts().collect::<Vec<_>>();
+        let expected = [8..17, 33..42]
+            .map(|lines| {
+                TextRange::new(
+                    text.line_start_byte(Line::new(lines.start)).unwrap(),
+                    text.line_start_byte(Line::new(lines.end)).unwrap(),
+                )
+                .unwrap()
+            })
+            .to_vec();
+        assert_eq!(
+            excerpts
+                .iter()
+                .map(|excerpt| excerpt.source_range())
+                .collect::<Vec<_>>(),
+            expected,
+            "冲突视图应只组合冲突及前后两行"
+        );
+        assert_eq!(view.conflict_editor_hunks(cx).len(), 2);
+    });
+
+    let source = view.read_with(cx, |view, _| view.conflict_files[&path].source.clone());
+    source.update(cx, |source, cx| {
+        let text = source.text_snapshot();
+        let range = TextRange::new(ByteOffset::ZERO, text.len_bytes()).unwrap();
+        source
+            .edit(
+                [Edit::replace(
+                    range,
+                    format!("before\n{conflict}between\n{conflict}after\n"),
+                )],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert_eq!(snapshot.excerpts().count(), 1, "相邻上下文窗口应合并");
+        assert_eq!(view.conflict_editor_hunks(cx).len(), 2);
+    });
+}
+
+#[gpui::test]
 fn conflict_projection_refresh_preserves_unchanged_files(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = canonical_root(directory.path());
@@ -248,6 +327,7 @@ fn conflict_projection_refresh_preserves_unchanged_files(cx: &mut TestAppContext
     }
     let project = test_project(root, cx);
     let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Conflict, project, cx));
+    cx.run_until_parked();
     let project_file = |path: PathBuf| GitChangeFile {
         path,
         status: FileStatus::Unmerged,
@@ -260,6 +340,7 @@ fn conflict_projection_refresh_preserves_unchanged_files(cx: &mut TestAppContext
         ];
         view.sync_conflict_projection(cx);
     });
+    cx.run_until_parked();
     let (topology, source_ids) = cx.update_entity(&view, |view, cx| {
         let snapshot = view
             .multi_buffer
@@ -289,6 +370,7 @@ fn conflict_projection_refresh_preserves_unchanged_files(cx: &mut TestAppContext
         ];
         view.sync_conflict_projection(cx);
     });
+    cx.run_until_parked();
     let (paths, remaining_ids, hunks, topology_after_paths) =
         cx.update_entity(&view, |view, cx| {
             let snapshot = view
@@ -336,7 +418,7 @@ fn conflict_projection_refresh_preserves_unchanged_files(cx: &mut TestAppContext
             )
             .unwrap();
     });
-    view.update(cx, |view, cx| view.sync_conflict_projection(cx));
+    cx.run_until_parked();
     let (updated, hunks) = cx.update_entity(&view, |view, cx| {
         let snapshot = view
             .multi_buffer
@@ -344,12 +426,17 @@ fn conflict_projection_refresh_preserves_unchanged_files(cx: &mut TestAppContext
         (snapshot.clone(), view.conflict_editor_hunks(cx))
     });
     let second_buffer_id = cx.read_entity(&second_source, |source, _| source.buffer_id());
-    let second_text = updated
-        .text_for_range(updated.buffer_range(second_buffer_id).unwrap())
-        .unwrap();
-    assert!(second_text.starts_with("resolved\n"));
-    assert!(!second_text.contains("<<<<<<<"));
-    assert_eq!(updated.topology_version(), topology_after_paths);
+    assert!(updated.buffer_range(second_buffer_id).is_none());
+    assert!(updated.topology_version() > topology_after_paths);
+    assert_eq!(
+        second_source.read_with(cx, |source, _| {
+            let text = source.text_snapshot();
+            text.slice_text(TextRange::new(ByteOffset::ZERO, text.len_bytes()).unwrap())
+                .unwrap()
+                .to_string()
+        }),
+        "resolved\n"
+    );
     assert_eq!(hunks.len(), 1, "源文本解决冲突后仅保留其他文件的装饰");
 
     view.update(cx, |view, cx| {

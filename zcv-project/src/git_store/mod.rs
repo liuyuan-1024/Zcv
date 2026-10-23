@@ -13,8 +13,11 @@
 //! 同 key 的排队 job 直接丢弃。
 
 mod background;
+mod conflict_set;
 mod jobs;
 mod snapshots;
+
+pub use conflict_set::{ConflictSet, ConflictSetChanged, ConflictSetSnapshot};
 
 use jobs::{GitJob, GitJobId, GitJobKey, GitJobRecord, ScheduledGitJob};
 pub use jobs::{GitJobPhase, GitJobStatus, GitOperationKind};
@@ -372,6 +375,7 @@ pub struct GitStore {
     /// 按 (路径, working 实体, 调用方键) 共享的 diff 实体；
     /// 同一份 diff 跨编辑器 / 面板视图复用，修订文本变化时就地增量安装，不替换实体。
     shared_diffs: HashMap<SharedDiffKey, SharedDiff>,
+    conflict_sets: HashMap<EntityId, WeakEntity<ConflictSet>>,
     /// 项目唯一的语言注册表；修订文档与工作区文档共用。
     language_registry: Arc<LanguageRegistry>,
     background: BackgroundExecutor,
@@ -500,6 +504,7 @@ impl GitStore {
             revision_documents: HashMap::new(),
             pending_index: HashMap::new(),
             shared_diffs: HashMap::new(),
+            conflict_sets: HashMap::new(),
             language_registry,
             background,
             self_handle,
@@ -600,6 +605,23 @@ impl GitStore {
             store: self.self_handle.clone(),
             base,
         })
+    }
+
+    /// 按工作区文档实体共享冲突范围，随最后一个消费者释放。
+    pub fn conflict_set(
+        &mut self,
+        source: Entity<LanguageBuffer>,
+        cx: &mut Context<Self>,
+    ) -> Entity<ConflictSet> {
+        let key = source.entity_id();
+        if let Some(set) = self.conflict_sets.get(&key).and_then(WeakEntity::upgrade) {
+            return set;
+        }
+        self.conflict_sets.retain(|_, set| set.upgrade().is_some());
+        let set = cx.new(|cx| ConflictSet::new(source, cx));
+        set.update(cx, |set, cx| set.reparse(cx));
+        self.conflict_sets.insert(key, set.downgrade());
+        set
     }
 
     /// 按 (路径, working 实体, 调用方键) 共享单个文件的 diff 实体。

@@ -21,15 +21,15 @@ use gpui::{
 use zcv_actions::DeployBufferSearch;
 use zcv_buffer_diff::{BufferDiff, BufferDiffEvent, BufferDiffInput, diff_line_boundary};
 use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorHunk, HunkControlTarget};
-use zcv_git::{
-    ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode, parse_conflict_regions,
-};
+use zcv_git::{ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{
     DiffExcerptRanges, DiffFile, DiffHunkSource, ExcerptLocation, ExcerptRange, MultiBuffer,
 };
 use zcv_path::{AbsolutePathBuf, compare_tree_entries};
-use zcv_project::{FileSaveConflictPolicy, GitStoreEvent, Project};
+use zcv_project::{
+    ConflictSet, ConflictSetSnapshot, FileSaveConflictPolicy, GitStoreEvent, Project,
+};
 use zcv_search::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
 use zcv_text::{BufferId, ByteOffset, Snapshot, TextRange};
 use zcv_theme::{color, scale};
@@ -50,6 +50,12 @@ struct GitChangeFile {
 
 struct DiffFileSubscription {
     diff: Entity<BufferDiff>,
+    _subscription: Subscription,
+}
+
+struct ConflictFileSubscription {
+    source: Entity<LanguageBuffer>,
+    set: Entity<ConflictSet>,
     _subscription: Subscription,
 }
 
@@ -373,6 +379,7 @@ struct DiffView {
     revision_load_task: Option<Task<()>>,
     /// 按工作区 Buffer 身份拥有 diff 订阅，控件与文件头共享此领域入口。
     diff_subscriptions: HashMap<BufferId, DiffFileSubscription>,
+    conflict_files: HashMap<PathBuf, ConflictFileSubscription>,
     /// 本差异视图的搜索会话：查询、匹配选项、可见性与替换开关由它唯一持有。
     search_bar: Entity<SearchBar>,
     _subscriptions: Vec<Subscription>,
@@ -625,6 +632,7 @@ impl DiffView {
             pending_path: None,
             revision_load_task: None,
             diff_subscriptions: HashMap::default(),
+            conflict_files: HashMap::default(),
             search_bar: cx.new(move |cx| {
                 SearchBar::new(
                     SearchBarConfig {
@@ -717,56 +725,101 @@ impl DiffView {
         }
     }
 
-    /// 冲突视图按 Git 文件集合增删完整工作区文档；保留文件由 MultiBuffer 的源订阅同步文本。
+    /// Git 状态决定文件集合；冲突范围快照决定各文件可见窗口。
     fn sync_conflict_projection(&mut self, cx: &mut Context<Self>) {
-        // Git 展示路径用于比较成员；移除 excerpt 必须使用源文档的规范化路径键。
         let attached = self.multi_buffer.update(cx, |buffer, cx| {
-            buffer
-                .snapshot(cx)
-                .excerpts()
-                .map(|excerpt| {
-                    (
-                        excerpt.display_path().to_path_buf(),
-                        excerpt.path().to_path_buf(),
-                    )
-                })
-                .collect::<HashMap<_, _>>()
+            buffer.snapshot(cx).excerpts().fold(
+                HashMap::<PathBuf, Vec<_>>::new(),
+                |mut paths, excerpt| {
+                    paths
+                        .entry(excerpt.display_path().to_path_buf())
+                        .or_default()
+                        .push((
+                            excerpt.path().to_path_buf(),
+                            excerpt.buffer_id(),
+                            excerpt.source_range(),
+                        ));
+                    paths
+                },
+            )
         });
         let visible = self
             .files
             .iter()
             .map(|file| file.path.clone())
             .collect::<HashSet<_>>();
-        for (display_path, source_path) in &attached {
+        self.conflict_files.retain(|path, _| visible.contains(path));
+        for (display_path, excerpts) in &attached {
             if !visible.contains(display_path) {
                 self.multi_buffer.update(cx, |buffer, cx| {
-                    buffer.remove_excerpts_for_path(source_path, cx);
+                    buffer.remove_excerpts_for_path(&excerpts[0].0, cx);
                 });
             }
         }
         for file in &self.files {
-            if attached.contains_key(&file.path) {
+            if !self.conflict_files.contains_key(&file.path) {
+                let Ok(source) = self
+                    .project
+                    .update(cx, |project, cx| project.open_buffer(&file.path, cx))
+                else {
+                    continue;
+                };
+                let git_store = self.project.read(cx).git_store();
+                let set = git_store.update(cx, |store, cx| store.conflict_set(source.clone(), cx));
+                let subscription = cx.subscribe(&set, |view, _, _, cx| {
+                    view.sync_conflict_projection(cx);
+                    view.apply_pending_path(cx);
+                    cx.notify();
+                });
+                self.conflict_files.insert(
+                    file.path.clone(),
+                    ConflictFileSubscription {
+                        source,
+                        set,
+                        _subscription: subscription,
+                    },
+                );
+            }
+            let subscription = &self.conflict_files[&file.path];
+            let Some(conflicts) = subscription.set.read(cx).snapshot() else {
+                continue;
+            };
+            if conflicts.text().version() != subscription.source.read(cx).text_snapshot().version()
+            {
                 continue;
             }
-            let Ok(source) = self
-                .project
-                .update(cx, |project, cx| project.open_buffer(&file.path, cx))
-            else {
+            let windows = conflict_excerpt_windows(&conflicts, DIFF_CONTEXT_LINES);
+            let current = attached.get(&file.path);
+            if windows.is_empty() {
+                if let Some(current) = current {
+                    self.multi_buffer.update(cx, |buffer, cx| {
+                        buffer.remove_excerpts_for_path(&current[0].0, cx);
+                    });
+                }
                 continue;
-            };
-            let source_len = source.read(cx).text_snapshot().len_bytes();
-            let Ok(source_range) = TextRange::new(ByteOffset::ZERO, source_len) else {
-                continue;
-            };
-            self.multi_buffer.update(cx, |buffer, cx| {
-                buffer.set_excerpts_for_path(
-                    vec![
-                        ExcerptRange::new(source, source_range, Vec::new())
-                            .with_display_path(file.path.clone()),
-                    ],
-                    cx,
-                );
+            }
+            let excerpts = windows
+                .into_iter()
+                .map(|lines| {
+                    ExcerptRange::line_range(subscription.source.clone(), lines, cx)
+                        .with_display_path(file.path.clone())
+                })
+                .collect::<Vec<_>>();
+            let same_ranges = current.is_some_and(|current| {
+                current.len() == excerpts.len()
+                    && current
+                        .iter()
+                        .zip(&excerpts)
+                        .all(|((_, buffer_id, range), excerpt)| {
+                            *buffer_id == subscription.source.read(cx).buffer_id()
+                                && *range == excerpt.source_range()
+                        })
             });
+            if !same_ranges {
+                self.multi_buffer.update(cx, |buffer, cx| {
+                    buffer.set_excerpts_for_path(excerpts, cx);
+                });
+            }
         }
         let hunks = self.conflict_editor_hunks(cx);
         self.editor.update(cx, |editor, cx| {
@@ -778,32 +831,32 @@ impl DiffView {
         let snapshot = self
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx));
-        let mut excerpts = snapshot.excerpts();
         let mut hunks = Vec::new();
-        for (buffer, path) in self.multi_buffer.read(cx).file_buffers(cx) {
-            let source = buffer.read(cx).text_snapshot();
-            let Ok(text_range) = TextRange::new(ByteOffset::ZERO, source.len_bytes()) else {
+        for file in &self.files {
+            let Some(subscription) = self.conflict_files.get(&file.path) else {
                 continue;
             };
-            let Ok(text) = source.slice_text(text_range) else {
+            let Some(conflicts) = subscription.set.read(cx).snapshot() else {
                 continue;
             };
-            let text = text.to_string();
-            for (index, region) in parse_conflict_regions(&text).iter().enumerate() {
-                let Some(excerpt) = excerpts.find(|excerpt| {
-                    excerpt.path() == path
-                        && excerpt
-                            .source_range()
-                            .contains(ByteOffset::new(region.outer.start))
+            if conflicts.text().version() != subscription.source.read(cx).text_snapshot().version()
+            {
+                continue;
+            }
+            for (index, region) in conflicts.regions().iter().enumerate() {
+                let Some(excerpt) = snapshot.excerpts().find(|excerpt| {
+                    excerpt.display_path() == file.path
+                        && excerpt.source_range().start().get() <= region.outer.start
+                        && excerpt.source_range().end().get() >= region.outer.end
                 }) else {
                     continue;
                 };
                 let output_offset = |offset: usize| {
-                    excerpt.output_range().start().get()
-                        + offset.saturating_sub(excerpt.source_range().start().get())
+                    excerpt.output_range().start().get() + offset
+                        - excerpt.source_range().start().get()
                 };
                 let Some(hunk) = EditorHunk::conflict(
-                    format!("{}\n{index}", path.display()),
+                    format!("{}\n{index}", file.path.display()),
                     region.outer.clone(),
                     region.theirs.start,
                     output_offset,
@@ -1422,6 +1475,31 @@ fn project_diff_excerpt_ranges(
         }
     }
     DiffExcerptRanges::Windows(ranges)
+}
+
+/// 冲突标记连同上下文构成可见窗口；相邻窗口在组合层只有一个 excerpt。
+fn conflict_excerpt_windows(
+    conflicts: &ConflictSetSnapshot,
+    context_lines: usize,
+) -> Vec<Range<usize>> {
+    let text = conflicts.text();
+    let line_count = text.line_count();
+    let mut windows = Vec::<Range<usize>>::new();
+    for region in conflicts.regions() {
+        let start = diff_line_boundary(text, ByteOffset::new(region.outer.start))
+            .saturating_sub(context_lines);
+        let end = diff_line_boundary(text, ByteOffset::new(region.outer.end))
+            .saturating_add(context_lines)
+            .min(line_count);
+        if let Some(previous) = windows.last_mut()
+            && start <= previous.end
+        {
+            previous.end = previous.end.max(end);
+        } else {
+            windows.push(start..end);
+        }
+    }
+    windows
 }
 
 fn subscribe_to_open_excerpts(

@@ -62,6 +62,15 @@ if [[ "$ARCH" == "arm64" && "$(uname -m)" != "arm64" ]]; then
 fi
 
 # ---------- 1. 构建 ----------
+# 链接器默认从 SDKROOT 或 xcode-select 所选目录解析 sysroot；
+# 显式固定为当前 SDK，避免环境漂移导致产物链到旧 SDK、红绿灯等系统外观退回旧样式。
+export SDKROOT="$(xcrun --show-sdk-path)"
+ACTIVE_SDK="$(xcrun --show-sdk-version)"
+if [[ ! "$ACTIVE_SDK" =~ ^[0-9]+(\.[0-9]+)*$ ]] || (( ${ACTIVE_SDK%%.*} < 26 )); then
+    echo "打包需要 macOS 26 或更新版本的 SDK，当前为 $ACTIVE_SDK；请检查 Xcode 与 xcode-select" >&2
+    exit 1
+fi
+
 echo "==> cargo build --release -p $PACKAGE --target $TARGET"
 cargo build --release -p "$PACKAGE" --target "$TARGET"
 echo "==> cargo build --release -p $HELPER_PACKAGE --bin $HELPER_BIN_NAME --target $TARGET"
@@ -75,6 +84,13 @@ for REQUIRED_BIN in "$BIN" "$HELPER_BIN"; do
         echo "构建产物不存在: $REQUIRED_BIN" >&2; exit 1
     fi
 done
+
+# 产物链接的 SDK 必须与本机当前 SDK 一致，否则系统会按旧 SDK 渲染旧版窗口外观。
+LINKED_SDK="$(vtool -show-build "$BIN" | awk '$1 == "sdk" {print $2; exit}')"
+if [[ "$LINKED_SDK" != "$ACTIVE_SDK" ]]; then
+    echo "产物链接 SDK ($LINKED_SDK) 与当前 SDK ($ACTIVE_SDK) 不一致；请检查 xcode-select 与 SDKROOT" >&2
+    exit 1
+fi
 
 # ---------- 2. 组装 .app ----------
 APP="$OUT_DIR/$APP_NAME.app"
@@ -123,7 +139,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   </array>
 
   <key>LSMinimumSystemVersion</key>
-  <string>11.0</string>
+  <string>26.0</string>
 
   <key>NSHighResolutionCapable</key>
   <true/>

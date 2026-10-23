@@ -81,7 +81,7 @@ fn top_bar_content_starts_after_native_window_controls(cx: &mut TestAppContext) 
     cx.run_until_parked();
 
     let content = content_bounds.borrow().expect("顶栏内容应完成布局");
-    assert_eq!(content.left(), px(78.0));
+    assert_eq!(content.left(), px(76.0));
 
     cx.update(|window, _| {
         window.set_rem_size(px(scale::DEFAULT_UI_SIZE * 2.0));
@@ -92,5 +92,5 @@ fn top_bar_content_starts_after_native_window_controls(cx: &mut TestAppContext) 
     let content = content_bounds
         .borrow()
         .expect("调整字号后顶栏内容应重新布局");
-    assert_eq!(content.left(), px(96.0));
+    assert_eq!(content.left(), px(92.0));
 }

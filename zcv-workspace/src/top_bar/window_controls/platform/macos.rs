@@ -1,9 +1,12 @@
 use gpui::{DefiniteLength, Pixels, Point, Window, point, px};
 use zcv_theme::scale;
 
+// macOS 26+ 新样式红绿灯的固定几何：按钮帧 14×14、帧间距 9，三帧总宽 60px。
+// 原生按钮尺寸由系统决定、不随字号缩放，因此组宽用固定像素；两侧留白用结构刻度随字号缩放。
+// 红绿灯区与窗口边缘、顶栏内容区之间的留白统一为 S8，比常规组件边距大一级，让系统控制区在顶栏中独立成组。
 const TRAFFIC_LIGHT_HEIGHT: Pixels = px(14.0);
-const TRAFFIC_LIGHT_MARGIN: DefiniteLength = scale::structural(9.0);
 const TRAFFIC_LIGHT_GROUP_WIDTH: Pixels = px(60.0);
+const TRAFFIC_LIGHT_MARGIN: DefiniteLength = scale::S8;
 
 #[derive(Default)]
 pub(in crate::top_bar) struct WindowControls {

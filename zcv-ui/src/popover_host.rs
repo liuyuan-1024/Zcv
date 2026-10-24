@@ -7,13 +7,15 @@ use std::{
 };
 
 use gpui::{
-    Anchor, App, FocusHandle, MouseButton, Pixels, WeakFocusHandle, Window, anchored, deferred,
-    div, point, prelude::*,
+    Anchor, App, FocusHandle, MouseButton, MouseDownEvent, Pixels, WeakFocusHandle, Window,
+    anchored, deferred, div, point, prelude::*,
 };
 use zcv_theme::{color, scale};
 
 /// 浮层内容视图调用的关闭回调。
 pub type PopoverDismissHandler = Box<dyn Fn(&mut Window, &mut App)>;
+
+type OutsideClickHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App)>;
 
 /// 浮层身份：同身份重复打开 = 关闭（toggle 语义）。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -192,29 +194,61 @@ impl PopoverHost {
         cx: &App,
         content: impl IntoElement,
     ) -> impl IntoElement {
+        self.overlay_inner(window, cx, content, true, None)
+    }
+
+    /// 菜单弹层使用外部点击事件关闭，保留顶栏相邻菜单的鼠标命中。
+    pub fn menu_overlay(
+        &self,
+        window: &Window,
+        cx: &App,
+        content: impl IntoElement,
+        on_outside: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        self.overlay_inner(window, cx, content, false, Some(Box::new(on_outside)))
+    }
+
+    fn overlay_inner(
+        &self,
+        window: &Window,
+        cx: &App,
+        content: impl IntoElement,
+        intercept_background: bool,
+        on_outside: Option<OutsideClickHandler>,
+    ) -> impl IntoElement {
         let id = self.id;
         let layer = self.layer.clone();
         let win_size = window.bounds().size;
+        let mut panel = div()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+            });
+        if let Some(on_outside) = on_outside {
+            panel = panel.on_mouse_down_out(on_outside);
+        }
 
         div()
-            .child(
-                deferred(
-                    div()
-                        .absolute()
-                        .top(Pixels::ZERO)
-                        .left(Pixels::ZERO)
-                        .w(win_size.width)
-                        .h(win_size.height)
-                        .occlude()
-                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                            if let Some(active) = layer.dismiss(id) {
-                                active.restore_focus(window, cx);
-                            }
-                            window.refresh();
-                        }),
+            .when(intercept_background, |overlay| {
+                overlay.child(
+                    deferred(
+                        div()
+                            .absolute()
+                            .top(Pixels::ZERO)
+                            .left(Pixels::ZERO)
+                            .w(win_size.width)
+                            .h(win_size.height)
+                            .occlude()
+                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                if let Some(active) = layer.dismiss(id) {
+                                    active.restore_focus(window, cx);
+                                }
+                                window.refresh();
+                            }),
+                    )
+                    .with_priority(0),
                 )
-                .with_priority(0),
-            )
+            })
             .child(
                 deferred(
                     anchored()
@@ -223,28 +257,22 @@ impl PopoverHost {
                         .position_mode(gpui::AnchoredPositionMode::Local)
                         .snap_to_window_with_margin(scale::to_pixels(scale::S6, window))
                         .child(
-                            div()
-                                .occlude()
-                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                    cx.stop_propagation();
-                                })
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .max_h(
-                                            win_size.height
-                                                - scale::to_pixels(scale::S6, window) * 2.0,
-                                        )
-                                        .bg(color::current(cx).elevated_surface_background)
-                                        .border_l_3()
-                                        .border_color(color::current(cx).border_focused)
-                                        .border_1()
-                                        .border_color(color::current(cx).border)
-                                        .rounded_lg()
-                                        .overflow_hidden()
-                                        .child(content),
-                                ),
+                            panel.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .max_h(
+                                        win_size.height - scale::to_pixels(scale::S6, window) * 2.0,
+                                    )
+                                    .bg(color::current(cx).elevated_surface_background)
+                                    .border_l_3()
+                                    .border_color(color::current(cx).border_focused)
+                                    .border_1()
+                                    .border_color(color::current(cx).border)
+                                    .rounded_lg()
+                                    .overflow_hidden()
+                                    .child(content),
+                            ),
                         ),
                 )
                 .with_priority(1),

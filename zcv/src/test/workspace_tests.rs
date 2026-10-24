@@ -1,12 +1,46 @@
 use std::sync::Arc;
 
+use futures::channel::oneshot;
 use gpui::{AppContext, TestAppContext};
+use zcv_actions::About;
 use zcv_language::LanguageRegistry;
 use zcv_settings::{
     GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore, UserSettings,
 };
 
-use super::{DockPosition, Workspace, build_workspace};
+use super::{DockPosition, Workspace, build_workspace, retain_prompt_until_answer};
+
+#[gpui::test]
+fn prompt_remains_answerable_until_dismissed(cx: &mut TestAppContext) {
+    let (answer, prompt) = oneshot::channel();
+    cx.update(|cx| retain_prompt_until_answer(prompt, cx));
+    cx.run_until_parked();
+    assert!(answer.send(0).is_ok());
+}
+
+#[gpui::test]
+fn about_action_displays_current_version(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        init_settings(cx);
+        zcv_editor::init(cx, test_languages());
+        crate::app_menus::install(cx);
+    });
+    let (workspace, visual) =
+        cx.add_window_view(|window, cx| build_workspace(&None, test_languages(), window, cx));
+    let focus = visual.read_entity(&workspace, |workspace, _| workspace.focus_handle().clone());
+    visual.update(|window, cx| window.focus(&focus, cx));
+    visual.dispatch_action(About);
+    visual.run_until_parked();
+
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((
+            "关于 Zcv".to_owned(),
+            format!("当前版本：{}", env!("CARGO_PKG_VERSION"))
+        ))
+    );
+    cx.simulate_prompt_answer("知道了");
+}
 
 fn test_languages() -> Arc<LanguageRegistry> {
     Arc::new(LanguageRegistry::new())

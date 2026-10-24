@@ -142,7 +142,7 @@ described_actions!(
     ]
 );
 
-actions!(app_menu, [CloseMenu, NextItem, PreviousItem, ConfirmItem]);
+actions!(app_menu, [CloseMenu]);
 
 described_actions!(
     terminal,

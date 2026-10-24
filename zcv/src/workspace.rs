@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::Context as _;
+use futures::channel::oneshot;
 use gpui::{
     App, AsyncApp, Context, Entity, PromptLevel, TitlebarOptions, WeakEntity, Window, WindowBounds,
     WindowOptions, prelude::*, px, size,
@@ -271,6 +272,14 @@ fn finish_build_workspace(
     workspace
 }
 
+fn retain_prompt_until_answer(prompt: oneshot::Receiver<usize>, cx: &App) {
+    // Windows 原生对话框在接收端被丢弃时取消。
+    cx.spawn(async move |_| {
+        let _ = prompt.await;
+    })
+    .detach();
+}
+
 /// 所有工作区共享的面板、状态栏和编辑器内容装配。
 ///
 /// 这些 UI 不以 worktree 是否存在为条件；各状态项在没有活动编辑器时自行显示空态。
@@ -280,13 +289,14 @@ fn initialize_common_workspace(
     cx: &mut Context<Workspace>,
 ) {
     workspace.register_action(|_, _: &About, window, cx| {
-        drop(window.prompt(
+        let prompt = window.prompt(
             PromptLevel::Info,
             "关于 Zcv",
             Some(&format!("当前版本：{}", env!("CARGO_PKG_VERSION"))),
             &["知道了"],
             cx,
-        ));
+        );
+        retain_prompt_until_answer(prompt, cx);
     });
     workspace.register_action(|_, _: &CheckForUpdates, _window, cx| {
         let workspace = cx.weak_entity();
@@ -327,13 +337,14 @@ fn initialize_common_workspace(
             .iter()
             .any(|item| item.is_dirty(cx));
         if has_unsaved_items {
-            drop(window.prompt(
+            let prompt = window.prompt(
                 PromptLevel::Warning,
                 "存在未保存的文件",
                 Some("请先保存或关闭未保存的文件，再重启完成更新。"),
                 &["知道了"],
                 cx,
-            ));
+            );
+            retain_prompt_until_answer(prompt, cx);
             return;
         }
 

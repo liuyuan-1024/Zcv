@@ -1,14 +1,5 @@
 [
   {
-    "context": "ApplicationMenu",
-    "bindings": {
-      "escape": "app_menu::CloseMenu",
-      "down": "app_menu::NextItem",
-      "up": "app_menu::PreviousItem",
-      "enter": "app_menu::ConfirmItem"
-    }
-  },
-  {
     "context": "Editor",
     "bindings": {
       // =========================

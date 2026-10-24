@@ -3,13 +3,20 @@
 //! hover、选中、间距样式。可用于 picker 列表、菜单列表等。
 
 use gpui::{
-    AnyElement, App, ElementId, IntoElement, RenderOnce, ViewElement, Window, div, prelude::*,
+    AnyElement, App, CursorStyle, ElementId, IntoElement, RenderOnce, ViewElement, Window, div,
+    prelude::*,
 };
 use zcv_theme::{color, scale, typography};
+
+/// 行内光标：禁用行不给出可点击提示，其余行提示可点击。
+fn cursor_for_state(disabled: bool) -> Option<CursorStyle> {
+    (!disabled).then_some(CursorStyle::PointingHand)
+}
 
 /// 通用列表项。
 pub struct ListItem {
     id: ElementId,
+    disabled: bool,
     toggle_state: bool,
     start_slot: Option<AnyElement>,
     child: Option<AnyElement>,
@@ -21,12 +28,19 @@ impl ListItem {
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
+            disabled: false,
             toggle_state: false,
             start_slot: None,
             child: None,
             subtitle: None,
             end_slot: None,
         }
+    }
+
+    /// 禁用态：不显示悬停背景、不使用可点击光标；内容置灰由调用方负责。
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
 
     /// 首部插槽。
@@ -74,6 +88,7 @@ impl RenderOnce for ListItem {
         let ui_line = typography::ui_line_at(ui_size, cx);
         // hover 闭包只有 style 参数，先取色再 move 进闭包
         let hover_bg = color::current(cx).element_hover;
+        let disabled = self.disabled;
         let mut row = div()
             .id(self.id)
             .w_full()
@@ -83,10 +98,14 @@ impl RenderOnce for ListItem {
             .justify_between()
             .gap(scale::S6)
             .p(scale::S6)
-            .cursor_pointer()
             // test cfg 下注册 debug bounds，供行高断言使用。
-            .debug_selector(|| "list-item".into())
-            .hover(move |style| style.bg(hover_bg));
+            .debug_selector(|| "list-item".into());
+        if let Some(cursor) = cursor_for_state(disabled) {
+            row = row.cursor(cursor);
+        }
+        if !disabled {
+            row = row.hover(move |style| style.bg(hover_bg));
+        }
 
         if self.toggle_state {
             row = row.bg(color::current(cx).element_selected);

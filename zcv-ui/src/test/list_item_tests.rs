@@ -2,6 +2,12 @@ use gpui::{Context, Render, TestAppContext, Window, px, size};
 
 use super::*;
 
+#[test]
+fn disabled_rows_do_not_advertise_clicking() {
+    assert_eq!(cursor_for_state(true), None);
+    assert_eq!(cursor_for_state(false), Some(CursorStyle::PointingHand));
+}
+
 struct ShortRow;
 impl Render for ShortRow {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {

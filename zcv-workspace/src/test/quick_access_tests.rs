@@ -81,7 +81,7 @@ fn escape_restores_the_focus_before_quick_access(cx: &mut TestAppContext) {
             QuickAccess::new(
                 project,
                 workspace.downgrade(),
-                PickerLayer::default(),
+                PopoverLayer::default(),
                 window,
                 cx,
             )
@@ -132,7 +132,7 @@ fn clicking_quick_access_records_the_focus_before_the_input_takes_it(cx: &mut Te
                 QuickAccess::new(
                     project,
                     workspace.downgrade(),
-                    PickerLayer::default(),
+                    PopoverLayer::default(),
                     window,
                     cx,
                 )
@@ -177,7 +177,7 @@ fn line_column_entry_reuses_input_and_normal_search_does_not_offer_navigation(
                 QuickAccess::new(
                     project,
                     workspace.downgrade(),
-                    PickerLayer::default(),
+                    PopoverLayer::default(),
                     window,
                     cx,
                 )
@@ -443,7 +443,7 @@ fn command_candidates_come_from_described_actions(cx: &mut TestAppContext) {
         QuickAccess::new(
             workspace.read(cx).project().clone(),
             workspace.downgrade(),
-            PickerLayer::default(),
+            PopoverLayer::default(),
             window,
             cx,
         )

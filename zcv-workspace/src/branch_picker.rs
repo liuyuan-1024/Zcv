@@ -13,10 +13,10 @@ use zcv_actions::{DeleteGitBranch, SelectGitBranch};
 use zcv_fuzzy::Matcher;
 use zcv_git::Branch;
 use zcv_keymap::display_shortcut;
-use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, PickerLayer};
+use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, toggle_picker};
 use zcv_project::{GitStore, GitStoreEvent};
 use zcv_theme::color;
-use zcv_ui::{Button, ListItem, SvgIcon};
+use zcv_ui::{Button, ListItem, PopoverHost, PopoverLayer, SvgIcon};
 
 // ═══ 回调 ════════════════════════════════════════════════════════
 
@@ -198,7 +198,7 @@ impl PickerDelegate for BranchPickerDelegate {
 /// 按钮显示当前分支名；项目不是 git 仓库或空仓库时选择器整体不显示。
 /// detached HEAD 显示 8 位短 SHA。
 pub struct BranchPicker {
-    host: PickerHost,
+    host: PopoverHost,
     picker: Entity<Picker<BranchPickerDelegate>>,
     git_store: Entity<GitStore>,
     _git_subscription: Subscription,
@@ -220,14 +220,14 @@ impl BranchPicker {
     pub fn new(
         git_store: Entity<GitStore>,
         on_select: OnBranchSelected,
-        picker_layer: PickerLayer,
+        picker_layer: PopoverLayer,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let delegate = BranchPickerDelegate::new(Vec::new(), on_select);
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
-        let host = PickerHost::new(cx.focus_handle(), picker_layer);
+        let host = PopoverHost::new(cx.focus_handle(), picker_layer);
         picker.update(cx, |picker, _| {
             picker.set_on_dismiss(host.on_dismiss_handler())
         });
@@ -283,7 +283,7 @@ impl BranchPicker {
                 picker.set_query("", cx);
             });
         }
-        self.host.toggle(&self.picker, window, cx);
+        toggle_picker(&mut self.host, &self.picker, window, cx);
     }
 
     fn handle_delete_branch(
@@ -327,7 +327,7 @@ impl Render for BranchPicker {
 
         // 浮层
         if self.host.is_open() {
-            root = root.child(self.host.overlay(window, cx, &self.picker));
+            root = root.child(self.host.overlay(window, cx, self.picker.clone()));
         }
 
         root

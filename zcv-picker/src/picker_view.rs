@@ -15,7 +15,7 @@ use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
 };
 use zcv_theme::{color, fixed};
-use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, search_box};
+use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, PopoverDismissHandler, search_box};
 
 use super::PICKER_MAX_HEIGHT;
 
@@ -58,16 +58,13 @@ pub trait PickerDelegate: 'static + Sized {
 
 // ═══ Picker Entity ══════════════════════════════════════════════
 
-/// 浮层关闭回调。
-pub(crate) type OnDismiss = Box<dyn Fn(&mut Window, &mut App)>;
-
 pub struct Picker<D: PickerDelegate> {
     delegate: D,
     /// 单行输入控件；由 zcv_editor::init 注入的 EDITOR_FACTORY 创建。
     search_input: Arc<dyn ErasedEditor>,
     focus_handle: FocusHandle,
     width: Pixels,
-    on_dismiss: Option<OnDismiss>,
+    on_dismiss: Option<PopoverDismissHandler>,
     list_state: ListState,
     item_height_hint: Option<Pixels>,
     height_hint_pending: bool,
@@ -121,7 +118,7 @@ impl<D: PickerDelegate> Picker<D> {
     }
 
     /// 设置关闭回调（由父 Entity 调用，例如关闭浮层）。
-    pub fn set_on_dismiss(&mut self, f: OnDismiss) {
+    pub fn set_on_dismiss(&mut self, f: PopoverDismissHandler) {
         self.on_dismiss = Some(f);
     }
 

@@ -1,6 +1,6 @@
 # zcv-picker
 
-`zcv-picker` 提供通用“搜索 + 选择”浮层原语：`Picker` 负责搜索输入、过滤与列表导航，`PickerHost` 负责浮层开合与互斥。
+`zcv-picker` 提供通用“搜索 + 选择”能力：`Picker` 负责搜索输入、过滤与列表导航，浮层和焦点生命周期由 `zcv-ui::PopoverHost` 承载。
 
 公共入口是 [`src/picker.rs`](src/picker.rs)。
 
@@ -8,7 +8,7 @@
 
 - 承载 `PickerDelegate`（业务数据与匹配逻辑）。
 - 持有单行搜索输入、查询文本与列表滚动状态。
-- 由 `PickerHost` 管理浮层显隐、焦点与“当前活动浮层”互斥。
+- `toggle_picker` 把选择器的焦点范围与搜索输入目标交给 `PopoverHost`，供宿主打开或关闭选择器。
 
 本 crate 不拥有业务数据；项目选择、最近项目、分支选择等由宿主提供 delegate。
 
@@ -16,7 +16,7 @@
 
 - `Picker<D>` 拥有 delegate、搜索输入、查询与列表状态。
 - 搜索输入由 `zcv_editor::init` 注入的 `EDITOR_FACTORY` 创建，是查询输入的权威。
-- `PickerHost` 拥有浮层开合状态；宿主（如工作区）拥有 host 的生命周期。
+- `PopoverHost` 拥有浮层开合状态；宿主（如工作区）拥有 host 的生命周期。
 
 ## 不变量
 

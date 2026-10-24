@@ -7,12 +7,11 @@ use gpui::{
     WindowControlArea, div, prelude::*,
 };
 use zcv_actions::OpenSettings;
-use zcv_picker::PickerLayer;
 use zcv_project::{
     GitJobPhase, GitOperationKind, GitStore, GitStoreEvent, Project, RemoteOperationState,
 };
 use zcv_theme::{color, scale, typography};
-use zcv_ui::Button;
+use zcv_ui::{Button, PopoverLayer};
 
 use crate::{
     OnProjectSelected, Workspace,
@@ -21,8 +20,12 @@ use crate::{
     quick_access::QuickAccess,
 };
 
+#[cfg(any(not(target_os = "macos"), test))]
+mod application_menu;
 mod window_controls;
 
+#[cfg(not(target_os = "macos"))]
+use application_menu::ApplicationMenu;
 use window_controls::WindowControls;
 
 pub(crate) type TopBarCallback = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -46,6 +49,8 @@ pub struct TopBar {
     workspace: WeakEntity<Workspace>,
     callbacks: TopBarCallbacks,
     window_controls: WindowControls,
+    #[cfg(not(target_os = "macos"))]
+    application_menu: Entity<ApplicationMenu>,
     _git_subscription: Subscription,
 }
 
@@ -60,7 +65,9 @@ impl TopBar {
         cx: &mut Context<Self>,
     ) -> Self {
         let git_store = project.read(cx).git_store();
-        let picker_layer = PickerLayer::default();
+        let picker_layer = PopoverLayer::default();
+        #[cfg(not(target_os = "macos"))]
+        let application_menu = cx.new(|cx| ApplicationMenu::new(picker_layer.clone(), cx));
         let project_picker = cx.new(|cx| {
             ProjectPicker::new(
                 on_selected,
@@ -93,6 +100,8 @@ impl TopBar {
             workspace,
             callbacks,
             window_controls: WindowControls::new(),
+            #[cfg(not(target_os = "macos"))]
+            application_menu,
             _git_subscription: git_subscription,
         }
     }
@@ -202,6 +211,9 @@ mod tests;
 
 fn leading_slots(top_bar: &TopBar, cx: &App) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
+
+    #[cfg(not(target_os = "macos"))]
+    out.push(top_bar.application_menu.clone().into_any_element());
 
     // 项目选择器
     out.push(top_bar.project_picker.clone().into_any_element());

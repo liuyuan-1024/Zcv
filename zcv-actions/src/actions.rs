@@ -134,6 +134,17 @@ described_actions!(
 );
 
 described_actions!(
+    app,
+    APP_COMMANDS,
+    [
+        About => ("关于 Zcv", "查看当前应用版本"),
+        CheckForUpdates => ("检查更新", "检查是否有新的 Zcv 版本")
+    ]
+);
+
+actions!(app_menu, [CloseMenu, NextItem, PreviousItem, ConfirmItem]);
+
+described_actions!(
     terminal,
     TERMINAL_COMMANDS,
     [
@@ -266,6 +277,7 @@ actions!(
 /// 返回声明为用户可执行命令的 action 元数据。
 pub fn commands() -> impl Iterator<Item = &'static CommandMetadata> {
     [
+        APP_COMMANDS,
         EDITOR_COMMANDS,
         WORKSPACE_COMMANDS,
         TERMINAL_COMMANDS,

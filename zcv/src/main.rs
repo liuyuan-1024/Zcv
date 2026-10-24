@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod app_menus;
 mod auto_update;
 mod harness;
 mod workspace;
@@ -77,6 +78,7 @@ fn main() {
         zcv_search::init(cx);
         zcv_version_control::init(cx);
         zcv_keymap::init(cx).expect("内置快捷键应能注册");
+        app_menus::install(cx);
         auto_update::init(cx, update_error);
 
         // 更新 helper 需要在有限时间内确认新版本已经启动；

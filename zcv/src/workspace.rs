@@ -16,10 +16,10 @@ use gpui::{
     WindowOptions, prelude::*, px, size,
 };
 use zcv_actions::{
-    DecreaseContentFontSize, DecreaseUiFontSize, FocusLineColumn, FocusQuickAccess, GitFetch,
-    GitPull, GitPush, IncreaseContentFontSize, IncreaseUiFontSize, NewTerminal,
-    ResetContentFontSize, ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode,
-    ToggleProjectPicker,
+    About, CheckForUpdates, DecreaseContentFontSize, DecreaseUiFontSize, FocusLineColumn,
+    FocusQuickAccess, GitFetch, GitPull, GitPush, IncreaseContentFontSize, IncreaseUiFontSize,
+    NewTerminal, ResetContentFontSize, ResetUiFontSize, RestartToUpdate, SelectGitBranch,
+    ToggleHarnessMode, ToggleProjectPicker,
 };
 use zcv_editor::{Editor, EditorEvent};
 use zcv_language::LanguageRegistry;
@@ -279,6 +279,22 @@ fn initialize_common_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
+    workspace.register_action(|_, _: &About, window, cx| {
+        drop(window.prompt(
+            PromptLevel::Info,
+            "关于 Zcv",
+            Some(&format!("当前版本：{}", env!("CARGO_PKG_VERSION"))),
+            &["知道了"],
+            cx,
+        ));
+    });
+    workspace.register_action(|_, _: &CheckForUpdates, _window, cx| {
+        let workspace = cx.weak_entity();
+        UpdateManager::get(cx)
+            .expect("自动更新管理器必须先于工作区初始化")
+            .update(cx, |manager, cx| manager.request_check(workspace, cx));
+    });
+
     let outline = cx.new(|cx| {
         OutlinePanel::new(
             workspace.pane().clone(),

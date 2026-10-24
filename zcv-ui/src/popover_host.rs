@@ -1,7 +1,4 @@
-//! PickerHost —— 「按钮 + 浮层」外壳：打开状态、dismiss、焦点与浮层渲染。
-//!
-//! ProjectPicker / BranchPicker 各自持有数据源与按钮内容，共用的开关交互、焦点管理、全屏拦截与浮层样式链收敛到这里。
-//! 打开状态与互斥由同一顶栏持有的 `PickerLayer` 管理，常驻输入入口也复用它的焦点会话。
+//! 顶栏浮层的开合、互斥、焦点归还与展示外壳。
 
 use std::{
     cell::RefCell,
@@ -10,12 +7,13 @@ use std::{
 };
 
 use gpui::{
-    Anchor, App, Entity, FocusHandle, MouseButton, Pixels, WeakFocusHandle, Window, anchored,
-    deferred, div, point, prelude::*,
+    Anchor, App, FocusHandle, MouseButton, Pixels, WeakFocusHandle, Window, anchored, deferred,
+    div, point, prelude::*,
 };
 use zcv_theme::{color, scale};
 
-use crate::{Picker, PickerDelegate, picker_view::OnDismiss};
+/// 浮层内容视图调用的关闭回调。
+pub type PopoverDismissHandler = Box<dyn Fn(&mut Window, &mut App)>;
 
 /// 浮层身份：同身份重复打开 = 关闭（toggle 语义）。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -28,9 +26,9 @@ impl OverlayId {
     }
 }
 
-/// 同一顶栏的入口与选择器共享一个活动浮层；其他窗口拥有独立实例。
+/// 同一顶栏的所有浮层共享一个活动会话；其他窗口拥有独立实例。
 #[derive(Clone, Default)]
-pub struct PickerLayer {
+pub struct PopoverLayer {
     active: Rc<RefCell<Option<ActiveOverlay>>>,
 }
 
@@ -50,7 +48,7 @@ impl ActiveOverlay {
     }
 }
 
-impl PickerLayer {
+impl PopoverLayer {
     fn activate(
         &self,
         id: OverlayId,
@@ -113,15 +111,15 @@ impl PickerLayer {
     }
 }
 
-/// 顶栏浮层与焦点会话外壳；选择器另外使用按钮与浮层渲染能力。
-pub struct PickerHost {
+/// 顶栏浮层与焦点会话外壳；调用方负责内容和目标焦点。
+pub struct PopoverHost {
     id: OverlayId,
     focus: FocusHandle,
-    layer: PickerLayer,
+    layer: PopoverLayer,
 }
 
-impl PickerHost {
-    pub fn new(focus: FocusHandle, layer: PickerLayer) -> Self {
+impl PopoverHost {
+    pub fn new(focus: FocusHandle, layer: PopoverLayer) -> Self {
         Self {
             id: OverlayId::next(),
             focus,
@@ -149,8 +147,8 @@ impl PickerHost {
         self.layer.dismiss(self.id);
     }
 
-    /// 供 Picker 的 on_dismiss 使用的处理器。
-    pub fn on_dismiss_handler(&self) -> OnDismiss {
+    /// 供内容视图的关闭回调使用。
+    pub fn on_dismiss_handler(&self) -> PopoverDismissHandler {
         let id = self.id;
         let layer = self.layer.clone();
         Box::new(move |window, app| {
@@ -168,33 +166,31 @@ impl PickerHost {
         }
     }
 
-    /// 切换开合：打开时聚焦 Picker 搜索框，关闭时把焦点还给发起位置。
-    /// 调用方在打开分支先刷新数据源，再调用本方法。
-    pub fn toggle<D: PickerDelegate>(
+    /// 打开时聚焦目标；关闭时把焦点还给发起位置。
+    pub fn toggle(
         &mut self,
-        picker: &Entity<Picker<D>>,
+        focus_scope: FocusHandle,
+        focus_target: FocusHandle,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let focus_scope = picker.read(cx).focus_handle();
         let previous_focus = window.focused(cx).map(|focus| focus.downgrade());
         let (opened, closed) = self.layer.toggle(self.id, focus_scope, previous_focus);
         if let Some(closed) = closed {
             closed.restore_focus(window, cx);
         }
         if opened {
-            let input = picker.read(cx).search_input().clone();
-            window.focus(&input.focus_handle(cx), cx);
+            window.focus(&focus_target, cx);
         }
         window.refresh();
     }
 
-    /// 浮层：全屏点击拦截（垫底）+ anchored 弹层（包裹 Picker）。
-    pub fn overlay<D: PickerDelegate>(
+    /// 全屏点击拦截与锚定弹层。
+    pub fn overlay(
         &self,
         window: &Window,
         cx: &App,
-        picker: &Entity<Picker<D>>,
+        content: impl IntoElement,
     ) -> impl IntoElement {
         let id = self.id;
         let layer = self.layer.clone();
@@ -247,7 +243,7 @@ impl PickerHost {
                                         .border_color(color::current(cx).border)
                                         .rounded_lg()
                                         .overflow_hidden()
-                                        .child(picker.clone()),
+                                        .child(content),
                                 ),
                         ),
                 )

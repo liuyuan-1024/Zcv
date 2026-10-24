@@ -53,6 +53,21 @@ fn each_update_failure_is_notified_only_once() {
 }
 
 #[test]
+fn manual_check_reports_current_version_and_failure_reason() {
+    let (kind, message) = check_feedback(&Ok(CheckOutcome::Current));
+    assert!(kind == ToastKind::Info);
+    assert_eq!(
+        message,
+        format!("Zcv {} 已是最新版本", env!("CARGO_PKG_VERSION"))
+    );
+
+    let (kind, message) =
+        check_feedback(&Err(CheckFailure::Transient(anyhow::anyhow!("连接超时"))));
+    assert!(kind == ToastKind::Error);
+    assert_eq!(message, "检查更新失败：连接超时");
+}
+
+#[test]
 fn updated_result_notification_reports_rollback_only() {
     let rolled_back = UpdateResult {
         transaction_id: "42-1".to_owned(),
@@ -77,7 +92,7 @@ fn updated_result_notification_reports_rollback_only() {
 #[gpui::test]
 fn startup_notification_is_taken_once(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        let manager = cx.new(|cx| UpdateManager::new(None, Some(Arc::from("已回滚")), cx));
+        let manager = cx.new(|cx| UpdateManager::new(None, None, Some(Arc::from("已回滚")), cx));
         assert!(
             manager
                 .update(cx, |manager, _| manager.take_startup_notification())

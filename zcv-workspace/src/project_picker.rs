@@ -14,10 +14,10 @@ use gpui::{
 use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
 use zcv_fuzzy::Matcher;
 use zcv_keymap::{KeyBindings, display_shortcut};
-use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, PickerLayer, picker_divider};
+use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, picker_divider, toggle_picker};
 use zcv_project::Project;
 use zcv_theme::{color, scale};
-use zcv_ui::{Button, ListItem, SvgIcon};
+use zcv_ui::{Button, ListItem, PopoverHost, PopoverLayer, SvgIcon};
 
 use crate::{
     ToastKind, Workspace,
@@ -281,7 +281,7 @@ impl PickerDelegate for ProjectPickerDelegate {
 ///
 /// 显示当前项目名称，无项目时显示「选择项目」。
 pub struct ProjectPicker {
-    host: PickerHost,
+    host: PopoverHost,
     picker: Entity<Picker<ProjectPickerDelegate>>,
     /// 异步「打开本地项目」暂存的路径
     pending_path: Rc<RefCell<Option<String>>>,
@@ -295,7 +295,7 @@ impl ProjectPicker {
         on_selected: OnProjectSelected,
         project: Entity<Project>,
         workspace: WeakEntity<Workspace>,
-        picker_layer: PickerLayer,
+        picker_layer: PopoverLayer,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -334,7 +334,7 @@ impl ProjectPicker {
         );
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
-        let host = PickerHost::new(cx.focus_handle(), picker_layer);
+        let host = PopoverHost::new(cx.focus_handle(), picker_layer);
         picker.update(cx, |picker, _| {
             picker.set_on_dismiss(host.on_dismiss_handler())
         });
@@ -357,7 +357,7 @@ impl ProjectPicker {
                 picker.set_query("", cx);
             });
         }
-        self.host.toggle(&self.picker, window, cx);
+        toggle_picker(&mut self.host, &self.picker, window, cx);
     }
 
     /// 删除当前选中的最近项目（快捷键 cmd-backspace，仅 picker 打开时绑定生效）。
@@ -479,7 +479,7 @@ impl Render for ProjectPicker {
 
         // 浮层
         if self.host.is_open() {
-            root = root.child(self.host.overlay(window, cx, &self.picker));
+            root = root.child(self.host.overlay(window, cx, self.picker.clone()));
         }
 
         root

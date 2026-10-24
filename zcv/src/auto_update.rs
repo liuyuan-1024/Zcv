@@ -78,9 +78,12 @@ struct PreparedUpdate {
 pub(crate) struct UpdateManager {
     status: UpdateStatus,
     config: Option<UpdateConfig>,
+    disabled_reason: Option<Arc<str>>,
     prepared: Option<PreparedUpdate>,
     startup_notification: Option<Arc<str>>,
     check_task: Option<Task<()>>,
+    manual_requesters: Vec<WeakEntity<Workspace>>,
+    last_check_was_manual: bool,
     restart_started: bool,
 }
 
@@ -90,19 +93,21 @@ struct GlobalUpdateManager(Option<Entity<UpdateManager>>);
 impl Global for GlobalUpdateManager {}
 
 pub(crate) fn init(cx: &mut App, client_error: Option<String>) {
-    let config = if client_error.is_some() {
-        None
+    let (config, disabled_reason) = if let Some(error) = &client_error {
+        (None, Some(Arc::from(error.as_str())))
     } else {
-        UpdateConfig::from_app(cx)
-            .map_err(|error| eprintln!("自动更新未启用：{error:#}"))
-            .ok()
+        match UpdateConfig::from_app(cx) {
+            Ok(config) => (Some(config), None),
+            Err(error) => (None, Some(Arc::from(format!("{error:#}")))),
+        }
     };
     let startup_notification = match (client_error, startup_update_notification()) {
         (Some(error), Some(previous)) => Some(Arc::from(format!("{error}\n{previous}"))),
         (Some(error), None) => Some(Arc::from(error)),
         (None, previous) => previous,
     };
-    let manager = cx.new(|cx| UpdateManager::new(config, startup_notification, cx));
+    let manager =
+        cx.new(|cx| UpdateManager::new(config, disabled_reason, startup_notification, cx));
     cx.set_global(GlobalUpdateManager(Some(manager.clone())));
     manager.update(cx, |manager, cx| manager.check_for_update(cx));
 }
@@ -178,6 +183,7 @@ impl UpdateConfig {
 impl UpdateManager {
     fn new(
         config: Option<UpdateConfig>,
+        disabled_reason: Option<Arc<str>>,
         startup_notification: Option<Arc<str>>,
         _cx: &mut Context<Self>,
     ) -> Self {
@@ -188,9 +194,12 @@ impl UpdateManager {
                 UpdateStatus::Disabled
             },
             config,
+            disabled_reason,
             prepared: None,
             startup_notification,
             check_task: None,
+            manual_requesters: Vec::new(),
+            last_check_was_manual: false,
             restart_started: false,
         }
     }
@@ -206,6 +215,43 @@ impl UpdateManager {
 
     pub(crate) fn status(&self) -> UpdateStatus {
         self.status.clone()
+    }
+
+    pub(crate) fn request_check(
+        &mut self,
+        workspace: WeakEntity<Workspace>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(reason) = &self.disabled_reason {
+            show_update_toast(
+                &workspace,
+                ToastKind::Error,
+                format!("检查更新失败：{reason}"),
+                cx,
+            );
+            return;
+        }
+        if let UpdateStatus::ReadyToRestart { version } = &self.status {
+            show_update_toast(
+                &workspace,
+                ToastKind::Info,
+                format!("Zcv {version} 已就绪，请点击顶栏“重启以更新”"),
+                cx,
+            );
+            return;
+        }
+        if self.manual_requesters.contains(&workspace) {
+            return;
+        }
+        self.manual_requesters.push(workspace.clone());
+        if self.check_task.is_none() {
+            self.check_for_update(cx);
+        }
+        let message = match &self.status {
+            UpdateStatus::Downloading { version, .. } => format!("正在下载 Zcv {version}"),
+            _ => "正在检查更新".to_owned(),
+        };
+        show_update_toast(&workspace, ToastKind::Info, message, cx);
     }
 
     fn check_for_update(&mut self, cx: &mut Context<Self>) {
@@ -238,6 +284,9 @@ impl UpdateManager {
 
             this.update(cx, |manager, cx| {
                 manager.check_task.take();
+                let feedback = check_feedback(&result);
+                let requesters = std::mem::take(&mut manager.manual_requesters);
+                manager.last_check_was_manual = !requesters.is_empty();
                 match result {
                     Ok(CheckOutcome::Current) => manager.status = UpdateStatus::Idle,
                     Ok(CheckOutcome::Prepared(prepared)) => {
@@ -246,7 +295,7 @@ impl UpdateManager {
                         };
                         manager.prepared = Some(prepared);
                     }
-                    Err(CheckFailure::Transient) => {
+                    Err(CheckFailure::Transient(_)) => {
                         manager.status = UpdateStatus::Idle;
                     }
                     Err(CheckFailure::Permanent(error)) => {
@@ -254,6 +303,9 @@ impl UpdateManager {
                             message: Arc::from(format!("自动更新产物无效：{error:#}")),
                         };
                     }
+                }
+                for workspace in requesters {
+                    show_update_toast(&workspace, feedback.0, feedback.1.clone(), cx);
                 }
                 cx.notify();
             })
@@ -331,8 +383,24 @@ enum CheckOutcome {
 }
 
 enum CheckFailure {
-    Transient,
+    Transient(anyhow::Error),
     Permanent(anyhow::Error),
+}
+
+fn check_feedback(result: &result::Result<CheckOutcome, CheckFailure>) -> (ToastKind, String) {
+    match result {
+        Ok(CheckOutcome::Current) => (
+            ToastKind::Info,
+            format!("Zcv {} 已是最新版本", env!("CARGO_PKG_VERSION")),
+        ),
+        Ok(CheckOutcome::Prepared(prepared)) => (
+            ToastKind::Info,
+            format!("Zcv {} 已就绪，请点击顶栏“重启以更新”", prepared.version),
+        ),
+        Err(CheckFailure::Transient(error) | CheckFailure::Permanent(error)) => {
+            (ToastKind::Error, format!("检查更新失败：{error:#}"))
+        }
+    }
 }
 
 async fn check_and_stage(
@@ -390,9 +458,12 @@ async fn fetch_limited(
     let mut response = client
         .get(url, AsyncBody::empty(), true)
         .await
-        .map_err(|_| CheckFailure::Transient)?;
+        .map_err(CheckFailure::Transient)?;
     if !response.status().is_success() {
-        return Err(CheckFailure::Transient);
+        return Err(CheckFailure::Transient(anyhow::anyhow!(
+            "获取{label}返回 HTTP {}",
+            response.status()
+        )));
     }
     let mut body = Vec::new();
     let mut buffer = [0_u8; 8192];
@@ -401,7 +472,7 @@ async fn fetch_limited(
             .body_mut()
             .read(&mut buffer)
             .await
-            .map_err(|_| CheckFailure::Transient)?;
+            .map_err(|error| CheckFailure::Transient(error.into()))?;
         if read == 0 {
             break;
         }
@@ -439,9 +510,12 @@ async fn download_release(
     let mut response = client
         .get(&release.asset.url, AsyncBody::empty(), true)
         .await
-        .map_err(|_| CheckFailure::Transient)?;
+        .map_err(CheckFailure::Transient)?;
     if !response.status().is_success() {
-        return Err(CheckFailure::Transient);
+        return Err(CheckFailure::Transient(anyhow::anyhow!(
+            "下载更新返回 HTTP {}",
+            response.status()
+        )));
     }
 
     let mut digest = Sha256::new();
@@ -453,7 +527,7 @@ async fn download_release(
             .body_mut()
             .read(&mut buffer)
             .await
-            .map_err(|_| CheckFailure::Transient)?;
+            .map_err(|error| CheckFailure::Transient(error.into()))?;
         if read == 0 {
             break;
         }
@@ -511,8 +585,11 @@ impl UpdateButton {
             show_failure_toast(&workspace, message, cx);
         }
         let subscription = cx.observe(&manager, move |button, manager, cx| {
-            let status = manager.read(cx).status();
-            if let Some(message) = new_failure(&button.status, &status) {
+            let manager = manager.read(cx);
+            let status = manager.status();
+            if let Some(message) = new_failure(&button.status, &status)
+                && !manager.last_check_was_manual
+            {
                 show_failure_toast(&workspace, message, cx);
             }
             button.status = status;
@@ -533,17 +610,20 @@ fn new_failure(previous: &UpdateStatus, current: &UpdateStatus) -> Option<Arc<st
 }
 
 fn show_failure_toast(workspace: &WeakEntity<Workspace>, message: Arc<str>, cx: &mut App) {
+    show_update_toast(workspace, ToastKind::Error, message.to_string(), cx);
+}
+
+fn show_update_toast(
+    workspace: &WeakEntity<Workspace>,
+    kind: ToastKind,
+    message: String,
+    cx: &mut App,
+) {
     let workspace = workspace.clone();
     cx.defer(move |cx| {
         workspace
             .update(cx, |workspace, cx| {
-                workspace.show_toast(
-                    ToastKind::Error,
-                    message.to_string(),
-                    vec![],
-                    Some(Duration::from_secs(8)),
-                    cx,
-                );
+                workspace.show_toast(kind, message, vec![], Some(Duration::from_secs(8)), cx);
             })
             .ok();
     });

@@ -13,10 +13,11 @@ use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev, commands,
 };
 use zcv_fuzzy::{MatchScore, Matcher};
-use zcv_picker::{PickerHost, PickerLayer};
 use zcv_project::{Project, ProjectEvent};
 use zcv_theme::{FileIcons, color, scale};
-use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, ListItem, SvgIcon};
+use zcv_ui::{
+    EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, ListItem, PopoverHost, PopoverLayer, SvgIcon,
+};
 
 use crate::{ItemHandle, Workspace, typography_for_window};
 
@@ -241,7 +242,7 @@ impl FileSearchState {
 /// 搜索输入和结果由本组件持有；顶栏只决定它的布局位置。
 pub(crate) struct QuickAccess {
     input: Arc<dyn ErasedEditor>,
-    host: PickerHost,
+    host: PopoverHost,
     state: FileSearchState,
     commands: Vec<CommandCandidate>,
     results: Vec<SearchResult>,
@@ -261,7 +262,7 @@ impl QuickAccess {
     pub(crate) fn new(
         project: Entity<Project>,
         workspace: WeakEntity<Workspace>,
-        picker_layer: PickerLayer,
+        picker_layer: PopoverLayer,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -278,7 +279,7 @@ impl QuickAccess {
             .expect("顶栏统一入口需要 zcv_editor::init 注入编辑器工厂");
         let input = factory(cx);
         let input_focus = input.focus_handle(cx);
-        let host = PickerHost::new(input_focus.clone(), picker_layer);
+        let host = PopoverHost::new(input_focus.clone(), picker_layer);
         let focus_subscription = cx.on_focus(&input_focus, window, |search, _, cx| {
             if matches!(search.mode, AccessMode::Mixed)
                 && matches!(input_mode(&search.input.text(cx)), InputMode::Mixed(_))

@@ -202,7 +202,7 @@ fn open_workspace_window(
             window_bounds: Some(window_bounds),
             display_id,
             titlebar: Some(TitlebarOptions {
-                title: Some("".into()),
+                title: Some("Zcv".into()),
                 appears_transparent: true,
                 traffic_light_position: None,
             }),

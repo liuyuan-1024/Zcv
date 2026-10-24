@@ -22,6 +22,31 @@ fn absolute(path: PathBuf) -> AbsolutePathBuf {
         .expect("测试路径必须是绝对路径")
 }
 
+#[test]
+fn refresh_paths_merge_ancestors_without_dropping_siblings() {
+    let relative = |path: &str| RelativePathBuf::from_path(Path::new(path)).unwrap();
+    let paths = vec![
+        relative("src/a.rs"),
+        relative("src-old/b.rs"),
+        relative("src"),
+        relative("src/nested/c.rs"),
+        relative("docs/readme.md"),
+        relative("src"),
+    ];
+    assert_eq!(
+        coalesce_refresh_paths(paths),
+        vec![
+            relative("docs/readme.md"),
+            relative("src"),
+            relative("src-old/b.rs")
+        ]
+    );
+    assert_eq!(
+        coalesce_refresh_paths(vec![relative("src/a.rs"), RelativePathBuf::empty()]),
+        vec![RelativePathBuf::empty()]
+    );
+}
+
 impl GitStore {
     fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
         self.status_index

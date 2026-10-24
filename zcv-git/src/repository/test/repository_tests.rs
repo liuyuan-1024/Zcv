@@ -107,6 +107,35 @@ fn status_accepts_path_prefixes() {
 }
 
 #[test]
+fn long_path_batches_preserve_status_and_diff_stats() {
+    let (root, _temp) = test_repo();
+    let repo = open_repo(&root);
+    let paths = (0..240)
+        .map(|index| PathBuf::from(format!("{}_{index:03}.txt", "x".repeat(135))))
+        .collect::<Vec<_>>();
+    for path in &paths {
+        fs::write(root.join(path), "第一行\n").expect("应创建文件");
+    }
+    run_in(&root, &["git", "add", "-A"]);
+    for path in [paths.first().unwrap(), paths.last().unwrap()] {
+        fs::write(root.join(path), "第一行\n第二行\n").expect("应修改文件");
+    }
+
+    let status = repo.status(&paths).expect("长路径批次应查询成功");
+    assert_eq!(status.statuses.len(), paths.len());
+    assert_eq!(status.branch.unwrap().branch.as_deref(), Some("master"));
+
+    let staged = repo.diff_stat(true, &paths).expect("暂存行数应查询成功");
+    let unstaged = repo.diff_stat(false, &paths).expect("未暂存行数应查询成功");
+    assert_eq!(staged.len(), paths.len());
+    assert_eq!(unstaged.len(), 2);
+    for path in [paths.first().unwrap(), paths.last().unwrap()] {
+        assert_eq!(staged.get(path).map(|stat| stat.added), Some(1));
+        assert_eq!(unstaged.get(path).map(|stat| stat.added), Some(1));
+    }
+}
+
+#[test]
 fn list_worktree_files_includes_tracked_and_untracked_but_not_ignored() {
     let (root, _temp) = test_repo();
     let repo = open_repo(&root);

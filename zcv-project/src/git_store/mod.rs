@@ -50,6 +50,24 @@ use crate::text_file::{BufferLoadError, decode_to_string};
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
 
+fn coalesce_refresh_paths(mut paths: Vec<RelativePathBuf>) -> Vec<RelativePathBuf> {
+    paths.sort_by(|left, right| {
+        left.as_path()
+            .components()
+            .cmp(right.as_path().components())
+    });
+    let mut coalesced = Vec::with_capacity(paths.len());
+    for path in paths {
+        if coalesced.last().is_some_and(|ancestor: &RelativePathBuf| {
+            path.as_path().starts_with(ancestor.as_path())
+        }) {
+            continue;
+        }
+        coalesced.push(path);
+    }
+    coalesced
+}
+
 /// GitStore 通知事件。
 ///
 /// 单窗口简化：事件均无 payload（除提交撤销结果），订阅方收到后按需重读 GitStore 状态。
@@ -1678,6 +1696,10 @@ impl GitStore {
                     .into_iter()
                     .collect();
                 let (repositories, grouped_paths) = self.group_paths_by_repo(&paths);
+                let grouped_paths = grouped_paths
+                    .into_iter()
+                    .map(coalesce_refresh_paths)
+                    .collect();
                 Some(JobPreparation {
                     root,
                     repositories,

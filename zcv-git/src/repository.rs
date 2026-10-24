@@ -330,6 +330,30 @@ pub struct RealGitRepository {
     working_directory: PathBuf,
 }
 
+/// 为 Git 固定参数与 Windows 命令行转义预留空间。
+const MAX_PATHSPEC_ARGUMENT_BYTES: usize = 16 * 1024;
+
+fn pathspec_batches(paths: &[PathBuf]) -> Vec<&[PathBuf]> {
+    if paths.is_empty() {
+        return vec![paths];
+    }
+
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut bytes = 0;
+    for (index, path) in paths.iter().enumerate() {
+        let path_bytes = path.as_os_str().as_encoded_bytes().len().max(1) + 1;
+        if index > start && bytes + path_bytes > MAX_PATHSPEC_ARGUMENT_BYTES {
+            batches.push(&paths[start..index]);
+            start = index;
+            bytes = 0;
+        }
+        bytes += path_bytes;
+    }
+    batches.push(&paths[start..]);
+    batches
+}
+
 impl RealGitRepository {
     /// 打开 `.git` 目录指向的仓库。
     ///
@@ -591,27 +615,29 @@ impl GitRepository for RealGitRepository {
         // `--untracked-files=all` 让未跟踪文件逐条输出（非目录汇总）；
         // `--ignored=matching` 让被忽略的目录以 `!! dir/` 输出（不逐文件展开，避免 node_modules 这类目录撑爆输出），未被目录覆盖的忽略文件逐条输出；
         // `--no-renames` 保证每项恰两位状态码，`-z` 用 NUL 分隔原始字节路径。
-        let mut command = self.build_command(&[
-            "status",
-            "--porcelain=v1",
-            "-b",
-            "--ignored=matching",
-            "--untracked-files=all",
-            "--no-renames",
-            "-z",
-            "--",
-        ]);
-        for path in paths {
-            // 空路径表示整棵工作树，git 的约定是 `.`。
-            let arg: &Path = if path.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                path
-            };
-            command.arg(arg);
+        let mut stdout = Vec::new();
+        for batch in pathspec_batches(paths) {
+            let mut command = self.build_command(&[
+                "status",
+                "--porcelain=v1",
+                "-b",
+                "--ignored=matching",
+                "--untracked-files=all",
+                "--no-renames",
+                "-z",
+                "--",
+            ]);
+            for path in batch {
+                // 空路径表示整棵工作树，git 的约定是 `.`。
+                command.arg(if path.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    path
+                });
+            }
+            stdout.extend(self.run_command(&mut command, "git status")?.stdout);
         }
-        let output = self.run_command(&mut command, "git status")?;
-        GitStatus::from_bytes(&output.stdout)
+        GitStatus::from_bytes(&stdout)
     }
 
     fn diff_stat(&self, staged: bool, paths: &[PathBuf]) -> Result<HashMap<PathBuf, DiffStat>> {
@@ -622,20 +648,24 @@ impl GitRepository for RealGitRepository {
             args.push("--cached");
             args.push("HEAD");
         }
-        let mut command = self.build_command(&args);
-        if !paths.is_empty() {
-            command.arg("--");
-            for path in paths {
-                // 空路径表示整棵工作树，与 status 的路径参数语义保持一致。
-                command.arg(if path.as_os_str().is_empty() {
-                    Path::new(".")
-                } else {
-                    path
-                });
+        let mut stats = HashMap::new();
+        for batch in pathspec_batches(paths) {
+            let mut command = self.build_command(&args);
+            if !batch.is_empty() {
+                command.arg("--");
+                for path in batch {
+                    // 空路径表示整棵工作树，与 status 的路径参数语义保持一致。
+                    command.arg(if path.as_os_str().is_empty() {
+                        Path::new(".")
+                    } else {
+                        path
+                    });
+                }
             }
+            let output = self.run_command(&mut command, "git diff --numstat")?;
+            stats.extend(parse_numstat(&output.stdout));
         }
-        let output = self.run_command(&mut command, "git diff --numstat")?;
-        Ok(parse_numstat(&output.stdout))
+        Ok(stats)
     }
 
     fn restore_worktree(

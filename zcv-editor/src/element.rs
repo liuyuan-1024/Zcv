@@ -15,8 +15,8 @@ use gpui::{
     DispatchPhase, Element, ElementId, ElementInputHandler, Entity, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, PathBuilder, Pixels,
-    Point, Rgba, ScrollDelta, ScrollWheelEvent, ShapedLine, Size, Style, TextAlign, TextRun,
-    Window, div, fill, outline, point, prelude::*, px, relative, size,
+    Point, Rgba, ScrollDelta, ScrollEvent, ShapedLine, Size, Style, TextAlign, TextRun, Window,
+    div, fill, outline, point, prelude::*, px, relative, size,
 };
 use zcv_actions::OpenExcerpts;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
@@ -2136,7 +2136,7 @@ impl Element for EditorElement {
         let scroll_hitbox = prepaint.hitbox.clone();
         let scroll_line_height = prepaint.layout.line_height;
         let scroll_em_advance = prepaint.em_advance;
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+        window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble || !scroll_hitbox.should_handle_scroll(window) {
                 return;
             }

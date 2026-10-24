@@ -14,6 +14,10 @@ pub(in crate::top_bar) struct WindowControls {
 }
 
 impl WindowControls {
+    pub(in crate::top_bar) fn new() -> Self {
+        Self::default()
+    }
+
     pub(in crate::top_bar) fn align(&mut self, window: &Window, bar_height: Pixels) {
         let x = traffic_light_x(window);
         let y = (bar_height - TRAFFIC_LIGHT_HEIGHT) / 2.0;

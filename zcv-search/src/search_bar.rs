@@ -466,7 +466,7 @@ impl SearchBar {
         });
 
         // 替换类快捷键仅在替换输入框聚焦时生效：按焦点动态附加 in_replace 标签，keymap 据此区分查询框与替换框。
-        let mut key_context = KeyContext::new_with_defaults();
+        let mut key_context = KeyContext::new_with_defaults(cx.platform_info().os);
         key_context.add(self.config.key_context);
         if self
             .replace_input

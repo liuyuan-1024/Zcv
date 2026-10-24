@@ -2819,8 +2819,8 @@ impl Editor {
 
     /// 键位上下文：Editor 标识 + mode 标签。
     /// keymap 据此按模式选择绑定（如 `Editor && mode == full`），输入框类编辑器（single_line/auto_height）不占用 enter/tab 等键位。
-    fn key_context(&self) -> KeyContext {
-        let mut context = KeyContext::new_with_defaults();
+    fn key_context(&self, cx: &Context<Self>) -> KeyContext {
+        let mut context = KeyContext::new_with_defaults(cx.platform_info().os);
         context.add("Editor");
         context.set(
             "mode",
@@ -2935,7 +2935,7 @@ impl Render for Editor {
         EditorElement::register_actions(
             div()
                 .track_focus(&self.focus)
-                .key_context(self.key_context())
+                .key_context(self.key_context(cx))
                 .tab_index(0)
                 .cursor(CursorStyle::IBeam)
                 .w_full()

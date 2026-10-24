@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
     AppContext, Context, EventEmitter, FocusHandle, Focusable, Pixels, Point, Render, SharedString,
-    TestAppContext, Window, div, prelude::*,
+    TestAppContext, Window, div,
 };
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::MultiBuffer;

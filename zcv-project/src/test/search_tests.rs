@@ -5,6 +5,7 @@ use crate::{
 };
 use gpui::{AppContext as _, Entity, TestAppContext};
 use std::{fs, path::PathBuf, process::Command};
+use zcv_path::AbsolutePathBuf;
 use zcv_text::{ByteOffset, TextRange};
 
 /// 收集一次流式搜索的全部命中（直到后台关闭通道）。
@@ -32,7 +33,9 @@ fn match_count(results: &[FileSearchResult]) -> usize {
 #[gpui::test]
 async fn file_candidates_share_project_search_exclusions(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    let root = AbsolutePathBuf::canonicalize(directory.path())
+        .expect("项目根应可规范化")
+        .into_path_buf();
     fs::create_dir_all(root.join("target")).expect("应创建排除目录");
     fs::create_dir_all(root.join("src")).expect("应创建源码目录");
     fs::write(root.join("target/hidden.rs"), "hidden").expect("应创建排除文件");
@@ -49,7 +52,9 @@ async fn file_candidates_share_project_search_exclusions(cx: &mut TestAppContext
 #[gpui::test]
 async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    let root = AbsolutePathBuf::canonicalize(directory.path())
+        .expect("项目根应可规范化")
+        .into_path_buf();
     fs::create_dir_all(root.join("src")).expect("应创建源码目录");
     fs::write(root.join("src/a.rs"), "first\nneedle one\nlast\n").expect("应创建文件");
     fs::write(root.join("src/b.rs"), "needle two\n").expect("应创建文件");
@@ -88,7 +93,9 @@ async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppCont
 #[gpui::test]
 async fn search_results_follow_natural_project_path_order(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    let root = AbsolutePathBuf::canonicalize(directory.path())
+        .expect("项目根应可规范化")
+        .into_path_buf();
     fs::write(root.join("file10.txt"), "needle\n").expect("应创建文件");
     fs::write(root.join("file2.txt"), "needle\n").expect("应创建文件");
     let project = test_project(root, cx);
@@ -115,7 +122,9 @@ async fn search_results_follow_natural_project_path_order(cx: &mut TestAppContex
 #[gpui::test]
 async fn honors_exclusions_and_reports_invalid_regex(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    let root = AbsolutePathBuf::canonicalize(directory.path())
+        .expect("项目根应可规范化")
+        .into_path_buf();
     fs::create_dir_all(root.join("target")).expect("应创建排除目录");
     fs::write(root.join("target/hidden.txt"), "needle").expect("应创建文件");
     fs::write(root.join("visible.txt"), "needle").expect("应创建文件");
@@ -155,7 +164,9 @@ async fn honors_exclusions_and_reports_invalid_regex(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn search_decodes_unopened_files_through_the_project_boundary(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    let root = AbsolutePathBuf::canonicalize(directory.path())
+        .expect("项目根应可规范化")
+        .into_path_buf();
     let path = root.join("bom.txt");
     fs::write(&path, b"\xEF\xBB\xBFneedle\n").expect("应创建带 BOM 的文件");
 
@@ -195,7 +206,9 @@ async fn search_decodes_unopened_files_through_the_project_boundary(cx: &mut Tes
 #[gpui::test]
 async fn git_search_skips_ignored_build_outputs(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    let root = AbsolutePathBuf::canonicalize(directory.path())
+        .expect("项目根应可规范化")
+        .into_path_buf();
     assert!(
         Command::new("git")
             .args(["init", "--quiet"])

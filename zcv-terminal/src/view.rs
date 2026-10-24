@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
-    IntoElement, KeyDownEvent, Pixels, Render, ScrollWheelEvent, SharedString, Subscription,
+    IntoElement, KeyDownEvent, Pixels, Render, ScrollEvent, SharedString, Subscription,
     UTF16Selection, Window, div, prelude::*, px,
 };
 
@@ -200,7 +200,7 @@ impl TerminalView {
     /// 滚轮：鼠标报告模式转报告字节；备用屏幕回退方向键；否则像素滚动。
     pub(crate) fn handle_scroll_wheel(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         point: Option<crate::Point>,
         scroll_lines: i32,
         _window: &mut Window,

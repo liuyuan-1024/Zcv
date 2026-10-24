@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use gpui::{AppContext, Context, TestAppContext, div, prelude::*, px, size};
+use gpui::{AppContext, Context, TestAppContext, div, px, size};
 use zcv_fs_watch::{FsEventStream, Watcher};
 use zcv_language::LanguageRegistry;
 

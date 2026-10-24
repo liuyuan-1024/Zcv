@@ -28,11 +28,11 @@ use windows_sys::Win32::{
 use super::{ApplyBackend, StagedUpdate, UpdateInstallation};
 use crate::UpdateTransaction;
 
-pub const APP_DIRECTORY_NAME: &str = "Zcv";
-pub const APP_EXECUTABLE_RELATIVE_PATH: &str = "Zcv.exe";
-pub const HELPER_RELATIVE_PATH: &str = "zcv-update-helper.exe";
+pub(crate) const APP_DIRECTORY_NAME: &str = "Zcv";
+pub(super) const APP_EXECUTABLE_RELATIVE_PATH: &str = "Zcv.exe";
+pub(super) const HELPER_RELATIVE_PATH: &str = "zcv-update-helper.exe";
 
-pub fn from_process_path(process_path: &Path) -> Result<UpdateInstallation> {
+pub(super) fn from_process_path(process_path: &Path) -> Result<UpdateInstallation> {
     ensure!(
         process_path.file_name().and_then(|name| name.to_str()) == Some("Zcv.exe"),
         "当前进程不是 Zcv.exe"
@@ -51,11 +51,11 @@ pub fn from_process_path(process_path: &Path) -> Result<UpdateInstallation> {
     })
 }
 
-pub fn archive_entry_is_allowed(name: &str) -> bool {
+pub(crate) fn archive_entry_is_allowed(name: &str) -> bool {
     name == APP_DIRECTORY_NAME || name.starts_with(&format!("{APP_DIRECTORY_NAME}/"))
 }
 
-pub fn validate_extracted_app(app: &Path) -> Result<()> {
+pub(crate) fn validate_extracted_app(app: &Path) -> Result<()> {
     ensure!(
         app.join(APP_EXECUTABLE_RELATIVE_PATH).is_file(),
         "更新包缺少 Zcv.exe"
@@ -153,7 +153,7 @@ fn release_file_handles(app: &Path) -> Result<()> {
     result
 }
 
-pub fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
     let temporary = temporary
         .as_os_str()
         .encode_wide()
@@ -191,7 +191,11 @@ pub fn verify_app(app: &Path, expected_version: &Version) -> Result<()> {
     Ok(())
 }
 
-pub async fn extract_archive(_archive: &Path, destination: &Path, bytes: Vec<u8>) -> Result<()> {
+pub(crate) async fn extract_archive(
+    _archive: &Path,
+    destination: &Path,
+    bytes: Vec<u8>,
+) -> Result<()> {
     let reader = ZipFileReader::new(bytes).await?;
     for index in 0..reader.file().entries().len() {
         let entry = &reader.file().entries()[index];

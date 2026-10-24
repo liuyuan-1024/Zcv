@@ -1,4 +1,4 @@
-use gpui::{Context, Entity, Render, TestAppContext, Window, div, prelude::*};
+use gpui::{Context, Entity, Render, TestAppContext, Window, div};
 use zcv_multi_buffer::ExcerptRange;
 
 use super::common::test_buffer;

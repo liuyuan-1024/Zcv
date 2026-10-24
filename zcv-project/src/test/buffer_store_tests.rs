@@ -6,6 +6,7 @@ use std::{
 };
 
 use gpui::{AppContext, TestAppContext};
+use zcv_path::AbsolutePathBuf;
 use zcv_text::ByteOffset;
 
 use super::*;
@@ -72,7 +73,9 @@ fn separate_project_buffer_stores_do_not_share_buffers(cx: &mut TestAppContext) 
 #[gpui::test]
 fn directory_events_find_only_live_buffers_in_the_subtree(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    let directory = directory.path().canonicalize().expect("临时目录应可规范化");
+    let directory = AbsolutePathBuf::canonicalize(directory.path())
+        .expect("临时目录应可规范化")
+        .into_path_buf();
     let file = directory.join("file.txt");
     let nested = directory.join("sub").join("nested.txt");
     let sibling = directory.join("sibling.txt");

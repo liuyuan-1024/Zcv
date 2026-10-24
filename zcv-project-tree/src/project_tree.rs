@@ -544,7 +544,7 @@ impl ProjectTreePanel {
     /// 渲染行：普通态直接 Rc 克隆行快照（每帧零深拷贝）；
     /// 仅 Create 编辑态克隆快照插入临时行（低频交互，允许克隆）。
     fn dispatch_context(&self, window: &Window, cx: &Context<Self>) -> KeyContext {
-        let mut context = KeyContext::new_with_defaults();
+        let mut context = KeyContext::new_with_defaults(cx.platform_info().os);
         context.add("ProjectTree");
         context.add(
             if self

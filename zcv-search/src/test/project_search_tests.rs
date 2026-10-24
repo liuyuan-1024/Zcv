@@ -1,6 +1,6 @@
 use std::{fs, path::Path, sync::Arc};
 
-use gpui::{AppContext as _, Context, Entity, TestAppContext, VisualTestContext, Window};
+use gpui::{Context, Entity, TestAppContext, VisualTestContext, Window};
 use zcv_actions::DeployProjectSearch;
 use zcv_editor::init;
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};

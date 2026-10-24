@@ -428,7 +428,7 @@ impl VersionControlPanel {
 
     /// 快捷键上下文：面板标识 + 按焦点区分的子状态标签。
     fn dispatch_context(&self, window: &Window, cx: &Context<Self>) -> KeyContext {
-        let mut context = KeyContext::new_with_defaults();
+        let mut context = KeyContext::new_with_defaults(cx.platform_info().os);
         context.add("GitPanel");
         context.add(
             if self

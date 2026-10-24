@@ -79,11 +79,10 @@ fn editor_emits_dirty_changes_after_edit_and_save(cx: &mut TestAppContext) {
 #[gpui::test]
 fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    let root = directory.path().canonicalize().expect("临时目录应可规范化");
+    let root = AbsolutePathBuf::canonicalize(directory.path()).expect("临时目录应可规范化");
     let path = root.join("source.txt");
     fs::write(&path, "旧内容\n").expect("应创建源文件");
-    let project_root = AbsolutePathBuf::new(root).expect("测试项目根目录应为绝对路径");
-    let project = cx.new(|cx| Project::new(project_root, Arc::new(LanguageRegistry::new()), cx));
+    let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
     let source = project.update(cx, |project, cx| {
         project.open_buffer(&path, cx).expect("应打开源文件")
     });
@@ -125,11 +124,10 @@ fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
 #[gpui::test]
 fn saving_clean_singleton_applies_save_format(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时目录");
-    let root = directory.path().canonicalize().expect("临时目录应可规范化");
+    let root = AbsolutePathBuf::canonicalize(directory.path()).expect("临时目录应可规范化");
     let path = root.join("document.txt");
     fs::write(&path, "内容  ").expect("应创建文件");
-    let project_root = AbsolutePathBuf::new(root).expect("项目根目录应为绝对路径");
-    let project = cx.new(|cx| Project::new(project_root, Arc::new(LanguageRegistry::new()), cx));
+    let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
     let source = project
         .update(cx, |project, cx| project.open_buffer(&path, cx))
         .expect("应打开文件");
@@ -156,11 +154,10 @@ fn saving_clean_singleton_applies_save_format(cx: &mut TestAppContext) {
 #[gpui::test]
 fn editor_item_exposes_conflict_and_restores_the_same_source_document(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时目录");
-    let root = directory.path().canonicalize().expect("临时目录应可规范化");
+    let root = AbsolutePathBuf::canonicalize(directory.path()).expect("临时目录应可规范化");
     let path = root.join("source.txt");
     fs::write(&path, "原内容").expect("应创建源文件");
-    let project_root = AbsolutePathBuf::new(root).expect("项目根目录应为绝对路径");
-    let project = cx.new(|cx| Project::new(project_root, Arc::new(LanguageRegistry::new()), cx));
+    let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
     let source = project
         .update(cx, |project, cx| project.open_buffer(&path, cx))
         .expect("应打开源文件");
@@ -210,13 +207,12 @@ fn editor_item_exposes_conflict_and_restores_the_same_source_document(cx: &mut T
 fn rename_then_save_writes_to_new_path(cx: &mut TestAppContext) {
     // 项目根与打开路径统一走 canonical 形式（与真实装配一致）。
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
-    let root = directory.path().canonicalize().expect("临时目录应可规范化");
+    let root = AbsolutePathBuf::canonicalize(directory.path()).expect("临时目录应可规范化");
     let old_path = root.join("foo.rs");
     let new_path = root.join("bar.rs");
     fs::write(&old_path, "旧内容").expect("应创建测试文件");
 
-    let project_root = AbsolutePathBuf::new(root).expect("测试项目根目录应为绝对路径");
-    let project = cx.new(|cx| Project::new(project_root, Arc::new(LanguageRegistry::new()), cx));
+    let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
     // open_buffer 返回已承载规范路径的 LanguageBuffer（与 item_provider 同路径包装成组合文档）。
     let language_buffer = project.update(cx, |project, cx| {
         project.open_buffer(&old_path, cx).expect("应打开测试文件")
@@ -237,11 +233,7 @@ fn rename_then_save_writes_to_new_path(cx: &mut TestAppContext) {
     let path = cx.read_entity(&editor, |editor, cx| {
         editor.file_path(cx).expect("重命名后应有路径")
     });
-    assert_eq!(
-        path,
-        simplify_native(&new_path),
-        "编辑器路径应迁移到稳定的新路径"
-    );
+    assert_eq!(path, new_path, "编辑器路径应迁移到稳定的新路径");
     // 保存路径不得带尾随斜杠：join 空后缀生成的 `new_path/` 会导致 Not a directory。
     assert_eq!(path.file_name(), Some(std::ffi::OsStr::new("bar.rs")));
 

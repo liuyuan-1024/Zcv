@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use gpui::{
     AppContext, Context, FocusHandle, Render, TestAppContext, VisualTestContext, Window, div,
-    prelude::*,
 };
 use zcv_actions::DeployBufferSearch;
 use zcv_workspace::{Item, SearchableItem};

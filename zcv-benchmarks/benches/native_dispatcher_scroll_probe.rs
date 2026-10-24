@@ -22,7 +22,7 @@ use std::{
 
 use gpui::{
     App, AppContext as _, Application, AsyncApp, Bounds, Context, DispatchPhase, Entity,
-    IntoElement, PlatformInput, Render, ScrollDelta, ScrollWheelEvent, Window, WindowBounds,
+    IntoElement, PlatformInput, Render, ScrollDelta, ScrollEvent, Window, WindowBounds,
     WindowHandle, WindowOptions, point, px, size,
 };
 use zcv_assets::Assets;
@@ -62,7 +62,7 @@ struct ProbeRoot {
 impl Render for ProbeRoot {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let counter = self.unconsumed_scrolls.clone();
-        window.on_mouse_event(move |_: &ScrollWheelEvent, phase, _window, _cx| {
+        window.on_mouse_event(move |_: &ScrollEvent, phase, _window, _cx| {
             if phase == DispatchPhase::Bubble {
                 counter.set(counter.get() + 1);
             }
@@ -175,7 +175,7 @@ async fn measure_scroll(cx: &mut AsyncApp, handle: WindowHandle<ProbeRoot>, delt
     handle
         .update(cx, |_, window, cx| {
             window.dispatch_event(
-                PlatformInput::ScrollWheel(ScrollWheelEvent {
+                PlatformInput::Scroll(ScrollEvent {
                     position: point(px(300.), px(300.)),
                     delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
                     ..Default::default()

@@ -215,28 +215,27 @@ impl TerminalElement {
     fn register_interactivity_listeners(&mut self) {
         let state = self.interaction_state.clone();
         let view = self.view.clone();
-        self.interactivity
-            .on_scroll_wheel(move |event, window, cx| {
-                let Some(geometry) = state.borrow().geometry else {
-                    return;
-                };
-                let delta = event.delta.pixel_delta(geometry.line_height);
-                let scroll_lines =
-                    (f32::from(delta.y) / f32::from(geometry.line_height)).trunc() as i32;
-                let content = view.read(cx).terminal.read(cx).last_content().clone();
-                let point = crate::mappings::mouse::grid_point(
-                    event.position,
-                    geometry.origin,
-                    geometry.cell_width,
-                    geometry.line_height,
-                    content.display_offset,
-                    content.screen_lines,
-                    content.columns,
-                );
-                view.update(cx, |view, cx| {
-                    view.handle_scroll_wheel(event, Some(point), scroll_lines, window, cx);
-                });
+        self.interactivity.on_scroll(move |event, window, cx| {
+            let Some(geometry) = state.borrow().geometry else {
+                return;
+            };
+            let delta = event.delta.pixel_delta(geometry.line_height);
+            let scroll_lines =
+                (f32::from(delta.y) / f32::from(geometry.line_height)).trunc() as i32;
+            let content = view.read(cx).terminal.read(cx).last_content().clone();
+            let point = crate::mappings::mouse::grid_point(
+                event.position,
+                geometry.origin,
+                geometry.cell_width,
+                geometry.line_height,
+                content.display_offset,
+                content.screen_lines,
+                content.columns,
+            );
+            view.update(cx, |view, cx| {
+                view.handle_scroll_wheel(event, Some(point), scroll_lines, window, cx);
             });
+        });
 
         let state_for_down = self.interaction_state.clone();
         let view_for_down = self.view.clone();

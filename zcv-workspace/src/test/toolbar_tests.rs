@@ -1,4 +1,4 @@
-use gpui::{FocusHandle, Focusable, TestAppContext, div, prelude::*};
+use gpui::{FocusHandle, Focusable, TestAppContext, div};
 
 use super::*;
 use crate::Item;

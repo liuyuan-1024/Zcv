@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use gpui::{AppContext as _, TestAppContext, px, size};
+use gpui::{TestAppContext, px, size};
 use zcv_editor::Editor;
 use zcv_language::LanguageRegistry;
 

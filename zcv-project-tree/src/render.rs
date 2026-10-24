@@ -321,7 +321,7 @@ pub(super) fn render_row(
                         cx.stop_propagation();
                         return;
                     }
-                    if event.modifiers.secondary() {
+                    if event.modifiers.secondary(cx) {
                         if let Some(tree) = weak.upgrade() {
                             tree.update(cx, |tree, cx| {
                                 // 修饰键点击只改选中态、不打开/展开：清掉上次残留的意图。

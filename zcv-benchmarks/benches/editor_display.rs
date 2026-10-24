@@ -15,7 +15,7 @@ use std::{
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use gpui::{
     AppContext as _, AvailableSpace, Entity, IntoElement as _, MouseMoveEvent, ScrollDelta,
-    ScrollWheelEvent, TestAppContext, TestDispatcher, point, px, size,
+    ScrollEvent, TestAppContext, TestDispatcher, point, px, size,
 };
 mod common;
 
@@ -377,7 +377,7 @@ fn multi_excerpt_scroll_frame(c: &mut Criterion) {
         );
         cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
         // 先滚到底部：滚动帧在组合文档底部最容易暴露随位置或总规模增长的视口查询。
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position: point(px(600.), px(400.)),
             delta: ScrollDelta::Pixels(point(px(0.), px(-10_000_000.))),
             ..Default::default()
@@ -387,7 +387,7 @@ fn multi_excerpt_scroll_frame(c: &mut Criterion) {
             b.iter_custom(|iterations| {
                 let mut elapsed = Duration::ZERO;
                 for _ in 0..iterations {
-                    cx.simulate_event(ScrollWheelEvent {
+                    cx.simulate_event(ScrollEvent {
                         position: point(px(600.), px(400.)),
                         delta: ScrollDelta::Pixels(point(px(0.), px(24.))),
                         ..Default::default()
@@ -573,7 +573,7 @@ fn diff_scroll_frame_scenarios(
                     AvailableSpace::Definite(px(800.)),
                 );
                 cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
-                cx.simulate_event(ScrollWheelEvent {
+                cx.simulate_event(ScrollEvent {
                     position: point(px(600.), px(400.)),
                     delta: large_addition_row.map_or_else(
                         || ScrollDelta::Pixels(point(px(0.), px(-10_000_000.))),
@@ -591,7 +591,7 @@ fn diff_scroll_frame_scenarios(
                         b.iter_custom(|iterations| {
                             let mut elapsed = Duration::ZERO;
                             for frame in 0..iterations {
-                                cx.simulate_event(ScrollWheelEvent {
+                                cx.simulate_event(ScrollEvent {
                                     position: point(px(600.), px(400.)),
                                     delta: ScrollDelta::Pixels(point(
                                         px(0.),
@@ -615,7 +615,7 @@ fn diff_scroll_frame_scenarios(
                             let mut elapsed = Duration::ZERO;
                             for frame in 0..iterations {
                                 let started = Instant::now();
-                                cx.simulate_event(ScrollWheelEvent {
+                                cx.simulate_event(ScrollEvent {
                                     position: point(px(600.), px(400.)),
                                     delta: ScrollDelta::Pixels(point(
                                         px(0.),
@@ -638,7 +638,7 @@ fn diff_scroll_frame_scenarios(
                             b.iter_custom(|iterations| {
                                 let mut elapsed = Duration::ZERO;
                                 for _ in 0..iterations {
-                                    cx.simulate_event(ScrollWheelEvent {
+                                    cx.simulate_event(ScrollEvent {
                                         position: point(px(600.), px(400.)),
                                         delta: ScrollDelta::Lines(point(0., 1_000_000.)),
                                         ..Default::default()
@@ -647,7 +647,7 @@ fn diff_scroll_frame_scenarios(
                                         editor.clone().into_any_element()
                                     });
                                     let started = Instant::now();
-                                    cx.simulate_event(ScrollWheelEvent {
+                                    cx.simulate_event(ScrollEvent {
                                         position: point(px(600.), px(400.)),
                                         delta: ScrollDelta::Lines(point(0., -(target_row as f32))),
                                         ..Default::default()
@@ -677,7 +677,7 @@ fn diff_scroll_frame_scenarios(
                                 let mut elapsed = Duration::ZERO;
                                 for frame in 0..iterations {
                                     let started = Instant::now();
-                                    cx.simulate_event(ScrollWheelEvent {
+                                    cx.simulate_event(ScrollEvent {
                                         position: gutter_position,
                                         delta: ScrollDelta::Pixels(point(
                                             px(0.),

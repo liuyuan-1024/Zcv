@@ -1,6 +1,4 @@
-use gpui::{
-    Context, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, TestAppContext, point, px,
-};
+use gpui::{Context, Render, ScrollDelta, ScrollEvent, ScrollHandle, TestAppContext, point, px};
 use std::{cell::Cell, rc::Rc};
 
 use super::*;
@@ -198,7 +196,7 @@ fn button_keeps_click_isolation_but_allows_parent_scrolling(cx: &mut TestAppCont
     cx.simulate_click(button.center(), gpui::Modifiers::default());
     assert_eq!(button_clicks.get(), 1);
     assert_eq!(row_clicks.get(), 0, "行内按钮不能触发所在行的点击");
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: button.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(-20.0))),
         ..Default::default()

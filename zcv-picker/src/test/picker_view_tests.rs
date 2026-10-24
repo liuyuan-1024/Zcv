@@ -2,8 +2,8 @@ use std::{cell::Cell, rc::Rc};
 
 use crate::{PickerHost, PickerLayer};
 use gpui::{
-    AppContext, Entity, FocusHandle, KeyBinding, ScrollDelta, ScrollWheelEvent, TestAppContext,
-    actions, anchored, deferred, point, px, size,
+    AppContext, Entity, FocusHandle, KeyBinding, ScrollDelta, ScrollEvent, TestAppContext, actions,
+    anchored, deferred, point, px, size,
 };
 
 use super::*;
@@ -414,7 +414,7 @@ fn picker_list_scrolls_with_mouse_wheel(cx: &mut TestAppContext) {
         .debug_bounds("picker-action-0")
         .expect("第一行按钮应可见")
         .center();
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: button_position,
         delta: ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
         ..Default::default()
@@ -432,7 +432,7 @@ fn picker_list_scrolls_with_mouse_wheel(cx: &mut TestAppContext) {
         .expect("滚动后应绘制新的可见行");
     assert!(visible_row.top() < list_bounds.bottom() && visible_row.bottom() > list_bounds.top());
     for _ in 0..20 {
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position: button_position,
             delta: ScrollDelta::Pixels(point(px(0.0), px(-200.0))),
             ..Default::default()
@@ -630,7 +630,7 @@ fn picker_list_scrolls_inside_host_overlay(cx: &mut TestAppContext) {
         "浮层不能超出小窗口：{footer:?}"
     );
 
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: point(list_bounds.left() + px(10.0), list_bounds.top() + px(10.0)),
         delta: ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
         ..Default::default()
@@ -679,7 +679,7 @@ fn selected_item_beyond_first_viewport_is_visible_on_open_and_query_reset(cx: &m
         selected.top() >= viewport.top() && selected.bottom() <= viewport.bottom(),
         "打开时应定位到选中项：{selected:?}，视口 {viewport:?}"
     );
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: viewport.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(10000.0))),
         ..Default::default()

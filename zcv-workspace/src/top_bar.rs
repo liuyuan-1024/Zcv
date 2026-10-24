@@ -23,6 +23,8 @@ use crate::{
 
 mod window_controls;
 
+use window_controls::WindowControls;
+
 pub(crate) type TopBarCallback = Rc<dyn Fn(&mut Window, &mut App)>;
 
 #[derive(Clone)]
@@ -43,7 +45,7 @@ pub struct TopBar {
     update_control: Option<AnyView>,
     workspace: WeakEntity<Workspace>,
     callbacks: TopBarCallbacks,
-    window_controls: window_controls::WindowControls,
+    window_controls: WindowControls,
     _git_subscription: Subscription,
 }
 
@@ -90,7 +92,7 @@ impl TopBar {
             update_control: None,
             workspace,
             callbacks,
-            window_controls: window_controls::WindowControls::default(),
+            window_controls: WindowControls::new(),
             _git_subscription: git_subscription,
         }
     }

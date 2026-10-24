@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::{App, Context, FocusHandle, Render, TestAppContext, Window, div, prelude::*, px};
+use gpui::{App, Context, FocusHandle, Render, TestAppContext, Window, div, px};
 
 use super::*;
 use crate::{Panel, PanelEvent, PanelHandle};

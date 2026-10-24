@@ -1,8 +1,8 @@
 use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer, MultiBufferOffset};
 
 use gpui::{
-    Context, Entity, IntoElement, Modifiers, MouseButton, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, TestAppContext, TouchPhase, Window, point, px, size,
+    Context, Entity, IntoElement, Modifiers, MouseButton, Pixels, Render, ScrollDelta, ScrollEvent,
+    TestAppContext, TouchPhase, Window, point, px, size,
 };
 
 /// 测试包装：把预先创建的 Editor 实体作为窗口视图（布局由窗口首帧触发）。
@@ -474,7 +474,7 @@ fn wheel_input_updates_editor_scroll_state(cx: &mut TestAppContext) {
     });
 
     cx.run_until_parked();
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: point(px(4.), px(4.)),
         delta: ScrollDelta::Pixels(point(px(0.), px(-120.))),
         ..Default::default()
@@ -499,13 +499,13 @@ fn wheel_gesture_filters_to_dominant_axis_and_unlocks_on_reversal(cx: &mut TestA
     cx.refresh().expect("测试窗口应可刷新");
 
     // 手势以水平为主轴，后续小幅纵向分量被过滤。
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: point(px(100.), px(100.)),
         delta: ScrollDelta::Pixels(point(px(-80.), px(-10.))),
         touch_phase: TouchPhase::Started,
         ..Default::default()
     });
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: point(px(100.), px(100.)),
         delta: ScrollDelta::Pixels(point(px(-30.), px(-5.))),
         touch_phase: TouchPhase::Moved,
@@ -517,7 +517,7 @@ fn wheel_gesture_filters_to_dominant_axis_and_unlocks_on_reversal(cx: &mut TestA
     });
 
     // 纵向分量明显反超，主轴解锁，两轴同时滚动。
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: point(px(100.), px(100.)),
         delta: ScrollDelta::Pixels(point(px(-2.), px(-60.))),
         touch_phase: TouchPhase::Moved,
@@ -528,7 +528,7 @@ fn wheel_gesture_filters_to_dominant_axis_and_unlocks_on_reversal(cx: &mut TestA
     });
 
     // Ended 重置手势；下一次移动重新判定主轴。
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: point(px(100.), px(100.)),
         delta: ScrollDelta::Pixels(point(px(0.), px(0.))),
         touch_phase: TouchPhase::Ended,
@@ -537,7 +537,7 @@ fn wheel_gesture_filters_to_dominant_axis_and_unlocks_on_reversal(cx: &mut TestA
     let (before_x, before_top) = cx.read_entity(&editor, |editor, _| {
         (editor.scroll_manager.offset().x, editor.scroll_top())
     });
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: point(px(100.), px(100.)),
         delta: ScrollDelta::Pixels(point(px(0.), px(-40.))),
         touch_phase: TouchPhase::Moved,
@@ -571,7 +571,7 @@ fn line_wheel_delta_uses_character_width_horizontally(cx: &mut TestAppContext) {
     });
 
     // 行增量不做手势轴过滤：横向按字符宽、纵向按行高换算。
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: point(px(100.), px(100.)),
         delta: ScrollDelta::Lines(point(-2., -3.)),
         ..Default::default()
@@ -591,7 +591,7 @@ fn horizontal_scroll_stops_at_content_edge_and_caret_autoscrolls(cx: &mut TestAp
     });
 
     cx.run_until_parked();
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: point(px(4.), px(4.)),
         delta: ScrollDelta::Pixels(point(px(-100_000.), px(0.))),
         ..Default::default()
@@ -599,7 +599,7 @@ fn horizontal_scroll_stops_at_content_edge_and_caret_autoscrolls(cx: &mut TestAp
     let maximum = cx.read_entity(&editor, |editor, _| editor.scroll_manager.offset().x);
     assert!(maximum > px(0.));
 
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position: point(px(4.), px(4.)),
         delta: ScrollDelta::Pixels(point(px(-100_000.), px(0.))),
         ..Default::default()
@@ -871,7 +871,7 @@ fn composite_scroll_and_redraw_leave_content_snapshots_unchanged(cx: &mut TestAp
         "夹具必须实际启用软换行"
     );
     for delta in [-120., -8_000., 4_000., -1_000_000., 1_000_000., -240.] {
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position: point(px(100.), px(100.)),
             delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
             ..Default::default()
@@ -1012,7 +1012,7 @@ fn scrolling_does_not_invalidate_outline_but_editing_does(cx: &mut TestAppContex
 
     let before = cx.read_entity(&editor, |editor, cx| editor.outline_version(cx));
     for delta in [-120., -8_000., 4_000., -1_000_000.] {
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position: point(px(100.), px(100.)),
             delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
             ..Default::default()

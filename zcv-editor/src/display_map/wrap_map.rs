@@ -12,7 +12,8 @@ use std::{borrow::Cow, collections::VecDeque, mem, ops::Range, sync::Arc, time::
 
 use futures_lite::future::yield_now;
 use gpui::{
-    AppContext as _, Context, Font, LineFragment, LineWrapperHandle, Pixels, Task, TextSystem,
+    AppContext as _, Context, Font, IndentAdjustment, LineFragment, LineWrapperHandle, Pixels,
+    Task, TextSystem,
 };
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
@@ -1797,7 +1798,10 @@ impl WrapWorker {
         }
         let mut points: Vec<WrapPointInfo> = Vec::new();
         let mut character_index = 0;
-        for boundary in self.line_wrapper.wrap_line(&fragments, wrap_width) {
+        for boundary in
+            self.line_wrapper
+                .wrap_line(&fragments, wrap_width, IndentAdjustment::SameIndent)
+        {
             while character_index < prepared.chars.len()
                 && prepared.chars[character_index].expanded_start < boundary.ix
             {

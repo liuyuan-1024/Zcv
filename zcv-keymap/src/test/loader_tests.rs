@@ -1,4 +1,4 @@
-use gpui::{KeyContext, Keymap, Keystroke, TestAppContext};
+use gpui::{KeyContext, Keymap, Keystroke, OperatingSystem, TestAppContext};
 use zcv_actions::FocusOrHidePanel;
 
 use super::*;
@@ -130,16 +130,16 @@ fn jsonc_comments_and_trailing_comma_parse() {
 /// 内置 keymap 的所有 chord 段必须能被 gpui 解析，否则加载时会失败。
 #[test]
 fn all_builtin_keymap_keystrokes_parse() {
-    for source in [
-        "default-macos.json",
-        "default-linux.json",
-        "default-windows.json",
+    for (source, os) in [
+        ("default-macos.json", OperatingSystem::Mac),
+        ("default-linux.json", OperatingSystem::Linux),
+        ("default-windows.json", OperatingSystem::Windows),
     ] {
         let groups = parse_builtin_keymap(source);
         for group in &groups {
             for keys in group.bindings.keys() {
                 for keystroke in keys.split_whitespace() {
-                    Keystroke::parse(keystroke).unwrap_or_else(|error| {
+                    Keystroke::parse_with_os(keystroke, os).unwrap_or_else(|error| {
                         panic!("{source} 的键位 {keys:?} 无法解析：{error}")
                     });
                 }

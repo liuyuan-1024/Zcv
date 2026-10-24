@@ -1,6 +1,6 @@
 use std::{fs, path::Path, process::Command, slice, sync::Arc};
 
-use gpui::{AppContext as _, AvailableSpace, TestAppContext, px};
+use gpui::{AvailableSpace, TestAppContext, px};
 
 use zcv_actions::DeployBufferSearch;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging, PendingHunk};
@@ -2042,7 +2042,7 @@ fn staged_project_diff_find_seeds_query_from_editor_selection(cx: &mut TestAppCo
 
 #[gpui::test]
 fn diff_view_scroll_keeps_host_quiet_and_folding_notifies(cx: &mut TestAppContext) {
-    use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+    use gpui::{ScrollDelta, ScrollEvent, point, px};
     use std::{cell::Cell, rc::Rc};
     use zcv_multi_buffer::ExcerptRange;
 
@@ -2081,7 +2081,7 @@ fn diff_view_scroll_keeps_host_quiet_and_folding_notifies(cx: &mut TestAppContex
     let _subscription =
         visual.update(|_, cx| cx.observe(&view, move |_, _| observed.set(observed.get() + 1)));
     for delta in [-120., -1_000., 120., 1_000.] {
-        visual.simulate_event(ScrollWheelEvent {
+        visual.simulate_event(ScrollEvent {
             position: point(px(300.), px(300.)),
             delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
             ..Default::default()

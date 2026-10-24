@@ -1,4 +1,4 @@
-use gpui::{Context, Render, TestAppContext, Window, prelude::*, px, size};
+use gpui::{Context, Render, TestAppContext, Window, px, size};
 
 use super::*;
 

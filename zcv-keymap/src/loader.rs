@@ -99,20 +99,13 @@ pub(crate) fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBinding
                     format!("{source} 的快捷键 {keys:?} 引用了未知或无效 action {action_name:?}")
                 })?;
             let shortcut_action = action.boxed_clone();
-            let binding = KeyBinding::load(
-                keys,
-                action,
-                Some(context.clone()),
-                false,
-                None,
-                cx.keyboard_mapper().as_ref(),
-            )
-            .map_err(|error| {
-                anyhow!(
-                    "{source} 为 action {action_name:?} 配置了非法快捷键 {:?}",
-                    error.keystroke
-                )
-            })?;
+            let binding = KeyBinding::load(keys, action, Some(context.clone()), false, None, cx)
+                .map_err(|error| {
+                    anyhow!(
+                        "{source} 为 action {action_name:?} 配置了非法快捷键 {:?}",
+                        error.keystroke
+                    )
+                })?;
 
             bindings.push(binding);
             if !shortcuts

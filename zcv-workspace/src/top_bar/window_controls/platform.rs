@@ -34,11 +34,14 @@ pub(in crate::top_bar) fn titlebar_interaction(bar: Stateful<Div>) -> Stateful<D
 }
 
 #[cfg(not(target_os = "macos"))]
-#[derive(Default)]
 pub(in crate::top_bar) struct WindowControls;
 
 #[cfg(not(target_os = "macos"))]
 impl WindowControls {
+    pub(in crate::top_bar) fn new() -> Self {
+        Self
+    }
+
     pub(in crate::top_bar) fn align(&mut self, _: &Window, _: gpui::Pixels) {}
 }
 

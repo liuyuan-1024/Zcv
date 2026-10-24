@@ -12,7 +12,7 @@ use std::{
 use gpui::{
     App, AppContext, AvailableSpace, ClipboardEntry, ClipboardItem, Context, Entity, ExternalPaths,
     FileDropEvent, FocusHandle, KeyBinding, Modifiers, MouseButton, Render, TestAppContext,
-    VisualTestContext, Window, div, point, prelude::*, px,
+    VisualTestContext, Window, div, point, px,
 };
 use zcv_actions::{
     TreeActivate, TreeCancelConflict, TreeCancelEdit, TreeClearClipboard, TreeConfirmEdit,
@@ -1146,6 +1146,7 @@ fn shift_click_extends_selection_range(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, file_a, file_b, file_c) = three_file_project(cx);
 
     let (tree, cx) = cx.add_window_view({
@@ -1170,11 +1171,11 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
     // secondary 点击 b.txt（行 2）与 c.txt（行 3）：逐项加入集合。
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 2.0 + 1.)),
-        Modifiers::secondary_key(),
+        secondary,
     );
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 3.0 + 1.)),
-        Modifiers::secondary_key(),
+        secondary,
     );
     cx.run_until_parked();
 
@@ -1200,7 +1201,7 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
     // 再次 secondary 点击 c.txt：移除标记，游标留在该行，并入的首项保留。
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 3.0 + 1.)),
-        Modifiers::secondary_key(),
+        secondary,
     );
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
@@ -2425,6 +2426,7 @@ fn drag_from_marked_row_moves_the_whole_multi_selection(cx: &mut TestAppContext)
 /// 未拖拽）派发，拖动不打开文件、不破坏选区。
 #[gpui::test]
 fn drag_does_not_open_file_preview_and_keeps_selection(cx: &mut TestAppContext) {
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
     let open_count = Rc::new(Cell::new(0));
@@ -2451,7 +2453,7 @@ fn drag_does_not_open_file_preview_and_keeps_selection(cx: &mut TestAppContext) 
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(3)), secondary);
     cx.run_until_parked();
     let opened_before_drag = open_count.get();
     simulate_drag(cx, 2, 1);
@@ -2510,6 +2512,7 @@ fn drag_directory_row_does_not_toggle_expansion(cx: &mut TestAppContext) {
 /// 也 toggle 进集合构造的，与用户真实点击序列不一致，故未能暴露。
 #[gpui::test]
 fn drag_after_cmd_click_multi_selection_moves_all_items(cx: &mut TestAppContext) {
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
@@ -2530,8 +2533,8 @@ fn drag_after_cmd_click_multi_selection_moves_all_items(cx: &mut TestAppContext)
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
-    cx.simulate_click(point(px(10.), row_y(4)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(3)), secondary);
+    cx.simulate_click(point(px(10.), row_y(4)), secondary);
     cx.run_until_parked();
 
     // 从首个点选行（a，行 2）拖起放到 dst（行 1）：a 必须仍在多选集合内。
@@ -2559,6 +2562,7 @@ fn drag_after_cmd_click_multi_selection_moves_all_items(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn drag_uses_updated_selection_with_same_item_count(cx: &mut TestAppContext) {
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
@@ -2578,11 +2582,11 @@ fn drag_uses_updated_selection_with_same_item_count(cx: &mut TestAppContext) {
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(3)), secondary);
     cx.run_until_parked();
 
-    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::secondary_key());
-    cx.simulate_click(point(px(10.), row_y(4)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(2)), secondary);
+    cx.simulate_click(point(px(10.), row_y(4)), secondary);
     cx.run_until_parked();
     simulate_drag(cx, 3, 1);
 
@@ -2602,6 +2606,7 @@ fn drag_uses_updated_selection_with_same_item_count(cx: &mut TestAppContext) {
 /// 时序设计：建立多选 {a, b} 并完成渲染（载荷冻结含两项）→ 从 a 拖起 → 拖拽移动中把集合清空（模拟拖拽期间任何选区变化，不 notify 使场景最极端） → 放下到 dst：仍应移动发起时载荷中的 {a, b}。
 #[gpui::test]
 fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
@@ -2622,7 +2627,7 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     // 普通点击 a（行 2）+ cmd 点击 b（行 3）：建立多选 {a, b} 并完成渲染。
     cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(3)), secondary);
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
         assert_eq!(
@@ -2678,6 +2683,7 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
 /// 缺陷回归：未聚焦时首次 cmd 点击也应直接执行多选语义，后续拖拽移动全部选中项。
 #[gpui::test]
 fn drag_after_unfocused_first_cmd_click_moves_all_items(cx: &mut TestAppContext) {
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
     let (_tree, cx) = cx.add_window_view(move |_, cx| {
@@ -2695,8 +2701,8 @@ fn drag_after_unfocused_first_cmd_click_moves_all_items(cx: &mut TestAppContext)
     // 不预先聚焦，模拟用户从编辑器转向项目树的真实入口。
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
-    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::secondary_key());
-    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(2)), secondary);
+    cx.simulate_click(point(px(10.), row_y(3)), secondary);
     cx.run_until_parked();
 
     // 从首项 a（行 2）拖起放到 dst（行 1）：a、b 都应被移动。
@@ -2763,6 +2769,7 @@ fn drag_after_shift_range_selection_moves_all_items(cx: &mut TestAppContext) {
 /// 再次多选并拖拽仍应移动全部选中项——验证首次移动后的选区/行模型无状态残留。
 #[gpui::test]
 fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAppContext) {
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
@@ -2783,7 +2790,7 @@ fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAp
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     // 第一轮：普通点击 a（行 2）+ cmd 点击 b（行 3），拖到 dst（行 1）。
     cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(3)), secondary);
     cx.run_until_parked();
     simulate_drag(cx, 2, 1);
     assert!(
@@ -2799,7 +2806,7 @@ fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAp
     // 第二轮：行序变为 [根, dst, dst/a.txt, dst/b.txt]（目录子项紧随目录）；
     // 点选两个已移入文件再多选，拖回根目录行（行 0），不得受首轮状态残留影响。
     cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(3)), secondary);
     cx.run_until_parked();
     simulate_drag(cx, 3, 0);
 
@@ -2997,6 +3004,7 @@ fn clicking_blank_area_below_rows_keeps_selection_and_focuses_panel(cx: &mut Tes
 /// 未命中任何行的坐标不得写入任何选中状态。
 #[gpui::test]
 fn blank_click_between_multi_selection_and_drag_keeps_set(cx: &mut TestAppContext) {
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
@@ -3017,7 +3025,7 @@ fn blank_click_between_multi_selection_and_drag_keeps_set(cx: &mut TestAppContex
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
-    cx.simulate_click(point(px(10.), row_y(3)), Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(3)), secondary);
     cx.run_until_parked();
 
     // 点击行下方空白（共 5 行，y 明显越过 5×行高）。

@@ -95,6 +95,53 @@ fn input_scope_uses_rust_override_boundaries_and_pair_policy() {
 }
 
 #[test]
+fn powershell_and_batch_input_scopes_use_their_comment_and_string_rules() {
+    for (path, source, comment_marker, string_text, comment_prefix) in [
+        (
+            "script.ps1",
+            "# 注释\n$value = \"文本\"\n",
+            "#",
+            "文本",
+            "# ",
+        ),
+        (
+            "build.cmd",
+            "REM 注释\nset \"OUT=dist\"\n",
+            "REM",
+            "dist",
+            "REM ",
+        ),
+    ] {
+        let (buffer, syntax) = parsed_syntax(path, source);
+        let text = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let comment = syntax
+            .input_scope_at(ByteOffset::new(source.find(comment_marker).unwrap()), &text)
+            .unwrap();
+        assert_eq!(
+            comment.override_name(),
+            Some("comment"),
+            "{path} 应识别注释作用域"
+        );
+        assert!(comment.line_comment_prefixes().contains(&comment_prefix));
+
+        let string = syntax
+            .input_scope_at(
+                ByteOffset::new(source.find(string_text).unwrap() + 1),
+                &text,
+            )
+            .unwrap();
+        assert_eq!(
+            string.override_name(),
+            Some("string"),
+            "{path} 应识别字符串作用域"
+        );
+        assert!(!string.pairs().any(|pair| pair.start == "\""));
+        assert!(string.line_comment_prefixes().is_empty());
+    }
+}
+
+#[test]
 fn input_scope_uses_known_language_without_tree_and_survives_syntax_error() {
     let buffer =
         Buffer::from_text("let x = \"unfinished".to_owned(), BufferConfig::default()).unwrap();

@@ -268,6 +268,7 @@ const HTML_INPUT_FOLLOWERS: &str = ">})";
 const RUST_LINE_COMMENTS: &[&str] = &["// ", "/// ", "//! "];
 const SCRIPT_LINE_COMMENTS: &[&str] = &["// "];
 const HASH_LINE_COMMENTS: &[&str] = &["# "];
+const BATCH_LINE_COMMENTS: &[&str] = &["REM ", ":: "];
 const C_LINE_COMMENTS: &[&str] = &["// "];
 const CPP_LINE_COMMENTS: &[&str] = &["// ", "/// ", "//! "];
 const JSON_LINE_COMMENTS: &[&str] = &["// "];
@@ -355,6 +356,20 @@ const MARKDOWN_INPUT: LanguageInputConfig = LanguageInputConfig {
 };
 const SHELL_INPUT: LanguageInputConfig = LanguageInputConfig {
     line_comments: HASH_LINE_COMMENTS,
+    ..LanguageInputConfig::empty()
+};
+const POWERSHELL_INPUT: LanguageInputConfig = LanguageInputConfig {
+    line_comments: HASH_LINE_COMMENTS,
+    block_comment: Some(BlockCommentConfig {
+        start: "<#",
+        prefix: "",
+        end: "#>",
+        tab_size: 0,
+    }),
+    ..LanguageInputConfig::empty()
+};
+const BATCH_INPUT: LanguageInputConfig = LanguageInputConfig {
+    line_comments: BATCH_LINE_COMMENTS,
     ..LanguageInputConfig::empty()
 };
 const JSON_INPUT: LanguageInputConfig = LanguageInputConfig {
@@ -1053,6 +1068,68 @@ const SHELL_PAIRS: &[AutoClosePair] = &[
     },
 ];
 
+const POWERSHELL_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+];
+
+const BATCH_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+];
+
 const JSON_PAIRS: &[AutoClosePair] = &[
     AutoClosePair {
         start: "{",
@@ -1516,6 +1593,36 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             SHELL_INPUT_FOLLOWERS,
         )
         .with_input(SHELL_INPUT),
+        LanguageSpec::tree_sitter(
+            "PowerShell",
+            LanguageMatcher {
+                suffixes: &["ps1", "psm1", "psd1"],
+                first_line_pattern: first_line(r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?pwsh(?:\s|$)"),
+            },
+            || tree_sitter_powershell::LANGUAGE.into(),
+            file_language_queries!("powershell", tree_sitter_powershell::HIGHLIGHTS_QUERY)
+                .with_overrides(include_str!("../queries/powershell/overrides.scm")),
+            Some("pwsh"),
+            POWERSHELL_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
+        )
+        .with_input(POWERSHELL_INPUT)
+        .with_word_characters("$-"),
+        LanguageSpec::tree_sitter(
+            "Batch",
+            LanguageMatcher {
+                suffixes: &["bat", "cmd"],
+                first_line_pattern: None,
+            },
+            || tree_sitter_batch::LANGUAGE.into(),
+            file_language_queries!("batch", tree_sitter_batch::HIGHLIGHTS_QUERY)
+                .with_overrides(include_str!("../queries/batch/overrides.scm")),
+            None,
+            BATCH_PAIRS,
+            SHELL_INPUT_FOLLOWERS,
+        )
+        .with_input(BATCH_INPUT)
+        .with_word_characters("%!"),
         LanguageSpec::tree_sitter(
             "Ruby",
             LanguageMatcher {

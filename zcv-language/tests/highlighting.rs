@@ -61,6 +61,14 @@ const FIXTURES: &[Fixture] = &[
         language: "Shell",
     },
     Fixture {
+        file: "script.ps1",
+        language: "PowerShell",
+    },
+    Fixture {
+        file: "build.cmd",
+        language: "Batch",
+    },
+    Fixture {
         file: "app.rb",
         language: "Ruby",
     },

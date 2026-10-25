@@ -1,0 +1,2 @@
+(parenthesized
+  ")" @end) @indent

@@ -104,12 +104,29 @@ fn project_query_capture_names_resolve_to_theme_colors() {
             "lifetime",
             "text.jsx",
             "embedded",
+            "array",
+            "assignvalue",
+            "delimiter",
         ] {
             assert!(
                 style_for_theme(theme_id, name).color.is_some(),
                 "{theme_id} 主题必须为项目查询 capture `{name}` 提供颜色"
             );
         }
+    }
+}
+
+#[test]
+fn powershell_broad_captures_keep_base_text_and_delimiter_colors() {
+    for theme_id in ["dark", "light"] {
+        let text_color = style_for_theme(theme_id, "text").color;
+        let delimiter_color = style_for_theme(theme_id, "punctuation.delimiter").color;
+        assert_eq!(style_for_theme(theme_id, "array").color, text_color);
+        assert_eq!(style_for_theme(theme_id, "assignvalue").color, text_color);
+        assert_eq!(
+            style_for_theme(theme_id, "delimiter").color,
+            delimiter_color
+        );
     }
 }
 

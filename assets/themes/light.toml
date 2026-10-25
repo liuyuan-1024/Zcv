@@ -6,6 +6,8 @@ appearance = "light"
 
 "tag" = { fg = "#5c78e2ff" }
 "attribute" = { fg = "#5c78e2ff" }
+"array" = { fg = "#242529ff" }
+"assignvalue" = { fg = "#242529ff" }
 "comment" = { fg = "#a2a3a7ff", modifiers = ["italic"] }
 "boolean" = { fg = "gold" }
 "constant" = { fg = "#c18401ff" }
@@ -30,6 +32,7 @@ appearance = "light"
 "operator" = { fg = "#3882b7ff" }
 "keyword.operator" = { fg = "purple" }
 "special" = { fg = "blue" }
+"delimiter" = { fg = "#4d4f52ff" }
 "punctuation.special" = { fg = "#b92b46ff" }
 "punctuation.bracket" = { fg = "#4d4f52ff" }
 "punctuation.delimiter" = { fg = "#4d4f52ff" }

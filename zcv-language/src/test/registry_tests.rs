@@ -47,6 +47,11 @@ fn detects_baseline_languages_by_suffix() {
         ("init.lua", "Lua"),
         ("main.zig", "Zig"),
         ("query.sql", "SQL"),
+        ("script.ps1", "PowerShell"),
+        ("module.psm1", "PowerShell"),
+        ("module.psd1", "PowerShell"),
+        ("build.bat", "Batch"),
+        ("build.cmd", "Batch"),
     ] {
         assert_eq!(
             LanguageRegistry::new()
@@ -67,6 +72,7 @@ fn detects_baseline_script_languages_from_first_line() {
         ("#!/usr/bin/env swift", "Swift"),
         ("#!/usr/bin/env lua5.4", "Lua"),
         ("//usr/bin/env go run $0 $@; exit", "Go"),
+        ("#!/usr/bin/env pwsh", "PowerShell"),
     ] {
         assert_eq!(
             LanguageRegistry::new()

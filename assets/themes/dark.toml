@@ -4,6 +4,8 @@ appearance = "dark"
 
 "tag" = { fg = "#74ade8ff" }
 "attribute" = { fg = "#74ade8ff" }
+"array" = { fg = "#dce0e5ff" }
+"assignvalue" = { fg = "#dce0e5ff" }
 "comment" = { fg = "#5d636fff", modifiers = ["italic"] }
 "boolean" = { fg = "gold" }
 "constant" = { fg = "#dfc184ff" }
@@ -28,6 +30,7 @@ appearance = "dark"
 "operator" = { fg = "#6eb4bfff" }
 "keyword.operator" = { fg = "purple" }
 "special" = { fg = "blue" }
+"delimiter" = { fg = "#b2b9c6ff" }
 "punctuation.special" = { fg = "#b1574bff" }
 "punctuation.bracket" = { fg = "#b2b9c6ff" }
 "punctuation.delimiter" = { fg = "#b2b9c6ff" }

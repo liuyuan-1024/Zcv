@@ -53,6 +53,46 @@ fn rust_syntax_snapshot_exposes_zed_structure_queries() {
 }
 
 #[test]
+fn powershell_and_batch_scripts_expose_block_structure() {
+    for (path, source, open, close) in [
+        (
+            "script.ps1",
+            "function Test {\n  Get-Process\n}\n",
+            "{",
+            "}",
+        ),
+        (
+            "build.cmd",
+            "if exist \"src\" (\n  echo found\n)\n",
+            "(",
+            ")",
+        ),
+    ] {
+        let (buffer, syntax) = parsed_syntax(path, source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let full = 0..snapshot.len_bytes().get();
+        assert!(
+            syntax
+                .bracket_pairs(full.clone(), &snapshot)
+                .iter()
+                .any(|pair| {
+                    &source[pair.open.clone()] == open && &source[pair.close.clone()] == close
+                }),
+            "{path} 应识别块括号"
+        );
+        assert!(
+            !syntax.indent_ranges(full.clone(), &snapshot).is_empty(),
+            "{path} 应提供块缩进"
+        );
+        assert!(
+            !syntax.fold_ranges(full, &snapshot).is_empty(),
+            "{path} 应提供块折叠"
+        );
+    }
+}
+
+#[test]
 fn tsx_brackets_preserve_newline_only_metadata() {
     let source = "<main><section></section></main>";
     let (buffer, syntax) = crate::test::parsed_syntax("view.tsx", source);

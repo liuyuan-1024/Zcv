@@ -310,6 +310,16 @@ fn project_queries_highlight_representative_language_constructs() {
             &["keyword.directive", "keyword", "function", "variable"],
         ),
         (
+            "script.ps1",
+            "# 查询进程\nfunction Get-BusyProcess { Get-Process | Where-Object { $_.CPU -gt 10 } }\n",
+            &["comment", "keyword", "function", "variable", "number"],
+        ),
+        (
+            "build.cmd",
+            "@echo off\nREM 创建目录\nset \"OUT=dist\"\nif not exist \"%OUT%\" (\n  mkdir \"%OUT%\"\n)\n",
+            &["comment", "keyword", "function", "variable", "string"],
+        ),
+        (
             "Cargo.toml",
             "[package]\nname = \"zcv\"\nenabled = true\ncount = 3\npublished = 2026-08-31\n",
             &[
@@ -363,6 +373,17 @@ fn project_queries_highlight_representative_language_constructs() {
         assert!(
             captures.iter().all(|name| !name.starts_with('_')),
             "{path} 不应把查询辅助 capture 暴露给渲染层"
+        );
+    }
+}
+
+#[test]
+fn powershell_array_assignment_keeps_nested_literal_captures() {
+    let captures = capture_names_for("script.ps1", "$values = @(1, \"a\")\n");
+    for expected in ["array", "number", "string"] {
+        assert!(
+            captures.contains(expected),
+            "PowerShell 数组赋值应产生 `{expected}`，实际为 {captures:?}"
         );
     }
 }

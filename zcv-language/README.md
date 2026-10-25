@@ -70,3 +70,5 @@ JSX／TSX 的 `element` 块注释配置也由语言规格提供。只有语言�
 6. 增加文件识别、代表性 capture 和新增结构能力的行为测试。
 
 注册表测试会加载全部内置规格，检查名称和后缀唯一性、规格可达性，并确保每门文件语言同时具有 grammar、高亮、括号、缩进和折叠查询。
+
+PowerShell 文件（`.ps1`、`.psm1`、`.psd1`）和 Windows Batch 文件（`.bat`、`.cmd`）使用各自的 Tree-sitter grammar 与配套高亮查询。PowerShell 查询的 `array`、`assignvalue`、`delimiter` 捕获由内置主题显式着色；括号、缩进、折叠和输入作用域查询分别保存在对应语言目录。PowerShell 还识别 `pwsh` 脚本首行。

@@ -18,7 +18,7 @@ use zcv_workspace::{
 
 use zcv_editor::Editor;
 
-use crate::buffer_search::DocumentToolbar;
+use crate::document_toolbar::DocumentToolbar;
 
 struct TestView;
 

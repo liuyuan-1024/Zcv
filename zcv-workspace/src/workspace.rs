@@ -19,7 +19,6 @@ mod panel;
 mod panel_buttons;
 mod persistence;
 mod preview;
-mod project_picker;
 mod provider_registry;
 mod quick_access;
 mod recent_projects;
@@ -50,8 +49,9 @@ pub use preview::{
     PreviewPresentation, PreviewProvider, PreviewToolbar, PreviewViewport, PreviewViewportOptions,
     register,
 };
-pub use project_picker::OnProjectSelected;
-pub use recent_projects::{add_to_recent, most_recent_valid_project};
+pub use recent_projects::{
+    OnProjectSelected, RecentProjects, add_to_recent, most_recent_valid_project,
+};
 pub use searchable::{
     Direction, SearchEvent, SearchableItem, SearchableItemHandle, WeakSearchableItemHandle,
 };

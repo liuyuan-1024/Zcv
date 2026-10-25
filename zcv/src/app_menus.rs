@@ -5,19 +5,22 @@ use zcv_actions::{
     About, CheckForUpdates, CloseTab, Copy, Cut, DeployBufferSearch, DeployProjectSearch,
     FocusLineColumn, FocusQuickAccess, MinimizeWindow, OpenLocalProject, OpenSettings, Paste,
     QuitWindow, Redo, Save, SelectAll, ToggleBottomDock, ToggleLeftDock, ToggleMaximizeWindow,
-    ToggleRightDock, Undo,
+    Undo,
 };
 
 pub(crate) fn install(cx: &App) {
     cx.set_menus([
         Menu::new("Zcv").items([
+            MenuItem::action("关于 Zcv", About),
+            MenuItem::action("检查更新", CheckForUpdates),
+            MenuItem::separator(),
             MenuItem::action("打开设置", OpenSettings),
             MenuItem::separator(),
             MenuItem::action("退出 Zcv", QuitWindow),
         ]),
         Menu::new("文件").items([
-            MenuItem::action("打开项目…", OpenLocalProject),
-            MenuItem::action("切换项目…", zcv_actions::ToggleProjectPicker),
+            MenuItem::action("打开本地项目…", OpenLocalProject),
+            MenuItem::action("最近项目…", zcv_actions::ToggleRecentProjects),
             MenuItem::separator(),
             MenuItem::action("保存", Save),
             MenuItem::action("关闭标签页", CloseTab),
@@ -34,7 +37,6 @@ pub(crate) fn install(cx: &App) {
         Menu::new("视图").items([
             MenuItem::action("切换左侧面板", ToggleLeftDock),
             MenuItem::action("切换底部面板", ToggleBottomDock),
-            MenuItem::action("切换右侧面板", ToggleRightDock),
         ]),
         Menu::new("转到").items([
             MenuItem::action("快速打开…", FocusQuickAccess),
@@ -46,10 +48,6 @@ pub(crate) fn install(cx: &App) {
         Menu::new("窗口").items([
             MenuItem::action("最小化", MinimizeWindow),
             MenuItem::action("最大化或恢复", ToggleMaximizeWindow),
-        ]),
-        Menu::new("帮助").items([
-            MenuItem::action("关于 Zcv", About),
-            MenuItem::action("检查更新", CheckForUpdates),
         ]),
     ]);
 }

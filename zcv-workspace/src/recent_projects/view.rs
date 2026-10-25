@@ -1,17 +1,17 @@
-//! ProjectPicker —— 项目选择器。
+//! 最近项目入口与选择浮层。
 //!
-//! 自含按钮 + 浮层，浮层内嵌 `Picker<ProjectPickerDelegate>`。
+//! 顶栏入口显示当前项目，浮层展示可切换的最近项目。
 //! 按钮内联在布局中，浮层用 deferred + anchored 逃逸。
 //!
-//! 最近项目从 `~/.zcv/recent_projects.json` 读取，"打开本地项目"调用系统文件选择器选择目录。
+//! 最近项目从 `~/.zcv/recent_projects.json` 读取。
 
-use std::{cell::RefCell, path::Path, rc::Rc, time::Duration};
+use std::{path::Path, rc::Rc, time::Duration};
 
 use gpui::{
-    Action, AnyElement, App, ClickEvent, Context, Entity, PathPromptOptions, Render, WeakEntity,
-    Window, div, prelude::*,
+    Action, AnyElement, App, ClickEvent, Context, Entity, Render, WeakEntity, Window, div,
+    prelude::*,
 };
-use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
+use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleRecentProjects};
 use zcv_fuzzy::Matcher;
 use zcv_keymap::{KeyBindings, display_shortcut};
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, picker_divider, toggle_picker};
@@ -30,31 +30,27 @@ use crate::{
 /// 项目选中回调 —— 参数为项目路径。
 pub type OnProjectSelected = Rc<dyn Fn(String, &mut Window, &mut App)>;
 
-type OnOpenLocalProject = Rc<dyn Fn(&mut Window, &mut App)>;
-
-/// 项目选择器向宿主上报用户可见错误的回调（由装配层决定 toast 呈现）。
+/// 最近项目向宿主上报用户可见错误的回调（由装配层决定 toast 呈现）。
 type ErrorReporter = Rc<dyn Fn(String, &mut App)>;
 
 // ═══ 数据源 ═══════════════════════════════════════════════════════
 
-/// 项目选择器数据源。
-struct ProjectPickerDelegate {
+/// 最近项目数据源。
+struct RecentProjectsDelegate {
     project: Entity<Project>,
     query: String,
     projects: Vec<ProjectEntry>,
     filtered: Vec<usize>,
     selected_index: usize,
     on_selected: OnProjectSelected,
-    on_open_local_project: OnOpenLocalProject,
     on_error: ErrorReporter,
 }
 
-impl ProjectPickerDelegate {
+impl RecentProjectsDelegate {
     fn new(
         project: Entity<Project>,
         mut projects: Vec<ProjectEntry>,
         on_selected: OnProjectSelected,
-        on_open_local_project: OnOpenLocalProject,
         on_error: ErrorReporter,
         cx: &App,
     ) -> Self {
@@ -67,7 +63,6 @@ impl ProjectPickerDelegate {
             filtered,
             selected_index: 0,
             on_selected,
-            on_open_local_project,
             on_error,
         };
         delegate.select_current_project(cx);
@@ -155,7 +150,7 @@ impl ProjectPickerDelegate {
     }
 }
 
-impl PickerDelegate for ProjectPickerDelegate {
+impl PickerDelegate for RecentProjectsDelegate {
     fn match_count(&self) -> usize {
         self.filtered.len()
     }
@@ -261,14 +256,13 @@ impl PickerDelegate for ProjectPickerDelegate {
         } else {
             item
         };
-        let on_open_local_project = self.on_open_local_project.clone();
         Some(
             div()
                 .id("open-local-footer")
                 .child(picker_divider(cx))
                 .child(item)
-                .on_click(move |_, window, cx| {
-                    on_open_local_project(window, cx);
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(OpenLocalProject.boxed_clone(), cx);
                 })
                 .into_any_element(),
         )
@@ -277,20 +271,15 @@ impl PickerDelegate for ProjectPickerDelegate {
 
 // ═══ Entity ═════════════════════════════════════════════════════
 
-/// 项目选择器 —— 自含按钮 + 浮层。
+/// 顶栏中的最近项目入口与选择浮层。
 ///
-/// 显示当前项目名称，无项目时显示「选择项目」。
-pub struct ProjectPicker {
+/// 显示当前项目名称，并提供最近项目切换入口。
+pub struct RecentProjects {
     host: PopoverHost,
-    picker: Entity<Picker<ProjectPickerDelegate>>,
-    /// 异步「打开本地项目」暂存的路径
-    pending_path: Rc<RefCell<Option<String>>>,
-    /// 项目选中回调
-    on_selected: OnProjectSelected,
-    workspace: WeakEntity<Workspace>,
+    picker: Entity<Picker<RecentProjectsDelegate>>,
 }
 
-impl ProjectPicker {
+impl RecentProjects {
     pub fn new(
         on_selected: OnProjectSelected,
         project: Entity<Project>,
@@ -300,14 +289,6 @@ impl ProjectPicker {
         cx: &mut Context<Self>,
     ) -> Self {
         let projects = recent_projects::load_recent_projects();
-        let pending_path = Rc::new(RefCell::new(None));
-        let on_open_local_project: OnOpenLocalProject = {
-            let pending_path = pending_path.clone();
-            let workspace = workspace.clone();
-            Rc::new(move |_, cx| {
-                Self::open_local_project(pending_path.clone(), workspace.clone(), cx)
-            })
-        };
         let on_error: ErrorReporter = {
             let workspace = workspace.clone();
             Rc::new(move |message, cx| {
@@ -324,14 +305,7 @@ impl ProjectPicker {
                 }
             })
         };
-        let delegate = ProjectPickerDelegate::new(
-            project,
-            projects,
-            on_selected.clone(),
-            on_open_local_project,
-            on_error,
-            cx,
-        );
+        let delegate = RecentProjectsDelegate::new(project, projects, on_selected, on_error, cx);
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
         let host = PopoverHost::new(cx.focus_handle(), picker_layer);
@@ -339,13 +313,7 @@ impl ProjectPicker {
             picker.set_on_dismiss(host.on_dismiss_handler())
         });
 
-        Self {
-            host,
-            picker,
-            pending_path,
-            on_selected,
-            workspace,
-        }
+        Self { host, picker }
     }
 
     /// 外部切换（快捷键/按钮等）。
@@ -384,66 +352,10 @@ impl ProjectPicker {
         }
         window.refresh();
     }
-
-    fn handle_open_local_project(
-        &mut self,
-        _: &OpenLocalProject,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        Self::open_local_project(self.pending_path.clone(), self.workspace.clone(), cx);
-    }
-
-    fn open_local_project(
-        pending: Rc<RefCell<Option<String>>>,
-        workspace: WeakEntity<Workspace>,
-        cx: &mut App,
-    ) {
-        // 同步触发系统文件选择器，返回一个异步 channel
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("选择项目目录".into()),
-        });
-
-        // 通过 foreground executor 处理异步结果
-        cx.spawn(async move |cx| {
-            if let Ok(inner) = rx.await {
-                match inner {
-                    Ok(Some(paths)) => {
-                        if let Some(path) = paths.first() {
-                            *pending.borrow_mut() = Some(path.to_string_lossy().to_string());
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let _ = workspace.update(cx, |workspace, cx| {
-                            workspace.show_toast(
-                                ToastKind::Error,
-                                format!("选择项目目录失败：{error:#}"),
-                                vec![],
-                                Some(Duration::from_secs(5)),
-                                cx,
-                            );
-                        });
-                    }
-                }
-            } // Err(_) → channel 被关闭（取消），静默忽略
-        })
-        .detach();
-    }
 }
 
-impl Render for ProjectPicker {
+impl Render for RecentProjects {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 处理异步「打开本地项目」返回的路径
-        if let Some(path) = self.pending_path.borrow_mut().take() {
-            self.host.dismiss(window, cx);
-            let cb = self.on_selected.clone();
-            window.defer(cx, move |window, cx| cb(path, window, cx));
-        }
-
         let color_value = if self.host.is_open() {
             color::current(cx).icon_accent
         } else {
@@ -462,9 +374,9 @@ impl Render for ProjectPicker {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "选择项目".to_owned());
 
-        let button = Button::text("project-picker", button_text)
-            .label("项目选择器")
-            .shortcut(display_shortcut(&ToggleProjectPicker, cx))
+        let button = Button::text("recent-projects", button_text)
+            .label("最近项目")
+            .shortcut(display_shortcut(&ToggleRecentProjects, cx))
             .color(color_value)
             .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 
@@ -473,7 +385,6 @@ impl Render for ProjectPicker {
             // 复合 context 让 Picker 分组的快捷键与 Editor 同深度竞争
             .key_context("RecentProjects")
             .on_action(cx.listener(Self::handle_delete_recent))
-            .on_action(cx.listener(Self::handle_open_local_project))
             .relative()
             .child(button);
 
@@ -487,5 +398,5 @@ impl Render for ProjectPicker {
 }
 
 #[cfg(test)]
-#[path = "test/project_picker_tests.rs"]
+#[path = "../test/recent_projects_picker_tests.rs"]
 mod tests;

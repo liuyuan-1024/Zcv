@@ -19,7 +19,7 @@ use gpui::{
 };
 use zcv_actions::{
     FocusOrHidePanel, MinimizeWindow, OpenSettings, QuitWindow, Save, ToggleBottomDock,
-    ToggleLeftDock, ToggleMaximizeWindow, ToggleRightDock,
+    ToggleLeftDock, ToggleMaximizeWindow,
 };
 use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
@@ -1243,9 +1243,6 @@ impl Render for Workspace {
         }))
         .on_action(cx.listener(|this, _: &ToggleBottomDock, window, cx| {
             this.toggle_dock(DockPosition::Bottom, window, cx)
-        }))
-        .on_action(cx.listener(|this, _: &ToggleRightDock, window, cx| {
-            this.toggle_dock(DockPosition::Right, window, cx)
         }))
         .on_action(cx.listener(Self::handle_panel_keyboard_action))
         .on_drag_move(move |event: &DragMoveEvent<DraggedDock>, window, cx| {

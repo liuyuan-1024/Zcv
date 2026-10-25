@@ -64,7 +64,7 @@ impl PickerDelegate for TallDelegate {
     }
 }
 
-/// 模拟项目选择器的浮层形态：deferred + anchored + auto 高度容器，与 project_picker.rs 的真实浮层结构一致。
+/// 模拟最近项目的浮层形态：deferred + anchored + auto 高度容器，与 recent_projects/view.rs 的真实浮层结构一致。
 struct PopoverWrapper {
     picker: Entity<Picker<TallDelegate>>,
 }
@@ -129,7 +129,7 @@ fn footer_stays_visible_with_tall_rows(cx: &mut TestAppContext) {
 
 actions!(picker_tests, [EditorDelete, PickerDelete]);
 
-/// 模拟 ProjectPicker 根节点：提供 "ProjectPicker" key context，并挂两个测试 action 的 handler，用于观察哪个 action 被 keymap 匹配派发。
+/// 模拟 RecentProjects 根节点：提供 "RecentProjects" key context，并挂两个测试 action 的 handler，用于观察哪个 action 被 keymap 匹配派发。
 struct PickerWithContext {
     focus: FocusHandle,
     picker: Entity<Picker<ConfirmDelegate>>,
@@ -167,7 +167,7 @@ impl Render for PickerWithContext {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .track_focus(&self.focus)
-            .key_context("ProjectPicker")
+            .key_context("RecentProjects")
             .on_action(cx.listener(|this, _: &EditorDelete, _, _| {
                 this.editor_fired.set(true);
             }))
@@ -820,8 +820,8 @@ fn editor_binding_wins_over_plain_picker_context(cx: &mut TestAppContext) {
     assert!(!picker_fired.get());
 }
 
-/// 复合 context（ProjectPicker > Picker > Editor）与 Editor 绑定同深度，
-/// 后注册优先 —— 项目选择器打开时删除快捷键覆盖 Editor 的 cmd-backspace。
+/// 复合 context（RecentProjects > Picker > Editor）与 Editor 绑定同深度，
+/// 后注册优先 —— 最近项目打开时删除快捷键覆盖 Editor 的 cmd-backspace。
 #[gpui::test]
 fn composite_context_binding_wins_over_editor(cx: &mut TestAppContext) {
     init(cx);
@@ -836,7 +836,7 @@ fn composite_context_binding_wins_over_editor(cx: &mut TestAppContext) {
                 KeyBinding::new(
                     "cmd-backspace",
                     PickerDelete,
-                    Some("Picker || (ProjectPicker > Picker > Editor)"),
+                    Some("Picker || (RecentProjects > Picker > Editor)"),
                 ),
             ]);
             PickerWithContext::new(editor_fired, picker_fired, window, cx)

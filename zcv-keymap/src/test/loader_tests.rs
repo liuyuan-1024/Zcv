@@ -72,7 +72,7 @@ fn parameterized_actions_have_distinct_shortcuts(cx: &mut TestAppContext) {
 }
 
 #[test]
-fn quick_access_shortcut_keeps_project_picker_binding() {
+fn recent_projects_shortcut_is_preserved() {
     for (source, search_keys, project_keys) in [
         ("default-macos.json", "cmd-p", "cmd-shift-p"),
         ("default-linux.json", "ctrl-p", "ctrl-shift-p"),
@@ -90,7 +90,7 @@ fn quick_access_shortcut_keeps_project_picker_binding() {
         );
         assert_eq!(
             global.bindings.get(project_keys).map(RawAction::name),
-            Some("project_picker::ToggleProjectPicker")
+            Some("recent_projects::ToggleRecentProjects")
         );
     }
 }

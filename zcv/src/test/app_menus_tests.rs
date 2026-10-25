@@ -11,10 +11,7 @@ fn application_menus_expose_existing_editor_commands(cx: &mut TestAppContext) {
             .iter()
             .map(|menu| menu.name.as_ref())
             .collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            ["Zcv", "文件", "编辑", "视图", "转到", "窗口", "帮助"]
-        );
+        assert_eq!(names, ["Zcv", "文件", "编辑", "视图", "转到", "窗口"]);
 
         let action_names = |menu_index: usize| {
             menus[menu_index]
@@ -29,8 +26,14 @@ fn application_menus_expose_existing_editor_commands(cx: &mut TestAppContext) {
         };
         assert_eq!(
             action_names(0),
-            ["workspace::OpenSettings", "window_controls::QuitWindow"]
+            [
+                "app::About",
+                "app::CheckForUpdates",
+                "workspace::OpenSettings",
+                "window_controls::QuitWindow"
+            ]
         );
+        assert_eq!(action_names(1)[0], "workspace::OpenLocalProject");
         assert_eq!(
             action_names(2),
             [
@@ -42,6 +45,5 @@ fn application_menus_expose_existing_editor_commands(cx: &mut TestAppContext) {
                 "editor::SelectAll"
             ]
         );
-        assert_eq!(action_names(6), ["app::About", "app::CheckForUpdates"]);
     });
 }

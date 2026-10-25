@@ -51,13 +51,12 @@ fn confirm_invokes_on_selected(cx: &mut TestAppContext) {
         Rc::new(move |path, _window, _cx| triggered.set(Some(path)))
     };
     let mut delegate = cx.update(|cx| {
-        ProjectPickerDelegate::new(
+        RecentProjectsDelegate::new(
             cx.new(|cx| Project::empty(Arc::new(LanguageRegistry::new()), cx)),
             vec![ProjectEntry {
                 path: "/tmp/test-project".into(),
             }],
             on_selected,
-            Rc::new(|_, _| {}),
             Rc::new(|_, _| {}),
             cx,
         )
@@ -70,9 +69,9 @@ fn confirm_invokes_on_selected(cx: &mut TestAppContext) {
 }
 
 /// 构造 3 个项目的数据源，默认选中第一项。
-fn test_delegate(cx: &mut App) -> ProjectPickerDelegate {
+fn test_delegate(cx: &mut App) -> RecentProjectsDelegate {
     let on_selected: OnProjectSelected = Rc::new(|_, _, _| {});
-    ProjectPickerDelegate::new(
+    RecentProjectsDelegate::new(
         cx.new(|cx| Project::empty(Arc::new(LanguageRegistry::new()), cx)),
         vec![
             ProjectEntry {
@@ -86,7 +85,6 @@ fn test_delegate(cx: &mut App) -> ProjectPickerDelegate {
             },
         ],
         on_selected,
-        Rc::new(|_, _| {}),
         Rc::new(|_, _| {}),
         cx,
     )
@@ -105,7 +103,7 @@ fn remove_project_drops_entry_and_keeps_filter(cx: &mut TestAppContext) {
 #[gpui::test]
 fn project_query_matches_noncontiguous_name_characters(cx: &mut TestAppContext) {
     let mut delegate = cx.update(|cx| {
-        ProjectPickerDelegate::new(
+        RecentProjectsDelegate::new(
             cx.new(|cx| Project::empty(Arc::new(LanguageRegistry::new()), cx)),
             vec![
                 ProjectEntry {
@@ -116,7 +114,6 @@ fn project_query_matches_noncontiguous_name_characters(cx: &mut TestAppContext) 
                 },
             ],
             Rc::new(|_, _, _| {}),
-            Rc::new(|_, _| {}),
             Rc::new(|_, _| {}),
             cx,
         )
@@ -158,7 +155,7 @@ fn current_project_cannot_be_removed_from_recent_projects(cx: &mut TestAppContex
             .expect("当前项目有根目录")
             .to_string_lossy()
             .into_owned();
-        let delegate = ProjectPickerDelegate::new(
+        let delegate = RecentProjectsDelegate::new(
             project,
             vec![
                 ProjectEntry {
@@ -169,7 +166,6 @@ fn current_project_cannot_be_removed_from_recent_projects(cx: &mut TestAppContex
                 },
             ],
             Rc::new(|_, _, _| {}),
-            Rc::new(|_, _| {}),
             {
                 let reported = reported.clone();
                 Rc::new(move |message, _| reported.set(Some(message)))
@@ -217,7 +213,7 @@ fn current_project_is_selected_by_path_and_check_stays_after_its_name(cx: &mut T
             "/another-parent/{}",
             root.file_name().unwrap().to_string_lossy()
         );
-        let delegate = ProjectPickerDelegate::new(
+        let delegate = RecentProjectsDelegate::new(
             project,
             vec![
                 ProjectEntry { path: same_name },
@@ -227,7 +223,6 @@ fn current_project_is_selected_by_path_and_check_stays_after_its_name(cx: &mut T
                 ProjectEntry { path: current },
             ],
             Rc::new(|_, _, _| {}),
-            Rc::new(|_, _| {}),
             Rc::new(|_, _| {}),
             cx,
         );
@@ -285,7 +280,7 @@ fn reopening_selects_current_project_and_clears_previous_search(cx: &mut TestApp
     let (selector, cx) = cx.add_window_view(|window, cx| {
         let workspace = cx.new(|cx| Workspace::new_empty(languages.clone(), window, cx));
         let project = test_project(directory.path().to_path_buf(), languages, cx);
-        ProjectPicker::new(
+        RecentProjects::new(
             Rc::new(|_, _, _| {}),
             project,
             workspace.downgrade(),

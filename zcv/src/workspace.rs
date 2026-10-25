@@ -13,14 +13,14 @@ use std::{
 use anyhow::Context as _;
 use futures::channel::oneshot;
 use gpui::{
-    App, AsyncApp, Context, Entity, PromptLevel, TitlebarOptions, WeakEntity, Window, WindowBounds,
-    WindowOptions, prelude::*, px, size,
+    App, AsyncApp, Context, Entity, PathPromptOptions, PromptLevel, TitlebarOptions, WeakEntity,
+    Window, WindowBounds, WindowOptions, prelude::*, px, size,
 };
 use zcv_actions::{
     About, CheckForUpdates, DecreaseContentFontSize, DecreaseUiFontSize, FocusLineColumn,
     FocusQuickAccess, GitFetch, GitPull, GitPush, IncreaseContentFontSize, IncreaseUiFontSize,
-    NewTerminal, ResetContentFontSize, ResetUiFontSize, RestartToUpdate, SelectGitBranch,
-    ToggleHarnessMode, ToggleProjectPicker,
+    NewTerminal, OpenLocalProject, ResetContentFontSize, ResetUiFontSize, RestartToUpdate,
+    SelectGitBranch, ToggleHarnessMode, ToggleRecentProjects,
 };
 use zcv_editor::{Editor, EditorEvent};
 use zcv_language::LanguageRegistry;
@@ -140,6 +140,51 @@ fn switch_project_callback(languages: Arc<LanguageRegistry>) -> OnProjectSelecte
             workspace
         });
     })
+}
+
+/// 全局打开本地项目命令：由应用处理目录选择，再交给当前窗口的项目切换流程。
+pub(crate) fn install_open_local_project_action(languages: Arc<LanguageRegistry>, cx: &mut App) {
+    let switch_project = switch_project_callback(languages);
+    cx.on_action(move |_: &OpenLocalProject, cx| {
+        let Some(window) = cx.active_window() else {
+            return;
+        };
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("选择项目目录".into()),
+        });
+        let switch_project = switch_project.clone();
+        cx.spawn(async move |cx| match paths.await {
+            Ok(Ok(Some(paths))) => {
+                let Some(path) = paths.into_iter().next() else {
+                    return;
+                };
+                let path = path.to_string_lossy().into_owned();
+                let _ = window.update(cx, |_, window, cx| {
+                    switch_project(path, window, cx);
+                });
+            }
+            Ok(Ok(None)) | Err(_) => {}
+            Ok(Err(error)) => {
+                let _ = window.update(cx, |_, window, cx| {
+                    if let Some(workspace) = window.root::<Workspace>().flatten() {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                ToastKind::Error,
+                                format!("选择本地项目失败：{error:#}"),
+                                vec![],
+                                Some(Duration::from_secs(5)),
+                                cx,
+                            );
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
+    });
 }
 
 /// 规范化项目路径：相对路径（如 `zcv .`）归一为绝对路径，无效路径返回错误。
@@ -657,9 +702,9 @@ fn initialize_workspace(
         };
         line_column_bar.update(cx, |bar, cx| bar.focus_line_column(target, window, cx));
     });
-    let project_picker = top_bar.read(cx).project_picker.clone();
-    workspace.register_action(move |_workspace, _: &ToggleProjectPicker, window, cx| {
-        project_picker.update(cx, |picker, cx| picker.toggle(window, cx));
+    let recent_projects = top_bar.read(cx).recent_projects.clone();
+    workspace.register_action(move |_workspace, _: &ToggleRecentProjects, window, cx| {
+        recent_projects.update(cx, |recent_projects, cx| recent_projects.toggle(window, cx));
     });
     let branch_picker = top_bar.read(cx).branch_picker.clone();
     workspace.register_action(move |_workspace, _: &SelectGitBranch, window, cx| {

@@ -65,7 +65,7 @@ fn closed_last_window_can_open_a_workspace_again(cx: &mut TestAppContext) {
 #[gpui::test]
 fn panel_keyboard_action_uses_stable_panel_id(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        for action in ["ToggleLeftDock", "ToggleBottomDock", "ToggleRightDock"] {
+        for action in ["ToggleLeftDock", "ToggleBottomDock"] {
             assert!(cx.build_action(&format!("dock::{action}"), None).is_ok());
         }
         let action = cx

@@ -237,9 +237,8 @@
   {
     "context": "RecentProjects > Picker > Editor",
     "bindings": {
-      "cmd-o": "project_picker::OpenLocalProject",
-      "cmd-backspace": "project_picker::DeleteRecentProject",
-      "cmd-delete": "project_picker::DeleteRecentProject"
+      "cmd-backspace": "recent_projects::DeleteRecentProject",
+      "cmd-delete": "recent_projects::DeleteRecentProject"
     }
   },
 
@@ -365,6 +364,7 @@
       // 文件
       // =========================
 
+      "cmd-l": "workspace::OpenLocalProject",
       "cmd-s": "workspace::Save",
       "cmd-p": "workspace::FocusQuickAccess",
       "cmd-g": "workspace::FocusLineColumn",
@@ -373,8 +373,8 @@
       // Picker
       // =========================
 
-      // 项目选择
-      "cmd-shift-p": "project_picker::ToggleProjectPicker",
+      // 最近项目
+      "cmd-shift-p": "recent_projects::ToggleRecentProjects",
 
       // Git 分支
       "cmd-shift-b": "branch_picker::SelectGitBranch",

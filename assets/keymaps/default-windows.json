@@ -140,9 +140,8 @@
   {
     "context": "RecentProjects > Picker > Editor",
     "bindings": {
-      "ctrl-l": "project_picker::OpenLocalProject",
-      "ctrl-backspace": "project_picker::DeleteRecentProject",
-      "ctrl-delete": "project_picker::DeleteRecentProject"
+      "ctrl-backspace": "recent_projects::DeleteRecentProject",
+      "ctrl-delete": "recent_projects::DeleteRecentProject"
     }
   },
   {
@@ -227,7 +226,7 @@
       "f11": "window_controls::ToggleMaximizeWindow",
       "ctrl-p": "workspace::FocusQuickAccess",
       "ctrl-g": "workspace::FocusLineColumn",
-      "ctrl-shift-p": "project_picker::ToggleProjectPicker",
+      "ctrl-shift-p": "recent_projects::ToggleRecentProjects",
       "ctrl-shift-b": "branch_picker::SelectGitBranch",
       "ctrl-,": "workspace::OpenSettings",
       "ctrl-shift-e": ["dock::FocusOrHidePanel", { "panel": "project-tree" }],
@@ -236,6 +235,7 @@
       "ctrl-shift-f": "project_search::DeployProjectSearch",
       "ctrl-`": ["dock::FocusOrHidePanel", { "panel": "terminal" }],
       "ctrl-shift-h": "harness::ToggleHarnessMode",
+      "ctrl-l": "workspace::OpenLocalProject",
       "ctrl-s": "workspace::Save"
     }
   }

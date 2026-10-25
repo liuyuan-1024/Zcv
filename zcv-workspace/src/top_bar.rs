@@ -16,8 +16,8 @@ use zcv_ui::{Button, PopoverLayer};
 use crate::{
     OnProjectSelected, Workspace,
     branch_picker::{BranchPicker, OnBranchSelected},
-    project_picker::ProjectPicker,
     quick_access::QuickAccess,
+    recent_projects::RecentProjects,
 };
 
 mod application_menu;
@@ -36,7 +36,7 @@ pub struct TopBarCallbacks {
 }
 
 pub struct TopBar {
-    pub project_picker: Entity<ProjectPicker>,
+    pub recent_projects: Entity<RecentProjects>,
     /// 分支选择器（显示当前分支名；与 TopBar 一样直接读取 GitStore）。
     pub branch_picker: Entity<BranchPicker>,
     quick_access: Entity<QuickAccess>,
@@ -64,8 +64,8 @@ impl TopBar {
         let git_store = project.read(cx).git_store();
         let picker_layer = PopoverLayer::default();
         let application_menu = ApplicationMenu::new(picker_layer.clone(), cx);
-        let project_picker = cx.new(|cx| {
-            ProjectPicker::new(
+        let recent_projects = cx.new(|cx| {
+            RecentProjects::new(
                 on_selected,
                 project.clone(),
                 workspace.clone(),
@@ -88,7 +88,7 @@ impl TopBar {
         });
         let git_subscription = cx.subscribe(&git_store, |_, _, _: &GitStoreEvent, cx| cx.notify());
         Self {
-            project_picker,
+            recent_projects,
             branch_picker,
             quick_access,
             git_store,
@@ -215,7 +215,7 @@ fn leading_slots(top_bar: &TopBar, cx: &App) -> Vec<AnyElement> {
     }
 
     // 项目选择器
-    out.push(top_bar.project_picker.clone().into_any_element());
+    out.push(top_bar.recent_projects.clone().into_any_element());
 
     // Git 分支与同步/推送/拉取操作：项目不是 git 仓库时不显示。
     let has_repositories = top_bar.git_store.read(cx).has_repositories();

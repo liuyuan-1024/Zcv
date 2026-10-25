@@ -118,6 +118,7 @@ described_actions!(
     [
         Save => ("保存", "保存当前文档"),
         OpenSettings => ("打开设置", "打开设置文件"),
+        OpenLocalProject => ("打开本地项目", "从本地目录选择并切换项目"),
         FocusQuickAccess,
         FocusLineColumn => ("跳转到行列", "跳转到当前文档的指定行和列"),
         GitFetch => ("获取远程更新", "从远程仓库获取最新提交"),
@@ -162,8 +163,7 @@ described_actions!(
     DOCK_COMMANDS,
     [
         ToggleLeftDock => ("切换左侧面板", "显示或隐藏左侧面板"),
-        ToggleBottomDock => ("切换底部面板", "显示或隐藏底部面板"),
-        ToggleRightDock => ("切换右侧面板", "显示或隐藏右侧面板")
+        ToggleBottomDock => ("切换底部面板", "显示或隐藏底部面板")
     ]
 );
 
@@ -226,11 +226,10 @@ described_actions!(
 );
 
 described_actions!(
-    project_picker,
-    PROJECT_PICKER_COMMANDS,
+    recent_projects,
+    RECENT_PROJECTS_COMMANDS,
     [
-        ToggleProjectPicker => ("切换项目", "打开最近项目选择器"),
-        OpenLocalProject,
+        ToggleRecentProjects => ("切换最近项目", "显示或隐藏最近项目列表"),
         DeleteRecentProject
     ]
 );
@@ -286,7 +285,7 @@ pub fn commands() -> impl Iterator<Item = &'static CommandMetadata> {
         WINDOW_COMMANDS,
         BRANCH_PICKER_COMMANDS,
         PROJECT_SEARCH_COMMANDS,
-        PROJECT_PICKER_COMMANDS,
+        RECENT_PROJECTS_COMMANDS,
     ]
     .into_iter()
     .flatten()

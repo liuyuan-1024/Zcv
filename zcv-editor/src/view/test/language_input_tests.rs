@@ -6,6 +6,7 @@
 use gpui::TestAppContext;
 
 use super::jsx_tag_tests::{buffer_text, editor_with_state, state_text, type_text};
+use zcv_settings::{SettingsStore, UserSettings};
 
 /// 在给定初始状态输入 `input`，比较带光标标记的最终状态。
 fn check(cx: &mut TestAppContext, path: &'static str, before: &str, input: &str, after: &str) {
@@ -27,6 +28,7 @@ fn check(cx: &mut TestAppContext, path: &'static str, before: &str, input: &str,
 
 #[gpui::test]
 fn code_scope_autocloses_pairs_for_aligned_languages(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let cases: &[(&str, &str, &str, &str)] = &[
         (
             "test.rs",
@@ -61,6 +63,7 @@ fn code_scope_autocloses_pairs_for_aligned_languages(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn string_scope_disables_same_quote_for_aligned_languages(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let cases: &[(&str, &str, &str, &str)] = &[
         (
             "test.rs",
@@ -129,6 +132,7 @@ fn string_scope_disables_same_quote_for_aligned_languages(cx: &mut TestAppContex
 
 #[gpui::test]
 fn comment_scope_keeps_bracket_pairs_for_aligned_languages(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let cases: &[(&str, &str, &str, &str)] = &[
         ("test.rs", "// ˇ\n", "(", "// (ˇ)\n"),
         ("test.c", "// ˇ\n", "(", "// (ˇ)\n"),
@@ -151,6 +155,7 @@ fn comment_scope_keeps_bracket_pairs_for_aligned_languages(cx: &mut TestAppConte
 
 #[gpui::test]
 fn markdown_injected_rust_uses_inner_language_pairs(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     check(
         cx,
         "test.md",

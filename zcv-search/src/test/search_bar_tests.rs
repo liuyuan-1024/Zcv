@@ -7,6 +7,7 @@ use zcv_actions::DeployBufferSearch;
 use zcv_workspace::{Item, SearchableItem};
 
 use super::*;
+use zcv_settings::{SettingsStore, UserSettings};
 
 struct SearchBarHost {
     bar: Entity<SearchBar>,
@@ -39,6 +40,7 @@ impl Render for FocusSearchBarHost {
 
 #[gpui::test]
 fn closing_document_search_only_returns_focus_when_search_owns_it(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let registry = Arc::new(LanguageRegistry::new());
     let (host, cx) = cx.add_window_view(|window, cx| {
         let editor = cx.new(|cx| Editor::single_line(registry.clone(), cx));
@@ -82,6 +84,7 @@ fn closing_document_search_only_returns_focus_when_search_owns_it(cx: &mut TestA
 
 #[gpui::test]
 fn find_from_query_input_uses_target_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let registry = Arc::new(LanguageRegistry::new());
     let editor = cx.new({
         let registry = Arc::clone(&registry);
@@ -162,6 +165,7 @@ fn search_bar_with_text<'a>(
 
 #[gpui::test]
 fn replace_next_visits_each_remaining_match_in_order(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, bar, cx) =
         search_bar_with_text(cx, "abc abc abc", "abc", "X", MatchOptions::default());
     for (text, count) in [("X abc abc", 2), ("X X abc", 1), ("X X X", 0)] {
@@ -180,6 +184,7 @@ fn replace_next_visits_each_remaining_match_in_order(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn replace_next_wraps_after_the_last_match(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, bar, cx) =
         search_bar_with_text(cx, "abc abc abc", "abc", "X", MatchOptions::default());
     cx.update(|window, cx| {
@@ -204,6 +209,7 @@ fn replace_next_wraps_after_the_last_match(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn replace_next_skips_matches_created_inside_the_replacement(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, bar, cx) =
         search_bar_with_text(cx, "abc abc abc", "abc", "abcabc", MatchOptions::default());
     cx.update(|window, cx| {
@@ -224,6 +230,7 @@ fn replace_next_skips_matches_created_inside_the_replacement(cx: &mut TestAppCon
 
 #[gpui::test]
 fn replace_next_deletes_adjacent_matches_in_order(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, bar, cx) =
         search_bar_with_text(cx, "abcabcabc", "abc", "", MatchOptions::default());
     for (text, count) in [("abcabc", 2), ("abc", 1), ("", 0)] {
@@ -239,6 +246,7 @@ fn replace_next_deletes_adjacent_matches_in_order(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn replace_next_uses_regex_capture_replacement_lengths(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, bar, cx) = search_bar_with_text(
         cx,
         "a1 a22 a333",

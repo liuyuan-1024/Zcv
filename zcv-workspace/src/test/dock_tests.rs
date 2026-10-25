@@ -4,6 +4,7 @@ use gpui::{App, Context, FocusHandle, Render, TestAppContext, Window, div, px};
 
 use super::*;
 use crate::{Panel, PanelEvent, PanelHandle};
+use zcv_settings::{SettingsStore, UserSettings};
 
 macro_rules! test_panel {
     ($name:ident, $persistent_name:literal) => {
@@ -81,6 +82,7 @@ impl Render for InputPanel {
 
 #[gpui::test]
 fn focusing_dock_enters_the_active_panel_input(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let panel = cx.new(|cx| InputPanel {
         focus: cx.focus_handle(),
         input_focus: cx.focus_handle(),
@@ -117,6 +119,7 @@ fn focusing_dock_enters_the_active_panel_input(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn restores_active_panel_after_late_registration(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = cx.new(|cx| FirstPanel {
         focus: cx.focus_handle(),
     });
@@ -156,6 +159,7 @@ fn restores_active_panel_after_late_registration(cx: &mut TestAppContext) {
 /// 序列化 visible=true 的 dock 应随面板注册恢复打开（回归：终端面板重启不展开）。
 #[gpui::test]
 fn serialized_visible_dock_opens_on_panel_registration(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let panel = cx.new(|cx| FirstPanel {
         focus: cx.focus_handle(),
     });
@@ -185,6 +189,7 @@ fn serialized_visible_dock_opens_on_panel_registration(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn capture_uses_stable_panel_name_not_index(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let panel = cx.new(|cx| SecondPanel {
         focus: cx.focus_handle(),
     });

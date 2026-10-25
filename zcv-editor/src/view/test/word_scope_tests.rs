@@ -10,6 +10,7 @@ use zcv_workspace::SearchableItem;
 use super::common::{buffer_text, focus_editor};
 use super::*;
 use crate::selection::{Selection, SelectionSet};
+use zcv_settings::{SettingsStore, UserSettings};
 
 fn editor_with_path<'a>(
     cx: &'a mut TestAppContext,
@@ -60,6 +61,7 @@ fn double_click(editor: &Entity<Editor>, cx: &mut VisualTestContext, at: usize) 
 
 #[gpui::test]
 fn word_actions_use_code_string_and_comment_scopes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "const foo$bar = \"foo.bar\"; // foo-bar\n";
     let (_, editor, cx) = editor_with_path(cx, "main.js", source);
     cx.run_until_parked();
@@ -101,6 +103,7 @@ fn word_actions_use_code_string_and_comment_scopes(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn word_delete_with_selection_restores_text_and_caret_on_undo_redo(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "const foo$bar = 1;";
     let (buffer, editor, cx) = editor_with_path(cx, "main.js", source);
     cx.run_until_parked();
@@ -137,6 +140,7 @@ fn word_delete_with_selection_restores_text_and_caret_on_undo_redo(cx: &mut Test
 
 #[gpui::test]
 fn forward_and_backward_word_delete_use_current_scope(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "const x = \"foo.bar\"; // foo-bar";
     let (buffer, editor, cx) = editor_with_path(cx, "main.js", source);
     cx.run_until_parked();
@@ -186,6 +190,7 @@ fn forward_and_backward_word_delete_use_current_scope(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn unicode_word_scope_respects_graphemes_and_document_edges(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "const x = \"e\u{301}.中\";\n";
     let (_, editor, cx) = editor_with_path(cx, "main.js", source);
     cx.run_until_parked();
@@ -214,6 +219,7 @@ fn unicode_word_scope_respects_graphemes_and_document_edges(cx: &mut TestAppCont
 
 #[gpui::test]
 fn markdown_injection_uses_inner_word_scope_for_movement_and_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "```javascript\nconst x = \"foo.bar\";\n```\n";
     let (_, editor, cx) = editor_with_path(cx, "README.md", source);
     cx.run_until_parked();
@@ -237,6 +243,7 @@ fn markdown_injection_uses_inner_word_scope_for_movement_and_selection(cx: &mut 
 
 #[gpui::test]
 fn nested_markdown_html_script_word_actions_follow_inner_string_scope(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "<script>const x = \"foo.bar\";</script>\n";
     let (buffer, editor, cx) = editor_with_path(cx, "README.md", source);
     cx.run_until_parked();
@@ -273,6 +280,7 @@ fn nested_markdown_html_script_word_actions_follow_inner_string_scope(cx: &mut T
 
 #[gpui::test]
 fn word_movement_handles_line_start_and_line_end(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "foo$bar\nbaz";
     let (_, editor, cx) = editor_with_path(cx, "main.js", source);
     cx.run_until_parked();
@@ -286,6 +294,7 @@ fn word_movement_handles_line_start_and_line_end(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn language_change_recomputes_word_policy_without_a_source_copy(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) = editor_with_path(cx, "main.js", "foo$bar");
     cx.run_until_parked();
     focus_editor(&editor, cx);
@@ -302,6 +311,7 @@ fn language_change_recomputes_word_policy_without_a_source_copy(cx: &mut TestApp
 
 #[gpui::test]
 fn read_only_word_delete_keeps_text_and_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "const x = \"foo.bar\";";
     let buffer = Buffer::from_text(source.to_owned(), BufferConfig::default()).unwrap();
     let buffer = cx.new(move |cx| {
@@ -340,6 +350,7 @@ fn read_only_word_delete_keeps_text_and_selection(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn global_whole_word_search_uses_host_language_without_a_cursor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "const x = \"foo.bar\";";
     let (_, editor, cx) = editor_with_path(cx, "main.js", source);
     cx.run_until_parked();
@@ -371,6 +382,7 @@ fn global_whole_word_search_uses_host_language_without_a_cursor(cx: &mut TestApp
 
 #[gpui::test]
 fn composite_excerpt_word_movement_stops_at_source_boundary(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = Buffer::from_text("foo$bar".to_owned(), BufferConfig::default()).unwrap();
     let second = Buffer::from_text("baz".to_owned(), BufferConfig::default()).unwrap();
     let registry = Arc::new(LanguageRegistry::new());

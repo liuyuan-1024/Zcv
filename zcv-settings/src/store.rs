@@ -52,22 +52,14 @@ impl SettingsStore {
         cx.global::<Self>().settings.clone()
     }
 
-    /// 设置未注册时返回 None，消费方回退默认值。
-    pub fn try_get(cx: &App) -> Option<UserSettings> {
-        cx.try_global::<Self>().map(|store| store.settings.clone())
+    /// 按引用读取渲染热路径使用的标量设置；Store 必须已在应用初始化时注册。
+    pub fn minimum_contrast_for_highlights(cx: &App) -> f32 {
+        cx.global::<Self>().settings.minimum_contrast_for_highlights
     }
 
-    /// 渲染热路径按引用读取标量设置；未注册 Store 时由调用方决定默认策略。
-    pub fn minimum_contrast_for_highlights(cx: &App) -> Option<f32> {
-        cx.try_global::<Self>()
-            .map(|store| store.settings.minimum_contrast_for_highlights)
-    }
-
-    /// 读取扫描排除名单；SettingsStore 未初始化（如单元测试）时回退到默认名单。
+    /// 读取扫描排除名单；Store 必须已在应用初始化时注册。
     pub fn file_scan_exclusions(cx: &App) -> Vec<String> {
-        cx.try_global::<Self>()
-            .map(|store| store.settings.file_scan_exclusions.clone())
-            .unwrap_or_else(|| UserSettings::default().file_scan_exclusions)
+        cx.global::<Self>().settings.file_scan_exclusions.clone()
     }
 
     pub fn set_user_settings(&mut self, content: &str) -> Result<bool> {

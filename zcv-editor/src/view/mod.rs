@@ -29,7 +29,7 @@ use zcv_multi_buffer::{
     MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferOffset, MultiBufferRange,
     MultiBufferSnapshot, WordDiffs,
 };
-use zcv_settings::{CursorShape, SettingsStore, SoftWrapMode, TabConfig};
+use zcv_settings::{CursorShape, SettingsStore, SoftWrapMode};
 use zcv_text::{
     Affinity, Buffer, BufferConfig, BufferId, BufferVersion, Edit, Line, LineRange, LogicalColumn,
     MovementDirection, MovementUnit, Position, TextError, TextResult, TransactionId,
@@ -1745,10 +1745,7 @@ impl Editor {
         if snapshot.is_singleton() {
             snapshot.language_settings().tab.tab_size
         } else {
-            SettingsStore::try_get(cx).map_or_else(
-                || TabConfig::default().tab_size,
-                |settings| settings.tab.tab_size,
-            )
+            SettingsStore::get(cx).tab.tab_size
         }
     }
 
@@ -1798,12 +1795,12 @@ impl Editor {
             },
         )
         .detach();
-        let cursor_blink = SettingsStore::try_get(cx).is_none_or(|settings| settings.cursor_blink);
+        let settings = SettingsStore::get(cx);
+        let cursor_blink = settings.cursor_blink;
         let blink_manager = cx.new(|_| BlinkManager::new(cursor_blink));
         cx.observe(&blink_manager, |_, _, cx| cx.notify()).detach();
 
         // 换行模式默认来自全局设置，与编辑器模式无关。
-        let settings = SettingsStore::try_get(cx);
         let show_indent_guides = (mode == EditorMode::SingleLine).then_some(false);
         let this = Self {
             multi_buffer,
@@ -1833,16 +1830,10 @@ impl Editor {
             blink_manager,
             blink_manager_initialized: false,
             cursor_animation: CursorAnimation::default(),
-            cursor_animation_enabled: settings
-                .as_ref()
-                .is_some_and(|settings| settings.cursor_animation_enabled),
-            soft_wrap: settings
-                .as_ref()
-                .map_or(SoftWrap::default(), |settings| settings.soft_wrap.into()),
-            cursor_shape: settings
-                .as_ref()
-                .map_or(CursorShape::Bar, |settings| settings.cursor_shape),
-            preferred_line_length: settings.map_or(80, |settings| settings.preferred_line_length),
+            cursor_animation_enabled: settings.cursor_animation_enabled,
+            soft_wrap: settings.soft_wrap.into(),
+            cursor_shape: settings.cursor_shape,
+            preferred_line_length: settings.preferred_line_length,
             hovered_diff_hunk: None,
             gutter_hovered: false,
             mouse_select_mode: MouseSelectMode::Character,
@@ -1858,11 +1849,9 @@ impl Editor {
             cx.notify();
         })
         .detach();
-        // 设置变化时自动跟随；编辑器在测试环境无 SettingsStore 时保持默认。
+        // 设置变化时自动跟随。
         cx.observe_global::<SettingsStore>(|editor, cx| {
-            let Some(settings) = SettingsStore::try_get(cx) else {
-                return;
-            };
+            let settings = SettingsStore::get(cx);
             editor.soft_wrap = settings.soft_wrap.into();
             editor.cursor_shape = settings.cursor_shape;
             editor.cursor_animation_enabled = settings.cursor_animation_enabled;

@@ -9,6 +9,7 @@ use gpui::{
 use super::*;
 use zcv_actions::Newline;
 use zcv_language::LanguageRegistry;
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_ui::{Button, ListItem, PopoverHost, PopoverLayer};
 
 fn init(cx: &mut TestAppContext) {
@@ -92,6 +93,7 @@ impl Render for PopoverWrapper {
 /// 换行后列表内容高于容器时，列表必须收缩在可用空间内滚动，footer 保持可见且不被列表遮挡。
 #[gpui::test]
 fn footer_stays_visible_with_tall_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let (_, cx) = cx.add_window_view(|window, cx| {
         let picker = cx.new(|cx| {
@@ -208,6 +210,7 @@ impl PickerDelegate for TestDelegate {
 
 #[gpui::test]
 fn search_input_drives_picker_query(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let (picker, cx) = cx.add_window_view(|window, cx| {
         Picker::new(
@@ -264,6 +267,7 @@ impl PickerDelegate for ConfirmDelegate {
 
 #[gpui::test]
 fn navigation_and_confirm_work_while_search_editor_is_focused(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let confirmed = Rc::new(Cell::new(false));
     let selected_index = Rc::new(Cell::new(0));
@@ -304,6 +308,7 @@ fn navigation_and_confirm_work_while_search_editor_is_focused(cx: &mut TestAppCo
 /// 虚拟化列表必须获得确定高度，行才能被渲染出来。
 #[gpui::test]
 fn picker_list_has_visible_height(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let (view, cx) = cx.add_window_view(|window, cx| {
         Picker::new(
@@ -380,6 +385,7 @@ impl PickerDelegate for ScrollDelegate {
 
 #[gpui::test]
 fn picker_list_scrolls_with_mouse_wheel(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let (picker, cx) = cx.add_window_view(|window, cx| {
         Picker::new(
@@ -505,6 +511,7 @@ impl Render for FocusPopoverHost {
 
 #[gpui::test]
 fn picker_restores_the_original_focus_without_overwriting_a_new_target(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let (host, cx) = cx.add_window_view(|window, cx| {
         let layer = PopoverLayer::default();
@@ -555,6 +562,7 @@ fn picker_restores_the_original_focus_without_overwriting_a_new_target(cx: &mut 
 
 #[gpui::test]
 fn persistent_input_and_picker_share_the_original_focus(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let (host, cx) = cx.add_window_view(|window, cx| {
         let layer = PopoverLayer::default();
@@ -600,6 +608,7 @@ fn persistent_input_and_picker_share_the_original_focus(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn picker_list_scrolls_inside_host_overlay(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let (wrapper, cx) = cx.add_window_view(|window, cx| {
         let picker = cx.new(|cx| {
@@ -656,6 +665,7 @@ fn picker_list_scrolls_inside_host_overlay(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn selected_item_beyond_first_viewport_is_visible_on_open_and_query_reset(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let (picker, cx) = cx.add_window_view(|window, cx| {
         Picker::new(
@@ -733,6 +743,7 @@ impl PickerDelegate for LargeDelegate {
 
 #[gpui::test]
 fn match_reset_only_renders_visible_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let rendered = Rc::new(Cell::new(0));
     let (picker, cx) = cx.add_window_view({
@@ -757,6 +768,7 @@ fn match_reset_only_renders_visible_rows(cx: &mut TestAppContext) {
 #[gpui::test]
 #[ignore]
 fn picker_match_reset_cost(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     use std::time::Instant;
 
     init(cx);
@@ -792,6 +804,7 @@ fn picker_match_reset_cost(cx: &mut TestAppContext) {
 /// 被 DeleteToBeginningOfLine 抢占的原因。
 #[gpui::test]
 fn editor_binding_wins_over_plain_picker_context(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let editor_fired = Rc::new(Cell::new(false));
     let picker_fired = Rc::new(Cell::new(false));
@@ -824,6 +837,7 @@ fn editor_binding_wins_over_plain_picker_context(cx: &mut TestAppContext) {
 /// 后注册优先 —— 最近项目打开时删除快捷键覆盖 Editor 的 cmd-backspace。
 #[gpui::test]
 fn composite_context_binding_wins_over_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let editor_fired = Rc::new(Cell::new(false));
     let picker_fired = Rc::new(Cell::new(false));

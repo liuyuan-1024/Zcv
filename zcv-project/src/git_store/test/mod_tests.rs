@@ -15,6 +15,7 @@ fn test_registry() -> Arc<LanguageRegistry> {
 use gpui::AppContext;
 use zcv_buffer_diff::BufferDiffInput;
 use zcv_git::{FileStatus, RealGitRepository, StatusCode};
+use zcv_settings::{SettingsStore, UserSettings};
 
 fn absolute(path: PathBuf) -> AbsolutePathBuf {
     AbsolutePathBuf::canonicalize(&path)
@@ -254,6 +255,7 @@ fn external_checkout_updates_head(cx: &mut gpui::TestAppContext) {
 
 #[gpui::test]
 fn load_revision_text_returns_head_content(cx: &mut gpui::TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let git_store =
         cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
@@ -278,6 +280,7 @@ fn load_revision_text_returns_head_content(cx: &mut gpui::TestAppContext) {
 
 #[gpui::test]
 fn load_revision_text_returns_index_content(cx: &mut gpui::TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let unchanged_path = root.join("unchanged.txt");
     fs::write(&unchanged_path, "未变更内容\n").expect("应写入未变更文件");
@@ -407,6 +410,7 @@ fn status_for_directory_aggregates_children(cx: &mut gpui::TestAppContext) {
 
 #[gpui::test]
 fn revision_refresh_covers_git_metadata_and_same_status_rescan(cx: &mut gpui::TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
     fs::write(&path, "第一行\n暂存甲\n").unwrap();
@@ -465,6 +469,7 @@ fn revision_refresh_covers_git_metadata_and_same_status_rescan(cx: &mut gpui::Te
 fn refreshing_one_revision_path_does_not_discard_another_initial_load(
     cx: &mut gpui::TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
     let other = root.join("other.txt");
@@ -504,6 +509,7 @@ fn refreshing_one_revision_path_does_not_discard_another_initial_load(
 
 #[gpui::test]
 fn superseded_initial_revision_load_waits_for_the_current_read(cx: &mut gpui::TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
     let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
@@ -541,6 +547,7 @@ fn superseded_initial_revision_load_waits_for_the_current_read(cx: &mut gpui::Te
 fn failed_revision_read_preserves_cached_text_and_does_not_cache_missing(
     cx: &mut gpui::TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
     let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
@@ -597,6 +604,7 @@ fn failed_revision_read_preserves_cached_text_and_does_not_cache_missing(
 
 #[gpui::test]
 fn revision_diff_source_survives_missing_and_present_transitions(cx: &mut gpui::TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
     let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
@@ -652,6 +660,7 @@ fn revision_diff_source_survives_missing_and_present_transitions(cx: &mut gpui::
 fn binary_revision_is_not_installed_as_text_and_recovers_after_restage(
     cx: &mut gpui::TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
     fs::write(&path, b"binary\0content").unwrap();
@@ -1172,6 +1181,7 @@ fn stage_paths_expands_directory_to_matching_files(cx: &mut gpui::TestAppContext
 /// 同一 (working, base, index) 的 diff 实体在 GitStore 中按路径共享，缓存失效后才重建。
 #[gpui::test]
 fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
     let git_store =
@@ -1256,6 +1266,7 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
 fn diff_operations_stage_hunk_suppresses_source_and_marks_uncommitted_diff_pending(
     cx: &mut gpui::TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
     // 无关文件用于验证：暂存一个路径不得让其他路径的 index 文本整体失效。
@@ -1417,6 +1428,7 @@ fn diff_operations_stage_hunk_suppresses_source_and_marks_uncommitted_diff_pendi
 /// 而不是因版本不相等丢弃并提示用户刷新。
 #[gpui::test]
 fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut gpui::TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
 
@@ -1510,6 +1522,7 @@ fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut gpui::
 /// 而不是被在途互斥拒绝。
 #[gpui::test]
 fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut gpui::TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     fs::write(root.join("two.txt"), "a0\na1\na2\na3\na4\na5\n").expect("应写入初始文件");
     run_git(&root, &["add", "two.txt"]);

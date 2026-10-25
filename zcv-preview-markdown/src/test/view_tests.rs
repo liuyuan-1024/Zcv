@@ -25,6 +25,7 @@ use super::{
     visible_highlights_for_line,
 };
 use zcv_language::{HighlightSpan, LanguageRegistry, SnippetHighlightCancellation};
+use zcv_settings::{SettingsStore, UserSettings};
 
 fn plain(text: &str) -> Inline {
     Inline {
@@ -91,6 +92,7 @@ fn heading_targets_match_chinese_titles_and_distinguish_duplicates() {
 
 #[gpui::test]
 fn clicking_heading_link_scrolls_within_preview(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     struct TestWindow {
         scroll: ScrollHandle,
         heading_bounds: super::HeadingBounds,
@@ -160,6 +162,7 @@ fn clicking_heading_link_scrolls_within_preview(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn clicking_relative_file_link_uses_the_workspace_opener(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     struct TestWindow {
         content: Vec<Inline>,
         directory: PathBuf,
@@ -260,6 +263,7 @@ fn ordered_list_marker_width_accounts_for_multi_digit_numbers() {
 
 #[gpui::test]
 fn headings_preserve_a_minimum_line_height_at_their_own_font_size(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let type_scale = cx.update(|cx| typography::current(cx));
     for level in 1..=6 {
         let size = heading_size(level, type_scale);
@@ -269,6 +273,7 @@ fn headings_preserve_a_minimum_line_height_at_their_own_font_size(cx: &mut TestA
 
 #[gpui::test]
 fn inline_code_chip_outsets_text_and_uses_rounded_background(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     struct TestWindow;
 
     impl Render for TestWindow {
@@ -322,6 +327,7 @@ fn inline_code_chip_outsets_text_and_uses_rounded_background(cx: &mut TestAppCon
 
 #[gpui::test]
 fn mermaid_preview_renders_flowchart(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     cx.update(|cx| {
         let diagram = render_mermaid("graph TD; A-->B;", cx.svg_renderer())
             .expect("有效 Mermaid 图表应能渲染");
@@ -345,6 +351,7 @@ fn mermaid_chinese_labels_stay_in_native_svg_layout() {
 
 #[gpui::test]
 fn math_preview_size_follows_content_font_size(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     cx.update(|cx| {
         let renderer = cx.svg_renderer();
         let small = render_math(
@@ -397,6 +404,7 @@ fn applies_language_highlights_to_fenced_code_blocks() {
 
 #[gpui::test]
 fn preview_rebuilds_when_source_document_changes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     editor.update(cx, |editor, cx| {
         editor.set_text("# 初始标题", cx);
@@ -439,6 +447,7 @@ fn preview_rebuilds_when_source_document_changes(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn preview_coalesces_rapid_document_changes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     editor.update(cx, |editor, cx| {
         editor.set_text("初始正文", cx);
@@ -482,6 +491,7 @@ fn preview_coalesces_rapid_document_changes(cx: &mut TestAppContext) {
 /// 工具项注册方据此隐藏通用文档工具栏，两行工具区不会重复显示。
 #[gpui::test]
 fn preview_exposes_the_source_editor_as_a_proxy(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     editor.update(cx, |editor, cx| {
         editor.set_text("# 标题", cx);
@@ -533,6 +543,7 @@ fn test_render_image(app: &mut gpui::App) -> Arc<gpui::RenderImage> {
 
 #[gpui::test]
 fn inline_math_reserves_width_in_the_text_flow(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let cx = cx.add_empty_window();
     cx.update(|window, app| {
         let type_scale = typography::current(app);
@@ -630,6 +641,7 @@ fn inline_math_reserves_width_in_the_text_flow(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn list_marker_height_matches_the_first_line_of_a_wrapped_item(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let cx = cx.add_empty_window();
     let source = "1. 前前前前前前前前前前前前前前前前前前前前 $x^2$ 后后后后后后后后后后后后后后后后后后后后";
     let blocks = parse(source);
@@ -689,6 +701,7 @@ type CapturedInlineLayout = Rc<RefCell<Option<(TextLayout, Vec<MathPlacement>)>>
 
 #[gpui::test]
 fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let cx = cx.add_empty_window();
     let source = "例如，一个点对的距离和三个角度分别为 $(44\\text{ mm},32^\\circ,67^\\circ,114^\\circ)$，量化后得到键 $(5,1,3,6)$。另一个点对的数值如果略有不同，但仍落在这四个相同的格子里，也会得到同一个键，因而可以通过哈希表互相查到。";
     let blocks = parse(source);

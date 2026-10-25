@@ -15,6 +15,7 @@ use crate::{Item, Panel, dock::DockData, layout_state, panel::PanelEvent};
 use zcv_actions::{FocusOrHidePanel, Save};
 use zcv_language::LanguageRegistry;
 use zcv_project::{FileSaveConflictPolicy, Project};
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_theme::typography;
 
 struct ConflictItem {
@@ -88,6 +89,7 @@ impl Item for ConflictItem {
 
 #[gpui::test]
 fn lost_window_focus_returns_to_the_active_pane(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     struct FocusLossHost {
         workspace: Entity<Workspace>,
         temporary: FocusHandle,
@@ -127,6 +129,7 @@ fn lost_window_focus_returns_to_the_active_pane(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn saving_a_conflicted_item_shows_one_persistent_choice_toast(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let path = directory.path().join("conflict-item.txt");
     let (workspace, cx) =
@@ -222,6 +225,7 @@ impl Render for TestPanel {
 
 #[gpui::test]
 fn empty_workspace_has_a_project_without_a_worktree(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (workspace, cx) =
         cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
     let project = cx.read_entity(&workspace, |workspace, _| workspace.project().clone());
@@ -230,6 +234,7 @@ fn empty_workspace_has_a_project_without_a_worktree(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn typography_override_belongs_to_one_workspace(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (first, cx) =
         cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
     let (second, cx) =
@@ -258,6 +263,7 @@ fn typography_override_belongs_to_one_workspace(cx: &mut TestAppContext) {
 /// 因此本测试代表全部窗口级视图的读取路径。
 #[gpui::test]
 fn font_size_override_projects_through_window_typography(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (workspace, cx) =
         cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
     let baseline = cx.update(|window, cx| crate::typography_for_window(window, cx).content_size());
@@ -276,6 +282,7 @@ fn font_size_override_projects_through_window_typography(cx: &mut TestAppContext
 /// 回归：序列化 visible=true 的 dock 随面板注册恢复打开（重启不展开问题）。
 #[gpui::test]
 fn workspace_restores_visible_dock(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (workspace, cx) = cx.add_window_view(|window, cx| {
         let mut workspace = Workspace::new_empty(test_languages(), window, cx);
         workspace.bottom_dock.update(cx, |dock, cx| {
@@ -309,6 +316,7 @@ fn workspace_restores_visible_dock(cx: &mut TestAppContext) {
 /// 回归：dock 开合（set_open 直接调用，非 toggle 路径）应经 DockEvent 触发布局保存。
 #[gpui::test]
 fn dock_open_change_saves_layout(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().unwrap();
     let layout_path = directory.path().join("layout.json");
     let (workspace, cx) = cx.add_window_view(|window, cx| {
@@ -340,6 +348,7 @@ fn dock_open_change_saves_layout(cx: &mut TestAppContext) {
 /// 回归：dock 尺寸变化（拖拽 resize_to / 双击重置 reset_size）应经 DockEvent 触发布局保存。
 #[gpui::test]
 fn dock_resize_and_reset_save_layout(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().unwrap();
     let layout_path = directory.path().join("layout.json");
     let (workspace, cx) = cx.add_window_view(|window, cx| {
@@ -391,6 +400,7 @@ fn dock_resize_and_reset_save_layout(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().unwrap();
     let layout_path = directory.path().join("layout.json");
     let (workspace, cx) = cx.add_window_view(|window, cx| {
@@ -492,6 +502,7 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn later_workspace_navigation_keeps_the_latest_focus(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (workspace, cx) = cx.add_window_view(|window, cx| {
         let mut workspace = Workspace::new_empty(test_languages(), window, cx);
         let panel = cx.new(|cx| TestPanel {
@@ -516,6 +527,7 @@ fn later_workspace_navigation_keeps_the_latest_focus(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn closing_focused_panel_returns_focus_to_the_center_pane(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let panel = cx.new(|cx| TestPanel {
         focus: cx.focus_handle(),
         activation_focus: cx.focus_handle(),
@@ -545,6 +557,7 @@ fn closing_focused_panel_returns_focus_to_the_center_pane(cx: &mut TestAppContex
 
 #[gpui::test]
 fn closing_inactive_panel_preserves_active_panel_focus(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let inactive = cx.new(|cx| TestPanel {
         focus: cx.focus_handle(),
         activation_focus: cx.focus_handle(),

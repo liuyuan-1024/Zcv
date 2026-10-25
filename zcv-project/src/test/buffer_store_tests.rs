@@ -10,11 +10,13 @@ use zcv_path::AbsolutePathBuf;
 use zcv_text::ByteOffset;
 
 use super::*;
+use zcv_settings::{SettingsStore, UserSettings};
 
 static NEXT_TEST_FILE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[gpui::test]
 fn opening_the_same_file_reuses_its_buffer(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let path = test_file_path();
     fs::write(&path, "共享内容").expect("测试文件应可写入");
 
@@ -31,6 +33,7 @@ fn opening_the_same_file_reuses_its_buffer(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn deleted_file_buffer_keeps_the_same_identity_after_file_is_recreated(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let path = directory.path().join("deleted.txt");
     let mut store = BufferStore::new(Arc::new(LanguageRegistry::new()));
@@ -51,6 +54,7 @@ fn deleted_file_buffer_keeps_the_same_identity_after_file_is_recreated(cx: &mut 
 
 #[gpui::test]
 fn separate_project_buffer_stores_do_not_share_buffers(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let path = test_file_path();
     fs::write(&path, "项目隔离").expect("测试文件应可写入");
 
@@ -72,6 +76,7 @@ fn separate_project_buffer_stores_do_not_share_buffers(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn directory_events_find_only_live_buffers_in_the_subtree(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let directory = AbsolutePathBuf::canonicalize(directory.path())
         .expect("临时目录应可规范化")
@@ -106,6 +111,7 @@ fn directory_events_find_only_live_buffers_in_the_subtree(cx: &mut TestAppContex
 
 #[gpui::test]
 fn released_buffer_is_loaded_again(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let path = test_file_path();
     fs::write(&path, "第一次").expect("测试文件应可写入");
 
@@ -147,6 +153,7 @@ fn test_file_path() -> PathBuf {
 
 #[gpui::test]
 fn reopening_live_buffer_does_not_load_changed_disk_contents(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let path = directory.path().join("live.txt");
     fs::write(&path, "内存文档").expect("应写入文件");
@@ -159,6 +166,7 @@ fn reopening_live_buffer_does_not_load_changed_disk_contents(cx: &mut TestAppCon
 
 #[gpui::test]
 fn live_buffer_identity_survives_external_file_removal(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let path = directory.path().join("removed.txt");
     fs::write(&path, "旧内容").expect("应写入文件");

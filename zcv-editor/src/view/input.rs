@@ -258,7 +258,7 @@ impl Editor {
             return false;
         }
         let before = before.normalized();
-        let settings = SettingsStore::try_get(cx).unwrap_or_default();
+        let settings = SettingsStore::get(cx);
         let auto_close_enabled = settings.use_autoclose;
         let auto_surround_enabled = settings.use_auto_surround;
         if !auto_close_enabled && !auto_surround_enabled {

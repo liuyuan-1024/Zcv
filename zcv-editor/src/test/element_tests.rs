@@ -4,6 +4,7 @@ use crate::display_map::{
 };
 
 use super::*;
+use zcv_settings::{SettingsStore, UserSettings};
 
 #[path = "ligature_text_system.rs"]
 mod ligature_text_system;
@@ -309,7 +310,7 @@ fn layout_visible_lines(
             visible_source_ranges,
             visible_source_lines,
             selection_ranges: Vec::new(),
-            minimum_contrast_for_highlights: zcv_settings::UserSettings::default()
+            minimum_contrast_for_highlights: UserSettings::default()
                 .minimum_contrast_for_highlights,
         },
         presentation,
@@ -379,6 +380,7 @@ fn expanded_diff_snapshot(old: &str, new: &str, cx: &mut TestAppContext) -> Mult
 
 #[gpui::test]
 fn word_diff_background_keeps_changed_operator_out_of_adjacent_ligatures(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for (prefix, wrap, scroll_columns, deleted) in [
         (String::new(), false, 0., false),
         ("\t条件 ".into(), false, 0., false),
@@ -564,6 +566,7 @@ fn collapsed_deleted_hunk_triangle_is_centered_on_the_deletion_boundary() {
 
 #[gpui::test]
 fn search_marker_rows_cover_every_current_search_range(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = Buffer::from_text("first\nmiddle\n项目".to_owned(), BufferConfig::default())
         .expect("应创建搜索 marker 测试 Buffer");
     let snapshot = buffer.snapshot();
@@ -583,6 +586,7 @@ fn search_marker_rows_cover_every_current_search_range(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn search_scrollbar_markers_render_from_search_decorations(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 搜索标记按显示链实际持有的搜索装饰投影，与文档形态无关：
     // 组合文档同样应得到搜索滚动条标记。
     let source = cx.new(|cx| {
@@ -694,6 +698,7 @@ fn hunk_hit_regions(
 /// run 背景的字节区间是 shaped 文本内偏移，只取 `x_for_index` 而不加 `line.origin.x` 会把高亮整体左移（漏掉文本区起点偏移）。
 #[gpui::test]
 fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "代码 abc 代码\n";
     let buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer");
@@ -776,6 +781,7 @@ fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn active_line_background_covers_all_soft_wrapped_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -861,6 +867,7 @@ fn active_line_background_covers_all_soft_wrapped_rows(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn editor_width_soft_wrap_keeps_mixed_cjk_inside_text_bounds(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -941,6 +948,7 @@ fn editor_width_soft_wrap_keeps_mixed_cjk_inside_text_bounds(cx: &mut TestAppCon
 
 #[gpui::test]
 fn multibuffer_header_can_start_above_viewport(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "引擎\n";
     let source_text =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer");
@@ -1028,6 +1036,7 @@ fn multibuffer_header_can_start_above_viewport(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn sticky_buffer_header_follows_visible_excerpts(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first_text = "a0\na1\na2\na3\na4\na5\na6\na7\n";
     let first_buffer = Buffer::from_text(first_text.to_owned(), BufferConfig::default())
         .expect("应创建第一个源 Buffer");
@@ -1123,6 +1132,7 @@ fn next_file_header_pushes_sticky_header_out() {
 
 #[gpui::test]
 fn wrapped_unicode_markdown_queries_highlights_from_source_chunks(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "> **The reconstructed Functionally Equivalent Scene（功能等价场景）can be directly imported into ROS（机器人操作系统）to support interactive simulation（交互式仿真）and long-horizon robot task execution（长时序机器人任务执行）.**\n";
     let buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer");
@@ -1216,6 +1226,7 @@ fn wrapped_unicode_markdown_queries_highlights_from_source_chunks(cx: &mut TestA
 
 #[gpui::test]
 fn large_buffer_layout_shapes_only_visible_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -1267,6 +1278,7 @@ fn large_buffer_layout_shapes_only_visible_rows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn gutter_and_text_share_vertical_rows_but_only_text_scrolls_horizontally(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -1323,6 +1335,7 @@ fn gutter_and_text_share_vertical_rows_but_only_text_scrolls_horizontally(cx: &m
 
 #[gpui::test]
 fn indent_guide_columns_use_the_same_tab_size_as_text(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -1384,6 +1397,7 @@ fn indent_guide_columns_use_the_same_tab_size_as_text(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn folded_projection_rows_drive_layout_and_hit_testing(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let snapshot = Buffer::from_text(
         "anchor\nhidden one\nhidden two\nafter".to_owned(),
         BufferConfig::default(),
@@ -1447,6 +1461,7 @@ fn folded_projection_rows_drive_layout_and_hit_testing(cx: &mut TestAppContext) 
 /// 落在元素内部的索引吸附到元素起点，元素之后回到元素终点。
 #[gpui::test]
 fn folded_element_participates_in_cross_fragment_coordinates(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let snapshot = Buffer::from_text(
         "anchor\nhidden one\nafter".to_owned(),
         BufferConfig::default(),
@@ -1620,6 +1635,7 @@ impl IntoElement for RecordingElement {
 /// 为假时按内容测量（MinContent），由渲染层交给元素布局消费。
 #[gpui::test]
 fn constrain_width_bounds_element_fragment(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let mut available = [None; 2];
     for (constrain_width, slot) in [(true, 0usize), (false, 1usize)] {
         let recorded = Arc::new(Mutex::new(None));
@@ -1713,6 +1729,7 @@ fn constrain_width_bounds_element_fragment(cx: &mut TestAppContext) {
 /// 平移布局后 prepaint 原点跟随行原点。
 #[gpui::test]
 fn inline_element_prepaints_at_the_final_translated_origin(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let recorded = Arc::new(Mutex::new(None));
     let snapshot = Buffer::from_text(
         "anchor\nhidden one\nafter".to_owned(),
@@ -1798,6 +1815,7 @@ fn inline_element_prepaints_at_the_final_translated_origin(cx: &mut TestAppConte
 
 #[gpui::test]
 fn multi_line_selection_uses_one_rounded_contour_with_inner_turns(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -1871,6 +1889,7 @@ fn multi_line_selection_uses_one_rounded_contour_with_inner_turns(cx: &mut TestA
 
 #[gpui::test]
 fn selected_spaces_render_one_dot_each_without_treating_tabs_as_spaces(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -1928,6 +1947,7 @@ fn selected_spaces_render_one_dot_each_without_treating_tabs_as_spaces(cx: &mut 
 
 #[gpui::test]
 fn caret_outside_visible_rows_is_not_painted_on_viewport_edge(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -1980,6 +2000,7 @@ fn caret_outside_visible_rows_is_not_painted_on_viewport_edge(cx: &mut TestAppCo
 fn multibuffer_excerpt_uses_the_same_text_selection_geometry_as_a_single_buffer(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "abcdef\nx\nabcde\n";
     let source_buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer");
@@ -2107,6 +2128,7 @@ fn multibuffer_excerpt_uses_the_same_text_selection_geometry_as_a_single_buffer(
 
 #[gpui::test]
 fn scrollbar_hunk_rows_map_logical_rows_to_display_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -2216,6 +2238,7 @@ fn scrollbar_hunk_rows_map_logical_rows_to_display_rows(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn scrollbar_hunk_rows_mark_materialized_deleted_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let collapsed = project_display_snapshot(
         cx,
         Buffer::from_text(
@@ -2283,6 +2306,7 @@ fn scrollbar_hunk_rows_mark_materialized_deleted_rows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn modified_hunk_expansion_marks_old_and_new_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let snapshot = project_display_snapshot(
         cx,
         Buffer::from_text(
@@ -2315,6 +2339,7 @@ fn modified_hunk_expansion_marks_old_and_new_rows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn modified_hunk_strip_stays_yellow_when_expanded(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 竖条色不随展开变化：展开的修改块竖条保持黄色并覆盖旧行 + 修改行。
     let snapshot = project_display_snapshot(
         cx,
@@ -2362,6 +2387,7 @@ fn placeholder_renderer(display: &DisplaySnapshot) -> ChunkRenderer {
 /// 相同宽度不产生显示编辑。
 #[gpui::test]
 fn measured_element_width_drives_soft_wrap(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -2420,6 +2446,7 @@ fn measured_element_width_drives_soft_wrap(cx: &mut TestAppContext) {
 /// 水平窗口部分覆盖折叠占位符时，chunk 仍携带渲染描述，布局仍生成元素片段。
 #[gpui::test]
 fn windowed_placeholder_chunk_keeps_renderer_and_element(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let snapshot = Buffer::from_text(
         format!("{}\nhidden\ntail", "a".repeat(200)),
         BufferConfig::default(),
@@ -2521,6 +2548,7 @@ fn windowed_placeholder_chunk_keeps_renderer_and_element(cx: &mut TestAppContext
 /// 「整行显示列 → 窗口内偏移」换算，不能把整行列直接作用于窗口文本。
 #[gpui::test]
 fn windowed_selection_geometry_matches_caret(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -2633,6 +2661,7 @@ fn windowed_selection_geometry_matches_caret(cx: &mut TestAppContext) {
 /// 这里验证 render 闭包在主题切换后仍产出 Div 元素，颜色读取时机由构造签名与实现保证。
 #[gpui::test]
 fn ellipsis_render_reads_theme_at_call_time(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let window = cx.add_window(|_, _| Empty);
     window
         .update(cx, |_, window, cx| {
@@ -2678,6 +2707,7 @@ fn ellipsis_render_reads_theme_at_call_time(cx: &mut TestAppContext) {
 /// diff 滚动条标记按显示链实际持有的 diff 装饰投影，与文档形态无关。
 #[gpui::test]
 fn diff_scrollbar_markers_render_from_diff_decorations(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let snapshot: MultiBufferSnapshot = Buffer::from_text(
         "line0\nline1\nline2\nline3\n".to_owned(),
         BufferConfig::default(),
@@ -2708,6 +2738,7 @@ fn diff_scrollbar_markers_render_from_diff_decorations(cx: &mut TestAppContext) 
 /// 覆盖「选择集合 → 显示行 → 轨道标记」的完整接线。
 #[gpui::test]
 fn editor_element_projects_cursor_marker(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = cx.new(|cx| {
         let buffer = Buffer::from_text("one\ntwo\nthree\n".to_owned(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");

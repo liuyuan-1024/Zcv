@@ -9,6 +9,7 @@ use zcv_git::StatusCode;
 use zcv_keymap::init;
 use zcv_language::LanguageRegistry;
 use zcv_project::{Project, StatusEntry};
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_ui::tree_row_height;
 
 /// 构造快照：路径 → 状态；diff 统计取固定样例值（staged/unstaged 可区分）。
@@ -392,6 +393,7 @@ fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
 
 #[gpui::test]
 fn empty_state_initializes_repository_and_builds_section_tree(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project_root = directory.path().to_path_buf();
     let project = test_project(project_root.clone(), cx);
@@ -436,6 +438,7 @@ fn empty_state_initializes_repository_and_builds_section_tree(cx: &mut TestAppCo
 
 #[gpui::test]
 fn first_click_on_unfocused_panel_focuses_and_opens(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let open_count = Rc::new(Cell::new(0));
@@ -503,6 +506,7 @@ fn first_click_on_unfocused_panel_focuses_and_opens(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn keyboard_navigation_opens_file_as_active(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let open_count = Rc::new(Cell::new(0));
@@ -542,6 +546,7 @@ fn keyboard_navigation_opens_file_as_active(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn staged_section_opens_the_staged_project_diff(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     run_in(&root, &["git", "add", "tracked.txt"]);
     let opened_kind = Rc::new(Cell::new(None));
@@ -583,6 +588,7 @@ fn section_entries(panel: &VersionControlPanel) -> Vec<(GitSection, String)> {
 
 #[gpui::test]
 fn directories_expand_by_default(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 目录下有变更文件：首次构建后目录默认展开，子文件可见。
     let (root, _temp) = test_repo();
     fs::create_dir_all(root.join("src")).expect("应创建目录");
@@ -607,6 +613,7 @@ fn directories_expand_by_default(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn new_directories_expand_by_default_while_manually_collapsed_stay(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     fs::create_dir_all(root.join("src")).expect("应创建目录");
     fs::write(root.join("src/a.txt"), "改动\n").expect("应写入文件");
@@ -661,6 +668,7 @@ fn new_directories_expand_by_default_while_manually_collapsed_stay(cx: &mut Test
 
 #[gpui::test]
 fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
 
@@ -709,6 +717,7 @@ fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppCon
 
 #[gpui::test]
 fn collapsed_section_keeps_header_checkbox_and_select_all(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 分组折叠只隐藏条目行；只要该组仍有文件，标题行全选复选框就必须常驻且可整组暂存。
     let (root, _temp) = test_repo();
     fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
@@ -742,6 +751,7 @@ fn collapsed_section_keeps_header_checkbox_and_select_all(cx: &mut TestAppContex
 
 #[gpui::test]
 fn header_checkbox_selects_all_entries_in_section(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 两个未暂存文件：header 全选 → 全部暂存，未暂存组清空、已暂存组出现两项。
     let (root, _temp) = test_repo();
     fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
@@ -800,6 +810,7 @@ fn header_checkbox_selects_all_entries_in_section(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn space_toggles_staging_and_moves_row_between_sections(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -838,6 +849,7 @@ fn space_toggles_staging_and_moves_row_between_sections(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn space_in_commit_editor_inserts_text_without_toggling_staging(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let project = test_project(project_root, cx);
@@ -880,6 +892,7 @@ fn space_in_commit_editor_inserts_text_without_toggling_staging(cx: &mut TestApp
 
 #[gpui::test]
 fn selection_border_only_shows_when_changes_tree_is_focused(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     let project = test_project(root, cx);
     let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
@@ -938,6 +951,7 @@ fn assert_hover_tooltip(cx: &mut VisualTestContext, row_index: usize) {
 
 #[gpui::test]
 fn hovering_unchecked_checkbox_shows_tooltip(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -953,6 +967,7 @@ fn hovering_unchecked_checkbox_shows_tooltip(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn hovering_checkbox_shows_tooltip_with_many_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 复现真实场景：大量变更文件（行数超过可视区域，触发 uniform_list 虚拟化）。
     let (root, _temp) = test_repo();
     for index in 0..40 {
@@ -987,6 +1002,7 @@ fn hovering_checkbox_shows_tooltip_with_many_rows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn hover_tooltip_survives_row_rebuild(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 复现真实场景：行重建（git 操作/滚动后 rebuild_rows）后再次 hover 复选框，
     // tooltip 应仍然显示。
     let (root, _temp) = test_repo();
@@ -1054,6 +1070,7 @@ fn hover_tooltip_survives_row_rebuild(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn hover_tooltip_with_partially_staged_file(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 部分暂存（MM）：文件同时出现在已暂存与未暂存两组，两个复选框 id 相同
     // （按 path 生成）——验证两组的 tooltip 是否互相干扰。
     let (root, _temp) = test_repo();
@@ -1091,6 +1108,7 @@ fn hover_tooltip_with_partially_staged_file(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn hovering_checked_checkbox_shows_tooltip(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
@@ -1119,6 +1137,7 @@ fn hovering_checked_checkbox_shows_tooltip(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn checkbox_click_stages_file_without_opening_it(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let open_count = Rc::new(Cell::new(0));
@@ -1161,6 +1180,7 @@ fn checkbox_click_stages_file_without_opening_it(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn commit_button_commits_without_panel_focus(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 回归：焦点不在版本控制面板时，点击"提交"按钮也应生效。
     // dispatch_action 从当前焦点沿焦点链派发，面板 handler 收不到动作，按钮必须直接调用面板方法而不是依赖焦点链。
     let (root, _temp) = test_repo();
@@ -1205,6 +1225,7 @@ fn commit_button_commits_without_panel_focus(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn commit_flow_clears_editor_and_refreshes_last_commit(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     run_in(&root, &["git", "add", "tracked.txt"]);
     let project_root = root.clone();
@@ -1257,6 +1278,7 @@ fn commit_flow_clears_editor_and_refreshes_last_commit(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn commit_shortcut_submits_staged_changes_from_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     run_in(&root, &["git", "add", "tracked.txt"]);
     let project_root = root.clone();
@@ -1296,6 +1318,7 @@ fn commit_shortcut_submits_staged_changes_from_editor(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn commit_without_staged_changes_is_ignored(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     fs::write(root.join("untracked.txt"), "新文件\n").expect("应创建未跟踪文件");
 
@@ -1355,6 +1378,7 @@ fn commit_without_staged_changes_is_ignored(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn uncommit_restores_previous_message_into_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_repo();
     // 第二次提交：多行消息（subject + 空行 + body），随后制造未暂存改动。
     fs::write(root.join("tracked.txt"), "第二次内容\n").expect("应修改文件");
@@ -1395,6 +1419,7 @@ fn uncommit_restores_previous_message_into_editor(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn uncommit_button_restores_message_without_panel_focus(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 回归：焦点不在版本控制面板时，点击"撤销"按钮也应生效（与 commit 按钮同理：不依赖焦点链派发）。
     let (root, _temp) = test_repo();
     fs::write(root.join("tracked.txt"), "第二次内容\n").expect("应修改文件");

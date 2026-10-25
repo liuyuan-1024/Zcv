@@ -130,7 +130,7 @@ impl Workspace {
             window.focus(&target, cx);
         });
 
-        let settings = SettingsStore::try_get(cx).unwrap_or_default();
+        let settings = SettingsStore::get(cx);
         let typography = Typography::new(
             cx,
             settings.content_font_size,
@@ -353,7 +353,7 @@ impl Workspace {
     }
 
     fn rebuild_typography(&mut self, cx: &mut Context<Self>) {
-        let settings = SettingsStore::try_get(cx).unwrap_or_default();
+        let settings = SettingsStore::get(cx);
         self.apply_typography_settings(&settings, cx);
         cx.notify();
     }

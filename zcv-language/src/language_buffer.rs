@@ -120,13 +120,11 @@ impl LanguageBuffer {
         }
         let settings = resolve_settings(&syntax_map, cx);
 
-        // 设置变化时刷新按语言解析的结果；测试环境未注册 SettingsStore 时不建立订阅。
-        if cx.try_global::<SettingsStore>().is_some() {
-            cx.observe_global::<SettingsStore>(|language_buffer, cx| {
-                language_buffer.refresh_settings(cx);
-            })
-            .detach();
-        }
+        // 设置变化时刷新按语言解析的结果。
+        cx.observe_global::<SettingsStore>(|language_buffer, cx| {
+            language_buffer.refresh_settings(cx);
+        })
+        .detach();
 
         let mut this = Self {
             buffer,

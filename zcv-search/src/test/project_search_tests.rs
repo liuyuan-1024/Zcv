@@ -11,6 +11,7 @@ use zcv_project::Project;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, TextRange};
 
 use super::*;
+use zcv_settings::{SettingsStore, UserSettings};
 
 struct PassiveWatcher {
     watcher: FsWatcher,
@@ -57,6 +58,7 @@ fn test_workspace(
 
 #[gpui::test]
 fn reopening_project_search_reuses_view_and_focuses_query(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let registry = Arc::new(LanguageRegistry::new());
     cx.update(|cx| init(cx, registry));
@@ -86,6 +88,7 @@ fn reopening_project_search_reuses_view_and_focuses_query(cx: &mut TestAppContex
 
 #[gpui::test]
 fn project_search_folds_all_files_in_one_display_update(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let registry = Arc::new(LanguageRegistry::new());
     let project = cx.new(|cx| {
@@ -151,6 +154,7 @@ fn project_search_folds_all_files_in_one_display_update(cx: &mut TestAppContext)
 
 #[gpui::test]
 async fn project_search_installs_background_loaded_results(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");
     fs::write(root.join("result.txt"), "needle\n").expect("应创建命中文件");
@@ -185,6 +189,7 @@ async fn project_search_installs_background_loaded_results(cx: &mut TestAppConte
 /// 漏接时点击「打开文件」与 alt-enter 都只发出事件而无人处理，表现为搜索结果无法打开文件。
 #[gpui::test]
 async fn restored_project_search_tab_opens_excerpt_files(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = AbsolutePathBuf::canonicalize(directory.path())
         .expect("项目根应可规范化")
@@ -270,6 +275,7 @@ async fn restored_project_search_tab_opens_excerpt_files(cx: &mut TestAppContext
 /// 目标改为弱句柄后，释放外部强引用即可让视图与搜索栏一起释放。
 #[gpui::test]
 fn project_search_view_and_search_bar_release_together(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = cx.new(|cx| {
         Project::new_with_watcher(
@@ -316,6 +322,7 @@ fn project_search_view_and_search_bar_release_together(cx: &mut TestAppContext) 
 /// 打开项目搜索后应直接聚焦查询输入框；Item 主焦点默认落在结果编辑器上。
 #[gpui::test]
 async fn deploying_project_search_focuses_query_input(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");
     cx.update(|cx| init(cx, Arc::new(LanguageRegistry::new())));
@@ -350,6 +357,7 @@ async fn deploying_project_search_focuses_query_input(cx: &mut TestAppContext) {
 
 #[gpui::test]
 async fn cmd_f_in_project_search_results_reuses_project_query(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");
     let result_path = root.join("result.txt");

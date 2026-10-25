@@ -4,6 +4,7 @@ use gpui::TestAppContext;
 use zcv_text::{BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};
 
 use super::*;
+use zcv_settings::{SettingsStore, UserSettings};
 
 fn test_registry() -> Arc<LanguageRegistry> {
     Arc::new(LanguageRegistry::new())
@@ -38,6 +39,7 @@ fn foreground_parse_obeys_budget_and_can_complete() {
 
 #[gpui::test]
 fn parsing_finishes_without_blocking_buffer_edits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             test_buffer("fn main() {}\n"),
@@ -66,6 +68,7 @@ fn parsing_finishes_without_blocking_buffer_edits(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn disk_conflict_survives_brief_return_to_saved_text(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = cx.new(|cx| {
         LanguageBuffer::new(
             test_buffer("磁盘旧内容"),
@@ -93,6 +96,7 @@ fn disk_conflict_survives_brief_return_to_saved_text(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn language_name_and_syntax_follow_first_line_changes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             test_buffer(""),
@@ -132,6 +136,7 @@ fn language_name_and_syntax_follow_first_line_changes(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn distinguishes_text_parse_and_metadata_events(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             test_buffer("fn main() {}\n"),
@@ -180,6 +185,7 @@ fn distinguishes_text_parse_and_metadata_events(cx: &mut TestAppContext) {
 fn text_event_wakes_consumers_after_language_snapshot_reaches_the_batch_version(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             test_buffer("fn main() {}\n"),
@@ -229,6 +235,7 @@ fn text_event_wakes_consumers_after_language_snapshot_reaches_the_batch_version(
 
 #[gpui::test]
 fn rapid_edits_install_only_the_latest_parse(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             test_buffer("fn main() {}\n"),
@@ -299,6 +306,7 @@ fn rapid_edits_install_only_the_latest_parse(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn language_switch_during_parse_installs_the_new_grammar(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             test_buffer("print('ok')\n"),
@@ -335,6 +343,7 @@ fn language_switch_during_parse_installs_the_new_grammar(cx: &mut TestAppContext
 /// 回归：文本与语法在同一实体上编辑后必须停留在同一版本，不再依赖跨实体观察者。
 #[gpui::test]
 fn text_and_syntax_share_the_version_after_same_entity_edit(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             test_buffer("fn main() {}\n"),
@@ -364,6 +373,7 @@ fn text_and_syntax_share_the_version_after_same_entity_edit(cx: &mut TestAppCont
 /// 回归：LanguageBuffer 仍需暴露与持有文本同源的版本化增量，供组合层惰性拉取。
 #[gpui::test]
 fn versioned_incremental_batch_is_still_available(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             test_buffer("fn main() {}\n"),
@@ -394,6 +404,7 @@ fn versioned_incremental_batch_is_still_available(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn is_dirty_ignores_edits_that_restore_the_visible_fragments(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let language_buffer =
         cx.new(|cx| LanguageBuffer::new(test_buffer("hello"), None, test_registry(), cx));
     language_buffer.update(cx, |language_buffer, cx| {
@@ -429,6 +440,7 @@ fn is_dirty_ignores_edits_that_restore_the_visible_fragments(cx: &mut TestAppCon
 
 #[gpui::test]
 fn is_dirty_is_clean_after_undoing_a_deletion(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let language_buffer =
         cx.new(|cx| LanguageBuffer::new(test_buffer("hello"), None, test_registry(), cx));
     language_buffer.update(cx, |language_buffer, cx| {

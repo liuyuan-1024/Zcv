@@ -15,6 +15,7 @@ use crate::{
     display_map::{DisplayColumn, DisplayPoint, DisplayRow},
     selection::{Selection, SelectionSet},
 };
+use zcv_settings::{SettingsStore, SoftWrapMode, UserSettings};
 
 /// 字节偏移构造辅助（测试文本均为 ASCII，字节数即字符数）。
 fn b(value: usize) -> MultiBufferOffset {
@@ -57,6 +58,7 @@ fn selections(selection: Selection) -> SelectionSet {
 
 #[gpui::test]
 fn single_click_places_a_caret(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "hello world");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -72,6 +74,7 @@ fn single_click_places_a_caret(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn clicking_while_cursor_is_blink_hidden_shows_the_new_caret(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "hello world");
     let (editor, cx) = cx.add_window_view(move |window, cx| {
         let editor = Editor::for_language_buffer(buffer, cx);
@@ -96,6 +99,7 @@ fn clicking_while_cursor_is_blink_hidden_shows_the_new_caret(cx: &mut TestAppCon
 
 #[gpui::test]
 fn clicking_last_digit_and_closing_quote_uses_nearest_caret_boundary(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "version = \"0.9.140\"";
     let zero_start = text.rfind('0').unwrap();
     let quote_start = text.rfind('"').unwrap();
@@ -175,6 +179,7 @@ fn clicking_last_digit_and_closing_quote_uses_nearest_caret_boundary(cx: &mut Te
 
 #[gpui::test]
 fn clicking_multibyte_character_uses_visible_caret_boundaries(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "中a");
     let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx));
     cx.run_until_parked();
@@ -216,6 +221,7 @@ fn clicking_multibyte_character_uses_visible_caret_boundaries(cx: &mut TestAppCo
 
 #[gpui::test]
 fn pending_selection_commits_only_when_mouse_gesture_ends(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "abcdef");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -248,6 +254,7 @@ fn pending_selection_commits_only_when_mouse_gesture_ends(cx: &mut TestAppContex
 
 #[gpui::test]
 fn double_click_selects_the_whole_word(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "foo_bar baz\n");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -277,6 +284,7 @@ fn double_click_selects_the_whole_word(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn triple_click_selects_the_whole_line(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "first line\nsecond line\n");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -305,6 +313,7 @@ fn triple_click_selects_the_whole_line(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn quadruple_click_selects_all(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "one two three");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -323,6 +332,7 @@ fn quadruple_click_selects_all(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn dragging_with_character_granularity_selects_a_range(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "hello world");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -359,6 +369,7 @@ fn dragging_with_character_granularity_selects_a_range(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn editing_cancels_a_pending_mouse_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "abcdef");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -385,6 +396,7 @@ fn editing_cancels_a_pending_mouse_selection(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn double_click_drag_selects_whole_words(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "one two three");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -422,6 +434,7 @@ fn double_click_drag_selects_whole_words(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn triple_click_drag_selects_whole_lines(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "aaa\nbbb\nccc\n");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -451,6 +464,7 @@ fn triple_click_drag_selects_whole_lines(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn dragging_leftwards_anchors_against_the_original_word_end(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "one two three");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -476,6 +490,7 @@ fn dragging_leftwards_anchors_against_the_original_word_end(cx: &mut TestAppCont
 
 #[gpui::test]
 fn shift_click_extends_selection_from_the_anchor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "one two three");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -505,6 +520,7 @@ fn shift_click_extends_selection_from_the_anchor(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn selection_extension_crosses_folded_placeholder_and_continues(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let raw_buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
@@ -562,6 +578,7 @@ fn selection_extension_crosses_folded_placeholder_and_continues(cx: &mut TestApp
 
 #[gpui::test]
 fn shift_double_click_extends_by_word_granularity(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "one two three");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -591,6 +608,7 @@ fn shift_double_click_extends_by_word_granularity(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn mouse_events_drive_double_click_through_the_element(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "aaaaaa bbbbbb\ncccccc dddddd\n");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -649,6 +667,7 @@ fn mouse_events_drive_double_click_through_the_element(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn mouse_dragging_expands_selection_across_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "aaaaaa bbbbbb\ncccccc dddddd\n");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -698,6 +717,7 @@ fn mouse_dragging_expands_selection_across_rows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -732,6 +752,9 @@ fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn mouse_dragging_beyond_right_edge_autoscrolls_horizontally(cx: &mut TestAppContext) {
+    let mut settings = UserSettings::default();
+    settings.soft_wrap = SoftWrapMode::None;
+    cx.set_global(SettingsStore::new(settings));
     let buffer = test_buffer(cx, "long content ".repeat(300));
     let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx));
     cx.run_until_parked();
@@ -758,6 +781,7 @@ fn mouse_dragging_beyond_right_edge_autoscrolls_horizontally(cx: &mut TestAppCon
 
 #[gpui::test]
 fn dragging_outside_editor_does_not_scroll_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();

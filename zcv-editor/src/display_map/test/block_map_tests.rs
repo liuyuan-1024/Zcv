@@ -10,6 +10,7 @@ use std::{
 use gpui::{AppContext as _, TestAppContext, font, px};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{Buffer, BufferConfig};
 
 use super::*;
@@ -98,6 +99,7 @@ fn disjoint_line_deletions_in_one_text_transform_keep_paired_endpoints(cx: &mut 
 
 #[gpui::test]
 fn disjoint_line_deletions_before_a_header_keep_exact_input_coverage(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
 
     let text = (0..4000).map(|row| format!("{row}\n")).collect::<String>();
@@ -159,6 +161,7 @@ fn disjoint_line_deletions_before_a_header_keep_exact_input_coverage(cx: &mut Te
 
 #[gpui::test]
 fn coalesced_edits_keep_text_folded_blocks_and_async_wraps_consistent(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
 
     cx.background_executor.set_block_on_ticks(0..=0);
@@ -266,6 +269,7 @@ fn coalesced_edits_keep_text_folded_blocks_and_async_wraps_consistent(cx: &mut T
 
 #[gpui::test]
 fn folding_a_middle_buffer_rebuilds_an_exact_current_block_projection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = language_buffer("src/a.rs", "a0\na1\n", cx);
     let middle = language_buffer("src/b.rs", "b0\nb1\n", cx);
     let last = language_buffer("src/c.rs", "c0\nc1\n", cx);
@@ -306,6 +310,7 @@ fn folding_a_middle_buffer_rebuilds_an_exact_current_block_projection(cx: &mut T
 /// 否则会与重建区间重叠，使变换输入行多算。
 #[gpui::test]
 fn folding_a_buffer_with_multiple_excerpts_keeps_input_coverage(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = language_buffer("src/a.rs", "a0\na1\n", cx);
     let middle = language_buffer("src/b.rs", "b0\nb1\nb2\n", cx);
     let last = language_buffer("src/c.rs", "c0\nc1\n", cx);
@@ -350,6 +355,7 @@ fn folding_a_buffer_with_multiple_excerpts_keeps_input_coverage(cx: &mut TestApp
 
 #[gpui::test]
 fn out_of_range_wrap_row_fails_explicitly(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = language_buffer("src/a.rs", "a0\na1\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
     let (_, snapshot) = cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx));
@@ -372,6 +378,7 @@ fn out_of_range_wrap_row_fails_explicitly(cx: &mut TestAppContext) {
 /// 块投影的输入行必须始终精确覆盖换行投影。
 #[gpui::test]
 fn editing_a_folded_composite_document_keeps_block_input_coverage(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = language_buffer("src/a.rs", "a0\na1\na2\na3\n", cx);
     let middle = language_buffer("src/b.rs", "b0\nb1\nb2\nb3\nb4\n", cx);
     let last = language_buffer("src/c.rs", "c0\nc1\nc2\nc3\n", cx);
@@ -427,6 +434,7 @@ fn editing_a_folded_composite_document_keeps_block_input_coverage(cx: &mut TestA
 
 #[gpui::test]
 fn block_patch_preserves_unaffected_headers_after_edit_and_removal(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     use zcv_text::{ByteOffset, Edit, TransactionMetadata};
     let first = language_buffer("src/a.rs", "a0\na1\n", cx);
     let middle = language_buffer("src/b.rs", "b0\nb1\n", cx);
@@ -502,6 +510,7 @@ fn block_patch_preserves_unaffected_headers_after_edit_and_removal(cx: &mut Test
 
 #[gpui::test]
 fn block_patches_cover_disjoint_edits_wraps_and_window_changes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     use zcv_text::{ByteOffset, Edit, TransactionMetadata};
     let sources: Vec<_> = (0..4)
         .map(|file| {

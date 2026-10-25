@@ -4,6 +4,7 @@ use gpui::{AppContext as _, Empty, TestAppContext};
 use zcv_language::LanguageRegistry;
 use zcv_multi_buffer::ExcerptRange;
 use zcv_path::AbsolutePathBuf;
+use zcv_settings::{SettingsStore, UserSettings};
 
 use zcv_workspace::ItemHandle;
 
@@ -32,6 +33,7 @@ fn item_events_preserve_distinct_semantics() {
 
 #[gpui::test]
 fn breadcrumbs_use_the_supplied_project_root(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     cx.update_entity(&editor, |editor, cx| {
         editor.set_file_path(PathBuf::from("/project/src/main.rs"), cx);
@@ -46,6 +48,7 @@ fn breadcrumbs_use_the_supplied_project_root(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn editor_emits_dirty_changes_after_edit_and_save(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     let events = Rc::new(RefCell::new(Vec::new()));
     let observed = Rc::clone(&events);
@@ -78,6 +81,7 @@ fn editor_emits_dirty_changes_after_edit_and_save(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = AbsolutePathBuf::canonicalize(directory.path()).expect("临时目录应可规范化");
     let path = root.join("source.txt");
@@ -123,6 +127,7 @@ fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn saving_clean_singleton_applies_save_format(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let root = AbsolutePathBuf::canonicalize(directory.path()).expect("临时目录应可规范化");
     let path = root.join("document.txt");
@@ -153,6 +158,7 @@ fn saving_clean_singleton_applies_save_format(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn editor_item_exposes_conflict_and_restores_the_same_source_document(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let root = AbsolutePathBuf::canonicalize(directory.path()).expect("临时目录应可规范化");
     let path = root.join("source.txt");
@@ -205,6 +211,7 @@ fn editor_item_exposes_conflict_and_restores_the_same_source_document(cx: &mut T
 /// 复现「重命名后保存失败」：重命名必须同步 Editor 的路径，否则保存会落到旧路径（旧路径已不存在 → IO 失败）。
 #[gpui::test]
 fn rename_then_save_writes_to_new_path(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 项目根与打开路径统一走 canonical 形式（与真实装配一致）。
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = AbsolutePathBuf::canonicalize(directory.path()).expect("临时目录应可规范化");

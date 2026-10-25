@@ -471,7 +471,7 @@ impl TerminalSettings {
     }
 
     pub(crate) fn load(cx: &App, font_size_override: Option<f32>) -> Self {
-        let settings = SettingsStore::try_get(cx).unwrap_or_default();
+        let settings = SettingsStore::get(cx);
         Self::from_user_settings(&settings, font_size_override)
     }
 }

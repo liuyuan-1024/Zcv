@@ -3,6 +3,7 @@ use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferOffset, MultiBuffer
 
 use gpui::{Modifiers, TestAppContext, point, px, size};
 use zcv_actions::{Backspace, ConfirmLocalRename, Delete, RenameLocal};
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{Edit, TransactionId, TransactionMetadata};
 
 use super::common::{buffer_text, focus_editor, inject_file_diff, test_buffer};
@@ -16,6 +17,7 @@ use std::sync::Arc;
 
 #[gpui::test]
 fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "abc");
     let first = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
     let second = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
@@ -107,6 +109,7 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn editors_sharing_a_singleton_source_also_share_text_history(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "abc");
     let first = cx.new({
         let buffer = buffer.clone();
@@ -135,6 +138,7 @@ fn editors_sharing_a_singleton_source_also_share_text_history(cx: &mut TestAppCo
 
 #[gpui::test]
 fn consecutive_text_input_is_one_undo_and_redo_step(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "");
     let editor = cx.new({
         let buffer = buffer.clone();
@@ -168,6 +172,7 @@ fn consecutive_text_input_is_one_undo_and_redo_step(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn changing_selection_breaks_text_input_undo_group(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "");
     let editor = cx.new({
         let buffer = buffer.clone();
@@ -190,6 +195,7 @@ fn changing_selection_breaks_text_input_undo_group(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn typing_after_replacing_a_selection_stays_in_one_undo_group(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "old");
     let editor = cx.new({
         let buffer = buffer.clone();
@@ -221,6 +227,7 @@ fn typing_after_replacing_a_selection_stays_in_one_undo_group(cx: &mut TestAppCo
 
 #[gpui::test]
 fn paste_stays_separate_from_text_input_undo_groups(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "");
     let editor = cx.new({
         let buffer = buffer.clone();
@@ -244,6 +251,7 @@ fn paste_stays_separate_from_text_input_undo_groups(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn consecutive_backspaces_are_one_undo_and_redo_step(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "abcd");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -283,6 +291,7 @@ fn consecutive_backspaces_are_one_undo_and_redo_step(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn multibuffer_editor_edits_the_underlying_file(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(cx, "abc\n");
     cx.update_entity(&source, |buffer, cx| {
         buffer.set_file_path(std::path::PathBuf::from("src/a.rs"), cx)
@@ -327,6 +336,7 @@ fn multibuffer_editor_edits_the_underlying_file(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a你😀\nsecond");
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer, cx));
 
@@ -363,6 +373,7 @@ fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn navigate_to_line_column_clamps_empty_document(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "");
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer, cx));
     editor.update(cx, |editor, cx| {
@@ -377,6 +388,7 @@ fn navigate_to_line_column_clamps_empty_document(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "struct 数据 {\n    value: i32,\n}\nfn build() {}\n";
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
         .expect("Rust 测试 Buffer 应能创建");
@@ -421,6 +433,7 @@ fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppCont
 
 #[gpui::test]
 fn stale_outline_label_survives_utf8_shift_and_navigates_by_anchor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let raw_buffer = Buffer::from_text("fn 数据() {}\n".to_owned(), BufferConfig::default())
         .expect("Rust 测试 Buffer 应能创建");
     let language_buffer = cx.new(move |cx| {
@@ -474,6 +487,7 @@ fn stale_outline_label_survives_utf8_shift_and_navigates_by_anchor(cx: &mut Test
 /// 单文件大纲必须来自源的完整语法快照，不能按 diff 片段裁剪，否则跨段定义会丢失。
 #[gpui::test]
 fn diff_injection_keeps_outline_items_spanning_hunks(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "# 一级\n\n正文\n\n## 二级\n\n正文\n\n### 三级\n\n正文\n\n## 二级乙\n\n正文\n";
     let raw_buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
         .expect("Markdown 测试 Buffer 应能创建");
@@ -541,6 +555,7 @@ fn diff_injection_keeps_outline_items_spanning_hunks(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn other_editor_editing_shared_buffer_moves_this_editors_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "abc");
     let first = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
     let second = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
@@ -576,6 +591,7 @@ fn other_editor_editing_shared_buffer_moves_this_editors_selection(cx: &mut Test
 }
 #[gpui::test]
 fn external_reload_moves_selection_through_diff(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie");
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
     // 光标在 "bravo" 行内 "br" 之后（行内第 2 字节）。
@@ -601,6 +617,7 @@ fn external_reload_moves_selection_through_diff(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn external_reload_collapses_selection_when_text_is_rewritten(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "abc");
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
     cx.update_entity(&editor, |editor, cx| {
@@ -621,6 +638,7 @@ fn external_reload_collapses_selection_when_text_is_rewritten(cx: &mut TestAppCo
 }
 #[gpui::test]
 fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let single_line = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     let auto_height =
         cx.new(|cx| Editor::auto_height(2, Some(6), Arc::new(LanguageRegistry::new()), cx));
@@ -650,6 +668,7 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
 }
 #[gpui::test]
 fn auto_height_keeps_newlines_single_line_strips(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let single_line = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     let auto_height =
         cx.new(|cx| Editor::auto_height(1, Some(4), Arc::new(LanguageRegistry::new()), cx));
@@ -667,6 +686,7 @@ fn auto_height_keeps_newlines_single_line_strips(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn editor_element_renders_multiline_unicode_text(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a你\n😀b");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -685,6 +705,7 @@ fn editor_element_renders_multiline_unicode_text(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn clicking_the_gutter_selects_a_logical_line(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "first\nsecond\nthird");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -723,6 +744,7 @@ fn clicking_the_gutter_selects_a_logical_line(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn committed_input_uses_element_input_handler_and_preserves_unicode(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -743,6 +765,7 @@ fn committed_input_uses_element_input_handler_and_preserves_unicode(cx: &mut Tes
 }
 #[gpui::test]
 fn editor_actions_move_extend_delete_and_restore_unicode_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a😀b");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -795,6 +818,7 @@ fn editor_actions_move_extend_delete_and_restore_unicode_selection(cx: &mut Test
 
 #[gpui::test]
 fn deleting_a_reversed_selection_always_leaves_a_caret_at_its_start(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "abcdef");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -824,6 +848,7 @@ fn deleting_a_reversed_selection_always_leaves_a_caret_at_its_start(cx: &mut Tes
 
 #[gpui::test]
 fn replacing_a_reversed_selection_places_the_caret_after_inserted_text(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "abcdef");
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
 
@@ -848,6 +873,7 @@ fn replacing_a_reversed_selection_places_the_caret_after_inserted_text(cx: &mut 
 }
 #[gpui::test]
 fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "fn main() { let value = 1; }\n";
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
         .expect("Rust 测试 Buffer 应能创建");
@@ -941,6 +967,7 @@ fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestApp
 
 #[gpui::test]
 fn f2_opens_inline_local_rename_and_enter_commits_it(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "fn main() {\n    let value = 1; let padding = \"0123456789012345678901234567890123456789\";\n    return value;\n}\n";
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
         .expect("Rust 测试 Buffer 应能创建");
@@ -1011,6 +1038,7 @@ fn f2_opens_inline_local_rename_and_enter_commits_it(cx: &mut TestAppContext) {
 fn select_larger_syntax_node_reaches_file_root_from_rust_imports_and_structures(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "use gpui::{\n    AnyElement,\n    Entity,\n    App,\n};\n\nstruct EditorState {\n    value: usize,\n}\n";
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
         .expect("Rust 测试 Buffer 应能创建");
@@ -1053,6 +1081,7 @@ fn select_larger_syntax_node_reaches_file_root_from_rust_imports_and_structures(
 
 #[gpui::test]
 fn matching_brackets_come_from_tree_sitter_query(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "fn main() { call(); }\n";
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
         .expect("Rust 测试 Buffer 应能创建");
@@ -1100,6 +1129,7 @@ fn matching_brackets_come_from_tree_sitter_query(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn word_and_line_delete_actions_follow_editor_boundaries(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "alpha beta gamma");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -1155,6 +1185,7 @@ fn word_and_line_delete_actions_follow_editor_boundaries(cx: &mut TestAppContext
 }
 #[gpui::test]
 fn document_boundary_actions_move_and_extend_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "ab\n中😀z";
     let buffer = test_buffer(cx, text);
     let (editor, cx) = cx.add_window_view({
@@ -1203,6 +1234,7 @@ fn document_boundary_actions_move_and_extend_selection(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = (0..40).map(|row| format!("{row}\n")).collect::<String>();
     let buffer = test_buffer(cx, text);
     let (editor, cx) = cx.add_window_view({
@@ -1291,6 +1323,7 @@ fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn clipboard_actions_edit_selected_text_through_transactions(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "hello");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -1329,6 +1362,7 @@ fn clipboard_actions_edit_selected_text_through_transactions(cx: &mut TestAppCon
 }
 #[gpui::test]
 fn move_line_up_and_down_reorders_lines_and_follows_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -1369,6 +1403,7 @@ fn move_line_up_and_down_reorders_lines_and_follows_selection(cx: &mut TestAppCo
 }
 #[gpui::test]
 fn move_line_skips_document_edges_and_moves_multi_line_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -1406,6 +1441,7 @@ fn move_line_skips_document_edges_and_moves_multi_line_selection(cx: &mut TestAp
 }
 #[gpui::test]
 fn move_line_keeps_newline_separation_at_document_edge(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -1444,6 +1480,7 @@ fn move_line_keeps_newline_separation_at_document_edge(cx: &mut TestAppContext) 
 }
 #[gpui::test]
 fn move_line_moves_rows_of_partial_selection_and_keeps_shape(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -1489,6 +1526,7 @@ fn move_line_moves_rows_of_partial_selection_and_keeps_shape(cx: &mut TestAppCon
 }
 #[gpui::test]
 fn directional_moves_collapse_selection_to_its_edges(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -1567,6 +1605,7 @@ fn directional_moves_collapse_selection_to_its_edges(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn word_line_and_vertical_movement_use_engine_boundaries(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "alpha 你好\nxy");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -1607,6 +1646,7 @@ fn word_line_and_vertical_movement_use_engine_boundaries(cx: &mut TestAppContext
 }
 #[gpui::test]
 fn newline_is_a_transaction_and_undo_restores_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "ab");
     let editor = cx.new({
         let buffer = buffer.clone();
@@ -1638,6 +1678,7 @@ fn newline_is_a_transaction_and_undo_restores_selection(cx: &mut TestAppContext)
 }
 #[gpui::test]
 fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "fn main() {}\n";
     let caret = source.find('{').unwrap() + 1;
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
@@ -1669,6 +1710,7 @@ fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn composite_excerpt_uses_its_source_tree_sitter_indent_query(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source_text = "fn main() {}\n";
     let caret = source_text.find('{').unwrap() + 1;
     let raw_buffer = Buffer::from_text(source_text.to_owned(), BufferConfig::default())
@@ -1716,6 +1758,7 @@ fn composite_excerpt_uses_its_source_tree_sitter_indent_query(cx: &mut TestAppCo
 
 #[gpui::test]
 fn newline_does_not_compound_indent_inside_an_outer_rust_block(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "pub(crate) fn config_dir() -> &'static Path {\n    static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();\n    CONFIG_DIR.get_or_init(|| home_dir().join(\".zcv\")).as_path()\n}";
     let caret = source.find(".as_path()").unwrap() + ".as_path()".len();
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
@@ -1751,6 +1794,7 @@ fn newline_does_not_compound_indent_inside_an_outer_rust_block(cx: &mut TestAppC
 
 #[gpui::test]
 fn newline_uses_the_nearest_code_line_as_its_indent_basis(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "fn main() {\n    build()\n}";
     let caret = source.find("build(").unwrap() + "build(".len();
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())

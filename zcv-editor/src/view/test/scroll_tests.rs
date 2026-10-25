@@ -4,6 +4,7 @@ use gpui::{
     Context, Entity, IntoElement, Modifiers, MouseButton, Pixels, Render, ScrollDelta, ScrollEvent,
     TestAppContext, TouchPhase, Window, point, px, size,
 };
+use zcv_settings::{SettingsStore, SoftWrapMode, UserSettings};
 
 /// 测试包装：把预先创建的 Editor 实体作为窗口视图（布局由窗口首帧触发）。
 struct EditorInWindow(Entity<Editor>);
@@ -31,6 +32,7 @@ use std::{cell::Cell, rc::Rc};
 
 #[gpui::test]
 fn composite_document_refreshes_scrollbar_markers(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 组合文档与单文档共用同一条慢标记管线：应排队刷新并安装结果，
     // 而不是按文档形态清空缓存、取消任务。
     let source = test_buffer(cx, scrolling_text());
@@ -58,6 +60,7 @@ fn composite_document_refreshes_scrollbar_markers(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn new_file_diff_reaches_the_git_scrollbar_marker(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(cx, "你好啊\n\n我啊地方\n先试试");
     let path = std::path::PathBuf::from("new.txt");
     source.update(cx, |source, cx| source.set_file_path(path.clone(), cx));
@@ -124,6 +127,7 @@ fn new_file_diff_reaches_the_git_scrollbar_marker(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = test_buffer(
         cx,
         (0..40)
@@ -196,6 +200,7 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn composite_refresh_keeps_the_viewport_anchored_to_the_file(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(
         cx,
         (0..80)
@@ -237,6 +242,7 @@ fn composite_refresh_keeps_the_viewport_anchored_to_the_file(cx: &mut TestAppCon
 
 #[gpui::test]
 fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = test_buffer(
         cx,
         (0..120)
@@ -306,6 +312,7 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn moving_caret_beyond_viewport_scrolls_it_back_into_view(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = (0..120)
         .map(|row| format!("line {row}\n"))
         .collect::<String>();
@@ -336,6 +343,7 @@ fn moving_caret_beyond_viewport_scrolls_it_back_into_view(cx: &mut TestAppContex
 }
 #[gpui::test]
 fn vertical_movement_preserves_goal_column_across_short_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "a long line with enough text\nshort\nanother long line here\n";
     let buffer = test_buffer(cx, text);
     let (editor, cx) = cx.add_window_view({
@@ -380,6 +388,9 @@ fn vertical_movement_preserves_goal_column_across_short_rows(cx: &mut TestAppCon
 
 #[gpui::test]
 fn vertical_movement_keeps_pixel_goal_beyond_render_window(cx: &mut TestAppContext) {
+    let mut settings = UserSettings::default();
+    settings.soft_wrap = SoftWrapMode::None;
+    cx.set_global(SettingsStore::new(settings));
     let line = "a".repeat(1500);
     let buffer = test_buffer(cx, format!("{line}\n{line}"));
     let (editor, cx) = cx.add_window_view({
@@ -410,6 +421,7 @@ fn vertical_movement_keeps_pixel_goal_beyond_render_window(cx: &mut TestAppConte
 /// 回归：打开文件后的导航（open_path_at / open_path_at_line_column）若发生在软换行布局之前，滚动目标点必须按布局后的显示行换算，否则长行文件会滚不到目标行。
 #[gpui::test]
 fn navigation_before_wrap_layout_lands_on_target_row(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 深文件 + 长行：软换行生效后目标行的显示行号远大于 buffer 行号。
     let text = (0..120)
         .map(|row| format!("line {row} {}", "x".repeat(250)))
@@ -464,6 +476,7 @@ fn navigation_before_wrap_layout_lands_on_target_row(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn wheel_input_updates_editor_scroll_state(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = (0..120)
         .map(|row| format!("line {row}\n"))
         .collect::<String>();
@@ -490,6 +503,9 @@ fn wheel_input_updates_editor_scroll_state(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn wheel_gesture_filters_to_dominant_axis_and_unlocks_on_reversal(cx: &mut TestAppContext) {
+    let mut settings = UserSettings::default();
+    settings.soft_wrap = SoftWrapMode::None;
+    cx.set_global(SettingsStore::new(settings));
     let text = (0..120)
         .map(|row| format!("{row} {}\n", "long content ".repeat(40)))
         .collect::<String>();
@@ -551,6 +567,9 @@ fn wheel_gesture_filters_to_dominant_axis_and_unlocks_on_reversal(cx: &mut TestA
 
 #[gpui::test]
 fn line_wheel_delta_uses_character_width_horizontally(cx: &mut TestAppContext) {
+    let mut settings = UserSettings::default();
+    settings.soft_wrap = SoftWrapMode::None;
+    cx.set_global(SettingsStore::new(settings));
     let text = (0..120)
         .map(|row| format!("{row} {}\n", "long content ".repeat(40)))
         .collect::<String>();
@@ -583,6 +602,9 @@ fn line_wheel_delta_uses_character_width_horizontally(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn horizontal_scroll_stops_at_content_edge_and_caret_autoscrolls(cx: &mut TestAppContext) {
+    let mut settings = UserSettings::default();
+    settings.soft_wrap = SoftWrapMode::None;
+    cx.set_global(SettingsStore::new(settings));
     let text = "修改 zcv 模块时，请先阅读 zcv/docs/下的所有文档规范。同时查阅**[zed编辑器](https://github.com/zed-industries/zed)**的源码，看看zed是如何实现的，参考zed的实现方式，甚至是直接照搬zed的实现方式。".repeat(4);
     let buffer = test_buffer(cx, text.clone());
     let (editor, cx) = cx.add_window_view({
@@ -631,6 +653,7 @@ fn horizontal_scroll_stops_at_content_edge_and_caret_autoscrolls(cx: &mut TestAp
 }
 #[gpui::test]
 fn clicking_scrollbar_track_pages_and_enters_dragging(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -684,6 +707,7 @@ fn clicking_scrollbar_track_pages_and_enters_dragging(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn dragging_scrollbar_thumb_moves_content_by_delta(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -737,6 +761,7 @@ fn dragging_scrollbar_thumb_moves_content_by_delta(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn dragging_thumb_to_marker_position_scrolls_to_that_row(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -799,6 +824,7 @@ fn dragging_thumb_to_marker_position_scrolls_to_that_row(cx: &mut TestAppContext
 }
 #[gpui::test]
 fn hovering_thumb_cycles_three_states(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -842,6 +868,7 @@ fn hovering_thumb_cycles_three_states(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn composite_scroll_and_redraw_leave_content_snapshots_unchanged(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let combined = cx.new(MultiBuffer::empty);
     for file in 0..10 {
         let source = test_buffer(
@@ -902,6 +929,7 @@ fn composite_scroll_and_redraw_leave_content_snapshots_unchanged(cx: &mut TestAp
 
 #[gpui::test]
 fn batch_file_folding_publishes_one_semantic_change(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let combined = cx.new(MultiBuffer::empty);
     for file in 0..10 {
         let source = test_buffer(cx, "one\ntwo\n".to_owned());
@@ -960,6 +988,7 @@ fn batch_file_folding_publishes_one_semantic_change(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn removing_then_unfolding_a_file_keeps_empty_frames_stable(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(cx, "line\n".to_owned());
     source.update(cx, |source, cx| source.set_file_path("src/a.rs".into(), cx));
     let multi = cx.new(MultiBuffer::empty);
@@ -991,6 +1020,7 @@ fn removing_then_unfolding_a_file_keeps_empty_frames_stable(cx: &mut TestAppCont
 
 #[gpui::test]
 fn scrolling_does_not_invalidate_outline_but_editing_does(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = (0..120)
         .map(|row| format!("fn item_{row}() {{}}\n"))
         .collect::<String>();

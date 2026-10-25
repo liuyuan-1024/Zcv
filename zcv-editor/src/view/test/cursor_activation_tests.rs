@@ -3,6 +3,7 @@ use zcv_multi_buffer::ExcerptRange;
 
 use super::common::test_buffer;
 use super::*;
+use zcv_settings::{SettingsStore, UserSettings};
 
 struct TwoEditors {
     focused: Entity<Editor>,
@@ -20,6 +21,7 @@ impl Render for TwoEditors {
 
 #[gpui::test]
 fn focused_editor_stops_blinking_when_window_deactivates(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "光标测试");
     let (editor, cx) = cx.add_window_view(move |window, cx| {
         let editor = Editor::for_language_buffer(buffer, cx);
@@ -58,6 +60,7 @@ fn focused_editor_stops_blinking_when_window_deactivates(cx: &mut TestAppContext
 fn focused_read_only_editor_keeps_editor_selection_and_shows_a_steady_caret(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(cx, "已暂存内容\n");
     cx.update_entity(&source, |buffer, cx| {
         buffer.set_file_path("staged.rs".into(), cx)
@@ -88,6 +91,7 @@ fn focused_read_only_editor_keeps_editor_selection_and_shows_a_steady_caret(
 
 #[gpui::test]
 fn window_reactivation_only_resumes_the_focused_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "双编辑器光标测试");
     let (view, cx) = cx.add_window_view(move |window, cx| {
         let focused = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));

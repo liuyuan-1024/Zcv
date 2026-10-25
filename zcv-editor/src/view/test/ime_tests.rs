@@ -5,9 +5,11 @@ use gpui::{EntityInputHandler, TestAppContext, px, size};
 use super::common::{buffer_text, test_buffer};
 use super::*;
 use crate::selection::SelectionSet;
+use zcv_settings::{SettingsStore, UserSettings};
 
 #[gpui::test]
 fn marked_text_updates_buffer_and_unmark_finishes_composition(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "ab");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -57,6 +59,7 @@ fn marked_text_updates_buffer_and_unmark_finishes_composition(cx: &mut TestAppCo
 }
 #[gpui::test]
 fn ime_candidate_updates_merge_into_one_undo_step(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "ab");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -97,6 +100,7 @@ fn ime_candidate_updates_merge_into_one_undo_step(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn ime_updates_every_cursor_and_tracks_the_primary_marked_range(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "ab cd");
     let initial_selections = SelectionSet::new_with_primary(
         vec![
@@ -134,6 +138,7 @@ fn ime_updates_every_cursor_and_tracks_the_primary_marked_range(cx: &mut TestApp
 }
 #[gpui::test]
 fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "fn main() { let value = \"\"; }";
     let insertion = source.find("\"\"").unwrap() + 1;
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
@@ -186,6 +191,7 @@ fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContex
 }
 #[gpui::test]
 fn ime_relative_utf16_range_replaces_the_marked_subrange(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -211,6 +217,7 @@ fn ime_relative_utf16_range_replaces_the_marked_subrange(cx: &mut TestAppContext
 }
 #[gpui::test]
 fn marked_text_can_cancel_and_committed_range_uses_utf16_offsets(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a😀b");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -238,6 +245,7 @@ fn marked_text_can_cancel_and_committed_range_uses_utf16_offsets(cx: &mut TestAp
 fn ime_candidate_bounds_survive_composition_and_scroll_layout_invalidation(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = (0..40)
         .map(|row| format!("line {row}\n"))
         .collect::<String>();

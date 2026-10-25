@@ -6,6 +6,7 @@ use zcv_actions::DeployBufferSearch;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging, PendingHunk};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DiffExcerptRanges, ExcerptDiffKind, MultiBufferOffset};
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
 
 #[test]
@@ -80,6 +81,7 @@ fn canonical_root(path: &Path) -> PathBuf {
 
 #[gpui::test]
 fn binary_files_stay_in_status_but_not_staged_or_unstaged_diff(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -123,6 +125,7 @@ fn binary_files_stay_in_status_but_not_staged_or_unstaged_diff(cx: &mut TestAppC
 
 #[gpui::test]
 fn unstaged_diff_removes_open_file_when_disk_content_becomes_binary(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -185,6 +188,7 @@ fn unstaged_diff_removes_open_file_when_disk_content_becomes_binary(cx: &mut Tes
 
 #[gpui::test]
 fn staged_diff_tracks_revision_text_support_changes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -234,6 +238,7 @@ fn staged_diff_tracks_revision_text_support_changes(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn conflict_projection_shows_only_conflicts_with_context(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = canonical_root(directory.path());
     let path = root.join("conflicted.rs");
@@ -313,6 +318,7 @@ fn conflict_projection_shows_only_conflicts_with_context(cx: &mut TestAppContext
 
 #[gpui::test]
 fn conflict_projection_refresh_preserves_unchanged_files(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = canonical_root(directory.path());
     let first = root.join("first.rs");
@@ -486,6 +492,7 @@ fn plain_diff_file(
 #[gpui::test]
 #[ignore]
 fn project_diff_control_render_cost(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     use std::time::Instant;
 
     struct ControlProbe {
@@ -624,6 +631,7 @@ fn project_diff_control_render_cost(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn hunk_actions_keep_the_source_after_display_indices_change(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     use std::sync::Mutex;
     use zcv_buffer_diff::DiffOperations;
     use zcv_text::Anchor;
@@ -765,6 +773,7 @@ fn hunk_actions_keep_the_source_after_display_indices_change(cx: &mut TestAppCon
 fn created_file_and_pure_deletion_targets_stage_and_unstage_without_display_lookup(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -848,6 +857,7 @@ fn created_file_and_pure_deletion_targets_stage_and_unstage_without_display_look
 
 #[gpui::test]
 fn empty_project_diff_renders_blank_focusable_view(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = test_project(directory.path().to_path_buf(), cx);
     let (view, cx) =
@@ -882,6 +892,7 @@ fn empty_project_diff_renders_blank_focusable_view(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn project_diff_keeps_hunk_interest_while_its_multibuffer_is_empty(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -918,6 +929,7 @@ fn project_diff_keeps_hunk_interest_while_its_multibuffer_is_empty(cx: &mut Test
 /// 端到端：git 删除文件中间一行后，展开的旧侧行保持原始位置；折叠时只移除旧侧内容。
 #[gpui::test]
 fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -989,6 +1001,7 @@ fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn git_status_drives_one_ordered_excerpt_per_changed_file(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1043,6 +1056,7 @@ fn git_status_drives_one_ordered_excerpt_per_changed_file(cx: &mut TestAppContex
 /// 从删除输出区域打开文件时，换算到工作区文件中的真实行列。
 #[gpui::test]
 fn deleted_output_region_maps_to_working_tree_hunk_position(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1162,6 +1176,7 @@ fn clamp_column_to_line_caps_at_line_length() {
 
 #[gpui::test]
 fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1230,6 +1245,7 @@ fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestApp
 
 #[gpui::test]
 fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1361,6 +1377,7 @@ fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppCont
 
 #[gpui::test]
 fn staging_first_hunk_keeps_last_deletion_visible_after_reopening(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1435,6 +1452,7 @@ fn staging_first_hunk_keeps_last_deletion_visible_after_reopening(cx: &mut TestA
 
 #[gpui::test]
 fn initially_staged_deleted_file_displays_old_side(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1476,6 +1494,7 @@ fn initially_staged_deleted_file_displays_old_side(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn staged_projection_refreshes_without_status_change_or_restart(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1551,6 +1570,7 @@ fn staged_projection_refreshes_without_status_change_or_restart(cx: &mut TestApp
 
 #[gpui::test]
 fn head_change_updates_staged_projection_without_rebuilding_file_list(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1601,6 +1621,7 @@ fn head_change_updates_staged_projection_without_rebuilding_file_list(cx: &mut T
 
 #[gpui::test]
 fn clearing_pending_hunk_restores_projection_without_rebuilding_files(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1660,6 +1681,7 @@ fn clearing_pending_hunk_restores_projection_without_rebuilding_files(cx: &mut T
 /// Git hunk 多文件编辑器默认展开；用户折叠后刷新仍保持折叠，且映射保持一致。
 #[gpui::test]
 fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1777,6 +1799,7 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
 /// 复现：普通编辑器展开 hunk（singleton → excerpts）后触发 git hunks 刷新，与 DiffView 共享仓库时不应让统一投影重建 panic。
 #[gpui::test]
 fn plain_editor_expansion_then_git_refresh_keeps_diff_view_consistent(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1834,6 +1857,7 @@ fn plain_editor_expansion_then_git_refresh_keeps_diff_view_consistent(cx: &mut T
 /// DiffView 的片段映射不应 panic。
 #[gpui::test]
 fn expansion_edit_then_refresh_keeps_diff_view_consistent(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -1924,6 +1948,7 @@ fn run_in(dir: &Path, args: &[&str]) {
 /// 活动 Item 是本差异视图时工具栏显示在右侧；其他 Item 时隐藏。
 #[gpui::test]
 fn project_diff_toolbar_follows_active_item(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = test_project(directory.path().to_path_buf(), cx);
     let toolbar = cx.new(|_| ProjectDiffToolbar::new());
@@ -2032,16 +2057,19 @@ fn assert_project_diff_find_seeds_query_from_editor_selection(
 
 #[gpui::test]
 fn unstaged_project_diff_find_seeds_query_from_editor_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     assert_project_diff_find_seeds_query_from_editor_selection(ProjectDiffKind::Unstaged, cx);
 }
 
 #[gpui::test]
 fn staged_project_diff_find_seeds_query_from_editor_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     assert_project_diff_find_seeds_query_from_editor_selection(ProjectDiffKind::Staged, cx);
 }
 
 #[gpui::test]
 fn diff_view_scroll_keeps_host_quiet_and_folding_notifies(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     use gpui::{ScrollDelta, ScrollEvent, point, px};
     use std::{cell::Cell, rc::Rc};
     use zcv_multi_buffer::ExcerptRange;

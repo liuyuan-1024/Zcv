@@ -16,6 +16,7 @@ zcv-language.workspace = true
 sum-tree.workspace = true
 
 [dev-dependencies]
+zcv-settings.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 
 [lints]

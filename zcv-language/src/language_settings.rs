@@ -38,20 +38,19 @@ impl Default for LanguageSettings {
 }
 
 impl LanguageSettings {
-    /// 按语言解析设置；`SettingsStore` 未注册（如单元测试）时回退内置默认。
+    /// 按语言解析设置；应用初始化必须先注册 `SettingsStore`。
     pub fn resolve(language_name: Option<&str>, cx: &App) -> Arc<Self> {
-        Arc::new(
-            SettingsStore::try_get(cx).map_or_else(Self::default, |settings| Self {
-                tab: settings.tab_for_language(language_name),
-                indent_guides: settings.indent_guides_for_language(language_name),
-                auto_indent: settings.auto_indent,
-                extend_comment_on_newline: settings.extend_comment_on_newline,
-                extend_list_on_newline: settings.extend_list_on_newline,
-                remove_trailing_whitespace_on_save: settings
-                    .remove_trailing_whitespace_on_save_for_language(language_name),
-                ensure_final_newline_on_save: settings
-                    .ensure_final_newline_on_save_for_language(language_name),
-            }),
-        )
+        let settings = SettingsStore::get(cx);
+        Arc::new(Self {
+            tab: settings.tab_for_language(language_name),
+            indent_guides: settings.indent_guides_for_language(language_name),
+            auto_indent: settings.auto_indent,
+            extend_comment_on_newline: settings.extend_comment_on_newline,
+            extend_list_on_newline: settings.extend_list_on_newline,
+            remove_trailing_whitespace_on_save: settings
+                .remove_trailing_whitespace_on_save_for_language(language_name),
+            ensure_final_newline_on_save: settings
+                .ensure_final_newline_on_save_for_language(language_name),
+        })
     }
 }

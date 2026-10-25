@@ -2,6 +2,7 @@ use gpui::{FocusHandle, Focusable, TestAppContext, div};
 
 use super::*;
 use crate::Item;
+use zcv_settings::{SettingsStore, UserSettings};
 
 struct TestItem {
     focus: FocusHandle,
@@ -65,6 +66,7 @@ impl ToolbarItemView for LocationProbe {
 
 #[gpui::test]
 fn active_item_change_repositions_toolbar_items(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let toolbar = cx.new(|_| Toolbar::new());
     let active = cx.new(|cx| TestItem {
         focus: cx.focus_handle(),

@@ -22,6 +22,7 @@ fn git_status_for_path(project: &Project, path: &Path, cx: &App) -> Option<Statu
 
 #[gpui::test]
 fn empty_project_has_no_worktree_or_project_services(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let project = cx.update(|cx| cx.new(|cx| Project::empty(test_languages(), cx)));
     cx.read_entity(&project, |project, _| {
         assert!(!project.has_worktree());
@@ -32,6 +33,7 @@ fn empty_project_has_no_worktree_or_project_services(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn project_construction_survives_root_removed_after_validation(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let root = AbsolutePathBuf::canonicalize(directory.path()).expect("项目根目录应可规范化");
     fs::remove_dir(directory.path()).expect("应移除已校验的项目根目录");
@@ -44,6 +46,7 @@ fn project_construction_survives_root_removed_after_validation(cx: &mut TestAppC
 
 #[gpui::test]
 async fn background_file_load_installs_one_shared_document(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let first_path = directory.path().join("first.txt");
     let second_path = directory.path().join("second.txt");
@@ -74,6 +77,7 @@ async fn background_file_load_installs_one_shared_document(cx: &mut TestAppConte
 
 #[gpui::test]
 fn released_document_drops_project_subscription_and_path_index(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let file = directory.path().join("open.txt");
     fs::write(&file, "内容").expect("应创建文件");
@@ -131,6 +135,7 @@ impl Watcher for FailingWatcher {
 
 #[gpui::test]
 fn initial_file_watcher_error_is_buffered_until_workspace_subscribes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let root = directory.path().to_path_buf();
     let project = cx.new(|cx| {
@@ -163,6 +168,7 @@ fn initial_file_watcher_error_is_buffered_until_workspace_subscribes(cx: &mut Te
 
 #[gpui::test]
 fn saving_buffer_writes_current_version_and_marks_it_clean(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let path = test_file_path();
     let language_buffer = cx.new(|cx| {
         let buffer =
@@ -199,6 +205,7 @@ fn saving_buffer_writes_current_version_and_marks_it_clean(cx: &mut TestAppConte
 fn saving_crlf_input_writes_the_source_snapshot_and_marks_that_version_clean(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let path = directory.path().join("document.txt");
     fs::write(&path, "甲\r\n乙\r").expect("应创建文件");
@@ -242,6 +249,7 @@ fn saving_crlf_input_writes_the_source_snapshot_and_marks_that_version_clean(
 
 #[gpui::test]
 fn save_formats_the_source_buffer_as_one_undo_step_before_writing(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let path = directory.path().join("document.txt");
     fs::write(&path, "甲  \n乙\t \n \t\n").expect("应创建文件");
@@ -287,6 +295,7 @@ fn save_formats_the_source_buffer_as_one_undo_step_before_writing(cx: &mut TestA
 
 #[gpui::test]
 fn saving_empty_or_already_formatted_file_does_not_create_an_edit(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().unwrap();
     let project = test_project(directory.path().to_path_buf(), cx);
     for (name, contents) in [("empty.txt", ""), ("formatted.txt", "内容\n")] {
@@ -412,6 +421,7 @@ fn save_uses_language_override_without_changing_global_defaults(cx: &mut TestApp
 
 #[gpui::test]
 fn failed_write_keeps_save_format_edit_dirty(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("document.txt");
     fs::write(&path, "内容  ").unwrap();
@@ -448,6 +458,7 @@ fn failed_write_keeps_save_format_edit_dirty(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn failed_save_keeps_buffer_dirty(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let path = test_file_path().join("missing.txt");
     let language_buffer = cx.new(|cx| {
         let buffer =
@@ -476,6 +487,7 @@ fn failed_save_keeps_buffer_dirty(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn renaming_file_keeps_open_buffer_indexed_by_new_path(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let old_path = directory.path().join("old.txt");
     let new_path = directory.path().join("new.txt");
@@ -503,6 +515,7 @@ fn renaming_file_keeps_open_buffer_indexed_by_new_path(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn creating_path_rejects_existing_file_and_directory_collisions(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let file = directory.path().join("src/components/new.txt");
     let folder = directory.path().join("assets/icons/new-folder");
@@ -550,6 +563,7 @@ fn creating_path_rejects_existing_file_and_directory_collisions(cx: &mut TestApp
 
 #[gpui::test]
 fn trashing_path_rejects_project_root_and_outside_entries(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = test_project(directory.path().to_path_buf(), cx);
 
@@ -569,6 +583,7 @@ fn trashing_path_rejects_project_root_and_outside_entries(cx: &mut TestAppContex
 
 #[gpui::test]
 fn trashing_path_moves_file_to_system_trash(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let file = directory.path().join("to-trash.txt");
     fs::write(&file, "content").expect("应创建测试文件");
@@ -583,6 +598,7 @@ fn trashing_path_moves_file_to_system_trash(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn moving_file_across_directories_keeps_open_buffer_indexed_by_new_path(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let old_path = directory.path().join("old.txt");
     let new_path = directory.path().join("sub").join("new.txt");
@@ -611,6 +627,7 @@ fn moving_file_across_directories_keeps_open_buffer_indexed_by_new_path(cx: &mut
 
 #[gpui::test]
 fn moving_directory_into_itself_is_rejected(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let dir = directory.path().join("dir");
     fs::create_dir_all(dir.join("sub")).expect("应创建嵌套目录");
@@ -633,6 +650,7 @@ fn moving_directory_into_itself_is_rejected(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn moving_file_overwrites_or_rejects_existing_destination(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let source = directory.path().join("source.txt");
     let target = directory.path().join("target.txt");
@@ -669,6 +687,7 @@ fn moving_file_overwrites_or_rejects_existing_destination(cx: &mut TestAppContex
 
 #[gpui::test]
 fn moving_directory_moves_nested_files(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let source_dir = directory.path().join("src");
     let target_dir = directory.path().join("dest");
@@ -691,6 +710,7 @@ fn moving_directory_moves_nested_files(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn moving_directory_with_overwrite_replaces_existing_directory(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let source_dir = directory.path().join("src");
     let target_dir = directory.path().join("dest");
@@ -719,6 +739,7 @@ fn moving_directory_with_overwrite_replaces_existing_directory(cx: &mut TestAppC
 
 #[gpui::test]
 async fn copying_directory_recursively_replicates_contents(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let source_dir = directory.path().join("src");
     fs::create_dir_all(source_dir.join("嵌套")).expect("应创建嵌套目录");
@@ -750,6 +771,7 @@ async fn copying_directory_recursively_replicates_contents(cx: &mut TestAppConte
 
 #[gpui::test]
 fn copying_into_own_subtree_is_rejected(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let source_dir = directory.path().join("src");
     fs::create_dir_all(&source_dir).expect("应创建源目录");
@@ -770,6 +792,7 @@ fn copying_into_own_subtree_is_rejected(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn copying_without_overwrite_rejects_existing_destination(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let source = directory.path().join("source.txt");
     let destination = directory.path().join("destination.txt");
@@ -795,6 +818,7 @@ fn copying_without_overwrite_rejects_existing_destination(cx: &mut TestAppContex
 
 #[gpui::test]
 async fn copying_file_completes_in_background(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let source = directory.path().join("source.txt");
     let destination = directory.path().join("destination.txt");
@@ -818,6 +842,7 @@ async fn copying_file_completes_in_background(cx: &mut TestAppContext) {
 
 #[gpui::test]
 async fn copying_external_directory_into_project(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let project_dir = tempfile::tempdir().expect("应创建项目目录");
     let external_dir = tempfile::tempdir().expect("应创建外部目录");
     let source = external_dir.path().join("源目录");
@@ -853,6 +878,7 @@ async fn copying_external_directory_into_project(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn copying_external_path_rejects_target_outside_project(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let project_dir = tempfile::tempdir().expect("应创建项目目录");
     let external_dir = tempfile::tempdir().expect("应创建外部目录");
     let source = external_dir.path().join("source.txt");
@@ -873,6 +899,7 @@ fn copying_external_path_rejects_target_outside_project(cx: &mut TestAppContext)
 
 #[gpui::test]
 async fn copying_with_overwrite_replaces_existing_destination(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let source = directory.path().join("source.txt");
     let destination = directory.path().join("destination.txt");
@@ -897,6 +924,7 @@ async fn copying_with_overwrite_replaces_existing_destination(cx: &mut TestAppCo
 
 #[gpui::test]
 fn moving_directory_into_own_ancestor_is_rejected_even_with_overwrite(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let ancestor = directory.path().join("dir");
     let source = ancestor.join("sub");
@@ -925,6 +953,7 @@ fn moving_directory_into_own_ancestor_is_rejected_even_with_overwrite(cx: &mut T
 
 #[gpui::test]
 fn copying_directory_into_own_ancestor_is_rejected(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let source = directory.path().join("src");
     fs::create_dir_all(&source).expect("应创建源目录");
@@ -942,6 +971,7 @@ fn copying_directory_into_own_ancestor_is_rejected(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn fs_events_trigger_incremental_git_status_refresh(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let project = test_project(root.clone(), cx);
     cx.run_until_parked();
@@ -975,6 +1005,7 @@ fn fs_events_trigger_incremental_git_status_refresh(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn directory_and_rescan_events_reload_open_document(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let root = directory.path();
     let folder = root.join("nested");
@@ -1010,6 +1041,7 @@ fn directory_and_rescan_events_reload_open_document(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn reload_waits_for_file_recreated_after_transient_read_failure(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let file = directory.path().join("open.txt");
     fs::write(&file, "旧内容").expect("应创建文件");
@@ -1057,6 +1089,7 @@ fn reload_waits_for_file_recreated_after_transient_read_failure(cx: &mut TestApp
 
 #[gpui::test]
 fn empty_project_watches_its_open_file(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let file = directory.path().join("standalone.txt");
     fs::write(&file, "初始内容").expect("应创建文件");
@@ -1103,6 +1136,7 @@ fn empty_project_watches_its_open_file(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn project_watches_open_file_outside_its_root(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let root = tempfile::tempdir().expect("应创建项目目录");
     let external = tempfile::tempdir().expect("应创建外部目录");
     let file = external.path().join("outside.txt");
@@ -1135,6 +1169,7 @@ fn project_watches_open_file_outside_its_root(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn external_files_share_parent_watch_until_last_document_closes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let first_path = directory.path().join("first.txt");
     let second_path = directory.path().join("second.txt");
@@ -1180,6 +1215,7 @@ fn external_files_share_parent_watch_until_last_document_closes(cx: &mut TestApp
 
 #[gpui::test]
 fn external_change_waits_for_unsaved_edits_to_be_undone(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let file = directory.path().join("open.txt");
     fs::write(&file, "磁盘旧内容").expect("应创建文件");
@@ -1232,6 +1268,7 @@ fn external_change_waits_for_unsaved_edits_to_be_undone(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn external_change_requires_explicit_choice_before_saving(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let file = directory.path().join("open.txt");
     fs::write(&file, "磁盘旧内容").expect("应创建文件");
@@ -1288,6 +1325,7 @@ fn external_change_requires_explicit_choice_before_saving(cx: &mut TestAppContex
 fn restore_conflicted_file_reads_disk_without_replacing_the_document_entity(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let file = directory.path().join("open.txt");
     fs::write(&file, "磁盘旧内容").expect("应创建文件");
@@ -1336,6 +1374,7 @@ fn restore_conflicted_file_reads_disk_without_replacing_the_document_entity(
 
 #[gpui::test]
 fn conflict_in_a_later_source_prevents_partial_multi_file_save(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let first = directory.path().join("first.txt");
     let second = directory.path().join("second.txt");
@@ -1389,6 +1428,7 @@ fn conflict_in_a_later_source_prevents_partial_multi_file_save(cx: &mut TestAppC
 
 #[gpui::test]
 fn restore_does_not_discard_edits_made_after_the_choice(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().unwrap();
     let file = directory.path().join("open.txt");
     fs::write(&file, "磁盘旧内容").unwrap();
@@ -1434,6 +1474,7 @@ fn restore_does_not_discard_edits_made_after_the_choice(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn fs_removal_events_trigger_full_rescan(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let project = test_project(root.clone(), cx);
     cx.run_until_parked();
@@ -1478,6 +1519,7 @@ fn fs_removal_events_trigger_full_rescan(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn external_removal_keeps_live_document_for_recreated_file(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let root = directory.path().to_path_buf();
     let project = test_project(root.clone(), cx);
@@ -1530,6 +1572,7 @@ fn external_removal_keeps_live_document_for_recreated_file(cx: &mut TestAppConte
 
 #[gpui::test]
 fn removal_event_after_atomic_replacement_reloads_live_document(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let file = directory.path().join("open.txt");
     fs::write(&file, "旧内容").expect("应创建文件");
@@ -1563,6 +1606,7 @@ fn removal_event_after_atomic_replacement_reloads_live_document(cx: &mut TestApp
 
 #[gpui::test]
 fn fs_rescan_events_discover_unreported_file(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let project = test_project(root.clone(), cx);
     cx.run_until_parked();
@@ -1597,6 +1641,7 @@ fn fs_rescan_events_discover_unreported_file(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn saving_buffer_refreshes_git_status(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let project = test_project(root.clone(), cx);
     cx.run_until_parked();
@@ -1642,6 +1687,7 @@ fn saving_buffer_refreshes_git_status(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn save_events_preserve_undo_history(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let file = directory.path().join("document.txt");
     fs::write(&file, "原内容").expect("应创建测试文件");

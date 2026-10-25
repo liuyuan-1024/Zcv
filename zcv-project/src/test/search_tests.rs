@@ -6,6 +6,7 @@ use crate::{
 use gpui::{AppContext as _, Entity, TestAppContext};
 use std::{fs, path::PathBuf, process::Command};
 use zcv_path::AbsolutePathBuf;
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{ByteOffset, TextRange};
 
 /// 收集一次流式搜索的全部命中（直到后台关闭通道）。
@@ -32,6 +33,7 @@ fn match_count(results: &[FileSearchResult]) -> usize {
 
 #[gpui::test]
 async fn file_candidates_share_project_search_exclusions(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = AbsolutePathBuf::canonicalize(directory.path())
         .expect("项目根应可规范化")
@@ -51,6 +53,7 @@ async fn file_candidates_share_project_search_exclusions(cx: &mut TestAppContext
 
 #[gpui::test]
 async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = AbsolutePathBuf::canonicalize(directory.path())
         .expect("项目根应可规范化")
@@ -92,6 +95,7 @@ async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppCont
 
 #[gpui::test]
 async fn search_results_follow_natural_project_path_order(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = AbsolutePathBuf::canonicalize(directory.path())
         .expect("项目根应可规范化")
@@ -121,6 +125,7 @@ async fn search_results_follow_natural_project_path_order(cx: &mut TestAppContex
 
 #[gpui::test]
 async fn honors_exclusions_and_reports_invalid_regex(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = AbsolutePathBuf::canonicalize(directory.path())
         .expect("项目根应可规范化")
@@ -163,6 +168,7 @@ async fn honors_exclusions_and_reports_invalid_regex(cx: &mut TestAppContext) {
 /// 与 `open_buffer` 首次打开一致地剥离 BOM，而不是绕过解码边界保留 U+FEFF。
 #[gpui::test]
 async fn search_decodes_unopened_files_through_the_project_boundary(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = AbsolutePathBuf::canonicalize(directory.path())
         .expect("项目根应可规范化")
@@ -205,6 +211,7 @@ async fn search_decodes_unopened_files_through_the_project_boundary(cx: &mut Tes
 
 #[gpui::test]
 async fn git_search_skips_ignored_build_outputs(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = AbsolutePathBuf::canonicalize(directory.path())
         .expect("项目根应可规范化")

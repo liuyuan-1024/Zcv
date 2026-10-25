@@ -19,6 +19,7 @@ use zcv_workspace::{
 use zcv_editor::Editor;
 
 use crate::document_toolbar::DocumentToolbar;
+use zcv_settings::{SettingsStore, UserSettings};
 
 struct TestView;
 
@@ -172,6 +173,7 @@ fn document_toolbar(cx: &mut TestAppContext) -> Entity<DocumentToolbar> {
 
 #[gpui::test]
 fn buffer_search_does_not_require_an_active_path(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
         let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
@@ -190,6 +192,7 @@ fn buffer_search_does_not_require_an_active_path(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn buffer_search_does_not_use_a_path_as_search_capability(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
         let item = cx.new(|cx| TestItem {
@@ -211,6 +214,7 @@ fn buffer_search_does_not_use_a_path_as_search_capability(cx: &mut TestAppContex
 /// 编辑器显示缓冲搜索工具区；其他 Item 由各自的工具项承担，工具区隐藏。
 #[gpui::test]
 fn document_toolbar_is_visible_for_editor_and_hidden_for_other_items(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
         let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
@@ -236,6 +240,7 @@ fn document_toolbar_is_visible_for_editor_and_hidden_for_other_items(cx: &mut Te
 /// 组合 Item 仅暴露内层编辑器时，编辑器搜索工具区必须隐藏（差异/提交图等由各自工具项承担搜索）。
 #[gpui::test]
 fn document_toolbar_is_hidden_for_composite_items_that_expose_an_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
         let inner_editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
@@ -257,6 +262,7 @@ fn document_toolbar_is_hidden_for_composite_items_that_expose_an_editor(cx: &mut
 
 #[gpui::test]
 fn hidden_document_search_does_not_search_a_composite_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
         let registry = Arc::new(LanguageRegistry::new());
@@ -292,6 +298,7 @@ fn hidden_document_search_does_not_search_a_composite_editor(cx: &mut TestAppCon
 /// 项目搜索结果仍走 Editor 管线，但当前 Item 的搜索目标是项目搜索本身。
 #[gpui::test]
 fn project_search_view_acts_as_editor_and_owns_its_toolbar(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let root = AbsolutePathBuf::canonicalize(Path::new(".")).expect("测试项目目录应可规范化");
     let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
     let view = cx.new(|cx| crate::project_search::ProjectSearchView::new(project, cx));
@@ -332,6 +339,7 @@ fn project_search_view_acts_as_editor_and_owns_its_toolbar(cx: &mut TestAppConte
 /// 搜索条在新活动 Item 上部署搜索；查询被派发给当前 Item。
 #[gpui::test]
 fn document_toolbar_deploys_search_on_the_active_item(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
         let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));

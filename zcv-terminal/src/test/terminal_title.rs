@@ -1,10 +1,12 @@
 use gpui::{AppContext as _, TestAppContext};
+use zcv_settings::{SettingsStore, UserSettings};
 
 use super::support::display_only_terminal;
 use crate::TerminalBuilder;
 
 #[gpui::test]
 fn tab_title_tracks_current_directory_and_keeps_shell_name(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let temporary_directory = tempfile::tempdir().expect("应创建临时目录");
     let starting_directory = temporary_directory.path().join("starting-directory");
     std::fs::create_dir(&starting_directory).expect("应创建终端启动目录");

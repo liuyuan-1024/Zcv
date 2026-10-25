@@ -12,6 +12,7 @@ use zcv_text::{Buffer, BufferConfig};
 
 use super::Editor;
 use crate::selection::{Selection, SelectionSet};
+use zcv_settings::{SettingsStore, UserSettings};
 
 /// 用例中的光标标记。
 const CARET: char = 'ˇ';
@@ -150,6 +151,7 @@ fn check(cx: &mut TestAppContext, before_marked: &str, after_marked: &str) {
 
 #[gpui::test]
 fn tsx_tag_autoclose_matches_zed_cases(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     check(cx, "<divˇ", "<div>ˇ</div>");
     check(cx, "<div><divˇ</div>", "<div><div>ˇ</div></div>");
     check(cx, "<div><divˇ</div></div>", "<div><div>ˇ</div></div>");
@@ -182,6 +184,7 @@ fn tsx_tag_autoclose_matches_zed_cases(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn tsx_tag_autoclose_supports_multiple_cursors(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) = editor_with_state(
         cx,
         "test.tsx",
@@ -200,6 +203,7 @@ fn tsx_tag_autoclose_supports_multiple_cursors(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn tsx_tag_autoclose_commits_in_one_undo_step(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) = editor_with_state(cx, "test.tsx", "<divˇ");
     cx.run_until_parked();
     type_text(&editor, cx, ">");
@@ -214,6 +218,7 @@ fn tsx_tag_autoclose_commits_in_one_undo_step(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn tsx_tag_autoclose_does_not_duplicate_on_repeat_input(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) = editor_with_state(cx, "test.tsx", "<divˇ");
     cx.run_until_parked();
     type_text(&editor, cx, ">");
@@ -225,6 +230,7 @@ fn tsx_tag_autoclose_does_not_duplicate_on_repeat_input(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn tsx_tag_autoclose_skips_manual_closing_tag(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) = editor_with_state(cx, "test.tsx", "<div>ˇ");
     cx.run_until_parked();
     // 手动输入闭合标签时，最后的 `>` 属于闭合标签，不应再补全。
@@ -234,6 +240,7 @@ fn tsx_tag_autoclose_skips_manual_closing_tag(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn tsx_tag_autoclose_only_applies_to_jsx_and_tsx(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) = editor_with_state(cx, "test.ts", "a = bˇ");
     cx.run_until_parked();
     type_text(&editor, cx, ">");
@@ -243,6 +250,7 @@ fn tsx_tag_autoclose_only_applies_to_jsx_and_tsx(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn tsx_tag_autoclose_does_not_fire_for_comparison(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) = editor_with_state(cx, "test.tsx", "const n = aˇ");
     cx.run_until_parked();
     type_text(&editor, cx, ">");
@@ -250,6 +258,7 @@ fn tsx_tag_autoclose_does_not_fire_for_comparison(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn tsx_tag_autoclose_during_ime_composition_is_skipped(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) = editor_with_state(cx, "test.tsx", "<divˇ");
     cx.run_until_parked();
     cx.update(|window, app| {
@@ -264,6 +273,7 @@ fn tsx_tag_autoclose_during_ime_composition_is_skipped(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn tsx_tag_autoclose_is_rejected_in_read_only_excerpt(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, _editor, cx) = editor_with_state(cx, "test.tsx", "<divˇ");
     cx.run_until_parked();
     let combined = cx.new(MultiBuffer::empty_read_only);
@@ -296,6 +306,7 @@ fn tsx_tag_autoclose_is_rejected_in_read_only_excerpt(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn tsx_tag_autoclose_applies_per_excerpt_in_composite_document(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let registry = Arc::new(LanguageRegistry::new());
     let first = cx.new({
         let registry = registry.clone();
@@ -368,6 +379,7 @@ fn tsx_tag_autoclose_applies_per_excerpt_in_composite_document(cx: &mut TestAppC
 
 #[gpui::test]
 fn tsx_tag_autoclose_backspace_removes_only_typed_characters(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) = editor_with_state(cx, "test.tsx", "<divˇ");
     cx.run_until_parked();
     type_text(&editor, cx, ">");

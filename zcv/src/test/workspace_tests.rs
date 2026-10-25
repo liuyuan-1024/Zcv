@@ -21,7 +21,9 @@ fn prompt_remains_answerable_until_dismissed(cx: &mut TestAppContext) {
 #[gpui::test]
 fn about_action_displays_current_version(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        init_settings(cx);
+        let reporter = cx.new(|_| SettingsErrorReporter::default());
+        cx.set_global(GlobalSettingsErrorReporter(reporter));
+        cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, test_languages());
         crate::app_menus::install(cx);
     });
@@ -46,17 +48,13 @@ fn test_languages() -> Arc<LanguageRegistry> {
     Arc::new(LanguageRegistry::new())
 }
 
-fn init_settings(cx: &mut gpui::App) {
-    let reporter = cx.new(|_| SettingsErrorReporter::default());
-    cx.set_global(GlobalSettingsErrorReporter(reporter));
-    cx.set_global(SettingsStore::new(UserSettings::default()));
-}
-
 /// 空工作区与项目工作区走同一条装配路径：全部面板无条件注册，空态由面板自行渲染。
 #[gpui::test]
 fn empty_workspace_installs_all_panels(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        init_settings(cx);
+        let reporter = cx.new(|_| SettingsErrorReporter::default());
+        cx.set_global(GlobalSettingsErrorReporter(reporter));
+        cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, test_languages());
     });
     let (workspace, cx) =
@@ -80,7 +78,9 @@ fn empty_workspace_installs_all_panels(cx: &mut TestAppContext) {
 #[gpui::test]
 fn switching_replaces_root_in_same_window(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        init_settings(cx);
+        let reporter = cx.new(|_| SettingsErrorReporter::default());
+        cx.set_global(GlobalSettingsErrorReporter(reporter));
+        cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, test_languages());
     });
     let (old_workspace, cx) =

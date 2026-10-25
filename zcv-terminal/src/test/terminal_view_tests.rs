@@ -9,6 +9,7 @@ use gpui::{
     Context, Entity, EntityInputHandler, IntoElement, Modifiers, MouseButton, Render,
     TestAppContext, VisualTestContext, Window, div, point, prelude::*, px, size,
 };
+use zcv_settings::{SettingsStore, UserSettings};
 
 #[derive(Default)]
 struct EmptyView;
@@ -54,6 +55,7 @@ fn all_text(content: &Content) -> String {
 /// 模拟器接收输出后应投影到渲染快照。
 #[gpui::test]
 async fn terminal_output_updates_content(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let terminal = build_terminal(cx);
     let (_, cx) = cx.add_window_view(|_window, _cx| EmptyView);
 
@@ -72,6 +74,7 @@ async fn terminal_output_updates_content(cx: &mut TestAppContext) {
 /// 像素高度变化时，模型仍需立即持有最新边界，不能等待下一次 PTY resize。
 #[gpui::test]
 async fn terminal_size_snapshot_is_authoritative_before_resize(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let terminal = build_terminal(cx);
     let (_, cx) = cx.add_window_view(|_window, _cx| EmptyView);
 
@@ -94,6 +97,7 @@ async fn terminal_size_snapshot_is_authoritative_before_resize(cx: &mut TestAppC
 /// IME 候选窗定位：渲染一帧后 bounds_for_range 应返回光标像素位置。
 #[gpui::test]
 async fn ime_cursor_bounds(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let terminal = build_terminal(cx);
     let (view, cx) = cx.add_window_view(|_window, cx| TerminalView::new(terminal, cx));
     cx.run_until_parked();
@@ -116,6 +120,7 @@ async fn ime_cursor_bounds(cx: &mut TestAppContext) {
 /// 焦点先于首次挂载到达视图时，首次注册监听仍要同步到终端状态机。
 #[gpui::test]
 async fn focus_before_first_render_is_synchronized_to_terminal(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let terminal = build_terminal(cx);
     let terminal_for_view = terminal.clone();
     let (_, cx) = cx.add_window_view(move |window, cx| {
@@ -135,6 +140,7 @@ async fn focus_before_first_render_is_synchronized_to_terminal(cx: &mut TestAppC
 /// 光标与焦点绑定：失焦隐藏；聚焦时（终端未表态）默认闪烁可见。
 #[gpui::test]
 async fn cursor_focus_binding(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let terminal = build_terminal(cx);
     let (view, cx) = cx.add_window_view(|_window, cx| TerminalView::new(terminal, cx));
     cx.run_until_parked();
@@ -152,6 +158,7 @@ async fn cursor_focus_binding(cx: &mut TestAppContext) {
 /// 渲染冒烟：display-only 终端渲染一帧不 panic，输入写入不依赖 PTY。
 #[gpui::test]
 async fn render_smoke(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let terminal = build_terminal(cx);
     let (view, cx) = cx.add_window_view(|_window, cx| TerminalView::new(terminal, cx));
     cx.run_until_parked();
@@ -173,6 +180,7 @@ async fn render_smoke(cx: &mut TestAppContext) {
 /// 选择设置与清除：select_range 后应报告存在选择，清除后消失。
 #[gpui::test]
 async fn selection_set_and_clear(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let terminal = build_terminal(cx);
     let (_, cx) = cx.add_window_view(|_window, _cx| EmptyView);
 
@@ -216,6 +224,7 @@ async fn selection_set_and_clear(cx: &mut TestAppContext) {
 /// 终端刚创建且尚无 PTY 输出时，鼠标按下也必须能建立选区手势。
 #[gpui::test]
 async fn selection_starts_before_terminal_output(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let terminal = build_terminal(cx);
     let (_, cx) = cx.add_window_view(|_window, _cx| EmptyView);
 
@@ -247,6 +256,7 @@ async fn selection_starts_before_terminal_output(cx: &mut TestAppContext) {
 async fn releasing_selection_outside_the_terminal_ends_the_pointer_gesture(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let terminal = build_terminal(cx);
     let terminal_for_view = terminal.clone();
     let (_view, cx) =

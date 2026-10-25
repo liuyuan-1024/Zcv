@@ -13,6 +13,7 @@ use crate::{
     Item, PreviewItem, PreviewItemHandle, PreviewProvider, register,
     toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView},
 };
+use zcv_settings::{SettingsStore, UserSettings};
 
 /// 辅助视图类型，仅用于测试中创建窗口。
 struct TestView;
@@ -54,6 +55,7 @@ impl ToolbarItemView for RecordingToolbar {
 /// Pane 在活动项变化后把新活动项同步给工具区。
 #[gpui::test]
 fn pane_syncs_toolbar_with_active_item(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "工具区同步");
     let pane = cx.new(Pane::new);
     cx.add_window_view(|window, cx| {
@@ -365,6 +367,7 @@ fn assert_active_is_preview(pane: &Pane, cx: &App, expected: bool) {
 
 #[gpui::test]
 fn pane_owns_file_path_and_item_backed_by_the_given_buffer(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "真实编辑器");
     let pane = cx.new(Pane::new);
     open_file_in_test(cx, &pane, PathBuf::from("demo.txt"), buffer.clone());
@@ -400,6 +403,7 @@ fn pane_owns_file_path_and_item_backed_by_the_given_buffer(cx: &mut TestAppConte
 
 #[gpui::test]
 fn opening_the_same_path_reuses_the_pane_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first_buffer = test_buffer(cx, "首次");
     let second_buffer = test_buffer(cx, "重复");
 
@@ -413,6 +417,7 @@ fn opening_the_same_path_reuses_the_pane_editor(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn transient_tab_is_replaced_and_permanent_open_promotes_it(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let pane = cx.new(Pane::new);
     let permanent_buffer = test_buffer(cx, "固定");
     open_file_in_test(cx, &pane, PathBuf::from("permanent.txt"), permanent_buffer);
@@ -445,6 +450,7 @@ fn transient_tab_is_replaced_and_permanent_open_promotes_it(cx: &mut TestAppCont
 
 #[gpui::test]
 fn editing_transient_tab_promotes_it_before_next_transient_tab(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let pane = cx.new(Pane::new);
     let edited_buffer = test_buffer(cx, "临时标签");
     open_transient_file_in_test(cx, &pane, PathBuf::from("edited.txt"), edited_buffer);
@@ -474,6 +480,7 @@ fn editing_transient_tab_promotes_it_before_next_transient_tab(cx: &mut TestAppC
 
 #[gpui::test]
 fn single_click_opens_preview_but_double_click_replaces_it_with_source(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let svg_buffer = test_buffer(
@@ -504,6 +511,7 @@ fn single_click_opens_preview_but_double_click_replaces_it_with_source(cx: &mut 
 
 #[gpui::test]
 fn opening_another_transient_preview_replaces_the_previous_preview(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let first_buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -523,6 +531,7 @@ fn opening_another_transient_preview_replaces_the_previous_preview(cx: &mut Test
 
 #[gpui::test]
 fn preview_toggle_switches_tabs_and_preserves_transient_lifecycle(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let svg_buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -562,6 +571,7 @@ fn preview_toggle_switches_tabs_and_preserves_transient_lifecycle(cx: &mut TestA
 
 #[gpui::test]
 fn only_transient_svg_files_open_in_preview_by_default(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let permanent_pane = cx.new(Pane::new);
     let permanent_svg = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -585,6 +595,7 @@ fn only_transient_svg_files_open_in_preview_by_default(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn preview_is_unique_and_shares_the_source_document(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let svg_buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -606,6 +617,7 @@ fn preview_is_unique_and_shares_the_source_document(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn serialized_pane_keeps_fixed_preview_and_its_active_position(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -627,6 +639,7 @@ fn serialized_pane_keeps_fixed_preview_and_its_active_position(cx: &mut TestAppC
 
 #[gpui::test]
 fn serialized_pane_omits_transient_preview(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -639,6 +652,7 @@ fn serialized_pane_omits_transient_preview(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn serialized_pane_keeps_fixed_custom_item(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let pane = cx.new(Pane::new);
     cx.add_window_view(|window, cx| {
         pane.update(cx, |pane, cx| {
@@ -666,6 +680,7 @@ fn serialized_pane_keeps_fixed_custom_item(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn restored_preview_is_fixed(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -689,6 +704,7 @@ fn restored_preview_is_fixed(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn unsupported_file_does_not_open_a_preview_tab(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let text_buffer = test_buffer(cx, "普通文本");
@@ -699,6 +715,7 @@ fn unsupported_file_does_not_open_a_preview_tab(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn closing_preview_keeps_the_source_tab(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let svg_buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -719,6 +736,7 @@ fn closing_preview_keeps_the_source_tab(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn closing_source_keeps_its_preview(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -745,6 +763,7 @@ fn closing_source_keeps_its_preview(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn showing_source_from_an_orphaned_preview_appends_a_tab(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let svg_buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -789,6 +808,7 @@ fn showing_source_from_an_orphaned_preview_appends_a_tab(cx: &mut TestAppContext
 
 #[gpui::test]
 fn double_clicking_a_transient_tab_promotes_it(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let pane = cx.new(Pane::new);
     let buffer = test_buffer(cx, "临时标签");
     open_transient_file_in_test(cx, &pane, PathBuf::from("preview.txt"), buffer);
@@ -806,6 +826,7 @@ fn double_clicking_a_transient_tab_promotes_it(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn double_clicking_a_preview_tab_keeps_its_preview_content(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);
     let pane = cx.new(Pane::new);
     let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -824,6 +845,7 @@ fn double_clicking_a_preview_tab_keeps_its_preview_content(cx: &mut TestAppConte
 
 #[gpui::test]
 fn move_tab_reorders_tabs_correctly(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let pane = cx.new(Pane::new);
 
     // 用 scratch Buffer 模拟多个标签
@@ -891,6 +913,7 @@ fn move_tab_reorders_tabs_correctly(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn every_close_path_emits_removed(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 回归：三条关闭路径（close_tab 直接关闭、删除文件触发）都必须发射 Removed，订阅方（项目树高亮）才能刷新。
     let buffer = test_buffer(cx, "内容");
     let pane = cx.new(Pane::new);
@@ -935,6 +958,7 @@ fn every_close_path_emits_removed(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn tab_bar_is_only_rendered_when_pane_has_an_active_item(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (pane, cx) = cx.add_window_view(|_, cx| Pane::new(cx));
     cx.run_until_parked();
     cx.refresh().expect("测试窗口应可刷新");
@@ -960,6 +984,7 @@ fn tab_bar_is_only_rendered_when_pane_has_an_active_item(cx: &mut TestAppContext
 
 #[gpui::test]
 fn clicking_empty_pane_area_moves_focus_to_pane(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 决定性验证：点击空白 pane（无活动文件）后，焦点转移给 pane 自身
     // （gpui 对 track_focus 元素的"聚焦点击"内建行为：mouse down Bubble 阶段自动 window.focus）。
     // 这解释了"项目树/终端点击空白 pane 后失焦"——焦点去了 pane，行为正确；

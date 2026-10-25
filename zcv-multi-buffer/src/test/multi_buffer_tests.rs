@@ -15,6 +15,7 @@ use zcv_text::{
 };
 
 use super::*;
+use zcv_settings::{SettingsStore, UserSettings};
 
 /// 测试辅助：按路径分组写入，替代已删除的整篇 set_excerpts 入口。
 trait SetExcerptsByPath {
@@ -153,6 +154,7 @@ fn test_diff_file(
 /// 文件插入顺序与后台结果就绪顺序独立；就绪文件不能被重复计作新增映射。
 #[gpui::test]
 fn diff_materialization_handles_insertion_before_a_pending_file(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let a = singleton("src/a.rs", "a1\na2\n", cx);
     let c = singleton("src/c.rs", "c1\nc2\n", cx);
     let d = singleton("src/d.rs", "d1\nd2\n", cx);
@@ -206,6 +208,7 @@ fn diff_materialization_handles_insertion_before_a_pending_file(cx: &mut TestApp
 fn tree_ordered_diff_keeps_directory_first_order_during_out_of_order_arrival(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let sources = [
         singleton("a.rs", "a\n", cx),
         singleton("src/file10.rs", "ten\n", cx),
@@ -261,6 +264,7 @@ fn tree_ordered_diff_keeps_directory_first_order_during_out_of_order_arrival(
 fn ordinary_multi_buffer_uses_natural_path_order_without_directory_grouping(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let sources = [
         singleton("src/sub/b.rs", "sub\n", cx),
         singleton("src/file10.rs", "ten\n", cx),
@@ -294,6 +298,7 @@ fn ordinary_multi_buffer_uses_natural_path_order_without_directory_grouping(
 /// 整体替换时保留仍有效的就绪映射；移除尚未就绪的文件后，其结果不能重新进入投影。
 #[gpui::test]
 fn diff_materialization_tracks_pending_replacement_and_removal(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for remove_pending in [false, true] {
         let a = singleton("src/a.rs", "a1\na2\n", cx);
         let b = singleton("src/b.rs", "b1\nb2\n", cx);
@@ -357,6 +362,7 @@ fn diff_materialization_tracks_pending_replacement_and_removal(cx: &mut TestAppC
 /// 中段插入文件后的投影必须与"一开始就包含该文件"完全一致（含增量下标顺延）。
 #[gpui::test]
 fn inserting_middle_diff_file_matches_fresh_three_file_build(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let a = singleton("src/a.rs", "a1\na2\n", cx);
     let b = singleton("src/b.rs", "b1\nb2\n", cx);
     let c = singleton("src/c.rs", "c1\nc2\n", cx);
@@ -429,6 +435,7 @@ fn inserting_middle_diff_file_matches_fresh_three_file_build(cx: &mut TestAppCon
 
 #[gpui::test]
 fn removing_middle_diff_file_matches_fresh_two_file_build(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let a = singleton("src/a.rs", "a1\na2\n", cx);
     let b = singleton("src/b.rs", "b1\nb2\n", cx);
     let c = singleton("src/c.rs", "c1\nc2\n", cx);
@@ -500,6 +507,7 @@ fn removing_middle_diff_file_matches_fresh_two_file_build(cx: &mut TestAppContex
 /// 移除路径顺序末尾的文件后，前一个文件不再需要分隔合成换行，投影必须与全新单文件构建一致。
 #[gpui::test]
 fn removing_last_diff_file_matches_fresh_single_file_build(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let a = singleton("src/a.rs", "a1\na2", cx);
     let c = singleton("src/c.rs", "c1\nc2", cx);
 
@@ -539,6 +547,7 @@ fn removing_last_diff_file_matches_fresh_single_file_build(cx: &mut TestAppConte
 /// 单个文件的 diff 版本变化必须只原地重物化该路径，其余文件与全新构建一致。
 #[gpui::test]
 fn single_file_version_change_matches_fresh_three_file_build(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let a = singleton("src/a.rs", "a1\na2\n", cx);
     let b = singleton("src/b.rs", "b1\nb2\nb3\n", cx);
     let c = singleton("src/c.rs", "c1\nc2\n", cx);
@@ -623,6 +632,7 @@ fn single_file_version_change_matches_fresh_three_file_build(cx: &mut TestAppCon
 /// 组合映射树按源路径排序，中间插入与按显示路径移除都必须与之对齐。
 #[gpui::test]
 fn relative_display_paths_stay_consistent_across_middle_edit(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let a = singleton("/repo/src/a.rs", "a1\na2\n", cx);
     let b = singleton("/repo/src/b.rs", "b1\nb2\n", cx);
     let c = singleton("/repo/src/c.rs", "c1\nc2\n", cx);
@@ -699,6 +709,7 @@ fn read_diff_state(
 
 #[gpui::test]
 fn clearing_buffer_diffs_removes_previous_hunks(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -729,6 +740,7 @@ fn clearing_buffer_diffs_removes_previous_hunks(cx: &mut TestAppContext) {
 /// 未提交 diff 以 HEAD 为 base、工作区为 working，由 index → working 参照逐 hunk 标注暂存语义。
 #[gpui::test]
 fn unified_diff_marks_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
     let diff = test_diff_entity(
         source.clone(),
@@ -771,6 +783,7 @@ fn unified_diff_marks_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
 /// 同一文件同时存在已暂存与未暂存 hunk 时逐 hunk 判定，而不是整文件一刀切。
 #[gpui::test]
 fn unified_diff_marks_mixed_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "a\nB\nc\nd\nE\n", cx);
     let diff = test_diff_entity(
         source.clone(),
@@ -795,6 +808,7 @@ fn unified_diff_marks_mixed_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
 /// 已暂存视图：working 本身就是 index，分类自然得到全部 Staged。
 #[gpui::test]
 fn standalone_staged_view_classifies_all_hunks_as_staged(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let index_source = singleton("src/a.rs", "one\nstaged\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(index_source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -828,6 +842,7 @@ fn standalone_staged_view_classifies_all_hunks_as_staged(cx: &mut TestAppContext
 /// index→工作区 hunk 部分重叠，应标记为 PartiallyStaged（实心渲染）。
 #[gpui::test]
 fn staged_hunk_with_partial_unstaged_edit_is_partially_staged(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "line1\nSTAGED\nNEW\nline3\n", cx);
     let diff = test_diff_entity(
         source.clone(),
@@ -849,6 +864,7 @@ fn staged_hunk_with_partial_unstaged_edit_is_partially_staged(cx: &mut TestAppCo
 /// 主 hunk 与未暂存 hunk 仅部分重叠时标记为部分暂存。
 #[gpui::test]
 fn unified_diff_marks_partially_staged_hunk(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "one\nX\nY\nthree\n", cx);
     let diff = test_diff_entity(
         source.clone(),
@@ -872,6 +888,7 @@ fn unified_diff_marks_partially_staged_hunk(cx: &mut TestAppContext) {
 /// 回归：不改变 diff 几何的刷新既不推进语言元数据，也不创建新的显示输入。
 #[gpui::test]
 fn unchanged_diff_display_does_not_advance_metadata_or_display_version(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -919,6 +936,7 @@ fn unchanged_diff_display_does_not_advance_metadata_or_display_version(cx: &mut 
 /// 即使差异更新没有改变组合文本，消费者也必须收到差异状态事件。
 #[gpui::test]
 fn diff_state_change_notifies_snapshot_consumers(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     struct EventProbe {
         _subscription: gpui::Subscription,
     }
@@ -980,6 +998,7 @@ fn diff_state_change_notifies_snapshot_consumers(cx: &mut TestAppContext) {
 /// 回归：展开状态改变只推进 diff 显示版本，不能污染语法／设置元数据版本。
 #[gpui::test]
 fn diff_display_change_uses_its_own_version(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -1040,6 +1059,7 @@ fn line_cursor_reads_empty_composite_row(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn line_cursor_matches_stateless_line_queries(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "甲乙\nsecond\r\n\r\nthird", cx);
     let second = singleton("src/b.rs", "无尾换行中文", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1085,6 +1105,7 @@ fn line_cursor_matches_stateless_line_queries(cx: &mut TestAppContext) {
 /// 片段从行中间截断时，行游标必须按片段源范围裁剪内容。
 #[gpui::test]
 fn line_cursor_clips_to_excerpt_source_range(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton(
         "src/a.rs",
         "前缀中文内容尾
@@ -1134,6 +1155,7 @@ fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> Entity<Language
 
 #[gpui::test]
 fn input_scope_maps_each_excerpt_and_rejects_read_only_region(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let rust = singleton("a.rs", "let a = 1;\n", cx);
     let script = singleton("b.js", "const b = 2;\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1196,6 +1218,7 @@ fn input_scope_maps_each_excerpt_and_rejects_read_only_region(cx: &mut TestAppCo
 
 #[gpui::test]
 fn indent_guides_follow_nested_indentation_and_blank_lines(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton(
         "src/indent.rs",
         "root\n    outer\n\n        inner\n    outer\nend",
@@ -1217,6 +1240,7 @@ fn indent_guides_follow_nested_indentation_and_blank_lines(cx: &mut TestAppConte
 
 #[gpui::test]
 fn enclosing_indent_selects_the_opening_and_blank_line_block(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton(
         "src/indent.rs",
         "root\n    outer\n\n        inner\n    tail\nend",
@@ -1250,6 +1274,7 @@ fn enclosing_indent_selects_the_opening_and_blank_line_block(cx: &mut TestAppCon
 
 #[gpui::test]
 fn indent_guides_treat_a_tab_as_one_tab_size_of_spaces(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/tabs.rs", "root\n\twith_tab\n    with_spaces\nend", cx);
     let buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
     let snapshot = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
@@ -1265,6 +1290,7 @@ fn indent_guides_treat_a_tab_as_one_tab_size_of_spaces(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn indent_guides_end_when_the_next_excerpt_dedents(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "root\n    a\n", cx);
     let second = singleton("src/b.rs", "root\n    b\n", cx);
     let buffer = cx.new(MultiBuffer::empty);
@@ -1288,6 +1314,7 @@ fn indent_guides_end_when_the_next_excerpt_dedents(cx: &mut TestAppContext) {
 /// 范围查询返回当前快照的组合坐标；行游标与按字节查询共享源映射语义。
 #[gpui::test]
 fn source_range_projection_follows_the_queried_excerpt(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/fragmented.rs", "a\nb\nc\nd\n", cx);
     let prefix = singleton("src/first.rs", "prefix\n", cx);
     let buffer = cx.new(MultiBuffer::empty);
@@ -1322,6 +1349,7 @@ fn source_range_projection_follows_the_queried_excerpt(cx: &mut TestAppContext) 
 /// 连续片段可以跨越删除投影；未展示的源文本不能被折叠范围跨过。
 #[gpui::test]
 fn source_range_projection_requires_contiguous_content(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = singleton("src/fragmented.rs", "a\nb\nc\nd\n", cx);
     let buffer = cx.new(MultiBuffer::empty);
     buffer.update(cx, |buffer, cx| {
@@ -1356,6 +1384,7 @@ fn source_range_projection_requires_contiguous_content(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn source_range_projection_keeps_logical_identity_across_diff_windows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = singleton("src/windows.rs", "a\ngap1\ngap2\np\nnew\nq\n", cx);
     let buffer = cx.new(MultiBuffer::empty);
     buffer.update(cx, |buffer, cx| {
@@ -1378,6 +1407,7 @@ fn source_range_projection_keeps_logical_identity_across_diff_windows(cx: &mut T
 /// 源坐标和组合坐标只属于各自快照；后续编辑不能改变已持有快照的投影结果。
 #[gpui::test]
 fn source_range_projection_uses_its_snapshot_after_source_edits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/edited.rs", "a\nb\nc\n", cx);
     let buffer = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     let before = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
@@ -1430,6 +1460,7 @@ fn read_only_singleton(path: &str, text: &str, cx: &mut TestAppContext) -> Entit
 
 #[gpui::test]
 fn title_uses_path_then_content_then_default(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 有文件路径的单例：标题取文件名。
     let source = singleton("src/main.rs", "fn main() {}\n", cx);
     let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
@@ -1463,6 +1494,7 @@ fn title_uses_path_then_content_then_default(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn anchor_resolves_to_neighbor_path_after_removal(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "a\n", cx);
     let second = singleton("src/b.rs", "b\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1500,6 +1532,7 @@ fn anchor_resolves_to_neighbor_path_after_removal(cx: &mut TestAppContext) {
 /// 结构性投影可以变为空；位置状态仍必须有确定的组合坐标。
 #[gpui::test]
 fn anchor_resolves_to_document_start_when_projection_becomes_empty(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "甲乙\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -1529,6 +1562,7 @@ fn anchor_resolves_to_document_start_when_projection_becomes_empty(cx: &mut Test
 
 #[gpui::test]
 fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "a\nb\n", cx);
     let second = singleton("src/b.rs", "c\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1584,6 +1618,7 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn appended_excerpt_matches_use_final_projected_order(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let existing = singleton("src/file1.rs", "needle\n", cx);
     let first = singleton("src/file2.rs", "needle\n", cx);
     let second = singleton("src/file10.rs", "needle\n", cx);
@@ -1635,6 +1670,7 @@ fn appended_excerpt_matches_use_final_projected_order(cx: &mut TestAppContext) {
 #[gpui::test]
 #[should_panic(expected = "set_excerpts_for_path 必须在文本事务之外")]
 fn structural_change_inside_a_transaction_fails(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "a\nb\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -1651,6 +1687,7 @@ fn structural_change_inside_a_transaction_fails(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn excerpt_iteration_preserves_mapping_order(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "a\nb\n", cx);
     let second = singleton("src/b.rs", "c\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1677,6 +1714,7 @@ fn excerpt_iteration_preserves_mapping_order(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn remove_excerpts_for_path_drops_only_that_path(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "a", cx);
     let second = singleton("src/b.rs", "b", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1718,6 +1756,7 @@ fn remove_excerpts_for_path_drops_only_that_path(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn excerpts_by_path_uses_the_path_cursor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "a\n", cx);
     let second = singleton("src/b.rs", "b\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1749,6 +1788,7 @@ fn excerpts_by_path_uses_the_path_cursor(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn text_chunks_stream_excerpt_sources_and_inserted_boundary(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/first.rs", "first", cx);
     let second = singleton("src/second.rs", "second\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1834,6 +1874,7 @@ fn plain_snapshot_streams_its_source_without_materializing() {
 
 #[gpui::test]
 fn composite_snapshot_remains_immutable_until_a_new_frame_is_read(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/main.rs", "one\ntwo\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     let before = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
@@ -1858,6 +1899,7 @@ fn composite_snapshot_remains_immutable_until_a_new_frame_is_read(cx: &mut TestA
 
 #[gpui::test]
 fn singleton_source_updates_the_display_stream_incrementally(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/main.rs", "fn main() {}\n", cx);
     let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&multi_buffer, |buffer, cx| {
@@ -1920,6 +1962,7 @@ fn singleton_source_updates_the_display_stream_incrementally(cx: &mut TestAppCon
 
 #[gpui::test]
 fn source_edit_updates_only_its_composite_excerpt(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/first.rs", "first\n", cx);
     let second = singleton("src/second.rs", "second\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1960,6 +2003,7 @@ fn source_edit_updates_only_its_composite_excerpt(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn multiple_source_edits_before_a_read_compose_into_one_incremental_batch(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/first.rs", "first\n", cx);
     let second = singleton("src/second.rs", "second\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -2011,6 +2055,7 @@ fn multiple_source_edits_before_a_read_compose_into_one_incremental_batch(cx: &m
 
 #[gpui::test]
 fn source_edit_outside_excerpts_publishes_an_empty_incremental_batch(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/partial.rs", "shown\nhidden\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -2049,6 +2094,7 @@ fn source_edit_outside_excerpts_publishes_an_empty_incremental_batch(cx: &mut Te
 
 #[gpui::test]
 fn one_source_edit_updates_all_visible_excerpts_incrementally(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/repeated.rs", "line\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -2205,6 +2251,7 @@ fn assert_output_coordinates(snapshot: &MultiBufferSnapshot) {
 
 #[gpui::test]
 fn output_coordinates_follow_content_across_logical_excerpts(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "前缀甲🙂尾\n跳过\n乙e\u{301}z\r\n最后", cx);
     let empty = singleton("src/b.rs", "", cx);
     let tail = singleton("src/c.rs", "尾🙂\n", cx);
@@ -2239,6 +2286,7 @@ fn output_coordinates_follow_content_across_logical_excerpts(cx: &mut TestAppCon
 
 #[gpui::test]
 fn diff_incremental_edits_keep_output_coordinates_and_patch_replay(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "甲🙂\nworking\r\n尾", cx);
     let tail = singleton("src/b.rs", "下一文件🙂", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -2330,6 +2378,7 @@ fn diff_incremental_edits_keep_output_coordinates_and_patch_replay(cx: &mut Test
 
 #[gpui::test]
 fn excerpt_matches_use_updated_output_coordinates_after_path_insertion(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "甲", cx);
     let second = singleton("src/b.rs", "🙂乙", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -2360,6 +2409,7 @@ fn excerpt_matches_use_updated_output_coordinates_after_path_insertion(cx: &mut 
 /// 源末尾换行与合成分隔换行共用组合增量协议，普通编辑与历史回放都必须覆盖完整输出。
 #[gpui::test]
 fn source_edits_project_excerpt_separator_changes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let cases = [
         ("甲\n", vec![(3..4, "")], "甲"),
         ("甲", vec![(3..3, "\n")], "甲\n"),
@@ -2430,6 +2480,7 @@ fn source_edits_project_excerpt_separator_changes(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn source_edits_project_separators_for_all_visible_excerpts(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/first.rs", "甲\n乙\n丙\n", cx);
     let tail = singleton("src/tail.rs", "尾", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -2471,6 +2522,7 @@ fn source_edits_project_separators_for_all_visible_excerpts(cx: &mut TestAppCont
 
 #[gpui::test]
 fn source_edits_keep_document_tail_free_of_synthetic_newlines(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/tail.rs", "甲\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     let (subscription, before) =
@@ -2500,6 +2552,7 @@ fn source_edits_keep_document_tail_free_of_synthetic_newlines(cx: &mut TestAppCo
 
 #[gpui::test]
 fn excerpt_topology_changes_publish_output_edits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/first.rs", "first\n", cx);
     let second = singleton("src/second.rs", "second\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -2527,6 +2580,7 @@ fn excerpt_topology_changes_publish_output_edits(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn dropping_a_middle_excerpt_publishes_a_single_output_edit(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/first.rs", "a\n", cx);
     let second = singleton("src/second.rs", "b\n", cx);
     let third = singleton("src/third.rs", "c\n", cx);
@@ -2563,6 +2617,7 @@ fn dropping_a_middle_excerpt_publishes_a_single_output_edit(cx: &mut TestAppCont
 
 #[gpui::test]
 fn composite_char_and_utf16_coordinates_count_synthetic_newlines(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/first.rs", "αβ", cx);
     let second = singleton("src/second.rs", "γ\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -2605,6 +2660,7 @@ fn composite_char_and_utf16_coordinates_count_synthetic_newlines(cx: &mut TestAp
 
 #[gpui::test]
 fn source_excerpts_and_display_transforms_use_separate_coordinate_trees(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/diff.rs", "a\nnew\nz", cx);
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |buffer, cx| {
@@ -2637,6 +2693,7 @@ fn source_excerpts_and_display_transforms_use_separate_coordinate_trees(cx: &mut
 
 #[gpui::test]
 fn singleton_role_does_not_depend_on_current_excerpt_shape(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/main.rs", "first\nsecond\n", cx);
     let working = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&working, |buffer, cx| {
@@ -2673,6 +2730,7 @@ fn singleton_role_does_not_depend_on_current_excerpt_shape(cx: &mut TestAppConte
 
 #[gpui::test]
 fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/main.rs", "// 前置\nfn 数据() {}\n// 后置\n", cx);
     cx.run_until_parked();
     let (function_range, source_name_start) = cx.read_entity(&source, |source, _| {
@@ -2731,6 +2789,7 @@ fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn outline_entries_carry_display_paths_for_multiple_files(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton(
         "src/a.rs",
         "fn 甲() {}
@@ -2787,6 +2846,7 @@ fn outline_entries_carry_display_paths_for_multiple_files(cx: &mut TestAppContex
 
 #[gpui::test]
 fn syntax_nodes_project_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/main.rs", "// 前置\nfn 数据() {}\n// 后置\n", cx);
     cx.run_until_parked();
     let source_name_start = "// 前置\nfn ".len();
@@ -2833,6 +2893,7 @@ fn syntax_nodes_project_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "zero\none\ntwo\n", cx);
     let second = singleton("src/b.rs", "alpha\nbeta\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -2903,6 +2964,7 @@ fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn per_path_excerpts_keep_path_order_regardless_of_insertion_order(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 这两个路径的字节序与 PathKey 组件序相反：git ls-files 先给 zcv-workspace，
     // 但 PathKey 序要求 zcv 在前。按字节序插入，验证组合文档仍按 PathKey 排序。
     let first = singleton("zcv/src/workspace.rs", "zero\none\n", cx);
@@ -2948,6 +3010,7 @@ fn per_path_excerpts_keep_path_order_regardless_of_insertion_order(cx: &mut Test
 }
 #[gpui::test]
 fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "zero\none\ntwo\nthree\nfour\n", cx);
     let second = singleton("src/b.rs", "alpha\nbeta\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -2986,6 +3049,7 @@ fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut Tes
 
 #[gpui::test]
 fn source_anchor_at_excerpt_boundary_resolves_to_following_excerpt(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "one\ntwo\nthree\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -3009,6 +3073,7 @@ fn source_anchor_at_excerpt_boundary_resolves_to_following_excerpt(cx: &mut Test
 
 #[gpui::test]
 fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "one\n", cx);
     let second = singleton("src/b.rs", "two\n", cx);
     let third = singleton("src/c.rs", "three\n", cx);
@@ -3050,6 +3115,7 @@ fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestApp
 /// 源锚点版本晚于目标快照时，禁止落到邻近文件/坐标。
 #[gpui::test]
 fn invalid_source_anchor_does_not_fall_forward_to_another_file(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "one\n", cx);
     let second = singleton("src/b.rs", "two\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -3089,6 +3155,7 @@ fn invalid_source_anchor_does_not_fall_forward_to_another_file(cx: &mut TestAppC
 /// 外部文本更新与普通编辑共用版本化坐标链，已有锚点自动跟随差异编辑。
 #[gpui::test]
 fn external_text_update_keeps_existing_anchor_mapped(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "alpha\ncharlie\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     let anchor = cx.update_entity(&combined, |buffer, cx| {
@@ -3117,6 +3184,7 @@ fn external_text_update_keeps_existing_anchor_mapped(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("deleted/a.rs", "", cx);
     let second = singleton("deleted/b.rs", "", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -3145,6 +3213,7 @@ fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppConte
 
 #[gpui::test]
 fn bounded_logical_boundaries_include_empty_file_at_document_end(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "", cx);
     let middle = singleton("src/b.rs", "one\ntwo\nthree\n", cx);
     let last = singleton("src/c.rs", "", cx);
@@ -3193,6 +3262,7 @@ fn bounded_logical_boundaries_include_empty_file_at_document_end(cx: &mut TestAp
 
 #[gpui::test]
 fn anchor_from_empty_source_follows_the_end_after_window_refresh(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "", cx);
     let combined = cx.new(MultiBuffer::empty);
     let anchor = combined.update(cx, |buffer, cx| {
@@ -3227,6 +3297,7 @@ fn anchor_from_empty_source_follows_the_end_after_window_refresh(cx: &mut TestAp
 
 #[gpui::test]
 fn terminal_source_anchors_follow_prefix_and_suffix_after_window_refresh(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "one\ntwo\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     let (start, end) = combined.update(cx, |buffer, cx| {
@@ -3277,6 +3348,7 @@ fn terminal_source_anchors_follow_prefix_and_suffix_after_window_refresh(cx: &mu
 
 #[gpui::test]
 fn source_reparse_does_not_reload_composite_text(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/main.rs", "fn main() {\n    println!(\"ok\");\n}\n", cx);
     let source_len = cx.read_entity(&source, |source, _| source.text_snapshot().len_bytes());
     let combined = cx.new(MultiBuffer::empty);
@@ -3302,6 +3374,7 @@ fn source_reparse_does_not_reload_composite_text(cx: &mut TestAppContext) {
 /// 组合编辑在 `MultiBuffer::edit` 内同步映射并重建订阅，`source_changed` 的消费为空，两条路径不会重复映射——这是 hunk 文本跟踪区间更新机制的前提。
 #[gpui::test]
 fn composite_edit_maps_excerpt_source_ranges_exactly_once(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "zero\none\ntwo\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -3350,6 +3423,7 @@ fn composite_edit_maps_excerpt_source_ranges_exactly_once(cx: &mut TestAppContex
 /// 外部源编辑后，显示 hunk 必须从当前 base/working 快照重算，而不是平移旧 Git hunk。
 #[gpui::test]
 fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "zero\none\ntwo\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -3438,6 +3512,7 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn diff_expansion_survives_hunk_kind_changes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for expanded_by_default in [false, true] {
         let source = singleton("src/a.rs", "a\nb\nc", cx);
         let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
@@ -3505,6 +3580,7 @@ fn diff_expansion_survives_hunk_kind_changes(cx: &mut TestAppContext) {
 /// 同一起点的差异区块在刷新、合并后保留显式展开状态。
 #[gpui::test]
 fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("tracked.txt", "line0\n改过\nline2\nline3\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     let base_text: Arc<str> = Arc::from("line0\nline1\nline2\nline3\n");
@@ -3584,6 +3660,7 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
 /// 迁移会丢失显式展开。身份改为在当前工作区快照上重新解析后，同一 hunk 不因版本推进而失效。
 #[gpui::test]
 fn diff_expansion_survives_working_version_advance_with_stale_old_diff(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "zero\nworking\ntwo\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -3644,6 +3721,7 @@ fn diff_expansion_survives_working_version_advance_with_stale_old_diff(cx: &mut 
 
 #[gpui::test]
 fn undo_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton(
         "src/window_controls.rs",
         "fn main() { let value = 1; }\n",
@@ -3693,6 +3771,7 @@ fn undo_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton(
         "src/window_controls.rs",
         "fn main() { let value = 1; }\n",
@@ -3741,6 +3820,7 @@ fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
 /// 后续文件的 hunk 坐标必须来自实际 excerpt 映射，不能按源行数累计后发生偏移。
 #[gpui::test]
 fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let created = singleton("created.txt", "created\n", cx);
     let modified = singleton("modified.txt", "before\nnew\nafter\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -3832,6 +3912,7 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
 
 #[gpui::test]
 fn new_file_diff_excludes_the_empty_editor_row_after_terminal_newline(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("new.txt", "first\nsecond\n", cx);
     let diff = test_diff_entity(source, "new.txt", None, None, cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -3858,6 +3939,7 @@ fn new_file_diff_excludes_the_empty_editor_row_after_terminal_newline(cx: &mut T
 
 #[gpui::test]
 fn visible_diff_hunks_stop_at_their_materialized_file_boundary(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let created = singleton("created.txt", "a\nb\nc\n", cx);
     let unchanged = singleton("unchanged.txt", "tail\n", cx);
     let created_diff = test_diff_entity(created, "created.txt", None, None, cx);
@@ -3896,6 +3978,7 @@ fn visible_diff_hunks_stop_at_their_materialized_file_boundary(cx: &mut TestAppC
 
 #[gpui::test]
 fn visible_diff_hunks_keep_full_source_range_when_projection_moves(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "heading\nbefore\nnew\nafter\nlast\n", cx);
     let working = "before\nnew one\nnew two\nnew three\nafter\n";
     let second = singleton("src/b.rs", working, cx);
@@ -3976,6 +4059,7 @@ fn visible_diff_hunks_keep_full_source_range_when_projection_moves(cx: &mut Test
 /// base 版本变化时，新的文本对重新定义 hunk 身份；旧 base 的展开状态不得迁移。
 #[gpui::test]
 fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "zero\none\ntwo\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4019,6 +4103,7 @@ fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut T
 
 #[gpui::test]
 fn base_text_change_with_same_hunk_geometry_updates_materialized_old_side(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "a\nnew\nz\n", cx);
     let diff = test_diff_entity(source.clone(), "src/a.rs", Some("a\nold\nz\n"), None, cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source, cx));
@@ -4054,6 +4139,7 @@ fn base_text_change_with_same_hunk_geometry_updates_materialized_old_side(cx: &m
 /// 回归：外部整体替换后，显示 hunk 必须从新工作区快照重算，旧 Git 操作 hunk 不得复用。
 #[gpui::test]
 fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "first\nchanged\nthird\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4096,6 +4182,7 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
 
 #[gpui::test]
 fn created_and_pure_deleted_hunks_keep_distinct_source_targets(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for (expanded, append) in [(false, false), (false, true), (true, false), (true, true)] {
         let created = singleton("src/created.rs", "created\n", cx);
         let deleted = singleton("src/deleted.rs", "", cx);
@@ -4162,6 +4249,7 @@ fn created_and_pure_deleted_hunks_keep_distinct_source_targets(cx: &mut TestAppC
 
 #[gpui::test]
 fn expanded_deleted_hunk_boundary_keeps_selection_in_working_text(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "a\nb\nc", cx);
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |buffer, cx| {
@@ -4193,6 +4281,7 @@ fn expanded_deleted_hunk_boundary_keeps_selection_in_working_text(cx: &mut TestA
 
 #[gpui::test]
 fn expanded_deleted_output_keeps_the_working_source_end_editable(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/gone.rs", "", cx);
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |buffer, cx| {
@@ -4231,6 +4320,7 @@ fn expanded_deleted_output_keeps_the_working_source_end_editable(cx: &mut TestAp
 
 #[gpui::test]
 fn diff_expansion_is_discarded_when_a_hunk_disappears(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/lifecycle.rs", "a\nnew\nz", cx);
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |buffer, cx| {
@@ -4272,6 +4362,7 @@ fn diff_expansion_is_discarded_when_a_hunk_disappears(cx: &mut TestAppContext) {
 /// 回归：工作区整份被删除且没有内容节点时，纯删除 hunk 仍必须挂到输出变换树并可见。
 #[gpui::test]
 fn fully_deleted_file_keeps_boundary_hunk(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/gone.rs", "", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4308,6 +4399,7 @@ fn fully_deleted_file_keeps_boundary_hunk(cx: &mut TestAppContext) {
 /// 组合文档只消费差异结果；未保存源文本也能直接消除已不存在的 hunk。
 #[gpui::test]
 fn projection_consumes_source_diff_changes_without_save_or_reinjection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "a\nb\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4361,6 +4453,7 @@ fn projection_consumes_source_diff_changes_without_save_or_reinjection(cx: &mut 
 /// 完整文件 excerpt 由文档构造方拥有，最后一个 hunk 消失不能移除文件内容。
 #[gpui::test]
 fn full_file_excerpt_survives_removing_the_last_diff_hunk(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "a\nb\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4419,6 +4512,7 @@ fn full_file_excerpt_survives_removing_the_last_diff_hunk(cx: &mut TestAppContex
 /// 回归：编辑内容但 hunk 几何不变时，diff 高亮不能因显示坐标门控而整体消失。
 #[gpui::test]
 fn diff_hunks_survive_geometry_preserving_edits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "a\nb\nc\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4469,6 +4563,7 @@ fn diff_hunks_survive_geometry_preserving_edits(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn diff_projection_materializes_only_caller_supplied_excerpt_ranges(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let path = "src/context.rs";
     let working_text = (0..40)
         .map(|line| {
@@ -4512,6 +4607,7 @@ fn diff_projection_materializes_only_caller_supplied_excerpt_ranges(cx: &mut Tes
 /// 源编辑先发布精确文本增量；后续 diff 结果若只更新 hunk 锚点，不能再次重建 excerpt 拓扑。
 #[gpui::test]
 fn diff_metadata_refresh_does_not_republish_unchanged_excerpt_topology(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "before\nleft\nafter\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -4562,6 +4658,7 @@ fn diff_metadata_refresh_does_not_republish_unchanged_excerpt_topology(cx: &mut 
 
 #[gpui::test]
 fn new_diff_hunk_does_not_expand_projection_edit_to_unchanged_later_hunks(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let path = "src/a.rs";
     let base = concat!(
         "first header\nbase one\nfirst tail\n",
@@ -4629,6 +4726,7 @@ fn new_diff_hunk_does_not_expand_projection_edit_to_unchanged_later_hunks(cx: &m
 /// 回归：某个文件尚未算完时，不能清空其他文件已经就绪的 diff 高亮。
 #[gpui::test]
 fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source_a = singleton("src/a.rs", "a\nb\nc\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source_a.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4684,6 +4782,7 @@ fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
 /// 回归：初始后台结果对应旧版本被拒后，diff 必须补算到当前版本，不能永久停在未计算状态。
 #[gpui::test]
 fn diff_recovers_when_initial_result_is_stale(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "a\nb\nc\n", cx);
     let diff = test_diff_entity(source.clone(), "src/a.rs", Some("a\nB\nc\n"), None, cx);
     // 不 park，立即编辑源：初始后台结果会对应旧版本并被版本门控拒绝。
@@ -4709,6 +4808,7 @@ fn diff_recovers_when_initial_result_is_stale(cx: &mut TestAppContext) {
 /// 回归：连续多次编辑后，diff 高亮仍必须可用（不依赖异步 DiffChanged 恰好重建）。
 #[gpui::test]
 fn diff_hunks_survive_rapid_edits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "a\nb\nc\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4752,6 +4852,7 @@ fn diff_hunks_survive_rapid_edits(cx: &mut TestAppContext) {
 /// 不能因为前后投影摘要相同而退化为空范围。
 #[gpui::test]
 fn diff_sync_frame_publishes_equal_length_source_replacement(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "a\nb\nc\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4824,6 +4925,7 @@ fn diff_sync_frame_publishes_equal_length_source_replacement(cx: &mut TestAppCon
 /// 普通文档默认折叠（只保留 gutter 竖条），差异审阅视图默认展开展示背景色。
 #[gpui::test]
 fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "a\nb\nc\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4863,6 +4965,7 @@ fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) 
 /// 展开的修改块词级范围必须落在组合文档坐标：旧侧指针指向 base 文本，新侧指针指向 working 文本。
 #[gpui::test]
 fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "let x = 2;\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4905,6 +5008,7 @@ fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut T
 
 #[gpui::test]
 fn word_diffs_track_the_working_source_before_the_diff_recompute(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "let x = 2;\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -4948,6 +5052,7 @@ fn word_diffs_track_the_working_source_before_the_diff_recompute(cx: &mut TestAp
 /// 逐行视口只返回相交的词级范围；展开状态和源版本推进不改变筛选语义。
 #[gpui::test]
 fn visible_word_diffs_match_the_current_full_projection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let base = (0..8)
         .map(|line| format!("let item_{line} = 100 + 300;\n"))
         .collect::<String>();
@@ -5040,6 +5145,7 @@ fn visible_word_diffs_match_the_current_full_projection(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn composite_edits_are_applied_to_the_underlying_buffer(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "zero\none\ntwo\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -5091,6 +5197,7 @@ fn composite_edits_are_applied_to_the_underlying_buffer(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn composite_file_buffers_are_deduplicated_across_excerpts(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "zero\none\ntwo\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -5118,6 +5225,7 @@ fn composite_file_buffers_are_deduplicated_across_excerpts(cx: &mut TestAppConte
 
 #[gpui::test]
 fn composite_tracks_edits_made_through_another_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/a.rs", "zero\none\ntwo\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -5153,6 +5261,7 @@ fn composite_tracks_edits_made_through_another_editor(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn composite_splits_cross_excerpt_edits_across_source_buffers(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "one\n", cx);
     let second = singleton("src/b.rs", "two\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -5205,6 +5314,7 @@ fn composite_splits_cross_excerpt_edits_across_source_buffers(cx: &mut TestAppCo
 /// 映射的源范围只在建立映射的那份源快照上有效；提交前必须一次性校验全部源。
 #[gpui::test]
 fn multi_source_edit_does_not_partially_commit_when_a_source_advanced(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "one\n", cx);
     let second = singleton("src/b.rs", "two\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -5271,6 +5381,7 @@ fn multi_source_edit_does_not_partially_commit_when_a_source_advanced(cx: &mut T
 /// 只读拒绝与版本失配一样必须在任何源提交前一次性判定。
 #[gpui::test]
 fn multi_source_edit_does_not_partially_commit_when_a_source_is_read_only(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "one\n", cx);
     let second = read_only_singleton("src/b.rs", "two\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -5328,6 +5439,7 @@ fn multi_source_edit_does_not_partially_commit_when_a_source_is_read_only(cx: &m
 
 #[gpui::test]
 fn read_only_composite_rejects_edits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("index.txt", "index 内容\n", cx);
     let combined = cx.new(MultiBuffer::empty_read_only);
     cx.update_entity(&combined, |buffer, cx| {
@@ -5346,6 +5458,7 @@ fn read_only_composite_rejects_edits(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let current = singleton("src/a.rs", "上下文\n新内容\n之后\n", cx);
     let current_buffer = current.clone();
     let combined = cx.new(MultiBuffer::empty);
@@ -5430,6 +5543,7 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
 /// 统一用 Bias::Left 起始遍历，避免跳过零长度边界节点。
 #[gpui::test]
 fn zero_length_excerpt_at_document_start_is_visited(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let empty = singleton("src/empty.rs", "", cx);
     let other = singleton("src/other.rs", "x\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -5453,6 +5567,7 @@ fn zero_length_excerpt_at_document_start_is_visited(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn dirty_summary_tracks_unique_sources_save_and_removal(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "one\ntwo\nthree\n", cx);
     let second = singleton("src/b.rs", "other\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -5531,6 +5646,7 @@ fn dirty_summary_tracks_unique_sources_save_and_removal(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn deleted_side_anchors_keep_order_and_detach_when_collapsed(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = singleton("src/a.rs", "before\nnew\nafter\n", cx);
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |buffer, cx| {
@@ -5646,6 +5762,7 @@ fn assert_summary_matches_text(snapshot: &MultiBufferSnapshot, expected_text: &s
 /// 单片段编辑与任意切分拼接后，组合范围摘要的行宽维度都必须与源快照一致。
 #[gpui::test]
 fn text_summary_matches_source_across_edits_and_splits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("src/summary.rs", "alpha\nβeta\n\nlongest line here\nz", cx);
     let buffer = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     let before = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
@@ -5708,6 +5825,7 @@ fn text_summary_matches_source_across_edits_and_splits(cx: &mut TestAppContext) 
 /// 多个 excerpt 拼接后，组合全文摘要必须等于各源摘要与结构分隔换行的聚合。
 #[gpui::test]
 fn text_summary_matches_concatenated_excerpts(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "aa\nbbb\ncc", cx);
     let second = singleton("src/b.rs", "无尾换行", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -5768,6 +5886,7 @@ fn text_summary_matches_concatenated_excerpts(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn coordinate_cursor_anchors_match_snapshot_across_excerpt_boundaries(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/first.rs", "甲乙", cx);
     let second = singleton("src/second.rs", "last", cx);
     let combined = cx.new(MultiBuffer::empty);

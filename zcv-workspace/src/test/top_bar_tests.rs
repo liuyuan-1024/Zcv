@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use gpui::{Bounds, Context, Pixels, TestAppContext, canvas, px};
 
 use super::*;
+use zcv_settings::{SettingsStore, UserSettings};
 
 struct TopBarLayout {
     frame_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
@@ -37,6 +38,7 @@ impl gpui::Render for TopBarLayout {
 
 #[gpui::test]
 fn top_bar_centers_search_with_a_bottom_border(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let frame_bounds = Rc::new(RefCell::new(None));
     let search_bounds = Rc::new(RefCell::new(None));
     let _window = cx.add_window(|_, _| TopBarLayout {
@@ -71,6 +73,7 @@ impl gpui::Render for NativeControlsInsetLayout {
 #[cfg(target_os = "macos")]
 #[gpui::test]
 fn top_bar_content_starts_after_native_window_controls(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let content_bounds = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view(|window, _| {
         window.set_rem_size(px(scale::DEFAULT_UI_SIZE));

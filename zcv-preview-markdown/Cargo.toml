@@ -26,6 +26,7 @@ zcv-ui.workspace = true
 zcv-workspace.workspace = true
 
 [dev-dependencies]
+zcv-settings.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 zcv-editor.workspace = true
 

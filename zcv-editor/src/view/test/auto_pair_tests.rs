@@ -12,7 +12,7 @@ use zcv_text::{Buffer, BufferConfig};
 
 use super::Editor;
 use crate::selection::{Selection, SelectionSet};
-use zcv_settings::SettingsStore;
+use zcv_settings::{SettingsStore, UserSettings};
 
 /// 按路径识别语言的窗口化编辑器。
 fn editor_with_path<'a>(
@@ -137,6 +137,7 @@ fn backspace(editor: &Entity<Editor>, cx: &mut VisualTestContext) {
 
 #[gpui::test]
 fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let plain = cx.new(|cx| {
         LanguageBuffer::new(
             Buffer::from_text("x ".to_owned(), BufferConfig::default())
@@ -229,6 +230,7 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
 
 #[gpui::test]
 fn composite_rust_selections_use_each_sources_current_scope(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let registry = Arc::new(LanguageRegistry::new());
     let first = cx.new({
         let registry = registry.clone();
@@ -317,6 +319,7 @@ fn composite_rust_selections_use_each_sources_current_scope(cx: &mut TestAppCont
 
 #[gpui::test]
 fn rust_string_disables_quote_pair_but_comment_keeps_brackets(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let original = "let s = \"ab\"; // ";
     let quote_position = original.find("ab").unwrap() + 1;
     let (buffer, editor, cx) = editor_with_rust(
@@ -353,6 +356,7 @@ fn rust_string_disables_quote_pair_but_comment_keeps_brackets(cx: &mut TestAppCo
 
 #[gpui::test]
 fn rust_code_quote_pair_restores_text_and_caret_on_undo(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "let x = ;";
     let at = source.find(';').unwrap();
     let (buffer, editor, cx) =
@@ -368,6 +372,7 @@ fn rust_code_quote_pair_restores_text_and_caret_on_undo(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn rust_multicharacter_start_autocloses_on_last_character(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "", SelectionSet::caret(MultiBufferOffset::ZERO));
     type_text(&editor, cx, "r");
@@ -382,6 +387,7 @@ fn rust_multicharacter_start_autocloses_on_last_character(cx: &mut TestAppContex
 
 #[gpui::test]
 fn complete_multicharacter_pair_input_and_manual_close_share_region(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "", SelectionSet::caret(MultiBufferOffset::ZERO));
     type_text(&editor, cx, "r#\"");
@@ -397,6 +403,7 @@ fn complete_multicharacter_pair_input_and_manual_close_share_region(cx: &mut Tes
 
 #[gpui::test]
 fn rapid_input_then_parse_install_uses_current_string_scope(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "let x = ;";
     let at = source.find(';').unwrap();
     let (buffer, editor, cx) =
@@ -420,6 +427,7 @@ fn rapid_input_then_parse_install_uses_current_string_scope(cx: &mut TestAppCont
 
 #[gpui::test]
 fn markdown_fence_uses_injected_rust_pair_policy(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "```rust\nlet x = ;\n```\n";
     let at = source.find(" = ").unwrap() + 3;
     let (buffer, editor, cx) = editor_with_path(
@@ -439,6 +447,7 @@ fn markdown_fence_uses_injected_rust_pair_policy(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn markdown_empty_list_item_ends_the_list(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "- ";
     let (buffer, editor, cx) = editor_with_path(
         cx,
@@ -460,6 +469,7 @@ fn markdown_empty_list_item_ends_the_list(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn newline_continues_rust_comments_and_restores_with_undo_redo(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "// item";
     let (buffer, editor, cx) = editor_with_rust(
         cx,
@@ -491,6 +501,7 @@ fn newline_continues_rust_comments_and_restores_with_undo_redo(cx: &mut TestAppC
 
 #[gpui::test]
 fn newline_continues_doc_and_block_comments(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for (source, expected) in [
         ("/// item", "/// item\n/// "),
         ("/* item */", "/* item\n * \n */"),
@@ -528,6 +539,7 @@ fn newline_continues_doc_and_block_comments(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn newline_respects_comment_start_and_end_boundaries(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for (source, cursor, expected, after) in [
         ("// item", 1, "/\n/ item", 2),
         ("/* */", 2, "/*\n * \n */", 6),
@@ -547,6 +559,7 @@ fn newline_respects_comment_start_and_end_boundaries(cx: &mut TestAppContext) {
 fn css_and_html_without_documentation_policy_do_not_continue_block_comments(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "/* item */";
     let cursor = source.find("item").unwrap() + 4;
     let (buffer, editor, cx) = editor_with_path(
@@ -588,6 +601,7 @@ fn css_and_html_without_documentation_policy_do_not_continue_block_comments(
 
 #[gpui::test]
 fn markdown_lists_continue_ordered_unordered_and_tasks(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for (source, expected) in [
         ("- item", "- item\n- "),
         ("1. item", "1. item\n2. "),
@@ -623,6 +637,7 @@ fn markdown_lists_continue_ordered_unordered_and_tasks(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn markdown_lists_continue_when_splitting_item_content(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for (source, cursor, expected, after) in [
         ("- item", 4, "- it\n- em", 7),
         ("1. item", 5, "1. it\n2. em", 9),
@@ -643,6 +658,7 @@ fn markdown_lists_continue_when_splitting_item_content(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn markdown_fenced_code_does_not_continue_list_like_text(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "```rust\n- item\n```";
     let cursor = source.find("item").unwrap() + 2;
     let expected = "```rust\n- it\nem\n```";
@@ -659,6 +675,7 @@ fn markdown_fenced_code_does_not_continue_list_like_text(cx: &mut TestAppContext
 
 #[gpui::test]
 fn markdown_empty_task_and_ordered_items_clear_or_unindent(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for (source, expected) in [
         ("- [ ] ", ""),
         ("3. ", ""),
@@ -686,6 +703,7 @@ fn markdown_empty_task_and_ordered_items_clear_or_unindent(cx: &mut TestAppConte
 
 #[gpui::test]
 fn newline_between_brackets_replaces_selection_with_one_transaction(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "{ x }";
     let expected = "{ \n    \n }";
     let (buffer, editor, cx) = editor_with_rust(
@@ -702,6 +720,7 @@ fn newline_between_brackets_replaces_selection_with_one_transaction(cx: &mut Tes
 
 #[gpui::test]
 fn newline_applies_two_comment_scopes_in_one_undo_step(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "// a\n// b";
     let expected = "// a\n// \n// b\n// ";
     let (buffer, editor, cx) = editor_with_rust(
@@ -758,6 +777,7 @@ fn newline_applies_two_comment_scopes_in_one_undo_step(cx: &mut TestAppContext) 
 fn markdown_nested_empty_list_item_unindents_and_read_only_newline_is_ignored(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "  - ";
     let (buffer, editor, cx) = editor_with_path(
         cx,
@@ -824,6 +844,7 @@ fn markdown_nested_empty_list_item_unindents_and_read_only_newline_is_ignored(
 
 #[gpui::test]
 fn newline_in_markdown_injected_rust_uses_the_injected_scope(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "```rust\n// item\n```\n";
     let at = source.find("item").unwrap() + "item".len();
     let (buffer, editor, cx) = editor_with_path(
@@ -847,7 +868,7 @@ fn newline_in_markdown_injected_rust_uses_the_injected_scope(cx: &mut TestAppCon
 #[gpui::test]
 fn newline_settings_can_disable_comment_and_list_continuation(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        cx.set_global(SettingsStore::new(zcv_settings::UserSettings::default()));
+        cx.set_global(SettingsStore::new(UserSettings::default()));
         cx.update_global::<SettingsStore, _>(|settings, _| {
             settings
                 .set_user_settings(
@@ -910,6 +931,7 @@ fn newline_settings_can_disable_comment_and_list_continuation(cx: &mut TestAppCo
 
 #[gpui::test]
 fn newline_during_ime_composition_skips_comment_continuation(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) = editor_with_rust(
         cx,
         "// item",
@@ -942,6 +964,7 @@ fn newline_during_ime_composition_skips_comment_continuation(cx: &mut TestAppCon
 
 #[gpui::test]
 fn newline_on_incomplete_rust_tree_keeps_the_observable_comment_behavior(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "// item(\nfn main(\n";
     let at = source.find('\n').unwrap();
     let (buffer, editor, cx) =
@@ -959,6 +982,7 @@ fn newline_on_incomplete_rust_tree_keeps_the_observable_comment_behavior(cx: &mu
 
 #[gpui::test]
 fn tsx_newline_only_bracket_rule_adds_a_blank_inner_line(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "<main></main>";
     let at = "<main>".len();
     let (buffer, editor, cx) = editor_with_path(
@@ -981,6 +1005,7 @@ fn tsx_newline_only_bracket_rule_adds_a_blank_inner_line(cx: &mut TestAppContext
 
 #[gpui::test]
 fn tsx_newline_only_respects_side_whitespace_and_newline_boundary(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for (source, cursor, expected, after) in [
         ("<main>  </main>", 7, "<main> \n    \n </main>", 12),
         ("<main>\n</main>", 7, "<main>\n\n    </main>", 12),
@@ -998,6 +1023,7 @@ fn tsx_newline_only_respects_side_whitespace_and_newline_boundary(cx: &mut TestA
 
 #[gpui::test]
 fn newline_at_composite_excerpt_boundary_does_not_borrow_next_scope(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let markdown = cx.new(|cx| {
         LanguageBuffer::new(
             Buffer::from_text("- item".to_owned(), BufferConfig::default()).unwrap(),
@@ -1064,6 +1090,7 @@ fn newline_at_composite_excerpt_boundary_does_not_borrow_next_scope(cx: &mut Tes
 
 #[gpui::test]
 fn script_string_scope_disables_same_quote_in_javascript_and_tsx(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for path in ["main.js", "main.tsx"] {
         let source = "const value = \"ab\";";
         let at = source.find("ab").unwrap() + 1;
@@ -1089,6 +1116,7 @@ fn script_string_scope_disables_same_quote_in_javascript_and_tsx(cx: &mut TestAp
 
 #[gpui::test]
 fn ime_preedit_quote_does_not_create_an_autoclose_pair(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "let x = ;";
     let at = source.find(';').unwrap();
     let (buffer, editor, cx) =
@@ -1108,6 +1136,7 @@ fn ime_preedit_quote_does_not_create_an_autoclose_pair(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn typing_open_bracket_inserts_matching_close_and_manual_close_skips_it(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(2)));
 
@@ -1123,6 +1152,7 @@ fn typing_open_bracket_inserts_matching_close_and_manual_close_skips_it(cx: &mut
 
 #[gpui::test]
 fn typing_inside_pair_keeps_closing_bracket_tracked_for_skip(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(2)));
 
@@ -1138,6 +1168,7 @@ fn typing_inside_pair_keeps_closing_bracket_tracked_for_skip(cx: &mut TestAppCon
 
 #[gpui::test]
 fn nested_pairs_skip_innermost_first(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(2)));
 
@@ -1154,6 +1185,7 @@ fn nested_pairs_skip_innermost_first(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn quote_after_word_character_does_not_autoclose(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 引号类配对前是词字符时不自动闭合，避免打断单词末尾的引号输入。
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(2)));
@@ -1165,6 +1197,7 @@ fn quote_after_word_character_does_not_autoclose(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn quote_after_whitespace_autocloses(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "a ", SelectionSet::caret(MultiBufferOffset::new(2)));
 
@@ -1175,6 +1208,7 @@ fn quote_after_whitespace_autocloses(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn open_bracket_before_identifier_does_not_autoclose(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 后续检查：光标后是标识符时不自动闭合。
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(1)));
@@ -1186,6 +1220,7 @@ fn open_bracket_before_identifier_does_not_autoclose(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn typing_open_bracket_surrounds_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let selections = SelectionSet::new(vec![Selection::new(
         MultiBufferOffset::new(0),
         MultiBufferOffset::new(3),
@@ -1204,6 +1239,7 @@ fn typing_open_bracket_surrounds_selection(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn backspace_in_empty_pair_deletes_the_whole_pair(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(2)));
 
@@ -1215,6 +1251,7 @@ fn backspace_in_empty_pair_deletes_the_whole_pair(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn backspace_deletes_content_then_pair_in_two_steps(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(2)));
 
@@ -1232,6 +1269,7 @@ fn backspace_deletes_content_then_pair_in_two_steps(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn editor_without_language_inserts_plain_text(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_without_language(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(2)));
 
@@ -1242,6 +1280,7 @@ fn editor_without_language_inserts_plain_text(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn undo_keeps_autoclose_region_valid(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(2)));
 
@@ -1258,6 +1297,7 @@ fn undo_keeps_autoclose_region_valid(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn multi_cursor_autocloses_each_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 两个光标后都允许自动闭合（行尾与前导空白）。
     let selections = SelectionSet::new_with_primary(
         vec![
@@ -1286,6 +1326,7 @@ fn multi_cursor_autocloses_each_selection(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn newline_inside_pair_inserts_extra_blank_line(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(2)));
 
@@ -1300,6 +1341,7 @@ fn newline_inside_pair_inserts_extra_blank_line(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn newline_inside_quote_pair_does_not_add_extra_line(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "a ", SelectionSet::caret(MultiBufferOffset::new(2)));
 
@@ -1313,6 +1355,7 @@ fn newline_inside_quote_pair_does_not_add_extra_line(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn newline_inside_handwritten_pair_adds_extra_line(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 文本判断：手写的括号对同样触发。
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab{}", SelectionSet::caret(MultiBufferOffset::new(3)));
@@ -1325,6 +1368,7 @@ fn newline_inside_handwritten_pair_adds_extra_line(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn autoclose_regions_stay_bounded_and_drop_invalid_entries(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(2)));
 

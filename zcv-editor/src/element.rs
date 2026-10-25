@@ -25,7 +25,7 @@ use zcv_language::BracketPair;
 use zcv_multi_buffer::{
     DiffRowStatus, IndentGuide, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
 };
-use zcv_settings::{CursorShape, IndentGuideSettings, SettingsStore, UserSettings};
+use zcv_settings::{CursorShape, IndentGuideSettings, SettingsStore};
 use zcv_text::Line;
 use zcv_theme::{color, fixed, scale};
 use zcv_ui::{
@@ -1676,8 +1676,7 @@ impl Element for EditorElement {
                 visible_source_ranges,
                 visible_source_lines,
                 selection_ranges,
-                minimum_contrast_for_highlights: SettingsStore::minimum_contrast_for_highlights(cx)
-                    .unwrap_or_else(|| UserSettings::default().minimum_contrast_for_highlights),
+                minimum_contrast_for_highlights: SettingsStore::minimum_contrast_for_highlights(cx),
             },
             presentation.clone(),
             search_decorations.as_deref(),

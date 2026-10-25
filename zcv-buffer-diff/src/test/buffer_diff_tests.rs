@@ -12,6 +12,7 @@ use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
 use crate::{
     BufferDiff, BufferDiffEvent, BufferDiffInput, DiffHunkStaging, PendingHunk, diff_line_boundary,
 };
+use zcv_settings::{SettingsStore, UserSettings};
 
 #[test]
 fn diff_line_boundary_excludes_only_the_terminal_empty_line() {
@@ -65,6 +66,7 @@ fn buffer_diff_input(
 /// 回归（M-E）：连续重算始终只替换实体拥有的同一个在途任务，实体销毁时随字段取消。
 #[gpui::test]
 fn rapid_recomputes_replace_the_single_owned_task(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("a\nb\nc\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
         BufferDiff::new(
@@ -100,6 +102,7 @@ fn rapid_recomputes_replace_the_single_owned_task(cx: &mut TestAppContext) {
 /// 回归（M-F）：working 不变而 base 连续前进时，旧 base 对应的结果不得安装。
 #[gpui::test]
 fn base_version_change_discards_stale_hunks(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("a\nb\nc\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
         BufferDiff::new(
@@ -131,6 +134,7 @@ fn base_version_change_discards_stale_hunks(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn changed_base_text_with_identical_hunk_geometry_emits_a_range(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("a\nnew\nz\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
         BufferDiff::new(
@@ -160,6 +164,7 @@ fn changed_base_text_with_identical_hunk_geometry_emits_a_range(cx: &mut TestApp
 
 #[gpui::test]
 fn changed_hunk_anchor_with_identical_geometry_emits_a_range(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("a\nb\nc\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
         BufferDiff::new(
@@ -198,6 +203,7 @@ fn changed_hunk_anchor_with_identical_geometry_emits_a_range(cx: &mut TestAppCon
 
 #[gpui::test]
 fn revision_inputs_and_working_buffer_use_the_same_line_endings(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("a\r\nnew\r\nc\r\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
         let mut input = buffer_diff_input(working, Some("a\r\nold\r\nc\r\n"), "src/a.rs");
@@ -230,6 +236,7 @@ fn revision_inputs_and_working_buffer_use_the_same_line_endings(cx: &mut TestApp
 
 #[gpui::test]
 fn latest_revision_text_supersedes_an_in_flight_change(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("原始\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
         let mut input = buffer_diff_input(working, Some("原始\n"), "src/a.rs");
@@ -268,6 +275,7 @@ fn latest_revision_text_supersedes_an_in_flight_change(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn source_edits_recalculate_without_a_projection_consumer(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("原始\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
         BufferDiff::new(
@@ -294,6 +302,7 @@ fn source_edits_recalculate_without_a_projection_consumer(cx: &mut TestAppContex
 
 #[gpui::test]
 fn pending_stage_survives_unrelated_working_edits_until_revision_changes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("a\nchanged\nz\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
         BufferDiff::new(
@@ -347,6 +356,7 @@ fn pending_stage_survives_unrelated_working_edits_until_revision_changes(cx: &mu
 
 #[gpui::test]
 fn pending_stage_survives_edit_log_eviction_after_unrelated_edits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let mut config = BufferConfig::default();
     config.large_file.max_edit_history_entries = 1;
     let buffer = Buffer::from_text("a\nchanged\nz\n".into(), config).unwrap();
@@ -392,6 +402,7 @@ fn pending_stage_survives_edit_log_eviction_after_unrelated_edits(cx: &mut TestA
 
 #[gpui::test]
 fn pending_restore_expires_after_editing_its_working_range(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("a\nchanged\nz\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
         BufferDiff::new(
@@ -429,6 +440,7 @@ fn pending_restore_expires_after_editing_its_working_range(cx: &mut TestAppConte
 
 #[gpui::test]
 fn repeated_pending_on_pure_deletion_replaces_the_previous_state(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("a\nc\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
         BufferDiff::new(
@@ -460,6 +472,7 @@ fn repeated_pending_on_pure_deletion_replaces_the_previous_state(cx: &mut TestAp
 
 #[gpui::test]
 fn pending_hunks_sort_by_current_anchors_after_prefix_edit(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("a\nchanged-one\nmiddle\nchanged-two\nz\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
         BufferDiff::new(
@@ -520,6 +533,7 @@ fn pending_hunks_sort_by_current_anchors_after_prefix_edit(cx: &mut TestAppConte
 
 #[gpui::test]
 fn hunk_boundaries_remain_ordered_during_source_edits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for (text, end) in [("a\nb\nc", 2), ("a\nedited\nb\nc", 9)] {
         let working = language_buffer(text, "src/a.rs", cx);
         let diff = cx.new(|cx| {
@@ -586,6 +600,7 @@ fn hunk_boundaries_remain_ordered_during_source_edits(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn revision_inputs_and_hunks_are_published_together(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working = language_buffer("工作区\n", "src/a.rs", cx);
     let diff =
         cx.new(|cx| BufferDiff::new(buffer_diff_input(working, Some("旧基线\n"), "src/a.rs"), cx));

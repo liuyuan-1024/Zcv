@@ -8,6 +8,7 @@ use std::{
 use gpui::{AppContext, Context, TestAppContext, div, px, size};
 use zcv_fs_watch::{FsEventStream, Watcher};
 use zcv_language::LanguageRegistry;
+use zcv_settings::{SettingsStore, UserSettings};
 
 use super::*;
 
@@ -198,6 +199,7 @@ fn current_project_cannot_be_removed_from_recent_projects(cx: &mut TestAppContex
 
 #[gpui::test]
 fn current_project_is_selected_by_path_and_check_stays_after_its_name(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建当前项目目录");
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
@@ -274,6 +276,7 @@ fn current_project_is_selected_by_path_and_check_stays_after_its_name(cx: &mut T
 
 #[gpui::test]
 fn reopening_selects_current_project_and_clears_previous_search(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建当前项目目录");
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
@@ -329,6 +332,7 @@ fn reopening_selects_current_project_and_clears_previous_search(cx: &mut TestApp
 
 #[gpui::test]
 fn empty_workspace_does_not_mark_a_recent_project_as_current(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages));
     let (picker, cx) =

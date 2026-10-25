@@ -9,6 +9,7 @@ use zcv_text::{Buffer, BufferConfig};
 
 use super::Editor;
 use crate::selection::{Selection, SelectionSet};
+use zcv_settings::{SettingsStore, UserSettings};
 
 fn editor_with_text(
     cx: &mut TestAppContext,
@@ -43,6 +44,7 @@ fn buffer_text(buffer: &Entity<LanguageBuffer>, cx: &TestAppContext) -> String {
 
 #[gpui::test]
 fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "fn main(value: i32) { let result = value; return result; }\n";
     let buffer =
         Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建");
@@ -75,6 +77,7 @@ fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn rename_local_at_rejects_ambiguous_binding(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "fn main() { let value = 1; let value = 2; value; }\n";
     let buffer =
         Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建");
@@ -103,6 +106,7 @@ fn rename_local_at_rejects_ambiguous_binding(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn rename_local_at_rejects_unresolved_reference(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "fn main() { let value = missing; value; }\n";
     let buffer =
         Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建");
@@ -131,6 +135,7 @@ fn rename_local_at_rejects_unresolved_reference(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn indent_and_outdent_are_editor_owned_selection_edits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let selections = SelectionSet::new(vec![Selection::new(
         MultiBufferOffset::new(0),
         MultiBufferOffset::new(3),
@@ -166,6 +171,7 @@ fn indent_and_outdent_are_editor_owned_selection_edits(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn caret_indent_uses_display_map_tab_column(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, editor) =
         editor_with_text(cx, "\tx", SelectionSet::caret(MultiBufferOffset::new(1)));
 
@@ -182,6 +188,7 @@ fn caret_indent_uses_display_map_tab_column(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = Buffer::from_text("first\n".to_string(), BufferConfig::default())
         .expect("应创建测试 Buffer");
     let second = Buffer::from_text("second\n".to_string(), BufferConfig::default())

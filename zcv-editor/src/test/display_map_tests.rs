@@ -9,6 +9,7 @@ use gpui::{AppContext, Pixels, TestAppContext, TextRun, font, px};
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer, MultiBufferOffset};
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{Affinity, Buffer, BufferConfig, Edit, Line, TextRange, TransactionMetadata};
 use zcv_theme::ThemeChoice;
 
@@ -68,6 +69,7 @@ fn apply_test_theme(cx: &mut TestAppContext, id: &'static str) {
 
 #[gpui::test]
 fn display_snapshot_resolves_syntax_styles_from_current_theme(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     apply_test_theme(cx, "light");
     let source_buffer = Buffer::from_text("fn main() {}".to_owned(), BufferConfig::default())
         .expect("测试 Buffer 应能创建");
@@ -98,6 +100,7 @@ fn display_snapshot_resolves_syntax_styles_from_current_theme(cx: &mut TestAppCo
 /// 语法折叠跨 working 片段投影，展开的基线文本不改变源覆盖连续性。
 #[gpui::test]
 fn syntax_fold_candidates_project_across_diff_fragments(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let base = "fn first() {\n    let a = 1;\n    let b = 3;\n}\nfn second() {\n    let c = 1;\n    let d = 3;\n}\n";
     let working = base.replace("= 1", "= 2");
     let registry = Arc::new(LanguageRegistry::new());
@@ -193,6 +196,7 @@ fn no_op_sync_keeps_the_display_projection_stable(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn display_pipeline_receives_the_source_transaction_batch(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source_buffer = Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
         .expect("测试 Buffer 应能创建");
     let source = cx.new(|cx| {
@@ -246,6 +250,7 @@ fn display_pipeline_receives_the_source_transaction_batch(cx: &mut TestAppContex
 /// Zed 按当前相邻 excerpt 的 BufferId分类，Zcv 必须据当前路径重建 header/divider，不能把旧实体块留在新拓扑中。
 #[gpui::test]
 fn block_boundaries_reclassify_when_their_file_changes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = cx.new(|cx| {
         LanguageBuffer::new(
             Buffer::from_text("a0\na1\n".to_owned(), BufferConfig::default())
@@ -386,6 +391,7 @@ fn fold_placeholder_chunk_carries_inline_renderer(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn anonymous_buffers_keep_distinct_header_identities(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let anonymous = |text: &str, cx: &mut TestAppContext| {
         cx.new(|cx| {
             LanguageBuffer::new(
@@ -1341,6 +1347,7 @@ fn soft_wrap_equal_row_multi_line_edit_stays_incremental(cx: &mut TestAppContext
 
 #[gpui::test]
 fn soft_wrap_stays_active_after_editing_an_expanded_diff_excerpt(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let path = PathBuf::from("src/a.rs");
     let prefix = "let before = ".repeat(12);
     let suffix = "; let after = value;\n".repeat(8);

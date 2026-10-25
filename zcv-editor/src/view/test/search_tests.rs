@@ -18,6 +18,7 @@ use crate::display_map::{
     test_support::{WrapRowKind, projected_line_text},
 };
 use std::{iter, sync::Arc};
+use zcv_settings::{SettingsStore, UserSettings};
 
 fn new_display_map(
     cx: &mut impl AppContext,
@@ -60,6 +61,7 @@ fn query(text: &str) -> SearchQuery {
 
 #[gpui::test]
 fn search_finds_all_matches_and_reports_count(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc abc abc");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -78,6 +80,7 @@ fn search_finds_all_matches_and_reports_count(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn external_search_ranges_append_without_resetting_active_match(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = |path: &str, cx: &mut TestAppContext| {
         cx.new(|cx| {
             LanguageBuffer::new(
@@ -136,6 +139,7 @@ fn external_search_ranges_append_without_resetting_active_match(cx: &mut TestApp
 
 #[gpui::test]
 fn search_respects_case_and_whole_word_options(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "Cat catalog cat");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -158,6 +162,7 @@ fn search_respects_case_and_whole_word_options(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn search_regex_matches_pattern(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "a1 b22 c333");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -177,6 +182,7 @@ fn search_regex_matches_pattern(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn empty_query_clears_search(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -192,6 +198,7 @@ fn empty_query_clears_search(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn activate_match_moves_in_direction_and_wraps(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc abc abc");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -222,6 +229,7 @@ fn activate_match_moves_in_direction_and_wraps(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn activate_match_uses_the_cursor_after_manual_navigation(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc abc abc");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -247,6 +255,7 @@ fn activate_match_uses_the_cursor_after_manual_navigation(cx: &mut TestAppContex
 
 #[gpui::test]
 fn activate_match_handles_adjacent_and_zero_width_matches(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for (text, pattern, regex) in [("abcabcabc", "abc", false), ("a\nb\nc", "(?m)$", true)] {
         let (editor, cx) = editor_with_text(cx, text);
         cx.update(|window, cx| {
@@ -277,6 +286,7 @@ fn activate_match_handles_adjacent_and_zero_width_matches(cx: &mut TestAppContex
 
 #[gpui::test]
 fn replace_current_replaces_active_match_only(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc abc abc");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -290,6 +300,7 @@ fn replace_current_replaces_active_match_only(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn replace_all_replaces_every_match(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc abc abc");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -303,6 +314,7 @@ fn replace_all_replaces_every_match(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn editing_researches_and_keeps_active_match(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "foo bar foo");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -320,6 +332,7 @@ fn editing_researches_and_keeps_active_match(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn undo_and_redo_recompute_matches_from_current_snapshot(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "foo");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -345,6 +358,7 @@ fn undo_and_redo_recompute_matches_from_current_snapshot(cx: &mut TestAppContext
 
 #[gpui::test]
 fn clear_search_removes_state_and_highlights(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -359,6 +373,7 @@ fn clear_search_removes_state_and_highlights(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn replace_all_researches_and_clears_stale_result(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc abc abc");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -378,6 +393,7 @@ fn replace_all_researches_and_clears_stale_result(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn replace_current_researches_and_keeps_remaining_matches(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc abc abc");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -394,6 +410,7 @@ fn replace_current_researches_and_keeps_remaining_matches(cx: &mut TestAppContex
 
 #[gpui::test]
 fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     use std::path::PathBuf;
 
     use zcv_language::LanguageBuffer;
@@ -436,6 +453,7 @@ fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     use std::ops::Range;
 
     let (editor, cx) = editor_with_text(cx, "abc abc abc");
@@ -501,6 +519,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc\nxxx\nabc\nabc");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -568,6 +587,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
 /// 真实场景：带语法高亮的 Markdown 搜索 "zcv"，匹配行必须渲染背景（spans 与背景层共存）。
 #[gpui::test]
 fn markdown_with_syntax_highlights_backgrounds_matches(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = r#"# zcv editor
 
 - **zcv** search
@@ -678,6 +698,7 @@ zcv final
 
 #[gpui::test]
 fn query_suggestion_seeds_search_from_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "hello world");
     cx.update(|_window, cx| {
         editor.update(cx, |editor, cx| {
@@ -706,6 +727,7 @@ fn query_suggestion_seeds_search_from_selection(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn query_suggestion_seeds_search_from_composite_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = test_buffer(cx, "alpha\n");
     first.update(cx, |buffer, cx| buffer.set_file_path("a.rs".into(), cx));
     let second = test_buffer(cx, "beta\n");
@@ -732,6 +754,7 @@ fn query_suggestion_seeds_search_from_composite_selection(cx: &mut TestAppContex
 
 #[gpui::test]
 fn activating_a_match_after_an_external_edit_stays_in_bounds(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 同一共享文本的另一个编辑者先缩短文档；第一个 Editor 的搜索结果在推进前是过期的。
     // 激活必须先推进快照再取当次范围，不能把旧范围交给 select_byte_range。
     let buffer = test_buffer(cx, "abc abc abc");
@@ -767,6 +790,7 @@ fn activating_a_match_after_an_external_edit_stays_in_bounds(cx: &mut TestAppCon
 
 #[gpui::test]
 fn editing_external_search_results_keeps_them_external(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc xyz abc");
     cx.update(|_window, cx| {
         editor.update(cx, |editor, cx| {
@@ -795,6 +819,7 @@ fn editing_external_search_results_keeps_them_external(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn search_state_change_reaches_display_decorations_without_a_text_change(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (editor, cx) = editor_with_text(cx, "abc abc abc");
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {

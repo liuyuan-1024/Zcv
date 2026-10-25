@@ -6,6 +6,7 @@ use gpui::{
     SharedString, TestAppContext, canvas, point,
 };
 use zcv_language::LanguageRegistry;
+use zcv_settings::{SettingsStore, UserSettings};
 
 struct TestView;
 
@@ -72,6 +73,7 @@ impl Render for FocusHost {
 
 #[gpui::test]
 fn escape_restores_the_focus_before_quick_access(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
     let (host, cx) = cx.add_window_view(|window, cx| {
@@ -122,6 +124,7 @@ fn escape_restores_the_focus_before_quick_access(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn clicking_quick_access_records_the_focus_before_the_input_takes_it(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
     let (host, cx) = cx.add_window_view(|window, cx| {
@@ -161,6 +164,7 @@ fn clicking_quick_access_records_the_focus_before_the_input_takes_it(cx: &mut Te
 fn line_column_entry_reuses_input_and_normal_search_does_not_offer_navigation(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
     let (host, cx) = cx.add_window_view(|window, cx| {
@@ -436,6 +440,7 @@ fn numeric_query_only_offers_matching_files_and_commands() {
 
 #[gpui::test]
 fn command_candidates_come_from_described_actions(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
     let (search, _) = cx.add_window_view(|window, cx| {

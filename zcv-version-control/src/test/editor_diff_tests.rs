@@ -16,6 +16,7 @@ use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 
 use super::inject_editor_diff;
+use zcv_settings::{SettingsStore, UserSettings};
 
 struct PassiveWatcher(FsWatcher);
 
@@ -79,6 +80,7 @@ fn editor_for_file(
 
 #[gpui::test]
 fn untracked_file_uses_the_same_git_projection_before_and_after_staging(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_directory, root, project) = project_with_repo(cx);
     let path = root.join("new.txt");
     fs::write(&path, "新增第一行\n新增第二行\n").expect("应写入新文件");
@@ -115,6 +117,7 @@ fn untracked_file_uses_the_same_git_projection_before_and_after_staging(cx: &mut
 
 #[gpui::test]
 fn clean_tracked_file_and_ignored_file_have_distinct_diff_eligibility(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_directory, root, project) = project_with_repo(cx);
     let clean_path = root.join("tracked.txt");
     let ignored_path = root.join("ignored.txt");

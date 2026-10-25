@@ -15,6 +15,7 @@ use crate::display_map::{
     DisplayColumn, DisplayPoint, DisplayRow, DisplayRowEvent, HighlightStyles, hunk_rendering,
     test_support::{WrapRowKind, projected_line_text},
 };
+use zcv_settings::{SettingsStore, SoftWrapMode, UserSettings};
 
 /// 由绝对坐标切片构造按段解析输入，供渲染单元测试调用。
 fn resolved_hunks(
@@ -42,6 +43,9 @@ fn resolved_hunks(
 /// D-E：行宽缓存必须按显示版本失效；tab 宽度变化不推进文本版本，却改变实际行宽。
 #[gpui::test]
 fn longest_line_width_cache_invalidates_when_only_the_display_changes(cx: &mut TestAppContext) {
+    let mut settings = UserSettings::default();
+    settings.soft_wrap = SoftWrapMode::None;
+    cx.set_global(SettingsStore::new(settings));
     let buffer = test_buffer(cx, "\tX\n");
     let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx));
 
@@ -127,6 +131,7 @@ impl DiffHunkDelegate for OccludingHunkControls {
 
 #[gpui::test]
 fn single_file_diff_uses_the_composite_projection_path(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(cx, "a\nworking\nc\n");
     let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
     inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
@@ -153,6 +158,7 @@ fn single_file_diff_uses_the_composite_projection_path(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn viewport_controls_carry_the_working_source_range(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(cx, "before\nnew one\nnew two\nnew three\nafter\n");
     let editor = cx.new(|cx| Editor::for_language_buffer(source.clone(), cx));
     inject_file_diff(
@@ -199,6 +205,7 @@ fn viewport_controls_carry_the_working_source_range(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn diff_decorations_are_cached_and_consumed_by_viewport(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(cx, "a\nworking\nc\n");
     let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
     inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
@@ -230,6 +237,7 @@ fn diff_decorations_are_cached_and_consumed_by_viewport(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn index_only_diff_change_updates_editor_decorations(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(cx, "a\nc\n");
     source.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -293,6 +301,7 @@ fn index_only_diff_change_updates_editor_decorations(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn staging_one_hunk_preserves_the_remaining_hunk_decoration(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let original = (0..30)
         .map(|line| format!("line{line}\n"))
         .collect::<String>();
@@ -396,6 +405,7 @@ fn staging_one_hunk_preserves_the_remaining_hunk_decoration(cx: &mut TestAppCont
 
 #[gpui::test]
 fn staging_another_hunk_preserves_deleted_row_status(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for deleted_line in [14, 29] {
         let original = (0..30)
             .map(|line| format!("line{line}\n"))
@@ -535,6 +545,7 @@ fn staging_another_hunk_preserves_deleted_row_status(cx: &mut TestAppContext) {
 /// 回归：同一行内编辑即使不改变 hunk 行范围，控件也必须使用当前 diff 的源操作范围。
 #[gpui::test]
 fn geometry_preserving_diff_edit_updates_hunk_control_source(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(cx, "a\nb\nc\n");
     let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
     inject_file_diff(&editor, &source, Arc::from("a\nB\nc\n"), cx);
@@ -584,6 +595,7 @@ fn geometry_preserving_diff_edit_updates_hunk_control_source(cx: &mut TestAppCon
 fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(cx, "a\nworking\nc\n");
     let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
     inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
@@ -614,6 +626,7 @@ fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
 
 #[gpui::test]
 fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = include_str!("../../../../assets/keymaps/default-macos.json");
     let raw_buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
         .expect("keymap 测试 Buffer 应能创建");
@@ -666,6 +679,7 @@ fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn hunk_controls_remain_visible_when_pointer_enters_controls(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "line0\nline1\nline2\n");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
@@ -705,6 +719,7 @@ fn hunk_controls_remain_visible_when_pointer_enters_controls(cx: &mut TestAppCon
 
 #[gpui::test]
 fn hunk_controls_stick_to_viewport_while_hunk_start_is_scrolled_out(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = (0..80)
         .map(|line| format!("line{line}"))
         .collect::<Vec<_>>()
@@ -760,6 +775,7 @@ fn hunk_controls_stick_to_viewport_while_hunk_start_is_scrolled_out(cx: &mut Tes
 
 #[gpui::test]
 fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\nb\nc");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -839,6 +855,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn added_hunk_strip_expands_from_any_row(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 普通文档中的纯新增块：多行色条的每一行都应可点击展开 / 折叠。
     let buffer = test_buffer(cx, "a\nx1\nx2\nx3\nb");
     buffer.update(cx, |buffer, cx| {
@@ -895,6 +912,7 @@ fn added_hunk_strip_expands_from_any_row(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn added_hunk_strip_clickable_when_start_scrolled_out(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 起点滚出视口后，可见部分仍应有 hitbox（与绘制侧 visible_block_extent 一致）。
     let text = (0..80)
         .map(|line| format!("line{line}"))
@@ -938,6 +956,7 @@ fn added_hunk_strip_clickable_when_start_scrolled_out(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
@@ -998,6 +1017,7 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn indent_guides_follow_the_editor_fold_projection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "fn main() {\n    if true {\n        let x = 1;\n    }\n}\n";
     let raw =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
@@ -1055,6 +1075,7 @@ fn first_placeholder_renderer(
 
 #[gpui::test]
 fn toggling_crease_renders_ellipsis_element(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "fn main() {\n    let x = 1;\n}\n";
     let buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
@@ -1087,6 +1108,7 @@ fn toggling_crease_renders_ellipsis_element(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
@@ -1128,6 +1150,7 @@ fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppC
 
 #[gpui::test]
 fn expanding_diff_hunk_preserves_code_fold(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 展开 diff hunk 只是重排组合文本，不得把已折叠的代码展开。
     let working = "fn main() {\n    let a = 1;\n    let b = 2;\n}\nfn other() {\n    let x = 1;\n    let y = 2;\n}\n";
     let base = "fn main() {\n    let a = 1;\n    let b = 99;\n}\nfn other() {\n    let x = 1;\n    let y = 2;\n}\n";
@@ -1167,6 +1190,7 @@ fn expanding_diff_hunk_preserves_code_fold(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn expanding_diff_hunk_keeps_crease_of_enclosing_fold(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 折叠范围包含 diff hunk 时，展开 hunk 会把工作区 excerpt 切开，
     // crease 用的 fold_ranges 仍必须跨连续的同类 excerpt 投影出来。
     let working = "fn main() {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n}\n";
@@ -1207,6 +1231,7 @@ fn expanding_diff_hunk_keeps_crease_of_enclosing_fold(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 回归：编辑后折叠范围与折叠状态必须保持（crease 箭头显示依赖 fold_ranges / fold_anchor_lines）。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer =
@@ -1268,6 +1293,7 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 回归：折叠块后光标在入口行 `{` 上，另一半括号高亮投影到合并行的真实 `}` 列。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer =
@@ -1326,6 +1352,7 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 折叠在显示上占一个字符：右箭头从折叠起点一步跨到闭合括号，左箭头回到折叠起点。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer =
@@ -1391,6 +1418,7 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "before\nfn folded() {\n  let value = 1;\n}\nafter\n";
     let raw_buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
         .expect("Rust 测试 Buffer 应能创建");
@@ -1476,6 +1504,7 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
 
 #[gpui::test]
 fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
@@ -1519,6 +1548,7 @@ fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn diff_hunks_follow_buffer_edits_without_losing_highlight(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "line 0\nCHANGED\nline 2\n");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -1583,6 +1613,7 @@ fn diff_hunks_follow_buffer_edits_without_losing_highlight(cx: &mut TestAppConte
 /// 这正是应用里"编辑带 diff 的文件"反复触发 canary 断言的路径。
 #[gpui::test]
 fn soft_wrap_diff_rebuild_keeps_wrap_input_coverage(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let text: String = (0..200).map(|row| format!("s{row:03}\n")).collect();
     let buffer = test_buffer(cx, &text);
     buffer.update(cx, |buffer, cx| {
@@ -1635,6 +1666,7 @@ fn soft_wrap_diff_rebuild_keeps_wrap_input_coverage(cx: &mut TestAppContext) {
 /// 普通文件不设置代码折叠；连续源事务、直接编辑和重载都必须提供同一帧的文本与显示坐标。
 #[gpui::test]
 fn plain_editor_batched_edits_and_reload_keep_display_aligned(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     for with_diff in [false, true] {
         let initial = "fn main() {\n    let name = \"中文🙂\";\n}\n";
         let source = test_buffer(cx, initial);
@@ -1741,6 +1773,7 @@ fn plain_editor_batched_edits_and_reload_keep_display_aligned(cx: &mut TestAppCo
 
 #[gpui::test]
 fn external_reparse_refreshes_added_diff_syntax_highlights(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_buffer(cx, "fn main() {\n    let value = 1;\n}\n");
     source.update(cx, |source, cx| {
         source.set_file_path(PathBuf::from("src/main.rs"), cx);
@@ -1804,6 +1837,7 @@ fn external_reparse_refreshes_added_diff_syntax_highlights(cx: &mut TestAppConte
 
 #[gpui::test]
 fn soft_wrap_renders_continuation_rows_and_click_hits_fragment(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 超长行（超出测试窗口宽度）在 editor-width 模式下拆成多个显示行。
     let buffer = test_buffer(cx, "    aaaa bbbb cccc dddd eeee ".repeat(10));
     let (editor, cx) = cx.add_window_view({
@@ -1852,6 +1886,7 @@ impl Render for NarrowSingleLineHost {
 
 #[gpui::test]
 fn single_line_editor_never_wraps_and_follows_caret_horizontally(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     let (_host, cx) = cx.add_window_view({
         let editor = editor.clone();
@@ -1879,6 +1914,9 @@ fn single_line_editor_never_wraps_and_follows_caret_horizontally(cx: &mut TestAp
 
 #[gpui::test]
 fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppContext) {
+    let mut settings = UserSettings::default();
+    settings.soft_wrap = SoftWrapMode::None;
+    cx.set_global(SettingsStore::new(settings));
     let source = test_buffer(
         cx,
         "    引擎内容很长，需要在多文件编辑器中正常软换行。".repeat(30),
@@ -1947,6 +1985,7 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
 
 #[gpui::test]
 fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = test_buffer(cx, "let alpha = 1;\nlet beta = 2;\n");
     first.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("a.rs"), cx)
@@ -2038,6 +2077,7 @@ fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestA
 
 #[gpui::test]
 fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = test_buffer(cx, "let alpha = 1;\nlet beta = 2;\n");
     first.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("a.rs"), cx)
@@ -2130,6 +2170,7 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
 
 #[gpui::test]
 fn long_line_highlight_query_is_clipped_to_render_budget(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 超长单行：高亮查询只覆盖可见前缀（渲染端同样只塑形前 MAX_RENDERED_LINE_LEN 字节）。
     let long = "let text = \"".to_owned() + &"a".repeat(8192) + "\";\n";
     let buffer = Buffer::from_text(long, BufferConfig::default()).expect("测试 Buffer 应能创建");
@@ -2164,6 +2205,9 @@ fn long_line_highlight_query_is_clipped_to_render_budget(cx: &mut TestAppContext
 
 #[gpui::test]
 fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppContext) {
+    let mut settings = UserSettings::default();
+    settings.soft_wrap = SoftWrapMode::None;
+    cx.set_global(SettingsStore::new(settings));
     // 未换行 + 超长行：非光标行只合成/塑形可见列窗口（±边距）内的文本，
     // 并回报窗口起点列供渲染端补偿行原点；光标行保持整行 shaping（autoscroll 依赖光标像素）。
     let long = "a".repeat(4096) + "tail";
@@ -2221,6 +2265,7 @@ fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppCo
 /// `source_start_line` 约定为 1 起始（gutter、悬浮标题直接使用），光标显示不得再次 +1，否则会显示成比实际大 1 的行号。
 #[gpui::test]
 fn cursor_text_maps_excerpt_output_to_real_source_line(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 源文件 8 行（0 起始 0..7）；excerpt 只取 0 起始第 5、6 行（a5 / a6）。
     let source = test_buffer(cx, "a0\na1\na2\na3\na4\na5\na6\n");
     source.update(cx, |buffer, cx| {
@@ -2255,6 +2300,7 @@ fn cursor_text_maps_excerpt_output_to_real_source_line(cx: &mut TestAppContext) 
 /// 光标可停在 HEAD 行、显示修订行列、工作区可编辑写回。
 #[gpui::test]
 fn materialized_deleted_excerpt_keeps_editing_and_cursor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 工作区（新侧）与 HEAD（旧侧，含被删行 old1/old2）。
     let work = test_buffer(cx, "a\nb\nc");
     work.update(cx, |buffer, cx| {
@@ -2292,6 +2338,7 @@ fn materialized_deleted_excerpt_keeps_editing_and_cursor(cx: &mut TestAppContext
 /// 回归：组合文档删除整行后，完整文档投影与源光标保持一致。
 #[gpui::test]
 fn combined_diff_dirty_edit_keeps_document_and_cursor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working_text = "L0\nL1\nL2\nL3\nADDED\nL5\nL6\nL7\nL8\n";
     let head_text = "L0\nL1\nL2\nL3\nL5\nL6\nL7\nL8\n";
 
@@ -2339,6 +2386,7 @@ fn combined_diff_dirty_edit_keeps_document_and_cursor(cx: &mut TestAppContext) {
 /// 回归：组合文档折叠/展开 hunk 触发投影整体重建后，光标必须停在同一逻辑源位置，而不是被重置到投影开头——与普通编辑器折叠不移动光标的行为保持一致。
 #[gpui::test]
 fn combined_diff_toggle_hunk_keeps_cursor_at_same_source_position(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\nb\nc");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -2384,6 +2432,7 @@ fn combined_diff_toggle_hunk_keeps_cursor_at_same_source_position(cx: &mut TestA
 /// 回归：组合文档下工作区源被外部编辑（非经编辑器）时，光标必须像普通编辑器一样跟随到同一逻辑源位置，而不是被投影重建重置到开头——与普通编辑器 external_reload 行为一致（参见 actions_tests::external_reload_moves_selection_through_diff）。
 #[gpui::test]
 fn external_source_edit_moves_combined_diff_cursor_like_plain_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -2434,6 +2483,7 @@ fn external_source_edit_moves_combined_diff_cursor_like_plain_editor(cx: &mut Te
 /// 回归：组合文档局部删除后，undo/redo 恢复全文与同一源位置的选择。
 #[gpui::test]
 fn combined_diff_undo_redo_restores_cursor_parity_with_plain_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let working_text = "L0\nL1\nL2\nL3\nADDED\nL5\nL6\nL7\nL8\n";
     let head_text = "L0\nL1\nL2\nL3\nL5\nL6\nL7\nL8\n";
     let source = test_buffer(cx, working_text);
@@ -2490,6 +2540,7 @@ fn combined_diff_undo_redo_restores_cursor_parity_with_plain_editor(cx: &mut Tes
 /// 单文件编辑器与组合文档编辑器共用 diff projection 和 hunk 展开行为。
 #[gpui::test]
 fn single_file_diff_expansion_uses_composite_projection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\nb\nc");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -2563,6 +2614,7 @@ fn single_file_diff_expansion_uses_composite_projection(cx: &mut TestAppContext)
 /// 折叠的删除块三角锚点：删除第 17 行（1-based，0-based 16）后，锚点行必须是组合 0-based 16 行（16/17 行边界），不能是 15 或 17。
 #[gpui::test]
 fn folded_deleted_hunk_anchor_is_at_the_deletion_row_boundary(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 工作区已删除第 17 行（1-based）：新侧 19 行，base 20 行。
     let working_text = (1..=20)
         .filter(|line| *line != 17)
@@ -2610,6 +2662,7 @@ fn folded_deleted_hunk_anchor_is_at_the_deletion_row_boundary(cx: &mut TestAppCo
 /// 回归：diff 刷新移除已展开 hunk 时，旧侧只读 excerpt 也必须随权威 hunk 数据消失。
 #[gpui::test]
 fn refreshing_diff_hunks_removes_stale_expanded_excerpt(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\nb\nc");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -2638,6 +2691,7 @@ fn refreshing_diff_hunks_removes_stale_expanded_excerpt(cx: &mut TestAppContext)
 /// 回归：diff 刷新后 hunk 边界变化（编辑导致 hunk 合并/移位）时，展开状态按旧侧行范围锚点迁移到新 hunk，不再因 old_range 精确匹配失败而丢失用户的显式展开。
 #[gpui::test]
 fn refreshing_diff_hunks_migrates_expansion_across_hunk_boundary_changes(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\nb\nc");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -2679,6 +2733,7 @@ fn refreshing_diff_hunks_migrates_expansion_across_hunk_boundary_changes(cx: &mu
 /// 回归：diff 刷新只清理真正消失的 hunk 状态，仍存在的 hunk 展开状态按锚点保留。
 #[gpui::test]
 fn refreshing_diff_hunks_drops_state_of_disappeared_hunk_only(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\nb\nc\nd\ne");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -2722,6 +2777,7 @@ fn refreshing_diff_hunks_drops_state_of_disappeared_hunk_only(cx: &mut TestAppCo
 fn refreshing_diff_hunks_preserves_collapsed_hunk_in_default_expanded_mode(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\nb\nc");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -2782,6 +2838,7 @@ fn refreshing_diff_hunks_preserves_collapsed_hunk_in_default_expanded_mode(
 /// 已物化的旧侧 excerpt 同时撤销。
 #[gpui::test]
 fn reset_diff_hunk_expansion_state_restores_default_strategy(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\nb\nc");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -2823,6 +2880,7 @@ fn reset_diff_hunk_expansion_state_restores_default_strategy(cx: &mut TestAppCon
 /// 消费同一份物化 hunk 映射；旧侧行是删除色，新侧行是新增色，gutter 色带覆盖两侧。
 #[gpui::test]
 fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\nnew\nc");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -2910,6 +2968,7 @@ fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut 
 /// shaping 会触发 GPUI 的 `text argument should not contain newlines` 断言。
 #[gpui::test]
 fn diff_refresh_keeps_line_terminators_out_of_renderer_chunks(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\r\nnew\r\nc\r\n");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -2961,6 +3020,7 @@ fn diff_refresh_keeps_line_terminators_out_of_renderer_chunks(cx: &mut TestAppCo
 /// 回归：软换行开启、暂存 hunk 触发结构变更时，Wrap 的 Tab 点输入边界必须保持自洽。
 #[gpui::test]
 fn staging_a_hunk_with_soft_wrap_keeps_wrap_map_invariant(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let fill = "x".repeat(120);
     let mut working = String::new();
     let mut base = String::new();
@@ -3020,6 +3080,7 @@ fn staging_a_hunk_with_soft_wrap_keeps_wrap_map_invariant(cx: &mut TestAppContex
 /// 中文 CRLF 输入进入源文档与 diff 后统一为 LF；切换 hunk 时显示坐标仍落在行内容内。
 #[gpui::test]
 fn soft_wrap_cjk_normalized_input_stays_inside_line_content(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let fill = "中文注释内容".repeat(160);
     let mut working = String::new();
     let mut base = String::new();
@@ -3070,6 +3131,7 @@ fn soft_wrap_cjk_normalized_input_stays_inside_line_content(cx: &mut TestAppCont
 /// 软换行下的 Wrap 变换树必须跟着收缩，不能保留旧覆盖。
 #[gpui::test]
 fn staging_a_deleted_hunk_with_soft_wrap_keeps_wrap_map_invariant(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let fill = "x".repeat(120);
     let mut working = String::new();
     let mut base = String::new();
@@ -3115,6 +3177,7 @@ fn staging_a_deleted_hunk_with_soft_wrap_keeps_wrap_map_invariant(cx: &mut TestA
 /// 回归：在只读的 Deleted 旧行上尝试编辑（被拒）后，光标移回工作区仍可正常编辑。
 #[gpui::test]
 fn editing_readonly_deleted_row_then_editing_working_text_still_works(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\nb\nc");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
@@ -3185,6 +3248,7 @@ fn caret_source_range(editor: &Entity<Editor>, cx: &TestAppContext) -> TextRange
 /// 回归：diff 展开/折叠只重建投影拓扑，选区按源 Anchor 解析到同一源位置。
 #[gpui::test]
 fn diff_expansion_preserves_selection_source_anchor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_file_buffer(cx, "src/a.rs", "a\nworking\nc\n");
     let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
     inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
@@ -3213,6 +3277,7 @@ fn diff_expansion_preserves_selection_source_anchor(cx: &mut TestAppContext) {
 /// 选区与渲染管线读取空投影，不能因原 source Anchor 已退出投影而崩溃。
 #[gpui::test]
 fn empty_diff_projection_keeps_selection_at_the_structural_boundary(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_file_buffer(cx, "src/a.rs", "a\nworking\nc\n");
     let combined = cx.new(MultiBuffer::empty_read_only);
     let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
@@ -3244,6 +3309,7 @@ fn empty_diff_projection_keeps_selection_at_the_structural_boundary(cx: &mut Tes
 /// 回归：外部源变更后选区源 Anchor 按当前快照解析，重建投影后仍落在同一逻辑源位置。
 #[gpui::test]
 fn external_source_change_advances_selection_source_anchor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_file_buffer(cx, "src/a.rs", "a\nworking\nc\n");
     let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
     inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
@@ -3279,6 +3345,7 @@ fn external_source_change_advances_selection_source_anchor(cx: &mut TestAppConte
 /// 只有空文本且设置了 placeholder 时才返回提示快照；判空走当前快照，不在渲染帧物化整份文本。
 #[gpui::test]
 fn placeholder_snapshot_requires_empty_text(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     cx.update_entity(&editor, |editor, cx| {
         editor.set_placeholder_text("输入内容", cx);
@@ -3303,6 +3370,7 @@ fn placeholder_snapshot_requires_empty_text(cx: &mut TestAppContext) {
 /// 开启软换行时，placeholder 必须与主显示映射共用换行配置并折行。
 #[gpui::test]
 fn placeholder_follows_soft_wrap_width(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     cx.update_entity(&editor, |editor, cx| {
         editor.set_placeholder_text("这是一段足够长的提示文本，用于触发软换行折行。", cx);
@@ -3320,6 +3388,7 @@ fn placeholder_follows_soft_wrap_width(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn folding_a_section_with_soft_wrap_enabled_keeps_wrap_map_invariant(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 软换行先开启、再折叠：结构编辑必须让 Wrap 变换树的 input 行数等于折叠后的 tab 行数。
     let text = "# 架构决策记录\n\n第一段正文。\n\n第二段正文。\n\n第三段正文。\n";
     let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("Buffer");
@@ -3355,6 +3424,7 @@ fn folding_a_section_with_soft_wrap_enabled_keeps_wrap_map_invariant(cx: &mut Te
 
 #[gpui::test]
 fn toggling_a_diff_hunk_emits_expansion_changed_once(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "a\nb\nc");
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)

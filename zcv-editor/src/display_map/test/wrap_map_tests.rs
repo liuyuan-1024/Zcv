@@ -4,6 +4,7 @@ use std::{ops::Range, sync::Arc};
 use gpui::{AppContext as _, Entity, TestAppContext, font, px};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{Affinity, Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
 
 fn reflow_fixture(cx: &mut TestAppContext) -> (Buffer, Entity<DisplayMap>, Entity<WrapMap>) {
@@ -97,6 +98,7 @@ fn soft_wrap_equal_total_rows_still_invalidates_decoration_geometry(cx: &mut Tes
 fn async_rewrap_startup_loads_multibyte_excerpts_before_empty_task_finishes(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     cx.background_executor.set_block_on_ticks(0..=0);
     let buffer = cx.new(MultiBuffer::empty);
     let (subscription, snapshot) =

@@ -10,6 +10,7 @@ use zcv_workspace::{DockPosition, Workspace};
 
 use super::{TerminalPanel, project_terminal_cwd};
 use crate::{TerminalBuilder, TerminalView, test::support::display_only_terminal};
+use zcv_settings::{SettingsStore, UserSettings};
 
 /// 测试项目不注册真实文件系统监听，避免 OS 监听线程向 GPUI 测试调度器投递事件。
 struct PassiveWatcher(FsWatcher);
@@ -36,6 +37,7 @@ impl Watcher for PassiveWatcher {
 
 #[gpui::test]
 fn new_terminal_uses_the_project_root_as_working_directory(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let temporary_directory = tempfile::tempdir().expect("应创建临时项目目录");
     let expected_root = temporary_directory
         .path()
@@ -60,6 +62,7 @@ fn new_terminal_uses_the_project_root_as_working_directory(cx: &mut TestAppConte
 
 #[gpui::test]
 fn terminal_creation_failure_keeps_panel_empty(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let temporary_directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = cx.new(|cx| {
         Project::new_with_watcher(
@@ -86,6 +89,7 @@ fn terminal_creation_failure_keeps_panel_empty(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn opening_hidden_terminal_panel_focuses_the_active_terminal(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let temporary_directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = cx.new(|cx| {
         Project::new_with_watcher(

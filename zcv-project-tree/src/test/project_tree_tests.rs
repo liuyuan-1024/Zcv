@@ -24,6 +24,7 @@ use zcv_git::FileStatus;
 use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
 use zcv_project::Project;
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_ui::{ConfirmAnswer, tree_row_height};
 
 use super::{
@@ -111,6 +112,7 @@ fn focus_tree(tree: &Entity<ProjectTreePanel>, cx: &mut VisualTestContext) {
 #[gpui::test]
 #[ignore]
 fn project_tree_visible_render_cost(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     use std::time::Instant;
 
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
@@ -219,6 +221,7 @@ fn rows_are_cached_until_rebuild_reinjects_them() {
 fn revealing_active_file_expands_ancestors_and_keeps_mark_separate_from_selection(
     cx: &mut TestAppContext,
 ) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let nested = root.join("src").join("feature");
@@ -266,6 +269,7 @@ fn revealing_active_file_expands_ancestors_and_keeps_mark_separate_from_selectio
 
 #[gpui::test]
 fn revealing_path_outside_project_clears_active_mark(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let file = directory.path().join("active.txt");
     fs::write(&file, "content").expect("应创建测试文件");
@@ -285,6 +289,7 @@ fn revealing_path_outside_project_clears_active_mark(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn applying_directory_rename_migrates_tree_paths(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let old_directory = root.join("old");
@@ -332,6 +337,7 @@ fn applying_directory_rename_migrates_tree_paths(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn space_edits_the_name_instead_of_activating_the_row_while_renaming(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let file = root.join("old.txt");
@@ -375,6 +381,7 @@ fn space_edits_the_name_instead_of_activating_the_row_while_renaming(cx: &mut Te
 
 #[gpui::test]
 fn first_click_on_unfocused_tree_focuses_and_opens(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project_root = abs(directory.path()).into_path_buf();
     let file = project_root.join("a.txt");
@@ -431,6 +438,7 @@ fn first_click_on_unfocused_tree_focuses_and_opens(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn rename_actions_edit_and_confirm_the_selected_row(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let old_path = root.join("old.txt");
@@ -471,6 +479,7 @@ fn rename_actions_edit_and_confirm_the_selected_row(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn canceling_tree_edit_keeps_focus_that_already_moved_elsewhere(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let path = root.join("entry.txt");
@@ -497,6 +506,7 @@ fn canceling_tree_edit_keeps_focus_that_already_moved_elsewhere(cx: &mut TestApp
 
 #[gpui::test]
 fn creating_entry_reveals_the_name_editor_outside_the_viewport(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let parent = root.join("zz-target");
@@ -551,6 +561,7 @@ fn creating_entry_reveals_the_name_editor_outside_the_viewport(cx: &mut TestAppC
 
 #[gpui::test]
 fn one_create_action_infers_nested_files_and_directories_from_the_path(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let file = root.join("src/components/button.rs");
@@ -612,6 +623,7 @@ fn one_create_action_infers_nested_files_and_directories_from_the_path(cx: &mut 
 
 #[gpui::test]
 fn creating_file_leaves_focus_in_the_opened_editor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let file = root.join("new.txt");
@@ -689,6 +701,7 @@ fn creating_file_leaves_focus_in_the_opened_editor(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn trash_action_moves_the_selected_row_to_trash_and_selects_the_next_row(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let trashed_file = root.join("trash-me.txt");
@@ -731,6 +744,7 @@ fn trash_action_moves_the_selected_row_to_trash_and_selects_the_next_row(cx: &mu
 
 #[gpui::test]
 fn trash_action_ignores_the_root_row(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = test_project(directory.path().to_path_buf(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
@@ -759,6 +773,7 @@ fn trash_action_ignores_the_root_row(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn trash_action_selects_the_last_row_after_deleting_the_final_entry(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let only_file = root.join("only.txt");
@@ -793,6 +808,7 @@ fn trash_action_selects_the_last_row_after_deleting_the_final_entry(cx: &mut Tes
 
 #[gpui::test]
 fn git_status_events_update_row_colors(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let project = test_project(root.clone(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
@@ -824,6 +840,7 @@ fn git_status_events_update_row_colors(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn git_status_events_color_directories_with_changed_children(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     // 建子目录并提交一个文件。
     let src = root.join("src");
@@ -870,6 +887,7 @@ fn git_status_events_color_directories_with_changed_children(cx: &mut TestAppCon
 
 #[gpui::test]
 fn expanding_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 回归：展开目录产生的新行此前未查询过，git 状态缓存需在展开时补齐。
     let (root, _temp) = test_git_repo();
     let sub = root.join("sub");
@@ -905,6 +923,7 @@ fn expanding_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn activating_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 回归：鼠标点击/键盘激活目录统一走 TreeActivate handler（toggle_expand），
     // 展开后的新行 git 状态需在激活时补齐。
     let (root, _temp) = test_git_repo();
@@ -973,6 +992,7 @@ fn test_git_repo() -> (PathBuf, tempfile::TempDir) {
 /// 回归：此前被忽略目录的展开被拦截（防 node_modules 撑爆行模型的旧方案）， 表现为"点了没反应"；现展开正常，重型目录由扫描排除名单治理。
 #[gpui::test]
 fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     fs::write(root.join(".gitignore"), "tmp/\n").expect("应写入 .gitignore");
     let tmp = root.join("tmp");
@@ -1018,6 +1038,7 @@ fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
 /// 无 worktree 的空项目：面板照常构造，root 为空、行模型为空（渲染空态提示）。
 #[gpui::test]
 fn empty_project_has_no_root_and_empty_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let project = cx.update(|cx| cx.new(|cx| Project::empty(test_languages(), cx)));
     let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
 
@@ -1029,6 +1050,7 @@ fn empty_project_has_no_root_and_empty_rows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn rapid_clicks_toggle_directory_each_click(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 快速连点：每次点击目录都切换展开/折叠（click_count 递增，不能吞掉 2+ 次点击）。
     let (root, _temp) = test_git_repo();
     let sub = root.join("sub");
@@ -1096,6 +1118,7 @@ fn three_file_project(
 
 #[gpui::test]
 fn shift_click_extends_selection_range(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, file_a, file_b, file_c) = three_file_project(cx);
 
     let (tree, cx) = cx.add_window_view({
@@ -1146,6 +1169,7 @@ fn shift_click_extends_selection_range(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, file_a, file_b, file_c) = three_file_project(cx);
 
@@ -1216,6 +1240,7 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn shift_down_keystroke_extends_selection_to_next_row(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, file_a, file_b, _file_c) = three_file_project(cx);
 
     let (tree, cx) = cx.add_window_view({
@@ -1254,6 +1279,7 @@ fn shift_down_keystroke_extends_selection_to_next_row(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn trash_action_deletes_multiple_selected_rows(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, file_a, file_b, file_c) = three_file_project(cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     let trashed_paths = Rc::new(RefCell::new(Vec::new()));
@@ -1297,6 +1323,7 @@ fn trash_action_deletes_multiple_selected_rows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn scheduled_refresh_coalesces_rapid_entries_changed_events(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (temp, project, _file_a, _file_b, _file_c) = three_file_project(cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
@@ -1354,6 +1381,7 @@ fn paste_project(
 
 #[gpui::test]
 fn pasting_external_file_uses_selected_directory(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
     let external = tempfile::tempdir().expect("应创建外部目录");
     let source = external.path().join("外部.txt");
@@ -1390,6 +1418,7 @@ fn pasting_external_file_uses_selected_directory(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn external_paste_conflict_uses_existing_confirmation(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, _file_a, _file_b, target) = paste_project(cx);
     let external = tempfile::tempdir().expect("应创建外部目录");
     let source = external.path().join("a.txt");
@@ -1465,6 +1494,7 @@ fn drag_project(
 
 #[gpui::test]
 fn copy_paste_duplicates_files_into_selected_directory(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, file_b, target) = paste_project(cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
@@ -1520,6 +1550,7 @@ fn copy_paste_duplicates_files_into_selected_directory(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn copy_paste_reports_progress_middle_state_and_clears_on_completion(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, file_b, target) = paste_project(cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
@@ -1562,6 +1593,7 @@ fn copy_paste_reports_progress_middle_state_and_clears_on_completion(cx: &mut Te
 
 #[gpui::test]
 fn paste_during_active_copy_is_ignored(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
@@ -1603,6 +1635,7 @@ fn paste_during_active_copy_is_ignored(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn copy_paste_recurses_into_directories_with_chinese_names(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().to_path_buf();
     let source_dir = root.join("源码");
@@ -1638,6 +1671,7 @@ fn copy_paste_recurses_into_directories_with_chinese_names(cx: &mut TestAppConte
 
 #[gpui::test]
 fn cut_paste_moves_file_and_degrades_clipboard(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
@@ -1687,6 +1721,7 @@ fn cut_paste_moves_file_and_degrades_clipboard(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn paste_into_file_row_targets_parent_directory(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().to_path_buf();
     let anchor = root.join("a.txt");
@@ -1716,6 +1751,7 @@ fn paste_into_file_row_targets_parent_directory(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn paste_conflict_confirm_overwrites_target_item_by_item(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, file_b, target) = paste_project(cx);
     // 预置两个同名冲突目标。
     fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
@@ -1780,6 +1816,7 @@ fn paste_conflict_confirm_overwrites_target_item_by_item(cx: &mut TestAppContext
 
 #[gpui::test]
 fn conflict_session_defers_clean_items_until_resolved(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, file_b, target) = paste_project(cx);
     // 仅 b.txt 与目标同名冲突；a.txt 为非冲突项。
     fs::write(target.join("b.txt"), "旧 b").expect("应创建冲突目标");
@@ -1827,6 +1864,7 @@ fn conflict_session_defers_clean_items_until_resolved(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn paste_conflict_skip_keeps_both_sides(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
     fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
@@ -1864,6 +1902,7 @@ fn paste_conflict_skip_keeps_both_sides(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn paste_conflict_cancel_changes_nothing(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, file_b, target) = paste_project(cx);
     fs::write(target.join("b.txt"), "旧 b").expect("应创建冲突目标");
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
@@ -1903,6 +1942,7 @@ fn paste_conflict_cancel_changes_nothing(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn paste_without_clipboard_is_noop(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, _file_a, _file_b, target) = paste_project(cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
@@ -1929,6 +1969,7 @@ fn paste_without_clipboard_is_noop(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn escape_keystroke_cancels_conflict_session(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
     fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
 
@@ -1972,6 +2013,7 @@ fn escape_keystroke_cancels_conflict_session(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn cut_marks_clipboard_paths_for_dimming(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, file_b, _target) = paste_project(cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
@@ -2016,6 +2058,7 @@ fn cut_marks_clipboard_paths_for_dimming(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn escape_clears_cut_clipboard_and_dimming(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, _file_b, _target) = paste_project(cx);
     // 面板作为窗口根视图（key_context 才能进入按键分发链），
     // 注册 escape 清空绑定（keymap 的 ProjectTree && not_editing 分组）。
@@ -2049,6 +2092,7 @@ fn escape_clears_cut_clipboard_and_dimming(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn escape_clears_copied_clipboard(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, _file_b, _target) = paste_project(cx);
     let (tree, cx) = cx.add_window_view(|_window, cx| {
         cx.bind_keys([KeyBinding::new(
@@ -2079,6 +2123,7 @@ fn escape_clears_copied_clipboard(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn escape_without_clipboard_is_noop(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, _file_b, _target) = paste_project(cx);
     let (tree, cx) = cx.add_window_view(|_window, cx| {
         cx.bind_keys([KeyBinding::new(
@@ -2108,6 +2153,7 @@ fn escape_without_clipboard_is_noop(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn escape_during_conflict_cancels_conflict_and_keeps_clipboard(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
     fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
 
@@ -2191,6 +2237,7 @@ fn simulate_drag(cx: &mut VisualTestContext, from_row: usize, to_row: usize) {
 
 #[gpui::test]
 fn dragging_external_file_into_directory_copies_it(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, _file_a, _file_b, target) = paste_project(cx);
     let external = tempfile::tempdir().expect("应创建外部目录");
     let source = external.path().join("拖入.txt");
@@ -2216,6 +2263,7 @@ fn dragging_external_file_into_directory_copies_it(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn external_drag_keeps_scrolling_at_edge_and_stops_on_exit(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建项目目录");
     for index in 0..100 {
         fs::write(
@@ -2298,6 +2346,7 @@ fn external_drag_keeps_scrolling_at_edge_and_stops_on_exit(cx: &mut TestAppConte
 
 #[gpui::test]
 fn internal_drag_keeps_scrolling_at_edge(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建项目目录");
     for index in 0..100 {
         fs::write(
@@ -2346,6 +2395,7 @@ fn internal_drag_keeps_scrolling_at_edge(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn drag_file_into_directory_moves_it_via_move_pipeline(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, _file_b, target) = paste_project(cx);
     let project_for_move = project.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
@@ -2385,6 +2435,7 @@ fn drag_file_into_directory_moves_it_via_move_pipeline(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn drag_from_marked_row_moves_the_whole_multi_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, file_b, target) = paste_project(cx);
     let project_for_move = project.clone();
     // move 闭包捕获选中路径的克隆，原值留给闭包后的文件系统断言。
@@ -2426,6 +2477,7 @@ fn drag_from_marked_row_moves_the_whole_multi_selection(cx: &mut TestAppContext)
 /// 未拖拽）派发，拖动不打开文件、不破坏选区。
 #[gpui::test]
 fn drag_does_not_open_file_preview_and_keeps_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
@@ -2470,6 +2522,7 @@ fn drag_does_not_open_file_preview_and_keeps_selection(cx: &mut TestAppContext) 
 /// 展开/折叠动作在 click（mouse_up 未拖拽）派发，拖拽消费了 click 则不执行。
 #[gpui::test]
 fn drag_directory_row_does_not_toggle_expansion(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().to_path_buf();
     let src = root.join("src");
@@ -2512,6 +2565,7 @@ fn drag_directory_row_does_not_toggle_expansion(cx: &mut TestAppContext) {
 /// 也 toggle 进集合构造的，与用户真实点击序列不一致，故未能暴露。
 #[gpui::test]
 fn drag_after_cmd_click_multi_selection_moves_all_items(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
@@ -2562,6 +2616,7 @@ fn drag_after_cmd_click_multi_selection_moves_all_items(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn drag_uses_updated_selection_with_same_item_count(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
@@ -2606,6 +2661,7 @@ fn drag_uses_updated_selection_with_same_item_count(cx: &mut TestAppContext) {
 /// 时序设计：建立多选 {a, b} 并完成渲染（载荷冻结含两项）→ 从 a 拖起 → 拖拽移动中把集合清空（模拟拖拽期间任何选区变化，不 notify 使场景最极端） → 放下到 dst：仍应移动发起时载荷中的 {a, b}。
 #[gpui::test]
 fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
@@ -2683,6 +2739,7 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
 /// 缺陷回归：未聚焦时首次 cmd 点击也应直接执行多选语义，后续拖拽移动全部选中项。
 #[gpui::test]
 fn drag_after_unfocused_first_cmd_click_moves_all_items(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
@@ -2721,6 +2778,7 @@ fn drag_after_unfocused_first_cmd_click_moves_all_items(cx: &mut TestAppContext)
 /// 缺陷回归：shift 点击建立区间多选后，从区间中部行拖起应移动整个区间。
 #[gpui::test]
 fn drag_after_shift_range_selection_moves_all_items(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, file_a, file_b, file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
@@ -2769,6 +2827,7 @@ fn drag_after_shift_range_selection_moves_all_items(cx: &mut TestAppContext) {
 /// 再次多选并拖拽仍应移动全部选中项——验证首次移动后的选区/行模型无状态残留。
 #[gpui::test]
 fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
@@ -2822,6 +2881,7 @@ fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAp
 
 #[gpui::test]
 fn drag_directory_into_its_own_subtree_is_rejected(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().to_path_buf();
     let src = root.join("src");
@@ -2860,6 +2920,7 @@ fn drag_directory_into_its_own_subtree_is_rejected(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn drag_hovering_folded_directory_expands_it_after_delay(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, _file_a, _file_b, target) = paste_project(cx);
     let project_for_move = project.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
@@ -2931,6 +2992,7 @@ fn drag_hovering_folded_directory_expands_it_after_delay(cx: &mut TestAppContext
 
 #[gpui::test]
 fn clicking_blank_area_below_rows_keeps_selection_and_focuses_panel(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
     let file = root.join("a.txt");
@@ -3004,6 +3066,7 @@ fn clicking_blank_area_below_rows_keeps_selection_and_focuses_panel(cx: &mut Tes
 /// 未命中任何行的坐标不得写入任何选中状态。
 #[gpui::test]
 fn blank_click_between_multi_selection_and_drag_keeps_set(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
     let project_for_move = project.clone();
@@ -3061,6 +3124,7 @@ fn blank_click_between_multi_selection_and_drag_keeps_set(cx: &mut TestAppContex
 
 #[gpui::test]
 fn clicking_blank_area_without_prior_row_click_keeps_fallback_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
     // 子场景：从未显式点击过任何行。行模型建好后，渲染期的 ensure_selected 兜底
     // 已把选中填为首行（根行），「选中为空」在有行面板中不可停留；
     // 本用例锁定：该兜底之外，空白点击自身不产生任何额外的选中写入。

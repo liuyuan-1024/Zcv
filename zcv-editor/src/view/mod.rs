@@ -6,7 +6,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use gpui::{
@@ -190,6 +190,32 @@ enum Motion {
     DocumentEdge,
 }
 
+const UNDO_GROUP_INTERVAL: Duration = Duration::from_millis(300);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum UndoGroupKind {
+    TextInput,
+    Backspace,
+    Delete,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct UndoGroupAttempt {
+    pub(super) kind: UndoGroupKind,
+    pub(super) buffer_version: BufferVersion,
+    pub(super) merge_with_previous: bool,
+}
+
+#[derive(Debug, Clone)]
+struct UndoGroupState {
+    kind: UndoGroupKind,
+    last_edit_at: Instant,
+    buffer_version: BufferVersion,
+    topology_version: u64,
+    transaction_id: TransactionId,
+    selections: SelectionSet<MultiBufferAnchor>,
+}
+
 impl From<MovementUnit> for Motion {
     fn from(unit: MovementUnit) -> Self {
         Self::ByUnit(unit)
@@ -276,6 +302,8 @@ pub struct Editor {
     /// 已确定的选区；鼠标手势期间不被临时选区覆盖。
     selections: SelectionSet<MultiBufferAnchor>,
     selection_history: SelectionHistory,
+    /// 最近一段可合并编辑的边界状态；文本撤销事实仍只由 Buffer 历史持有。
+    undo_grouping: Option<UndoGroupState>,
     /// 结构化选择扩展链；普通选区变更或文本编辑后失效。
     structured_selection_history: Vec<SelectionSet<MultiBufferAnchor>>,
     scroll_manager: ScrollManager,
@@ -912,6 +940,53 @@ impl Editor {
         self.apply_selection_change(selections, cx);
     }
 
+    pub(super) fn begin_undo_group(&self, kind: UndoGroupKind, cx: &App) -> UndoGroupAttempt {
+        let now = Instant::now();
+        let snapshot = self.text_snapshot(cx);
+        let topology_version = snapshot.topology_version();
+        let history_transaction = self.multi_buffer.read(cx).current_history_transaction(cx);
+        let merge_with_previous = self.undo_grouping.as_ref().is_some_and(|group| {
+            group.kind == kind
+                && now.saturating_duration_since(group.last_edit_at) < UNDO_GROUP_INTERVAL
+                && group.buffer_version == snapshot.version()
+                && group.topology_version == topology_version
+                && Some(group.transaction_id) == history_transaction
+                && group.selections == self.anchored_selections()
+        });
+
+        UndoGroupAttempt {
+            kind,
+            buffer_version: snapshot.version(),
+            merge_with_previous,
+        }
+    }
+
+    pub(super) fn finish_undo_group(&mut self, attempt: UndoGroupAttempt, cx: &App) {
+        let snapshot = self.text_snapshot(cx);
+        if snapshot.version() == attempt.buffer_version {
+            self.undo_grouping = None;
+            return;
+        }
+
+        let Some(transaction_id) = self.multi_buffer.read(cx).current_history_transaction(cx)
+        else {
+            self.undo_grouping = None;
+            return;
+        };
+        self.undo_grouping = Some(UndoGroupState {
+            kind: attempt.kind,
+            last_edit_at: Instant::now(),
+            buffer_version: snapshot.version(),
+            topology_version: snapshot.topology_version(),
+            transaction_id,
+            selections: self.anchored_selections(),
+        });
+    }
+
+    pub(super) fn break_undo_group(&mut self) {
+        self.undo_grouping = None;
+    }
+
     fn apply_selection_change(&mut self, selections: SelectionSet, cx: &mut Context<Self>) {
         self.composition = None;
         self.set_selections_without_clearing_structured_history(selections, cx);
@@ -1088,6 +1163,7 @@ impl Editor {
     }
 
     fn set_committed_selections(&mut self, selections: SelectionSet, cx: &mut Context<Self>) {
+        self.break_undo_group();
         self.selections = selections.anchored(self.display_snapshot(cx).buffer_snapshot());
         // 所有偏移态选择/编辑落地都经这里：自动闭合区域在此按新选择收敛，不另设清理入口。
         self.invalidate_autoclose_regions(cx);
@@ -1114,6 +1190,7 @@ impl Editor {
         selections: SelectionSet<MultiBufferAnchor>,
         cx: &mut Context<Self>,
     ) {
+        self.break_undo_group();
         self.composition = None;
         self.pending_selection = None;
         self.selections = selections;
@@ -1740,6 +1817,7 @@ impl Editor {
             placeholder_display_map: None,
             selections: initial_selections,
             selection_history: SelectionHistory::default(),
+            undo_grouping: None,
             structured_selection_history: Vec::new(),
             bracket_pair_cache: None,
             scroll_manager: ScrollManager::default(),

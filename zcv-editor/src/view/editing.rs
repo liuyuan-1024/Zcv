@@ -27,7 +27,21 @@ impl Editor {
         self.composition = None;
         let before_selections = self.resolved_selections(cx);
         let targets = self.delete_targets(&before_selections, Some((direction, unit)), cx);
-        self.apply_deletion(targets, description, cx);
+        let group_attempt = (matches!(unit, MovementUnit::Grapheme)
+            && before_selections
+                .as_slice()
+                .iter()
+                .all(|selection| selection.is_caret()))
+        .then(|| {
+            self.begin_undo_group(
+                match direction {
+                    MovementDirection::Previous => UndoGroupKind::Backspace,
+                    MovementDirection::Next => UndoGroupKind::Delete,
+                },
+                cx,
+            )
+        });
+        self.apply_deletion(targets, description, group_attempt, cx);
     }
 
     fn delete_to_line_edge(
@@ -74,7 +88,7 @@ impl Editor {
                 .collect::<TextResult<Vec<_>>>()
                 .map(SelectionSet::new)
         };
-        self.apply_deletion(targets, description, cx);
+        self.apply_deletion(targets, description, None, cx);
     }
 
     /// 删除命令尾部：替换层显式返回删除起点的 caret，不依赖旧选区端点映射。
@@ -82,14 +96,25 @@ impl Editor {
         &mut self,
         targets: TextResult<SelectionSet>,
         description: &'static str,
+        group_attempt: Option<UndoGroupAttempt>,
         cx: &mut Context<Self>,
     ) {
         let before_selections = self.resolved_selections(cx);
-        let metadata = edit_metadata(description);
-        let _ = self.change_with_after(before_selections, metadata.clone(), cx, |buffer| {
+        let mut metadata = edit_metadata(description);
+        if group_attempt.is_some_and(|attempt| attempt.merge_with_previous) {
+            metadata = metadata.with_merge_policy(TransactionMergePolicy::MergeWithPrevious);
+        }
+        let outcome = self.change_with_after(before_selections, metadata.clone(), cx, |buffer| {
             let targets = targets?;
             replace_selections(buffer, &targets, "")
         });
+        if outcome.is_ok() {
+            if let Some(attempt) = group_attempt {
+                self.finish_undo_group(attempt, cx);
+            }
+        } else {
+            self.break_undo_group();
+        }
     }
 
     /// 单行模式下的命令守卫：换行/缩进等编辑在单行输入框内由外层处理。
@@ -351,6 +376,7 @@ impl Editor {
     ///
     /// 历史回放不经过编辑事务会话（`change` 会开启新会话并记录选区），这里直接回放 MultiBuffer 历史并以被回放事务的身份只读恢复 SelectionHistory。
     fn replay_history(&mut self, redo: bool, cx: &mut Context<Self>) {
+        self.break_undo_group();
         if self.is_read_only(cx) {
             return;
         }
@@ -512,7 +538,7 @@ impl Editor {
             return;
         };
         if !text.is_empty() {
-            self.replace_text(None, &text, cx);
+            self.replace_pasted_text(&text, cx);
         }
     }
 

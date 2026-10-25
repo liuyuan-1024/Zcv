@@ -2,7 +2,7 @@ use zcv_language::LanguageRegistry;
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferOffset, MultiBufferRange};
 
 use gpui::{Modifiers, TestAppContext, point, px, size};
-use zcv_actions::{ConfirmLocalRename, RenameLocal};
+use zcv_actions::{Backspace, ConfirmLocalRename, Delete, RenameLocal};
 use zcv_text::{Edit, TransactionId, TransactionMetadata};
 
 use super::common::{buffer_text, focus_editor, inject_file_diff, test_buffer};
@@ -131,6 +131,154 @@ fn editors_sharing_a_singleton_source_also_share_text_history(cx: &mut TestAppCo
     cx.update_entity(&second, |editor, cx| editor.redo(cx));
     cx.run_until_parked();
     assert_eq!(buffer_text(&buffer, cx), "abcd");
+}
+
+#[gpui::test]
+fn consecutive_text_input_is_one_undo_and_redo_step(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "");
+    let editor = cx.new({
+        let buffer = buffer.clone();
+        move |cx| Editor::for_language_buffer(buffer, cx)
+    });
+
+    cx.update_entity(&editor, |editor, cx| {
+        editor.replace_text(None, "a", cx);
+        editor.replace_text(None, "b", cx);
+    });
+    assert_eq!(buffer_text(&buffer, cx), "ab");
+
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "");
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.selections(cx),
+            SelectionSet::caret(MultiBufferOffset::ZERO)
+        );
+    });
+
+    cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "ab");
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.selections(cx),
+            SelectionSet::caret(MultiBufferOffset::new(2))
+        );
+    });
+}
+
+#[gpui::test]
+fn changing_selection_breaks_text_input_undo_group(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "");
+    let editor = cx.new({
+        let buffer = buffer.clone();
+        move |cx| Editor::for_language_buffer(buffer, cx)
+    });
+
+    cx.update_entity(&editor, |editor, cx| {
+        editor.replace_text(None, "a", cx);
+        editor.replace_text(None, "b", cx);
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)), cx);
+        editor.replace_text(None, "X", cx);
+    });
+    assert_eq!(buffer_text(&buffer, cx), "aXb");
+
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "ab");
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "");
+}
+
+#[gpui::test]
+fn typing_after_replacing_a_selection_stays_in_one_undo_group(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "old");
+    let editor = cx.new({
+        let buffer = buffer.clone();
+        move |cx| Editor::for_language_buffer(buffer, cx)
+    });
+
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::ZERO,
+                MultiBufferOffset::new(3),
+            )]),
+            cx,
+        );
+        editor.replace_text(None, "a", cx);
+        editor.replace_text(None, "b", cx);
+    });
+    assert_eq!(buffer_text(&buffer, cx), "ab");
+
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "old");
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.selections(cx).primary().range(),
+            MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(3)).unwrap()
+        );
+    });
+}
+
+#[gpui::test]
+fn paste_stays_separate_from_text_input_undo_groups(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "");
+    let editor = cx.new({
+        let buffer = buffer.clone();
+        move |cx| Editor::for_language_buffer(buffer, cx)
+    });
+
+    cx.update_entity(&editor, |editor, cx| {
+        editor.replace_text(None, "a", cx);
+        editor.replace_pasted_text("P", cx);
+        editor.replace_text(None, "b", cx);
+    });
+    assert_eq!(buffer_text(&buffer, cx), "aPb");
+
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "aP");
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "a");
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "");
+}
+
+#[gpui::test]
+fn consecutive_backspaces_are_one_undo_and_redo_step(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "abcd");
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| {
+            let mut editor = Editor::for_language_buffer(buffer, cx);
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(4)), cx);
+            editor
+        }
+    });
+
+    cx.update(|window, app| {
+        editor.update(app, |editor, cx| {
+            editor.handle_backspace(&Backspace, window, cx);
+            editor.handle_backspace(&Backspace, window, cx);
+        });
+    });
+    assert_eq!(buffer_text(&buffer, cx), "ab");
+
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "abcd");
+    cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "ab");
+
+    cx.update(|window, app| {
+        editor.update(app, |editor, cx| {
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::ZERO), cx);
+            editor.handle_delete(&Delete, window, cx);
+            editor.handle_delete(&Delete, window, cx);
+        });
+    });
+    assert_eq!(buffer_text(&buffer, cx), "");
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "ab");
+    cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "");
 }
 
 #[gpui::test]

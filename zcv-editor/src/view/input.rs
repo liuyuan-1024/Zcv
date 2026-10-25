@@ -78,16 +78,43 @@ impl Editor {
         text: &str,
         cx: &mut Context<Self>,
     ) {
+        self.replace_text_with_grouping(range_utf16, text, true, cx);
+    }
+
+    pub(super) fn replace_pasted_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.break_undo_group();
+        self.replace_text_with_grouping(None, text, false, cx);
+        self.break_undo_group();
+    }
+
+    fn replace_text_with_grouping(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        text: &str,
+        allow_grouping: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_read_only(cx) {
             return;
         }
         let before_selections = self.resolved_selections(cx);
         let composition = self.composition.take();
+        let group_attempt = (allow_grouping
+            && range_utf16.is_none()
+            && composition.is_none()
+            && !text.is_empty()
+            && text.chars().all(|character| !character.is_control()))
+        .then(|| self.begin_undo_group(UndoGroupKind::TextInput, cx));
+        if group_attempt.is_none() {
+            self.break_undo_group();
+        }
+        let merge_with_previous = group_attempt.is_some_and(|attempt| attempt.merge_with_previous);
         // 自动闭合行为只作用于普通输入（IME 组合会话与指定替换范围不进入），并支持配置中的多字符起始配对。
         if range_utf16.is_none()
             && composition.is_none()
             && self.try_auto_pair_input(text, &before_selections, cx)
         {
+            self.break_undo_group();
             return;
         }
         // JSX/TSX 标签自动闭合是独立的语法结构输入，不进入通用括号配对规则。
@@ -95,21 +122,31 @@ impl Editor {
             && composition.is_none()
             && self.try_jsx_tag_autoclose(text, &before_selections, cx)
         {
+            self.break_undo_group();
             return;
         }
-        let Some((targets, text, metadata)) =
-            self.commit_input_edit(composition.clone(), range_utf16, text, "输入文本", cx)
-        else {
+        let Some((targets, text, metadata)) = self.commit_input_edit(
+            composition.clone(),
+            range_utf16,
+            text,
+            "输入文本",
+            merge_with_previous,
+            cx,
+        ) else {
+            self.break_undo_group();
             return;
         };
         // 编辑统一入口负责提交与选区落位；失败时恢复组合会话（选区已由入口恢复）。
-        if self
-            .change_with_after(before_selections, metadata.clone(), cx, |buffer| {
-                replace_selections(buffer, &targets, &text)
-            })
-            .is_err()
-        {
+        let outcome = self.change_with_after(before_selections, metadata.clone(), cx, |buffer| {
+            replace_selections(buffer, &targets, &text)
+        });
+        if outcome.is_ok() {
+            if let Some(attempt) = group_attempt {
+                self.finish_undo_group(attempt, cx);
+            }
+        } else {
             self.composition = composition;
+            self.break_undo_group();
         }
     }
 
@@ -123,6 +160,7 @@ impl Editor {
         range_utf16: Option<Range<usize>>,
         text: &str,
         description: &'static str,
+        merge_with_previous: bool,
         cx: &mut Context<Self>,
     ) -> Option<(SelectionSet, String, TransactionMetadata)> {
         let targets = match self.replacement_targets(composition.as_ref(), range_utf16, cx) {
@@ -144,7 +182,7 @@ impl Editor {
         Some((
             targets,
             text,
-            input_metadata(description, merge_with_composition),
+            input_metadata(description, merge_with_composition || merge_with_previous),
         ))
     }
 
@@ -680,6 +718,7 @@ impl EntityInputHandler for Editor {
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         // 组合过程本身已经通过真实事务发布编辑事件，这里只清组合会话，不另造事件出口。
         self.composition = None;
+        self.break_undo_group();
         self.input_layout = None;
         cx.notify();
     }
@@ -702,6 +741,7 @@ impl EntityInputHandler for Editor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.break_undo_group();
         let previous_composition = self.composition.take();
         let before_selections = self.resolved_selections(cx);
         let Some((targets, text, metadata)) = self.commit_input_edit(
@@ -709,6 +749,7 @@ impl EntityInputHandler for Editor {
             range_utf16,
             new_text,
             "输入法组合",
+            false,
             cx,
         ) else {
             return;

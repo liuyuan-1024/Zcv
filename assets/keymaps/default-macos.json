@@ -99,6 +99,14 @@
   },
 
   {
+    "context": "MarkdownPreview",
+    "bindings": {
+      "cmd-a": "editor::SelectAll",
+      "cmd-c": "editor::Copy"
+    }
+  },
+
+  {
     // 行内局部重命名输入框。
     "context": "Editor && mode == single_line",
     "bindings": {

@@ -51,6 +51,14 @@
     }
   },
   {
+    "context": "MarkdownPreview",
+    "bindings": {
+      "ctrl-a": "editor::SelectAll",
+      "ctrl-c": "editor::Copy"
+    }
+  },
+
+  {
     "context": "Editor && mode == single_line",
     "bindings": {
       "enter": "editor::ConfirmLocalRename",

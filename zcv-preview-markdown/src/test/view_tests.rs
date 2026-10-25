@@ -100,6 +100,7 @@ fn clicking_heading_link_scrolls_within_preview(cx: &mut TestAppContext) {
 
     impl Render for TestWindow {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let selection = Rc::default();
             let render_context = MarkdownRenderContext {
                 source_directory: None,
                 open_path: None,
@@ -107,6 +108,7 @@ fn clicking_heading_link_scrolls_within_preview(cx: &mut TestAppContext) {
                 math_images: &Default::default(),
                 mermaid_images: &Default::default(),
                 heading_bounds: &self.heading_bounds,
+                selection: &selection,
                 scroll_handle: &self.scroll,
                 window,
                 cx,
@@ -119,15 +121,7 @@ fn clicking_heading_link_scrolls_within_preview(cx: &mut TestAppContext) {
                 .track_scroll(&self.scroll)
                 .flex()
                 .flex_col()
-                .child(render_text_inline(
-                    &self.link,
-                    0,
-                    None,
-                    None,
-                    Some(&self.heading_bounds),
-                    Some(&self.scroll),
-                    cx,
-                ))
+                .child(render_text_inline(&self.link, 0, &render_context))
                 .children(
                     (1..30)
                         .map(|index| div().h(px(40.)).flex_none().child(format!("第 {index} 项"))),
@@ -173,16 +167,23 @@ fn clicking_relative_file_link_uses_the_workspace_opener(cx: &mut TestAppContext
     }
 
     impl Render for TestWindow {
-        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            div().child(render_text_inline(
-                &self.content,
-                0,
-                Some(self.directory.as_path()),
-                Some(&self.open_path),
-                None,
-                None,
-                _cx,
-            ))
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let selection = Rc::default();
+            let heading_bounds = super::HeadingBounds::default();
+            let scroll_handle = ScrollHandle::new();
+            let render_context = MarkdownRenderContext {
+                source_directory: Some(self.directory.as_path()),
+                open_path: Some(&self.open_path),
+                type_scale: typography::current(cx),
+                math_images: &Default::default(),
+                mermaid_images: &Default::default(),
+                heading_bounds: &heading_bounds,
+                selection: &selection,
+                scroll_handle: &scroll_handle,
+                window,
+                cx,
+            };
+            div().child(render_text_inline(&self.content, 0, &render_context))
         }
     }
 
@@ -289,6 +290,8 @@ fn inline_code_chip_outsets_text_and_uses_rounded_background(cx: &mut TestAppCon
             code_ranges: std::iter::once(2..5).collect(),
             code_color: chip_color,
             math_placements: Vec::new(),
+            selection: None,
+            selection_color: gpui::black().into(),
         }
     });
 
@@ -534,6 +537,7 @@ fn inline_math_reserves_width_in_the_text_flow(cx: &mut TestAppContext) {
     cx.update(|window, app| {
         let type_scale = typography::current(app);
         let math_size = size(px(40.), px(20.));
+        let selection = Rc::default();
         let mut math_images = MathImages::new();
         math_images.insert(
             "x^2".to_owned(),
@@ -549,6 +553,7 @@ fn inline_math_reserves_width_in_the_text_flow(cx: &mut TestAppContext) {
             math_images: &math_images,
             mermaid_images: &Default::default(),
             heading_bounds: &Default::default(),
+            selection: &selection,
             scroll_handle: &Default::default(),
             window,
             cx: app,
@@ -642,6 +647,7 @@ fn list_marker_height_matches_the_first_line_of_a_wrapped_item(cx: &mut TestAppC
                     size: size(px(60.), math_height),
                 }),
             );
+            let selection = Rc::default();
             let render_context = MarkdownRenderContext {
                 source_directory: None,
                 open_path: None,
@@ -649,6 +655,7 @@ fn list_marker_height_matches_the_first_line_of_a_wrapped_item(cx: &mut TestAppC
                 math_images: &math_images,
                 mermaid_images: &Default::default(),
                 heading_bounds: &Default::default(),
+                selection: &selection,
                 scroll_handle: &Default::default(),
                 window,
                 cx: app,
@@ -710,6 +717,7 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
                     }),
                 );
             }
+            let selection = Rc::default();
             let render_context = MarkdownRenderContext {
                 source_directory: None,
                 open_path: None,
@@ -717,6 +725,7 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
                 math_images: &math_images,
                 mermaid_images: &Default::default(),
                 heading_bounds: &Default::default(),
+                selection: &selection,
                 scroll_handle: &Default::default(),
                 window,
                 cx: app,
@@ -739,6 +748,8 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
                 code_ranges: Vec::new(),
                 code_color: gpui::black(),
                 math_placements: inline_text.math_placements,
+                selection: None,
+                selection_color: gpui::black().into(),
             }
         },
     );

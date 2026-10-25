@@ -12,15 +12,17 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, AnyEntity, App, Bounds, Context, Corners, Element, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, HighlightStyle, Hsla, Image,
-    ImageFormat, InspectorElementId, InteractiveText, LayoutId, ObjectFit, Pixels, Render,
-    RenderImage, Rgba, SMOOTH_SVG_SCALE_FACTOR, ScrollHandle, SharedString, Size,
+    AnyElement, AnyEntity, App, Bounds, ClipboardItem, Context, Corners, CursorStyle, Element,
+    ElementId, Entity, EventEmitter, FocusHandle, Focusable, FontStyle, FontWeight,
+    GlobalElementId, HighlightStyle, Hsla, Image, ImageFormat, InspectorElementId, InteractiveText,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, Point,
+    Render, RenderImage, Rgba, SMOOTH_SVG_SCALE_FACTOR, ScrollHandle, SharedString, Size,
     StatefulInteractiveElement, StrikethroughStyle, StyledImage, StyledText, Subscription,
     SvgRenderer, Task, TextAlign, TextLayout, UnderlineStyle, Window, div, fill, img, point,
     prelude::*, px, size,
 };
 use pulldown_cmark::Alignment;
+use zcv_actions::{Copy, SelectAll};
 use zcv_language::{
     HighlightSpan, LanguageRegistry, SnippetHighlightCancellation, SnippetHighlights,
     highlight_snippet_with_cancellation,
@@ -42,6 +44,149 @@ const INLINE_CODE_CHIP_CORNER_RADIUS: Pixels = px(4.);
 /// 行内公式在文本流中预留宽度时使用的不可断行空格。
 const MATH_PLACEHOLDER: char = '\u{00A0}';
 
+#[derive(Default)]
+struct MarkdownTextSelection {
+    text: String,
+    previous_text: Option<String>,
+    selection: Option<Range<usize>>,
+    anchor: Option<usize>,
+    dragging: bool,
+    runs: Vec<MarkdownTextRun>,
+    copy_replacements: Vec<CopyReplacement>,
+}
+
+struct MarkdownTextRun {
+    range: Range<usize>,
+    layout: TextLayout,
+    bounds: Option<Bounds<Pixels>>,
+}
+
+struct CopyReplacement {
+    range: Range<usize>,
+    text: String,
+}
+
+impl MarkdownTextSelection {
+    fn begin_render(&mut self) {
+        self.previous_text = Some(std::mem::take(&mut self.text));
+        self.runs.clear();
+        self.copy_replacements.clear();
+    }
+
+    fn end_render(&mut self) {
+        if self.previous_text.as_ref() != Some(&self.text) {
+            self.selection = None;
+            self.anchor = None;
+            self.dragging = false;
+        }
+        self.previous_text = None;
+    }
+
+    fn begin_block(&mut self) {
+        if !self.text.is_empty() && !self.text.ends_with('\n') {
+            self.text.push('\n');
+        }
+    }
+
+    fn append_separator(&mut self, separator: &str) {
+        self.text.push_str(separator);
+    }
+
+    fn register_text(&mut self, text: &str, layout: TextLayout) -> (usize, Range<usize>) {
+        let start = self.text.len();
+        self.text.push_str(text);
+        let range = start..self.text.len();
+        let run_index = self.runs.len();
+        self.runs.push(MarkdownTextRun {
+            range: range.clone(),
+            layout,
+            bounds: None,
+        });
+        (run_index, range)
+    }
+
+    fn add_copy_replacement(&mut self, range: Range<usize>, text: String) {
+        self.copy_replacements.push(CopyReplacement { range, text });
+    }
+
+    fn set_run_bounds(&mut self, run_index: usize, bounds: Bounds<Pixels>) {
+        if let Some(run) = self.runs.get_mut(run_index) {
+            run.bounds = Some(bounds);
+        }
+    }
+
+    fn index_for_position(&self, position: Point<Pixels>) -> Option<usize> {
+        self.runs.iter().find_map(|run| {
+            run.bounds
+                .as_ref()
+                .filter(|bounds| bounds.contains(&position))?;
+            let local_index = match run.layout.index_for_position(position) {
+                Ok(index) | Err(index) => index,
+            };
+            Some(run.range.start + local_index.min(run.range.len()))
+        })
+    }
+
+    fn begin_selection(&mut self, position: usize) {
+        self.anchor = Some(position);
+        self.selection = None;
+        self.dragging = true;
+    }
+
+    fn extend_selection(&mut self, position: usize) {
+        let Some(anchor) = self.anchor else { return };
+        self.selection = (anchor != position).then(|| anchor.min(position)..anchor.max(position));
+    }
+
+    fn end_selection(&mut self) {
+        self.dragging = false;
+        self.anchor = None;
+    }
+
+    fn clear(&mut self) {
+        self.text.clear();
+        self.previous_text = None;
+        self.selection = None;
+        self.anchor = None;
+        self.dragging = false;
+        self.runs.clear();
+        self.copy_replacements.clear();
+    }
+
+    fn select_all(&mut self) {
+        self.end_selection();
+        self.selection = (!self.text.is_empty()).then_some(0..self.text.len());
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let selection = self.selection.as_ref()?;
+        let mut replacements = self
+            .copy_replacements
+            .iter()
+            .filter(|replacement| {
+                replacement.range.start < selection.end && selection.start < replacement.range.end
+            })
+            .collect::<Vec<_>>();
+        replacements.sort_by_key(|replacement| replacement.range.start);
+
+        let mut output = String::new();
+        let mut cursor = selection.start;
+        for replacement in replacements {
+            let start = replacement.range.start.max(selection.start);
+            let end = replacement.range.end.min(selection.end);
+            if cursor < start {
+                output.push_str(&self.text[cursor..start]);
+            }
+            output.push_str(&replacement.text);
+            cursor = cursor.max(end);
+        }
+        if cursor < selection.end {
+            output.push_str(&self.text[cursor..selection.end]);
+        }
+        (!output.is_empty()).then_some(output)
+    }
+}
+
 /// 渲染后的公式：光栅图像与其逻辑尺寸。
 ///
 /// 逻辑尺寸用于在文本流中预留宽度，使公式后的文字继续排在同一行而不是整体换行。
@@ -62,6 +207,7 @@ struct MarkdownRenderContext<'a> {
     math_images: &'a MathImages,
     mermaid_images: &'a MermaidImages,
     heading_bounds: &'a HeadingBounds,
+    selection: &'a Rc<RefCell<MarkdownTextSelection>>,
     scroll_handle: &'a ScrollHandle,
     window: &'a Window,
     cx: &'a App,
@@ -75,6 +221,7 @@ pub(crate) struct MarkdownPreviewView {
     open_path: Option<OpenPathCallback>,
     focus: FocusHandle,
     scroll_handle: ScrollHandle,
+    selection: Rc<RefCell<MarkdownTextSelection>>,
     scrollbar: Scrollbar<ScrollHandle>,
     blocks: Arc<Vec<Block>>,
     code_highlight_generation: u64,
@@ -144,6 +291,7 @@ impl MarkdownPreviewView {
             focus: cx.focus_handle(),
             scrollbar: Scrollbar::vertical(scroll_handle.clone()),
             scroll_handle,
+            selection: Rc::default(),
             blocks: Arc::new(Vec::new()),
             code_highlight_generation: 0,
             code_highlight_cancellation: None,
@@ -183,6 +331,7 @@ impl MarkdownPreviewView {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.selection.borrow_mut().clear();
         if let Some(cancellation) = self.code_highlight_cancellation.take() {
             cancellation.cancel();
         }
@@ -322,6 +471,7 @@ impl Focusable for MarkdownPreviewView {
 
 impl Render for MarkdownPreviewView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.selection.borrow_mut().begin_render();
         let type_scale = typography_for_window(window, cx);
         self.ensure_math_render(type_scale.content_size(), color::current(cx).text, cx);
         let source_path = self.source_item.item_path(cx);
@@ -337,6 +487,7 @@ impl Render for MarkdownPreviewView {
             math_images: &self.math_images,
             mermaid_images: &self.mermaid_images,
             heading_bounds: &heading_bounds,
+            selection: &self.selection,
             scroll_handle: &self.scroll_handle,
             window,
             cx,
@@ -360,12 +511,64 @@ impl Render for MarkdownPreviewView {
                     .into_any_element()
             })
             .collect::<Vec<_>>();
+        self.selection.borrow_mut().end_render();
         div()
             .id("markdown-preview")
             .track_focus(&self.focus)
             .key_context("MarkdownPreview")
             .tab_index(0)
             .size_full()
+            .on_mouse_down(MouseButton::Left, {
+                let selection = Rc::clone(&self.selection);
+                let focus = self.focus.clone();
+                move |event: &MouseDownEvent, window, cx| {
+                    if event.button != MouseButton::Left {
+                        return;
+                    }
+                    let Some(position) = selection.borrow().index_for_position(event.position)
+                    else {
+                        return;
+                    };
+                    window.focus(&focus, cx);
+                    selection.borrow_mut().begin_selection(position);
+                    window.refresh();
+                }
+            })
+            .on_mouse_move({
+                let selection = Rc::clone(&self.selection);
+                move |event: &MouseMoveEvent, window, _cx| {
+                    if event.pressed_button != Some(MouseButton::Left)
+                        || !selection.borrow().dragging
+                    {
+                        return;
+                    }
+                    let mut selection = selection.borrow_mut();
+                    if let Some(position) = selection.index_for_position(event.position) {
+                        selection.extend_selection(position);
+                        window.refresh();
+                    }
+                }
+            })
+            .on_mouse_up(MouseButton::Left, {
+                let selection = Rc::clone(&self.selection);
+                move |_: &MouseUpEvent, window, _cx| {
+                    if selection.borrow().dragging {
+                        selection.borrow_mut().end_selection();
+                        window.refresh();
+                    }
+                }
+            })
+            .on_mouse_up_out(MouseButton::Left, {
+                let selection = Rc::clone(&self.selection);
+                move |_: &MouseUpEvent, window, _cx| {
+                    if selection.borrow().dragging {
+                        selection.borrow_mut().end_selection();
+                        window.refresh();
+                    }
+                }
+            })
+            .on_action(cx.listener(Self::handle_select_all))
+            .on_action(cx.listener(Self::handle_copy))
             .relative()
             .overflow_hidden()
             .bg(color::current(cx).editor_background)
@@ -380,12 +583,26 @@ impl Render for MarkdownPreviewView {
                     .text_color(color::current(cx).text)
                     .text_size(type_scale.content_size())
                     .line_height(type_scale.content_line())
+                    .cursor(CursorStyle::IBeam)
                     .flex()
                     .flex_col()
                     .gap(scale::S16)
                     .children(content),
             )
             .child(div().absolute().inset_0().child(self.scrollbar.clone()))
+    }
+}
+
+impl MarkdownPreviewView {
+    fn handle_select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
+        self.selection.borrow_mut().select_all();
+        cx.notify();
+    }
+
+    fn handle_copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = self.selection.borrow().selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
     }
 }
 
@@ -396,6 +613,7 @@ fn render_block(
     namespace: usize,
     render_context: &MarkdownRenderContext<'_>,
 ) -> AnyElement {
+    render_context.selection.borrow_mut().begin_block();
     let source_directory = render_context.source_directory;
     let type_scale = render_context.type_scale;
     let math_images = render_context.math_images;
@@ -461,7 +679,11 @@ fn render_block(
                 .map(|highlights| syntax::style_table(&highlights.capture_names, cx));
             let mut line_start = 0;
             let mut highlight_index = 0;
+            let mut has_line = false;
             for line in code_lines(text) {
+                if has_line {
+                    render_context.selection.borrow_mut().append_separator("\n");
+                }
                 let line_end = line_start + line.len();
                 code = code.child(div().child(render_code_line(
                     line,
@@ -469,8 +691,11 @@ fn render_block(
                     highlights.as_ref(),
                     styles.as_deref(),
                     &mut highlight_index,
+                    render_context.selection,
+                    color::current(cx).editor_selection_background.into(),
                 )));
                 line_start = line_end + 1;
+                has_line = true;
             }
             code.into_any_element()
         }
@@ -714,6 +939,7 @@ fn render_table_row(
     render_context: &MarkdownRenderContext<'_>,
 ) -> AnyElement {
     let cx = render_context.cx;
+    render_context.selection.borrow_mut().begin_block();
     div()
         .flex()
         .w_full()
@@ -721,6 +947,9 @@ fn render_table_row(
             row.border_t_1().border_color(color::current(cx).border)
         })
         .children(cells.iter().enumerate().map(|(cell_index, cell_content)| {
+            if cell_index > 0 {
+                render_context.selection.borrow_mut().append_separator("\t");
+            }
             let cell = div()
                 .flex_1()
                 .min_w(scale::S32)
@@ -760,6 +989,7 @@ struct InlineText {
     link_ranges: Vec<Range<usize>>,
     code_ranges: Vec<Range<usize>>,
     math_placements: Vec<MathPlacement>,
+    copy_replacements: Vec<(Range<usize>, String)>,
 }
 
 /// 行内公式在文本流中的位置、图像与逻辑尺寸。
@@ -817,6 +1047,10 @@ impl InlineText {
                     size: math.size,
                     reserved: space * count as f32,
                 });
+                self.copy_replacements.push((
+                    byte_offset..byte_offset + count * MATH_PLACEHOLDER.len_utf8(),
+                    source.to_owned(),
+                ));
             }
             Some(Err(error)) => {
                 self.push_muted(&format!("公式渲染失败：{error}"), render_context.cx);
@@ -842,15 +1076,7 @@ impl InlineText {
         }
     }
 
-    fn finish(
-        self,
-        key: usize,
-        source_directory: Option<&Path>,
-        open_path: Option<&OpenPathCallback>,
-        heading_bounds: Option<&HeadingBounds>,
-        scroll_handle: Option<&ScrollHandle>,
-        cx: &App,
-    ) -> AnyElement {
+    fn finish(self, key: usize, render_context: &MarkdownRenderContext<'_>) -> AnyElement {
         let InlineText {
             text,
             highlights,
@@ -858,26 +1084,33 @@ impl InlineText {
             link_ranges,
             code_ranges,
             math_placements,
+            copy_replacements,
         } = self;
+        let rendered_text = text.clone();
         let text = StyledText::new(text).with_highlights(highlights);
         let layout = text.layout().clone();
+        let (run_index, range) = render_context
+            .selection
+            .borrow_mut()
+            .register_text(&rendered_text, layout.clone());
+        for (replacement_range, replacement_text) in copy_replacements {
+            render_context.selection.borrow_mut().add_copy_replacement(
+                range.start + replacement_range.start..range.start + replacement_range.end,
+                replacement_text,
+            );
+        }
         let text = if links.is_empty() {
             text.into_any_element()
         } else {
-            let source_directory = source_directory.map(Path::to_path_buf);
-            let open_path = open_path.cloned();
-            let heading_bounds = heading_bounds.cloned();
-            let scroll_handle = scroll_handle.cloned();
+            let source_directory = render_context.source_directory.map(Path::to_path_buf);
+            let open_path = render_context.open_path.cloned();
+            let heading_bounds = Rc::clone(render_context.heading_bounds);
+            let scroll_handle = (*render_context.scroll_handle).clone();
             InteractiveText::new(("markdown-link", key), text)
                 .on_click(link_ranges, move |index, window, cx| {
                     let link = &links[index];
                     if let Some(slug) = link.strip_prefix('#') {
-                        if let (Some(bounds), Some(scroll_handle)) = (
-                            heading_bounds
-                                .as_ref()
-                                .and_then(|targets| targets.borrow().get(slug).copied()),
-                            scroll_handle.as_ref(),
-                        ) {
+                        if let Some(bounds) = heading_bounds.borrow().get(slug).copied() {
                             let offset = scroll_handle.offset();
                             let scroll_top = scroll_handle.bounds().top();
                             scroll_handle
@@ -897,18 +1130,18 @@ impl InlineText {
                 })
                 .into_any_element()
         };
-        if code_ranges.is_empty() && math_placements.is_empty() {
-            text
-        } else {
-            MarkdownInlineText {
-                text,
-                layout,
-                code_ranges,
-                code_color: color::current(cx).border_variant.into(),
-                math_placements,
-            }
-            .into_any_element()
+        MarkdownInlineText {
+            text,
+            layout,
+            code_ranges,
+            code_color: color::current(render_context.cx).border_variant.into(),
+            math_placements,
+            selection: Some((Rc::clone(render_context.selection), run_index)),
+            selection_color: color::current(render_context.cx)
+                .editor_selection_background
+                .into(),
         }
+        .into_any_element()
     }
 }
 
@@ -955,47 +1188,21 @@ fn render_inline(
                 inline_text.push(&inline.text, &inline.style, render_context.cx);
             }
         }
-        return inline_text.finish(
-            key,
-            render_context.source_directory,
-            render_context.open_path,
-            Some(render_context.heading_bounds),
-            Some(render_context.scroll_handle),
-            render_context.cx,
-        );
+        return inline_text.finish(key, render_context);
     }
-    render_text_inline(
-        content,
-        key,
-        render_context.source_directory,
-        render_context.open_path,
-        Some(render_context.heading_bounds),
-        Some(render_context.scroll_handle),
-        render_context.cx,
-    )
+    render_text_inline(content, key, render_context)
 }
 
 fn render_text_inline(
     content: &[Inline],
     key: usize,
-    source_directory: Option<&Path>,
-    open_path: Option<&OpenPathCallback>,
-    heading_bounds: Option<&HeadingBounds>,
-    scroll_handle: Option<&ScrollHandle>,
-    cx: &App,
+    render_context: &MarkdownRenderContext<'_>,
 ) -> AnyElement {
     let mut inline_text = InlineText::default();
     for inline in content {
-        inline_text.push(&inline.text, &inline.style, cx);
+        inline_text.push(&inline.text, &inline.style, render_context.cx);
     }
-    inline_text.finish(
-        key,
-        source_directory,
-        open_path,
-        heading_bounds,
-        scroll_handle,
-        cx,
-    )
+    inline_text.finish(key, render_context)
 }
 
 fn resolve_markdown_file_link(link: &str, source_directory: Option<&Path>) -> Option<PathBuf> {
@@ -1019,6 +1226,8 @@ struct MarkdownInlineText {
     code_ranges: Vec<Range<usize>>,
     code_color: Hsla,
     math_placements: Vec<MathPlacement>,
+    selection: Option<(Rc<RefCell<MarkdownTextSelection>>, usize)>,
+    selection_color: Hsla,
 }
 
 impl Element for MarkdownInlineText {
@@ -1053,6 +1262,11 @@ impl Element for MarkdownInlineText {
         cx: &mut App,
     ) -> Self::PrepaintState {
         self.text.prepaint(window, cx);
+        if let Some((selection, run_index)) = &self.selection {
+            selection
+                .borrow_mut()
+                .set_run_bounds(*run_index, self.layout.bounds());
+        }
     }
 
     fn paint(
@@ -1067,6 +1281,20 @@ impl Element for MarkdownInlineText {
     ) {
         paint_inline_code_chips(&self.layout, &self.code_ranges, self.code_color, window);
         paint_inline_math(&self.layout, &self.math_placements, window);
+        if let Some((selection, run_index)) = &self.selection {
+            let selection = selection.borrow();
+            if let (Some(range), Some(run)) =
+                (selection.selection.as_ref(), selection.runs.get(*run_index))
+            {
+                paint_text_selection(
+                    &self.layout,
+                    &run.range,
+                    range,
+                    self.selection_color,
+                    window,
+                );
+            }
+        }
         self.text.paint(window, cx);
     }
 }
@@ -1079,15 +1307,35 @@ impl gpui::IntoElement for MarkdownInlineText {
     }
 }
 
-fn paint_inline_code_chips(
+fn paint_text_selection(
     layout: &TextLayout,
-    code_ranges: &[Range<usize>],
+    run_range: &Range<usize>,
+    selection: &Range<usize>,
     color: Hsla,
     window: &mut Window,
 ) {
+    let selected_start = selection.start.max(run_range.start);
+    let selected_end = selection.end.min(run_range.end);
+    if selected_start >= selected_end {
+        return;
+    }
+
+    let local_range = selected_start - run_range.start..selected_end - run_range.start;
+    let text_align = window.text_style().text_align;
+    for_each_text_range_bounds(layout, local_range, text_align, |bounds| {
+        window.paint_quad(fill(bounds, color));
+    });
+}
+
+fn for_each_text_range_bounds(
+    layout: &TextLayout,
+    range: Range<usize>,
+    text_align: TextAlign,
+    mut paint: impl FnMut(Bounds<Pixels>),
+) {
+    // GPUI 将软换行边界索引归到前一行；按塑形后的行片段裁范围，才能正确覆盖下一行首字。
     let line_bounds = layout.bounds();
     let line_height = layout.line_height();
-    let text_align = window.text_style().text_align;
     let mut row_top = line_bounds.origin.y;
     let mut line_start = 0;
 
@@ -1106,13 +1354,9 @@ fn paint_inline_code_chips(
             .chain([(line_end, unwrapped_layout.width)]);
 
         for (row_end, row_end_x) in row_ends {
-            for code_range in code_ranges {
-                let selection_start = code_range.start.max(row_start);
-                let selection_end = code_range.end.min(row_end);
-                if selection_start >= selection_end {
-                    continue;
-                }
-
+            let selected_start = range.start.max(row_start);
+            let selected_end = range.end.min(row_end);
+            if selected_start < selected_end {
                 let alignment_offset = match text_align {
                     TextAlign::Left => Pixels::ZERO,
                     TextAlign::Center => {
@@ -1128,19 +1372,10 @@ fn paint_inline_code_chips(
                         + unwrapped_layout.x_for_index(index - line_start)
                         - row_start_x
                 };
-                let top = row_top + line_height * INLINE_CODE_CHIP_VERTICAL_INSET;
-                let bottom = row_top + line_height * (1. - INLINE_CODE_CHIP_VERTICAL_INSET);
-                let chip_outset = scale::to_pixels(scale::S2, window);
-                window.paint_quad(
-                    fill(
-                        Bounds::from_corners(
-                            point(x_for_index(selection_start) - chip_outset, top),
-                            point(x_for_index(selection_end) + chip_outset, bottom),
-                        ),
-                        color,
-                    )
-                    .corner_radii(INLINE_CODE_CHIP_CORNER_RADIUS),
-                );
+                paint(Bounds::from_corners(
+                    point(x_for_index(selected_start), row_top),
+                    point(x_for_index(selected_end), row_top + line_height),
+                ));
             }
 
             row_start = row_end;
@@ -1149,6 +1384,34 @@ fn paint_inline_code_chips(
         }
 
         line_start = line_end + 1;
+    }
+}
+
+fn paint_inline_code_chips(
+    layout: &TextLayout,
+    code_ranges: &[Range<usize>],
+    color: Hsla,
+    window: &mut Window,
+) {
+    let text_align = window.text_style().text_align;
+    for code_range in code_ranges {
+        for_each_text_range_bounds(layout, code_range.clone(), text_align, |bounds| {
+            let vertical_inset = bounds.size.height * INLINE_CODE_CHIP_VERTICAL_INSET;
+            let chip_outset = scale::to_pixels(scale::S2, window);
+            window.paint_quad(
+                fill(
+                    Bounds::from_corners(
+                        point(bounds.left() - chip_outset, bounds.top() + vertical_inset),
+                        point(
+                            bounds.right() + chip_outset,
+                            bounds.bottom() - vertical_inset,
+                        ),
+                    ),
+                    color,
+                )
+                .corner_radii(INLINE_CODE_CHIP_CORNER_RADIUS),
+            );
+        });
     }
 }
 
@@ -1495,6 +1758,8 @@ fn render_code_line(
     highlights: Option<&SnippetHighlights>,
     styles: Option<&[HighlightStyle]>,
     highlight_index: &mut usize,
+    selection: &Rc<RefCell<MarkdownTextSelection>>,
+    selection_color: Hsla,
 ) -> AnyElement {
     let line_highlights: Vec<(Range<usize>, HighlightStyle)> = highlights
         .zip(styles)
@@ -1510,9 +1775,19 @@ fn render_code_line(
                 .collect()
         })
         .unwrap_or_default();
-    StyledText::new(line.to_owned())
-        .with_highlights(line_highlights)
-        .into_any_element()
+    let text = StyledText::new(line.to_owned()).with_highlights(line_highlights);
+    let layout = text.layout().clone();
+    let (run_index, _) = selection.borrow_mut().register_text(line, layout.clone());
+    MarkdownInlineText {
+        text: text.into_any_element(),
+        layout,
+        code_ranges: Vec::new(),
+        code_color: selection_color,
+        math_placements: Vec::new(),
+        selection: Some((Rc::clone(selection), run_index)),
+        selection_color,
+    }
+    .into_any_element()
 }
 
 /// 返回与当前行相交的高亮，并将游标推进到后续行无需再次检查的位置。

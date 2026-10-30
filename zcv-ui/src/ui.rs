@@ -20,7 +20,9 @@ mod tooltip;
 mod tree;
 mod tree_disclosure;
 
-pub use autoscroll::drag_autoscroll_delta;
+pub use autoscroll::{
+    AUTOSCROLL_INTERVAL, DragAutoscroll, drag_autoscroll_delta, selection_autoscroll_delta,
+};
 pub use button::{Button, ButtonSize, ButtonStyle};
 pub use button_like::ButtonLike;
 pub use checkbox::Checkbox;

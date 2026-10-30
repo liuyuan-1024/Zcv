@@ -997,9 +997,9 @@ fn tsx_newline_only_bracket_rule_adds_a_blank_inner_line(cx: &mut TestAppContext
         &editor,
         cx,
         source,
-        "<main>\n    \n</main>",
+        "<main>\n  \n</main>",
         at,
-        "<main>\n    ".len(),
+        "<main>\n  ".len(),
     );
 }
 
@@ -1007,8 +1007,8 @@ fn tsx_newline_only_bracket_rule_adds_a_blank_inner_line(cx: &mut TestAppContext
 fn tsx_newline_only_respects_side_whitespace_and_newline_boundary(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     for (source, cursor, expected, after) in [
-        ("<main>  </main>", 7, "<main> \n    \n </main>", 12),
-        ("<main>\n</main>", 7, "<main>\n\n    </main>", 12),
+        ("<main>  </main>", 7, "<main> \n  \n </main>", 10),
+        ("<main>\n</main>", 7, "<main>\n\n  </main>", 10),
     ] {
         let (buffer, editor, cx) = editor_with_path(
             cx,

@@ -7,6 +7,44 @@ use alacritty_terminal::{
 use super::*;
 
 #[test]
+fn wheel_pixels_accumulate_into_lines_across_events() {
+    let mut remainder = Pixels::ZERO;
+    let height = Pixels::from(20.);
+    assert_eq!(
+        scroll_lines_for_pixels(&mut remainder, TouchPhase::Started, Pixels::ZERO, height),
+        0
+    );
+    assert_eq!(
+        scroll_lines_for_pixels(&mut remainder, TouchPhase::Moved, Pixels::from(8.), height),
+        0
+    );
+    assert_eq!(
+        scroll_lines_for_pixels(&mut remainder, TouchPhase::Moved, Pixels::from(15.), height),
+        1
+    );
+    assert_eq!(remainder, Pixels::from(3.));
+    assert_eq!(
+        scroll_lines_for_pixels(
+            &mut remainder,
+            TouchPhase::Moved,
+            Pixels::from(-28.),
+            height
+        ),
+        -1
+    );
+    assert_eq!(remainder, Pixels::from(-5.));
+    assert_eq!(
+        scroll_lines_for_pixels(&mut remainder, TouchPhase::Ended, Pixels::from(30.), height),
+        0
+    );
+    assert_eq!(
+        scroll_lines_for_pixels(&mut remainder, TouchPhase::Started, Pixels::ZERO, height),
+        0
+    );
+    assert_eq!(remainder, Pixels::ZERO);
+}
+
+#[test]
 fn terminal_lifecycle_has_explicit_close_and_exit_transitions() {
     let mut lifecycle = TerminalLifecycle::Running;
     assert!(lifecycle.begin_close());

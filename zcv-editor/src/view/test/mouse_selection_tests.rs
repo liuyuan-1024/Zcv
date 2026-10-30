@@ -737,6 +737,9 @@ fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) 
     });
     let drag_to = point(click.x, viewport_height + px(200.));
     cx.simulate_mouse_move(drag_to, Some(MouseButton::Left), Modifiers::default());
+    let head_before_tick =
+        cx.read_entity(&editor, |editor, cx| editor.selections(cx).primary().head());
+    cx.executor().advance_clock(Duration::from_millis(20));
     cx.run_until_parked();
     cx.read_entity(&editor, |editor, cx| {
         assert!(
@@ -746,6 +749,10 @@ fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) 
         assert!(
             editor.selections(cx).primary().range().start()
                 < editor.selections(cx).primary().range().end()
+        );
+        assert!(
+            editor.selections(cx).primary().head() > head_before_tick,
+            "指针不再移动时，自动滚动也应延伸选区"
         );
     });
 }
@@ -771,11 +778,18 @@ fn mouse_dragging_beyond_right_edge_autoscrolls_horizontally(cx: &mut TestAppCon
         Some(MouseButton::Left),
         Modifiers::default(),
     );
+    let head_before_tick =
+        cx.read_entity(&editor, |editor, cx| editor.selections(cx).primary().head());
+    cx.executor().advance_clock(Duration::from_millis(20));
     cx.run_until_parked();
 
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert!(editor.scroll_manager.offset().x > px(0.));
         assert_eq!(editor.scroll_top(), px(0.));
+        assert!(
+            editor.selections(cx).primary().head() > head_before_tick,
+            "水平自动滚动时，指针静止也应延伸选区"
+        );
     });
 }
 

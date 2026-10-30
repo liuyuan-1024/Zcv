@@ -22,7 +22,6 @@ use std::{
     path::{Path, PathBuf},
     process::ExitStatus,
     sync::Arc,
-    time::Duration,
 };
 
 use alacritty_terminal::{
@@ -44,7 +43,7 @@ use crate::{
     mappings::mouse::{grid_point_and_side, mouse_button_report, mouse_moved_report},
     pty_info::PtyProcessInfo,
 };
-use zcv_ui::drag_autoscroll_delta;
+use zcv_ui::{AUTOSCROLL_INTERVAL, DragAutoscroll};
 
 /// 调试用的默认终端尺寸（创建后由视图第一帧真实尺寸覆盖）。
 const DEBUG_TERMINAL_WIDTH: f32 = 500.;
@@ -53,6 +52,29 @@ const DEBUG_CELL_WIDTH: f32 = 5.;
 const DEBUG_LINE_HEIGHT: f32 = 5.;
 /// 创建时未确定窗口 id 时的占位值（unix 上无实际用途）。
 const DUMMY_WINDOW_ID: u64 = 0;
+
+fn scroll_lines_for_pixels(
+    remainder: &mut Pixels,
+    phase: TouchPhase,
+    delta: Pixels,
+    line_height: Pixels,
+) -> i32 {
+    match phase {
+        TouchPhase::Started => {
+            *remainder = Pixels::ZERO;
+            0
+        }
+        TouchPhase::Moved => {
+            *remainder += delta;
+            let lines = (f32::from(*remainder) / f32::from(line_height)) as i32;
+            if lines != 0 {
+                *remainder = Pixels::from(f32::from(*remainder) % f32::from(line_height));
+            }
+            lines
+        }
+        TouchPhase::Ended | TouchPhase::Cancelled => 0,
+    }
+}
 
 // ─── 尺寸与坐标 ───────────────────────────────────────────────────
 
@@ -310,16 +332,9 @@ impl SelectionGeometry {
         SelectionPoint { point, side }
     }
 
-    fn autoscroll_delta(&self, position: gpui::Point<Pixels>) -> Pixels {
+    fn selection_bounds(&self) -> gpui::Bounds<Pixels> {
         let height = self.line_height * self.screen_lines as f32;
-        let edge_margin = self.line_height.min(height / 3.0);
-        drag_autoscroll_delta(
-            position,
-            gpui::Bounds::new(self.origin, gpui::size(Pixels::from(1.), height)),
-            gpui::Point::new(Pixels::ZERO, edge_margin),
-            gpui::Point::new(Pixels::ZERO, height / 16.0),
-        )
-        .y
+        gpui::Bounds::new(self.origin, gpui::size(Pixels::from(1.), height))
     }
 }
 
@@ -393,9 +408,8 @@ enum MouseGesture {
 }
 
 struct SelectionDrag {
-    position: gpui::Point<Pixels>,
     geometry: SelectionGeometry,
-    autoscroll: Pixels,
+    autoscroll: DragAutoscroll,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -837,8 +851,16 @@ impl Terminal {
         cx.notify();
     }
 
-    /// 像素滚动：触控板手势按 touch phase 处理——Started 重置累积、Moved 累积并滚动整行、Ended/Cancelled 忽略。
-    /// 慢滚时每次增量小，累积跨事件进行，保证手感连续。
+    /// 滚轮与选区自动滚动共用跨事件的像素余量，输出终端可消费的整行数。
+    pub(crate) fn scroll_lines_for_pixels(
+        &mut self,
+        phase: TouchPhase,
+        delta: Pixels,
+        line_height: Pixels,
+    ) -> i32 {
+        scroll_lines_for_pixels(&mut self.scroll_px, phase, delta, line_height)
+    }
+
     pub(crate) fn scroll_px(
         &mut self,
         phase: TouchPhase,
@@ -846,21 +868,9 @@ impl Terminal {
         line_height: Pixels,
         cx: &mut Context<Self>,
     ) {
-        match phase {
-            TouchPhase::Started => {
-                self.scroll_px = Pixels::ZERO;
-            }
-            TouchPhase::Moved => {
-                self.scroll_px += delta;
-                let lines = (f32::from(self.scroll_px) / f32::from(line_height)) as i32;
-                if lines != 0 {
-                    // 保留余量：不足一行的像素跨事件继续累积。
-                    self.scroll_px =
-                        Pixels::from(f32::from(self.scroll_px) % f32::from(line_height));
-                    self.scroll_lines(lines, cx);
-                }
-            }
-            TouchPhase::Ended | TouchPhase::Cancelled => {}
+        let lines = self.scroll_lines_for_pixels(phase, delta, line_height);
+        if lines != 0 {
+            self.scroll_lines(lines, cx);
         }
     }
 
@@ -924,9 +934,8 @@ impl Terminal {
         };
         self.mouse_gesture = Some(MouseGesture::Selecting);
         self.selection_drag = Some(SelectionDrag {
-            position: event.position,
             geometry,
-            autoscroll: Pixels::ZERO,
+            autoscroll: DragAutoscroll::default(),
         });
         self.select_range(ty, point, None, cx);
         true
@@ -955,14 +964,19 @@ impl Terminal {
                 }
             }
             Some(MouseGesture::Selecting) if event.pressed_button == Some(MouseButton::Left) => {
-                let autoscroll = geometry.autoscroll_delta(event.position);
+                let mut autoscroll = DragAutoscroll::default();
+                autoscroll.update(
+                    event.position,
+                    geometry.selection_bounds(),
+                    geometry.line_height,
+                );
+                let active = autoscroll.delta().y != Pixels::ZERO;
                 self.selection_drag = Some(SelectionDrag {
-                    position: event.position,
                     geometry,
                     autoscroll,
                 });
                 self.update_selection(geometry.point_for(event.position, &self.last_content), cx);
-                if autoscroll != Pixels::ZERO {
+                if active {
                     self.schedule_selection_autoscroll(cx);
                 }
             }
@@ -1010,9 +1024,7 @@ impl Terminal {
         }
         self.selection_autoscroll_scheduled = true;
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(16))
-                .await;
+            cx.background_executor().timer(AUTOSCROLL_INTERVAL).await;
             let _ = this.update(cx, |terminal, cx| {
                 terminal.selection_autoscroll_scheduled = false;
                 terminal.selection_autoscroll_tick(cx);
@@ -1022,17 +1034,18 @@ impl Terminal {
     }
 
     fn selection_autoscroll_tick(&mut self, cx: &mut Context<Self>) {
-        let Some(drag) = self.selection_drag.as_ref() else {
-            return;
+        let (geometry, position, delta) = match self.selection_drag.as_ref() {
+            Some(drag) => (
+                drag.geometry,
+                drag.autoscroll.position(),
+                drag.autoscroll.delta().y,
+            ),
+            None => return,
         };
-        let delta = drag.autoscroll;
         if delta == Pixels::ZERO {
             return;
         }
-        let line_height = drag.geometry.line_height;
-        let position = drag.position;
-        let geometry = drag.geometry;
-        self.scroll_px(TouchPhase::Moved, delta, line_height, cx);
+        self.scroll_px(TouchPhase::Moved, delta, geometry.line_height, cx);
         self.update_selection(geometry.point_for(position, &self.last_content), cx);
         self.schedule_selection_autoscroll(cx);
     }

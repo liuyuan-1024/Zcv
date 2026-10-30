@@ -36,7 +36,7 @@ Zed 的编辑器架构是 Zcv 的目标架构。
 
 ```text
 macOS：/Users/liuyuan/projects/zed
-Windows：C:\projects\zed
+Windows：C:\Users\ASUS\projects
 ```
 
 重点理解：

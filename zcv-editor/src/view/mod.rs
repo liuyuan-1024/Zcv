@@ -1,7 +1,6 @@
 //! Editor View 的跨帧状态与交互。
 
 use std::{
-    cell::Cell,
     num::NonZeroUsize,
     ops::Range,
     path::{Path, PathBuf},
@@ -36,6 +35,7 @@ use zcv_text::{
     TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_theme::{color, typography};
+use zcv_ui::{AUTOSCROLL_INTERVAL, DragAutoscroll};
 use zcv_workspace::typography_for_window;
 
 use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerState};
@@ -47,7 +47,7 @@ use super::{
         ChunkRendererId, DisplayMap, DisplayPoint, DisplayRow, DisplayRowEvent, DisplaySnapshot,
         EditorHunk, FoldBias, FoldPlaceholder, HighlightStyles, HunkControlTarget,
     },
-    element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout},
+    element::{EditorElement, EditorInputLayout},
     scroll::{ScrollManager, ScrollViewport, ScrollbarThumbState},
     selection::{
         EditOutcome, EditPlan, Selection, SelectionHistory, SelectionSet, replace_selections,
@@ -325,8 +325,12 @@ pub struct Editor {
     hovered_diff_hunk: Option<usize>,
     /// 鼠标是否位于 gutter 内；只有进入或离开时需要刷新折叠指示。
     gutter_hovered: bool,
-    /// 拖拽选择自动滚动的限频时间戳（跨帧持久；事件频率可远超帧率，滚动频率需封顶）。
-    pub(crate) last_drag_autoscroll: Cell<Instant>,
+    /// 拖拽选择自动滚动的越界状态；由 16ms 定时器持续消费，与拖动事件频率解耦。
+    drag_autoscroll: DragAutoscroll,
+    /// 是否已有一个自动滚动 tick 在途（防止重复调度）。
+    drag_autoscroll_scheduled: bool,
+    /// 自动滚动后等待新布局命中测试的指针位置。
+    pending_drag_hit_test: Option<Point<Pixels>>,
     /// 文件内搜索状态（搜索条执行过一次搜索后存在，编辑后自动重搜）。
     /// 命中范围作为显示装饰输入注入显示链，显示坐标投影归 DisplayMap 所有。
     search: Option<EditorSearch>,
@@ -1347,6 +1351,9 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         self.structured_selection_history.clear();
+        self.drag_autoscroll.clear();
+        self.drag_autoscroll_scheduled = false;
+        self.pending_drag_hit_test = None;
         let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
         let offset = if extend {
             let anchor = self.resolved_selections(cx).primary().tail();
@@ -1598,6 +1605,9 @@ impl Editor {
 
     /// 鼠标松开：把临时选区提交到已确定集合。
     pub(super) fn end_selection(&mut self) {
+        self.drag_autoscroll.clear();
+        self.drag_autoscroll_scheduled = false;
+        self.pending_drag_hit_test = None;
         if let Some(pending) = self.pending_selection.take() {
             self.selections = pending.selection;
         }
@@ -1606,6 +1616,75 @@ impl Editor {
     /// 编辑器自身是否正在拖拽选区手势（拖拽滚动的生效守卫：`dragging` 事件是窗口级的，其他面板（如终端）拖拽时编辑器不应滚动）。
     pub(super) fn has_pending_selection(&self) -> bool {
         self.pending_selection.is_some()
+    }
+
+    /// 记录拖拽自动滚动的越界意图；实际滚动由 16ms 定时器消费，与拖动事件频率解耦。
+    pub(super) fn set_drag_autoscroll(
+        &mut self,
+        position: Point<Pixels>,
+        text_bounds: Bounds<Pixels>,
+        line_height: Pixels,
+    ) {
+        self.drag_autoscroll
+            .update(position, text_bounds, line_height);
+        if self.pending_drag_hit_test.is_some() {
+            self.pending_drag_hit_test = Some(position);
+        }
+    }
+
+    /// 指针是否已越出正文视口、需要继续自动滚动。
+    pub(super) fn drag_autoscroll_active(&self) -> bool {
+        self.drag_autoscroll.is_active()
+    }
+
+    /// 调度下一次自动滚动 tick；已有 tick 在途时不重复调度。
+    pub(super) fn schedule_drag_autoscroll(&mut self, cx: &mut Context<Self>) {
+        if self.drag_autoscroll_scheduled || !self.drag_autoscroll.is_active() {
+            return;
+        }
+        self.drag_autoscroll_scheduled = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(AUTOSCROLL_INTERVAL).await;
+            let _ = this.update(cx, |this, cx| {
+                this.drag_autoscroll_scheduled = false;
+                this.drag_autoscroll_tick(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn drag_autoscroll_tick(&mut self, cx: &mut Context<Self>) {
+        if !self.has_pending_selection() {
+            self.drag_autoscroll.clear();
+            return;
+        }
+        let delta = self.drag_autoscroll.delta();
+        if delta == point(Pixels::ZERO, Pixels::ZERO) {
+            return;
+        }
+        if !self.scroll_by(delta, cx) {
+            // 已到内容边界：停止自动滚动，避免定时器空转。
+            self.drag_autoscroll.clear();
+            return;
+        }
+        self.pending_drag_hit_test = Some(self.drag_autoscroll.position());
+        self.schedule_drag_autoscroll(cx);
+    }
+
+    /// 新布局生成后解析自动滚动留下的指针位置，再更新唯一的选区状态。
+    pub(super) fn resolve_pending_drag_hit_test(
+        &mut self,
+        layout: &EditorInputLayout,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(position) = self.pending_drag_hit_test.take() else {
+            return;
+        };
+        if self.has_pending_selection()
+            && let Some(point) = layout.display_point_for_position(position)
+        {
+            self.update_selection(point, cx);
+        }
     }
 
     pub(super) fn set_ime_caret_geometry(
@@ -1819,7 +1898,9 @@ impl Editor {
             bracket_pair_cache: None,
             scroll_manager: ScrollManager::default(),
             diff_hunk_delegate: None,
-            last_drag_autoscroll: Cell::new(Instant::now() - AUTOSCROLL_INTERVAL),
+            drag_autoscroll: DragAutoscroll::default(),
+            drag_autoscroll_scheduled: false,
+            pending_drag_hit_test: None,
             search: None,
             composition: None,
             input_layout: None,

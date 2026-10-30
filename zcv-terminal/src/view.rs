@@ -197,24 +197,29 @@ impl TerminalView {
         window.refresh();
     }
 
-    /// 滚轮：鼠标报告模式转报告字节；备用屏幕回退方向键；否则像素滚动。
+    /// 滚轮先累积成整行，再由终端模式决定报告、方向键或历史滚动。
     pub(crate) fn handle_scroll_wheel(
         &mut self,
         event: &ScrollEvent,
         point: Option<crate::Point>,
-        scroll_lines: i32,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let content = self.terminal.read(cx).last_content().clone();
         let mode = content.mode;
         let line_height = self.line_height(cx);
+        let delta = event.delta.pixel_delta(line_height);
+        let scroll_lines = self.terminal.update(cx, |terminal, _| {
+            terminal.scroll_lines_for_pixels(event.touch_phase, delta.y, line_height)
+        });
+        if scroll_lines == 0 {
+            return;
+        }
         let display_offset = content.display_offset;
         let screen_lines = content.screen_lines;
 
         // 鼠标报告模式：滚轮逐行上报。
-        if scroll_lines != 0
-            && mode.intersects(Modes::MOUSE_MODE)
+        if mode.intersects(Modes::MOUSE_MODE)
             && let Some(point) = point
             && let Some(reports) =
                 mouse::scroll_report(scroll_lines, point, display_offset, screen_lines, &mode)
@@ -228,8 +233,7 @@ impl TerminalView {
         }
 
         // 备用屏幕（vim 等）且开启 alternate scroll：转方向键，按住 shift 时例外。
-        if scroll_lines != 0
-            && mode.contains(Modes::ALT_SCREEN)
+        if mode.contains(Modes::ALT_SCREEN)
             && mode.contains(Modes::ALTERNATE_SCROLL)
             && !event.modifiers.shift
         {
@@ -239,11 +243,8 @@ impl TerminalView {
             return;
         }
 
-        // 普通滚动：像素累加，保证平滑（touch phase 驱动手势状态）。
-        let delta = event.delta.pixel_delta(line_height);
-        self.terminal.update(cx, |terminal, cx| {
-            terminal.scroll_px(event.touch_phase, delta.y, line_height, cx)
-        });
+        self.terminal
+            .update(cx, |terminal, cx| terminal.scroll_lines(scroll_lines, cx));
     }
 }
 

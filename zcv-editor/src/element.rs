@@ -7,7 +7,7 @@ use std::{
     ops::Range,
     rc::Rc,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use gpui::{
@@ -28,9 +28,7 @@ use zcv_multi_buffer::{
 use zcv_settings::{CursorShape, IndentGuideSettings, SettingsStore};
 use zcv_text::Line;
 use zcv_theme::{color, fixed, scale};
-use zcv_ui::{
-    Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta, ensure_minimum_contrast,
-};
+use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, ensure_minimum_contrast};
 
 use crate::{cursor_animation::CursorViewport, selection::SelectionSet};
 use unicode_segmentation::UnicodeSegmentation;
@@ -694,6 +692,14 @@ impl EditorInputLayout {
 
     pub(super) fn line_height(&self) -> Pixels {
         self.layout.line_height
+    }
+
+    /// 把一帧布局内的窗口坐标换算成显示坐标（命中测试/拖拽端点复用同一映射）。
+    pub(super) fn display_point_for_position(
+        &self,
+        position: Point<Pixels>,
+    ) -> Option<DisplayPoint> {
+        self.layout.display_point_for_position(position)
     }
 
     pub(super) fn line_end_position_for_offset(
@@ -1809,6 +1815,11 @@ impl Element for EditorElement {
             );
         }
         let layout = Rc::new(layout);
+        let input_layout = EditorInputLayout::from_layout(&layout);
+        self.editor.update(cx, |editor, cx| {
+            editor.resolve_pending_drag_hit_test(&input_layout, cx);
+        });
+        let selections = self.editor.read(cx).selections(cx);
         let selected_whitespace =
             layout_selected_whitespace(&selections, &layout, line_height, window, cx);
         // 所有背景源逐行合成为互不重叠的片段。
@@ -2092,12 +2103,12 @@ impl Element for EditorElement {
         });
 
         // 拖拽扩展选区：按住左键移动时按点击粒度更新选区；
-        // 鼠标拖出文本视口边缘时视口自动滚动、选区随之扩展；
+        // 鼠标拖出文本视口边缘时，由 Editor 的 16ms 自动滚动状态机持续滚动、选区随之扩展；
         // 无按键移动时兜底结束拖拽（覆盖"窗口外释放后移回"等漏网场景）。
-        // 自动滚动限频：鼠标移动事件频率可远超帧率，若每个事件都滚动，感知速度会随事件频率放大。
         let drag_editor = self.editor.clone();
         let drag_layout = Rc::clone(&prepaint.layout);
         let drag_text_bounds = prepaint.layout.text_clip_bounds;
+        let drag_line_height = prepaint.layout.line_height;
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
             if phase != DispatchPhase::Bubble {
                 return;
@@ -2106,24 +2117,20 @@ impl Element for EditorElement {
                 drag_editor.update(cx, |editor, _| editor.end_selection());
                 return;
             }
-            let scroll_delta = selection_autoscroll_delta(event.position, drag_text_bounds);
+            let Some(display_point) = drag_layout.display_point_for_position(event.position) else {
+                return;
+            };
             drag_editor.update(cx, |editor, cx| {
                 // 拖拽事件是窗口级的（`dragging` 为任意面板的按下状态）：
                 // 只有编辑器自身正在拖拽选区时才滚动/扩展选区，避免终端等面板拖拽时编辑器联动滚动。
                 if !editor.has_pending_selection() {
                     return;
                 }
-                let Some(display_point) = drag_layout.display_point_for_position(event.position)
-                else {
-                    return;
-                };
-                if scroll_delta != point(Pixels::ZERO, Pixels::ZERO)
-                    && editor.last_drag_autoscroll.get().elapsed() >= AUTOSCROLL_INTERVAL
-                {
-                    editor.last_drag_autoscroll.set(Instant::now());
-                    editor.scroll_by(scroll_delta, cx);
-                }
+                editor.set_drag_autoscroll(event.position, drag_text_bounds, drag_line_height);
                 editor.update_selection(display_point, cx);
+                if editor.drag_autoscroll_active() {
+                    editor.schedule_drag_autoscroll(cx);
+                }
             });
         });
 
@@ -4074,25 +4081,6 @@ fn line_end_offset(
     } else {
         Some(MultiBufferOffset::new(snapshot.len_bytes().get()))
     }
-}
-
-/// 拖拽选择自动滚动的限频间隔（≈60Hz）。
-pub(crate) const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(16);
-
-/// 拖拽选择时的视口自动滚动量：滚动量 = 超出视口边缘的距离 × 0.3，单事件上限视口高/宽 1/16——鼠标移出越远滚动越快，但快速甩动不会猛跳。
-fn selection_autoscroll_delta(
-    position: Point<Pixels>,
-    text_bounds: Bounds<Pixels>,
-) -> Point<Pixels> {
-    drag_autoscroll_delta(
-        position,
-        text_bounds,
-        point(Pixels::ZERO, Pixels::ZERO),
-        point(
-            text_bounds.size.width / 16.0,
-            text_bounds.size.height / 16.0,
-        ),
-    )
 }
 
 #[cfg(test)]

@@ -219,9 +219,6 @@ impl TerminalElement {
             let Some(geometry) = state.borrow().geometry else {
                 return;
             };
-            let delta = event.delta.pixel_delta(geometry.line_height);
-            let scroll_lines =
-                (f32::from(delta.y) / f32::from(geometry.line_height)).trunc() as i32;
             let content = view.read(cx).terminal.read(cx).last_content().clone();
             let point = crate::mappings::mouse::grid_point(
                 event.position,
@@ -233,7 +230,7 @@ impl TerminalElement {
                 content.columns,
             );
             view.update(cx, |view, cx| {
-                view.handle_scroll_wheel(event, Some(point), scroll_lines, window, cx);
+                view.handle_scroll_wheel(event, Some(point), window, cx);
             });
         });
 

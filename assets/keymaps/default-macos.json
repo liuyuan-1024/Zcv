@@ -364,7 +364,7 @@
       // 文件
       // =========================
 
-      "cmd-l": "workspace::OpenLocalProject",
+      "cmd-l": "workspace::OpenLocalDirectory",
       "cmd-s": "workspace::Save",
       "cmd-p": "workspace::FocusQuickAccess",
       "cmd-g": "workspace::FocusLineColumn",

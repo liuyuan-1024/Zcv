@@ -19,8 +19,8 @@ use gpui::{
 use zcv_actions::{
     About, CheckForUpdates, DecreaseContentFontSize, DecreaseUiFontSize, FocusLineColumn,
     FocusQuickAccess, GitFetch, GitPull, GitPush, IncreaseContentFontSize, IncreaseUiFontSize,
-    NewTerminal, OpenLocalProject, ResetContentFontSize, ResetUiFontSize, RestartToUpdate,
-    SelectGitBranch, ToggleHarnessMode, ToggleRecentProjects,
+    NewTerminal, OpenLocalDirectory, OpenLocalFile, ResetContentFontSize, ResetUiFontSize,
+    RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleRecentProjects,
 };
 use zcv_editor::{Editor, EditorEvent};
 use zcv_language::LanguageRegistry;
@@ -142,10 +142,10 @@ fn switch_project_callback(languages: Arc<LanguageRegistry>) -> OnProjectSelecte
     })
 }
 
-/// 全局打开本地项目命令：由应用处理目录选择，再交给当前窗口的项目切换流程。
-pub(crate) fn install_open_local_project_action(languages: Arc<LanguageRegistry>, cx: &mut App) {
+/// 全局打开本地目录命令：由应用处理目录选择，再交给当前窗口的项目切换流程。
+pub(crate) fn install_open_local_directory_action(languages: Arc<LanguageRegistry>, cx: &mut App) {
     let switch_project = switch_project_callback(languages);
-    cx.on_action(move |_: &OpenLocalProject, cx| {
+    cx.on_action(move |_: &OpenLocalDirectory, cx| {
         let Some(window) = cx.active_window() else {
             return;
         };
@@ -153,7 +153,7 @@ pub(crate) fn install_open_local_project_action(languages: Arc<LanguageRegistry>
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("选择项目目录".into()),
+            prompt: Some("选择本地目录".into()),
         });
         let switch_project = switch_project.clone();
         cx.spawn(async move |cx| match paths.await {
@@ -173,7 +173,53 @@ pub(crate) fn install_open_local_project_action(languages: Arc<LanguageRegistry>
                         workspace.update(cx, |workspace, cx| {
                             workspace.show_toast(
                                 ToastKind::Error,
-                                format!("选择本地项目失败：{error:#}"),
+                                format!("选择本地目录失败：{error:#}"),
+                                vec![],
+                                Some(Duration::from_secs(5)),
+                                cx,
+                            );
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
+    });
+}
+
+/// 在当前工作区打开用户选择的本地文件。
+pub(crate) fn install_open_local_file_action(cx: &mut App) {
+    cx.on_action(|_: &OpenLocalFile, cx| {
+        let Some(window) = cx.active_window() else {
+            return;
+        };
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("选择本地文件".into()),
+        });
+        cx.spawn(async move |cx| match paths.await {
+            Ok(Ok(Some(paths))) => {
+                let Some(path) = paths.into_iter().next() else {
+                    return;
+                };
+                let _ = window.update(cx, |_, window, cx| {
+                    if let Some(workspace) = window.root::<Workspace>().flatten() {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.open_path(path, true, window, cx);
+                        });
+                    }
+                });
+            }
+            Ok(Ok(None)) | Err(_) => {}
+            Ok(Err(error)) => {
+                let _ = window.update(cx, |_, window, cx| {
+                    if let Some(workspace) = window.root::<Workspace>().flatten() {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                ToastKind::Error,
+                                format!("选择本地文件失败：{error:#}"),
                                 vec![],
                                 Some(Duration::from_secs(5)),
                                 cx,

@@ -118,7 +118,8 @@ described_actions!(
     [
         Save => ("保存", "保存当前文档"),
         OpenSettings => ("打开设置", "打开设置文件"),
-        OpenLocalProject => ("打开本地项目", "从本地目录选择并切换项目"),
+        OpenLocalFile => ("打开本地文件", "选择文件并在当前工作区打开"),
+        OpenLocalDirectory => ("打开本地目录", "从本地目录选择并切换项目"),
         FocusQuickAccess,
         FocusLineColumn => ("跳转到行列", "跳转到当前文档的指定行和列"),
         GitFetch => ("获取远程更新", "从远程仓库获取最新提交"),

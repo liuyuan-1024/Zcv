@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use gpui::{AppContext, Context, TestAppContext, div, px, size};
+use gpui::{AppContext, Context, Modifiers, TestAppContext, div, px, size};
 use zcv_fs_watch::{FsEventStream, Watcher};
 use zcv_language::LanguageRegistry;
 use zcv_settings::{SettingsStore, UserSettings};
@@ -67,6 +67,34 @@ fn confirm_invokes_on_selected(cx: &mut TestAppContext) {
         delegate.confirm(window, cx);
     });
     assert_eq!(triggered.take().as_deref(), Some("/tmp/test-project"));
+}
+
+#[gpui::test]
+fn recent_projects_footer_opens_file_before_directory(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages));
+    let file_triggered = Rc::new(Cell::new(false));
+    let directory_triggered = Rc::new(Cell::new(false));
+    cx.update(|cx| {
+        let file_triggered = file_triggered.clone();
+        let directory_triggered = directory_triggered.clone();
+        cx.on_action(move |_: &OpenLocalFile, _| file_triggered.set(true));
+        cx.on_action(move |_: &OpenLocalDirectory, _| directory_triggered.set(true));
+    });
+    let (_picker, cx) =
+        cx.add_window_view(|window, cx| Picker::new(test_delegate(cx), PICKER_WIDTH, window, cx));
+    let file = cx
+        .debug_bounds("open-local-file-footer")
+        .expect("最近项目列表应显示打开本地文件");
+    let directory = cx
+        .debug_bounds("open-local-directory-footer")
+        .expect("最近项目列表应显示打开本地目录");
+    assert!(directory.top() >= file.bottom(), "文件入口应排在目录入口前");
+    cx.simulate_click(file.center(), Modifiers::default());
+    assert!(file_triggered.get());
+    cx.simulate_click(directory.center(), Modifiers::default());
+    assert!(directory_triggered.get());
 }
 
 /// 构造 3 个项目的数据源，默认选中第一项。

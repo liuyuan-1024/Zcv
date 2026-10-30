@@ -3,9 +3,9 @@
 use gpui::{App, Menu, MenuItem, OsAction};
 use zcv_actions::{
     About, CheckForUpdates, CloseTab, Copy, Cut, DeployBufferSearch, DeployProjectSearch,
-    FocusLineColumn, FocusQuickAccess, MinimizeWindow, OpenLocalProject, OpenSettings, Paste,
-    QuitWindow, Redo, Save, SelectAll, ToggleBottomDock, ToggleLeftDock, ToggleMaximizeWindow,
-    Undo,
+    FocusLineColumn, FocusQuickAccess, MinimizeWindow, OpenLocalDirectory, OpenLocalFile,
+    OpenSettings, Paste, QuitWindow, Redo, Save, SelectAll, ToggleBottomDock, ToggleLeftDock,
+    ToggleMaximizeWindow, Undo,
 };
 
 pub(crate) fn install(cx: &App) {
@@ -19,7 +19,8 @@ pub(crate) fn install(cx: &App) {
             MenuItem::action("退出 Zcv", QuitWindow),
         ]),
         Menu::new("文件").items([
-            MenuItem::action("打开本地项目…", OpenLocalProject),
+            MenuItem::action("打开本地文件…", OpenLocalFile),
+            MenuItem::action("打开本地目录…", OpenLocalDirectory),
             MenuItem::action("最近项目…", zcv_actions::ToggleRecentProjects),
             MenuItem::separator(),
             MenuItem::action("保存", Save),

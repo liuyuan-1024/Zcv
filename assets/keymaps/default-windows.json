@@ -235,7 +235,7 @@
       "ctrl-shift-f": "project_search::DeployProjectSearch",
       "ctrl-`": ["dock::FocusOrHidePanel", { "panel": "terminal" }],
       "ctrl-shift-h": "harness::ToggleHarnessMode",
-      "ctrl-l": "workspace::OpenLocalProject",
+      "ctrl-l": "workspace::OpenLocalDirectory",
       "ctrl-s": "workspace::Save"
     }
   }

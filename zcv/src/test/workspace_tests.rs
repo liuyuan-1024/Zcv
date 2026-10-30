@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{fs, sync::Arc};
 
 use futures::channel::oneshot;
 use gpui::{AppContext, TestAppContext};
-use zcv_actions::About;
+use zcv_actions::{About, OpenLocalFile};
 use zcv_language::LanguageRegistry;
 use zcv_settings::{
     GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore, UserSettings,
@@ -46,6 +46,54 @@ fn about_action_displays_current_version(cx: &mut TestAppContext) {
 
 fn test_languages() -> Arc<LanguageRegistry> {
     Arc::new(LanguageRegistry::new())
+}
+
+#[gpui::test]
+fn open_local_file_action_opens_file_outside_current_project(cx: &mut TestAppContext) {
+    let project_dir = tempfile::tempdir().expect("应创建项目目录");
+    let external_dir = tempfile::tempdir().expect("应创建项目外目录");
+    let file = external_dir.path().join("outside.txt");
+    fs::write(&file, "项目外文件").expect("应创建项目外文件");
+    let canonical_file = fs::canonicalize(&file).expect("项目外文件应可规范化");
+    let root =
+        zcv_path::AbsolutePathBuf::canonicalize(project_dir.path()).expect("项目目录应可规范化");
+    let languages = test_languages();
+    cx.update(|cx| {
+        let reporter = cx.new(|_| SettingsErrorReporter::default());
+        cx.set_global(GlobalSettingsErrorReporter(reporter));
+        cx.set_global(SettingsStore::new(UserSettings::default()));
+        zcv_editor::init(cx, languages.clone());
+        super::install_open_local_file_action(cx);
+    });
+    let (workspace, visual) = cx
+        .add_window_view(|window, cx| build_workspace(&Some(root.clone()), languages, window, cx));
+    let focus = visual.read_entity(&workspace, |workspace, _| workspace.focus_handle().clone());
+    visual.update(|window, cx| {
+        window.activate_window();
+        window.focus(&focus, cx);
+    });
+
+    visual.dispatch_action(OpenLocalFile);
+    assert!(visual.did_prompt_for_paths());
+    visual.simulate_path_prompt_response(|options| {
+        assert!(options.files);
+        assert!(!options.directories);
+        assert!(!options.multiple);
+        Some(vec![file.clone()])
+    });
+    visual.run_until_parked();
+
+    visual.read_entity(&workspace, |workspace, cx| {
+        assert_eq!(workspace.project().read(cx).root(), Some(root.as_path()));
+        assert_eq!(
+            workspace
+                .pane()
+                .read(cx)
+                .active_item()
+                .and_then(|item| item.item_path(cx)),
+            Some(canonical_file)
+        );
+    });
 }
 
 /// 空工作区与项目工作区走同一条装配路径：全部面板无条件注册，空态由面板自行渲染。

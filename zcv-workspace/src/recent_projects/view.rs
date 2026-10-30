@@ -11,7 +11,7 @@ use gpui::{
     Action, AnyElement, App, ClickEvent, Context, Entity, Render, WeakEntity, Window, div,
     prelude::*,
 };
-use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleRecentProjects};
+use zcv_actions::{DeleteRecentProject, OpenLocalDirectory, OpenLocalFile, ToggleRecentProjects};
 use zcv_fuzzy::Matcher;
 use zcv_keymap::{KeyBindings, display_shortcut};
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, picker_divider, toggle_picker};
@@ -244,26 +244,39 @@ impl PickerDelegate for RecentProjectsDelegate {
         let typography = typography_for_window(window, cx);
         let shortcut = cx
             .try_global::<KeyBindings>()
-            .and_then(|kb| kb.display_shortcut_named(OpenLocalProject.name()));
-        let item = ListItem::new("open-local").child("打开本地项目");
-        let item = if let Some(s) = shortcut {
-            item.end_slot(
+            .and_then(|kb| kb.display_shortcut_named(OpenLocalDirectory.name()));
+        let directory_item = ListItem::new("open-local-directory").child("打开本地目录");
+        let directory_item = if let Some(s) = shortcut {
+            directory_item.end_slot(
                 div()
                     .text_color(color::current(cx).text_placeholder)
                     .text_size(typography.ui_size())
                     .child(s),
             )
         } else {
-            item
+            directory_item
         };
         Some(
             div()
-                .id("open-local-footer")
                 .child(picker_divider(cx))
-                .child(item)
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(OpenLocalProject.boxed_clone(), cx);
-                })
+                .child(
+                    div()
+                        .id("open-local-file-footer")
+                        .debug_selector(|| "open-local-file-footer".into())
+                        .child(ListItem::new("open-local-file").child("打开本地文件"))
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(OpenLocalFile.boxed_clone(), cx);
+                        }),
+                )
+                .child(
+                    div()
+                        .id("open-local-directory-footer")
+                        .debug_selector(|| "open-local-directory-footer".into())
+                        .child(directory_item)
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(OpenLocalDirectory.boxed_clone(), cx);
+                        }),
+                )
                 .into_any_element(),
         )
     }

@@ -33,7 +33,28 @@ fn application_menus_expose_existing_editor_commands(cx: &mut TestAppContext) {
                 "window_controls::QuitWindow"
             ]
         );
-        assert_eq!(action_names(1)[0], "workspace::OpenLocalProject");
+        assert_eq!(
+            action_names(1),
+            [
+                "workspace::OpenLocalFile",
+                "workspace::OpenLocalDirectory",
+                "recent_projects::ToggleRecentProjects",
+                "workspace::Save",
+                "pane::CloseTab",
+            ]
+        );
+        assert_eq!(
+            menus[1]
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    OwnedMenuItem::Action { name, .. } => Some(name.as_str()),
+                    _ => None,
+                })
+                .take(2)
+                .collect::<Vec<_>>(),
+            ["打开本地文件…", "打开本地目录…"]
+        );
         assert_eq!(
             action_names(2),
             [

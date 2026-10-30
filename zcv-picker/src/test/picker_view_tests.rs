@@ -59,7 +59,7 @@ impl PickerDelegate for TallDelegate {
             div()
                 .debug_selector(|| "picker-footer".into())
                 .h(px(30.0))
-                .child("打开本地项目")
+                .child("打开本地目录")
                 .into_any_element(),
         )
     }
@@ -377,7 +377,7 @@ impl PickerDelegate for ScrollDelegate {
             div()
                 .h(px(30.0))
                 .debug_selector(|| "picker-footer".into())
-                .child("打开本地项目")
+                .child("打开本地目录")
                 .into_any_element(),
         )
     }

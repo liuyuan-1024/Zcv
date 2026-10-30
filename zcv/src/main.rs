@@ -78,7 +78,8 @@ fn main() {
         zcv_search::init(cx);
         zcv_version_control::init(cx);
         zcv_keymap::init(cx).expect("内置快捷键应能注册");
-        workspace::install_open_local_project_action(Arc::clone(&languages), cx);
+        workspace::install_open_local_file_action(cx);
+        workspace::install_open_local_directory_action(Arc::clone(&languages), cx);
         app_menus::install(cx);
         auto_update::init(cx, update_error);
 

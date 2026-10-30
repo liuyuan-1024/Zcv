@@ -672,6 +672,11 @@ impl Workspace {
         self.open_paths_now(vec![path], focus_opened_item, None, window, cx);
     }
 
+    /// 按传入顺序打开多个本地文件。
+    pub fn open_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_paths_now(paths, true, None, window, cx);
+    }
+
     /// 打开文件并把文本 Item 定位到指定 UTF-8 字节范围。
     pub fn open_path_at(
         &mut self,

@@ -3,41 +3,74 @@
 mod app_menus;
 mod auto_update;
 mod harness;
+mod open_with;
+#[cfg(target_os = "windows")]
+mod single_instance;
 mod workspace;
 
 use std::{ffi::OsString, path::PathBuf, sync::Arc};
 
+use futures::{StreamExt, channel::mpsc};
 use gpui::{App, Application};
-use workspace::{open_empty_workspace, open_empty_workspace_with_error, open_project_window};
+use workspace::{
+    handle_open_paths, open_empty_workspace, open_empty_workspace_with_error, open_project_window,
+};
 use zcv_assets::Assets;
 use zcv_language::LanguageRegistry;
 use zcv_settings::SettingsStore;
 use zcv_theme::typography;
 use zcv_workspace::most_recent_valid_project;
 
-fn initial_project_root(
-    mut args: impl Iterator<Item = OsString>,
-    recent_project: Option<PathBuf>,
-) -> Option<PathBuf> {
-    // args 首项是可执行名，第二项起是命令行路径
-    args.nth(1).map(PathBuf::from).or(recent_project)
+#[derive(Debug, PartialEq, Eq)]
+enum InitialOpen {
+    Project(PathBuf),
+    File(PathBuf),
+    Empty,
 }
 
-fn open_workspace_or_empty(root: Option<PathBuf>, languages: Arc<LanguageRegistry>, cx: &mut App) {
-    match root {
-        Some(root) => {
+fn initial_open(
+    mut args: impl Iterator<Item = OsString>,
+    recent_project: Option<PathBuf>,
+) -> InitialOpen {
+    let path = args.nth(1).map(PathBuf::from).or(recent_project);
+    match path {
+        Some(path) if path.is_file() => InitialOpen::File(path),
+        Some(path) => InitialOpen::Project(path),
+        None => InitialOpen::Empty,
+    }
+}
+
+fn open_initial(initial: InitialOpen, languages: Arc<LanguageRegistry>, cx: &mut App) {
+    match initial {
+        InitialOpen::Project(root) => {
             if let Err(error) = open_project_window(root, Arc::clone(&languages), cx) {
                 open_empty_workspace_with_error(format!("打开项目失败：{error:#}"), languages, cx)
                     .expect("空工作区窗口应能创建");
             }
         }
-        None => {
+        InitialOpen::File(path) => {
+            handle_open_paths(vec![path], vec![], languages, cx);
+        }
+        InitialOpen::Empty => {
             open_empty_workspace(languages, cx).expect("空工作区窗口应能创建");
         }
     }
 }
 
 fn main() {
+    let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(target_os = "windows")]
+    let request = initial_open(args.iter().cloned(), None);
+    let initial = initial_open(args.into_iter(), most_recent_valid_project());
+    #[cfg(target_os = "windows")]
+    let instance = match single_instance::start(&request) {
+        Ok(Some(instance)) => instance,
+        Ok(None) => return,
+        Err(error) => panic!("转交文件打开请求失败：{error:#}"),
+    };
+
+    open_with::ensure_open_with_registration();
+
     let http_client = auto_update::new_http_client();
     let update_error = http_client
         .as_ref()
@@ -49,10 +82,24 @@ fn main() {
         application = application.with_http_client(http_client);
     }
     let languages = Arc::new(LanguageRegistry::new());
+    let (open_urls_tx, mut open_urls_rx) = mpsc::unbounded::<Vec<String>>();
+    #[cfg(target_os = "windows")]
+    let (instance_tx, mut instance_rx) = mpsc::unbounded::<InitialOpen>();
+    #[cfg(target_os = "windows")]
+    instance.listen(instance_tx);
+    application.on_open_urls(move |urls| {
+        open_urls_tx
+            .unbounded_send(urls)
+            .expect("文件打开事件接收任务应保持运行");
+    });
     application.on_reopen({
         let languages = Arc::clone(&languages);
         move |cx| {
-            open_workspace_or_empty(most_recent_valid_project(), Arc::clone(&languages), cx);
+            open_initial(
+                initial_open(std::iter::empty(), most_recent_valid_project()),
+                Arc::clone(&languages),
+                cx,
+            );
             cx.activate(true);
         }
     });
@@ -89,11 +136,38 @@ fn main() {
             eprintln!("无法确认新版本启动：{error:#}");
         }
 
-        open_workspace_or_empty(
-            initial_project_root(std::env::args_os(), most_recent_valid_project()),
-            languages,
-            cx,
-        );
+        open_initial(initial, Arc::clone(&languages), cx);
+
+        #[cfg(target_os = "windows")]
+        cx.spawn({
+            let languages = Arc::clone(&languages);
+            async move |cx| {
+                while let Some(request) = instance_rx.next().await {
+                    cx.update(|cx| match request {
+                        InitialOpen::Empty => {
+                            if let Some(window) = cx
+                                .active_window()
+                                .or_else(|| cx.windows().into_iter().next())
+                            {
+                                window
+                                    .update(cx, |_, window, _| window.activate_window())
+                                    .ok();
+                            }
+                            cx.activate(true);
+                        }
+                        request => open_initial(request, Arc::clone(&languages), cx),
+                    });
+                }
+            }
+        })
+        .detach();
+
+        cx.spawn(async move |cx| {
+            while let Some(urls) = open_urls_rx.next().await {
+                cx.update(|cx| workspace::handle_open_urls(urls, Arc::clone(&languages), cx));
+            }
+        })
+        .detach();
 
         cx.activate(true);
     });

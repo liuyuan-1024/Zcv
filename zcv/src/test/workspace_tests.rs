@@ -2,13 +2,17 @@ use std::{fs, sync::Arc};
 
 use futures::channel::oneshot;
 use gpui::{AppContext, TestAppContext};
+use url::Url;
 use zcv_actions::{About, OpenLocalFile};
 use zcv_language::LanguageRegistry;
 use zcv_settings::{
     GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore, UserSettings,
 };
 
-use super::{DockPosition, Workspace, build_workspace, retain_prompt_until_answer};
+use super::{
+    DockPosition, Workspace, build_workspace, file_path_from_url, handle_open_urls,
+    retain_prompt_until_answer,
+};
 
 #[gpui::test]
 fn prompt_remains_answerable_until_dismissed(cx: &mut TestAppContext) {
@@ -93,6 +97,91 @@ fn open_local_file_action_opens_file_outside_current_project(cx: &mut TestAppCon
                 .and_then(|item| item.item_path(cx)),
             Some(canonical_file)
         );
+    });
+}
+
+#[test]
+fn finder_file_url_decodes_local_path() {
+    let path = std::path::PathBuf::from("/tmp/love 页面.html");
+    let url = Url::from_file_path(&path).expect("本地路径应能编码为文件地址");
+    assert_eq!(file_path_from_url(url.as_str()).unwrap(), path);
+    assert!(file_path_from_url("https://example.com/love.html").is_err());
+}
+
+#[gpui::test]
+fn finder_open_event_opens_html_in_active_workspace(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let file = directory.path().join("love 页面.html");
+    fs::write(&file, "<h1>你好</h1>").expect("应创建 HTML 文件");
+    let canonical_file = fs::canonicalize(&file).expect("HTML 文件应可规范化");
+    let languages = test_languages();
+    cx.update(|cx| {
+        let reporter = cx.new(|_| SettingsErrorReporter::default());
+        cx.set_global(GlobalSettingsErrorReporter(reporter));
+        cx.set_global(SettingsStore::new(UserSettings::default()));
+        zcv_editor::init(cx, languages.clone());
+    });
+    let workspace = {
+        let (workspace, visual) =
+            cx.add_window_view(|window, cx| build_workspace(&None, languages.clone(), window, cx));
+        visual.update(|window, _| window.activate_window());
+        workspace
+    };
+
+    let url = Url::from_file_path(&file).expect("HTML 路径应能编码为文件地址");
+    cx.update(|cx| handle_open_urls(vec![url.to_string()], languages, cx));
+    cx.run_until_parked();
+
+    cx.read_entity(&workspace, |workspace, cx| {
+        assert_eq!(
+            workspace
+                .pane()
+                .read(cx)
+                .active_item()
+                .and_then(|item| item.item_path(cx)),
+            Some(canonical_file)
+        );
+    });
+}
+
+#[gpui::test]
+fn finder_open_event_creates_workspace_when_no_window_exists(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let file = directory.path().join("love.html");
+    fs::write(&file, "<h1>你好</h1>").expect("应创建 HTML 文件");
+    let canonical_file = fs::canonicalize(&file).expect("HTML 文件应可规范化");
+    let languages = test_languages();
+    cx.update(|cx| {
+        let reporter = cx.new(|_| SettingsErrorReporter::default());
+        cx.set_global(GlobalSettingsErrorReporter(reporter));
+        cx.set_global(SettingsStore::new(UserSettings::default()));
+        zcv_editor::init(cx, languages.clone());
+    });
+
+    let url = Url::from_file_path(&file).expect("HTML 路径应能编码为文件地址");
+    cx.update(|cx| handle_open_urls(vec![url.to_string()], languages, cx));
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        let windows = cx.windows();
+        assert_eq!(windows.len(), 1);
+        windows[0]
+            .update(cx, |_, window, cx| {
+                let workspace = window
+                    .root::<Workspace>()
+                    .flatten()
+                    .expect("窗口应持有工作区");
+                let workspace = workspace.read(cx);
+                assert_eq!(
+                    workspace
+                        .pane()
+                        .read(cx)
+                        .active_item()
+                        .and_then(|item| item.item_path(cx)),
+                    Some(canonical_file)
+                );
+            })
+            .expect("工作区窗口应有效");
     });
 }
 

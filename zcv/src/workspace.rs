@@ -233,6 +233,71 @@ pub(crate) fn install_open_local_file_action(cx: &mut App) {
     });
 }
 
+fn file_path_from_url(url: &str) -> anyhow::Result<PathBuf> {
+    let url = url::Url::parse(url).with_context(|| format!("无效的文件地址：{url}"))?;
+    anyhow::ensure!(url.scheme() == "file", "不是本地文件地址：{url}");
+    url.to_file_path()
+        .map_err(|_| anyhow::anyhow!("无法转换本地文件地址：{url}"))
+}
+
+/// 将系统的打开文档事件交给当前工作区，沿用应用内打开文件的 Item 管线。
+pub(crate) fn handle_open_urls(urls: Vec<String>, languages: Arc<LanguageRegistry>, cx: &mut App) {
+    let mut paths = Vec::new();
+    let mut errors = Vec::new();
+    for url in urls {
+        match file_path_from_url(&url) {
+            Ok(path) => paths.push(path),
+            Err(error) => errors.push(format!("打开文件失败：{error:#}")),
+        }
+    }
+    handle_open_paths(paths, errors, languages, cx);
+}
+
+/// 系统文件事件和命令行文件入口共用同一条工作区打开管线。
+pub(crate) fn handle_open_paths(
+    paths: Vec<PathBuf>,
+    errors: Vec<String>,
+    languages: Arc<LanguageRegistry>,
+    cx: &mut App,
+) {
+    if paths.is_empty() && errors.is_empty() {
+        return;
+    }
+
+    if cx.windows().is_empty() {
+        open_empty_workspace(languages, cx).expect("空工作区窗口应能创建");
+    }
+    let window = cx
+        .active_window()
+        .or_else(|| cx.window_stack().and_then(|stack| stack.first().copied()))
+        .or_else(|| cx.windows().into_iter().next())
+        .expect("打开文件时应存在工作区窗口");
+    window
+        .update(cx, |_, window, cx| {
+            let workspace = window
+                .root::<Workspace>()
+                .flatten()
+                .expect("窗口应持有工作区");
+            workspace.update(cx, |workspace, cx| {
+                if !paths.is_empty() {
+                    workspace.open_paths(paths, window, cx);
+                }
+                for error in errors {
+                    workspace.show_toast(
+                        ToastKind::Error,
+                        error,
+                        vec![],
+                        Some(Duration::from_secs(5)),
+                        cx,
+                    );
+                }
+            });
+            window.activate_window();
+        })
+        .expect("打开文件时工作区窗口应有效");
+    cx.activate(true);
+}
+
 /// 规范化项目路径：相对路径（如 `zcv .`）归一为绝对路径，无效路径返回错误。
 fn canonical_project_root(root: PathBuf) -> anyhow::Result<AbsolutePathBuf> {
     let root = AbsolutePathBuf::canonicalize(&root)

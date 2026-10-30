@@ -23,6 +23,10 @@ HELPER_PACKAGE="zcv-update"
 HELPER_BIN_NAME="zcv-update-helper"
 ICON_SOURCE="assets/branding/Zcv.icns"
 VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"
+EXTENSION_XML="$(while IFS= read -r extension; do
+    [[ "$extension" =~ ^[a-z0-9]+$ ]] || { echo "无效的文件扩展名: $extension" >&2; exit 1; }
+    printf '        <string>%s</string>\n' "$extension"
+done < assets/document-extensions.txt)"
 
 MAKE_DMG=1
 APP_ONLY=0
@@ -132,6 +136,36 @@ cat > "$APP/Contents/Info.plist" <<EOF
 
   <key>CFBundleIconFile</key>
   <string>Zcv.icns</string>
+
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Zcv 文本文档</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.text</string>
+        <string>public.plain-text</string>
+        <string>public.utf8-plain-text</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Zcv 代码文件</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+$EXTENSION_XML
+      </array>
+    </dict>
+  </array>
 
   <key>CFBundleSupportedPlatforms</key>
   <array>

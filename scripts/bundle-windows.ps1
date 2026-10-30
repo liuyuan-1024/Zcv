@@ -1,4 +1,13 @@
-﻿$ErrorActionPreference = "Stop"
+﻿param(
+    [Alias("app-only")]
+    [switch]$AppOnly
+)
+
+$ErrorActionPreference = "Stop"
+
+if ($args.Count -gt 0) {
+    throw "未知参数: $($args -join ' ')"
+}
 
 function Invoke-Cargo {
     param(
@@ -58,13 +67,17 @@ Copy-Item -LiteralPath $helperPath -Destination (Join-Path $appDirectory "zcv-up
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText((Join-Path $appDirectory "version.txt"), $version, $utf8NoBom)
 
-Write-Host "==> $zipPath"
-if (Test-Path -LiteralPath $zipPath) {
-    Remove-Item -LiteralPath $zipPath -Force
+if (-not $AppOnly) {
+    Write-Host "==> $zipPath"
+    if (Test-Path -LiteralPath $zipPath) {
+        Remove-Item -LiteralPath $zipPath -Force
+    }
+    Compress-Archive -LiteralPath $appDirectory -DestinationPath $zipPath
 }
-Compress-Archive -LiteralPath $appDirectory -DestinationPath $zipPath
 
 Write-Host ""
 Write-Host "完成:"
 Write-Host "  $appDirectory"
-Write-Host "  $zipPath"
+if (-not $AppOnly) {
+    Write-Host "  $zipPath"
+}

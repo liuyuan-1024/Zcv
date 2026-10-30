@@ -52,7 +52,7 @@ GitHub Release 必须同时包含：
 `.github/workflows/release.yml` 分别在 macOS 和 Windows runner 上构建平台包，调用：
 
 - `scripts/bundle-mac --no-dmg`：构建应用和 helper，组装并 ad-hoc 签名完整 app bundle。
-- `scripts/bundle-windows.ps1`：构建 `Zcv.exe` 和 helper，组装 Windows 安装目录 ZIP。
+- `scripts/bundle-windows.ps1`：构建 `Zcv.exe` 和 helper，组装 Windows 安装目录 ZIP；传入 `--app-only` 时只生成安装目录，不生成 ZIP。若 PowerShell 拒绝运行未签名脚本，可使用 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bundle-windows.ps1 --app-only`，执行策略仅对该进程生效。
 - `scripts/release-update <私钥路径> [--no-build]`：在 GitHub Actions 发布工作区中自动发现两个平台的构建产物，合并生成清单、签名并核对私钥对应公钥与源码内置公钥一致。`--no-build` 表示跳过发布工作区中的打包步骤，只使用已准备好的更新包。
 
 发布 tag 必须是 `v<版本>`，并与根 `Cargo.toml` 的工作区版本一致。不要手工编辑清单中的大小或 SHA-256。

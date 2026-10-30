@@ -61,6 +61,8 @@ pub(crate) struct BuiltinSettingsContent {
     pub(crate) content_line_height: f32,
     pub(crate) tab_size: NonZeroUsize,
     pub(crate) insert_spaces: bool,
+    /// 按语言的内置默认缩进策略；键为语言展示名，字段缺省沿用全局值。
+    pub(crate) languages: HashMap<String, LanguageOverrideContent>,
     pub(crate) indent_guides: BuiltinIndentGuideSettings,
     pub(crate) soft_wrap: SoftWrapMode,
     pub(crate) minimum_contrast_for_highlights: f32,
@@ -147,7 +149,7 @@ pub(crate) struct LanguageOverrideContent {
 }
 
 /// 一门语言的 Tab / 缩进覆盖值。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LanguageOverride {
     pub tab_size: Option<NonZeroUsize>,
     pub insert_spaces: Option<bool>,
@@ -282,6 +284,12 @@ pub(crate) fn parse_builtin_settings(content: &str) -> Result<BuiltinSettingsCon
         settings.indent_guides.line_width.get() <= 10,
         "内置引导线宽度必须在 1 到 10 之间"
     );
+    for (language, overrides) in &settings.languages {
+        ensure!(
+            overrides.tab_size != Some(0),
+            "内置语言 {language} 的 tab_size 必须大于 0"
+        );
+    }
     ensure!(
         valid_minimum_contrast(settings.minimum_contrast_for_highlights),
         "内置高亮文字最低对比度必须在 0 到 106 之间"

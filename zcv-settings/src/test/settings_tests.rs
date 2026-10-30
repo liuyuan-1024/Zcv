@@ -281,6 +281,22 @@ fn per_language_overrides_replace_global_tab_fields() {
 }
 
 #[test]
+fn builtin_language_indent_defaults_apply_and_user_overrides_win() {
+    // 内置配置文件提供各语言默认缩进。
+    let defaults = UserSettings::default();
+    assert_eq!(defaults.tab_for_language(Some("JavaScript")).tab_size(), 2);
+    assert!(!defaults.tab_for_language(Some("Go")).insert_spaces);
+    assert_eq!(defaults.tab_for_language(None).tab_size(), 4);
+
+    // 用户按语言配置覆盖内置默认；未覆盖的字段仍沿用内置值。
+    let settings = UserSettings::merge(
+        parse_user_settings(r#"{"languages": {"JavaScript": {"tab_size": 8}}}"#).unwrap(),
+    );
+    assert_eq!(settings.tab_for_language(Some("JavaScript")).tab_size(), 8);
+    assert!(!settings.tab_for_language(Some("Go")).insert_spaces);
+}
+
+#[test]
 fn indent_guide_settings_merge_per_language() {
     let settings = UserSettings::merge(
         parse_user_settings(

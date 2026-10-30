@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     mem,
     ops::Range,
     rc::Rc,
@@ -12,11 +12,11 @@ use std::{
 
 use gpui::{
     AnyElement, App, AvailableSpace, BorderStyle, Bounds, ContentMask, Context, CursorStyle,
-    DispatchPhase, Element, ElementId, ElementInputHandler, Entity, GlobalElementId, Hitbox,
+    DispatchPhase, Element, ElementId, ElementInputHandler, Entity, Font, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, PathBuilder, Pixels,
-    Point, Rgba, ScrollDelta, ScrollEvent, ShapedLine, Size, Style, TextAlign, TextRun, Window,
-    div, fill, outline, point, prelude::*, px, relative, size,
+    Point, Rgba, ScrollDelta, ScrollEvent, ShapedLine, SharedString, Size, Style, TextAlign,
+    TextRun, Window, div, fill, outline, point, prelude::*, px, relative, size,
 };
 use zcv_actions::OpenExcerpts;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
@@ -1801,7 +1801,11 @@ impl Element for EditorElement {
                 &active_indices,
                 text_bounds.left() - scroll_x,
                 text_bounds.left(),
-                em_advance,
+                &mut IndentGuideShaper {
+                    window: &mut *window,
+                    font: &font,
+                    font_size,
+                },
             );
         }
         let layout = Rc::new(layout);
@@ -3401,17 +3405,29 @@ fn layout_visible_lines_from_viewport(
     }
 }
 
+/// 缩进参考线塑形所需的字体环境；聚成一项，避免布局函数参数过多。
+struct IndentGuideShaper<'a> {
+    window: &'a mut Window,
+    font: &'a Font,
+    font_size: Pixels,
+}
+
 fn layout_indent_guides(
     layout: &EditorLayout,
     guides: &[IndentGuide],
     active_indices: &[usize],
     content_left: Pixels,
     text_left: Pixels,
-    em_advance: Pixels,
+    shaper: &mut IndentGuideShaper<'_>,
 ) -> Vec<IndentGuideLayout> {
     let mut result = Vec::new();
+    // 每个语言的 `tab_size` 对应一个真实塑形的缩进宽度；同一帧内按值复用。
+    let mut indent_widths: HashMap<usize, Pixels> = HashMap::new();
     for (index, guide) in guides.iter().enumerate() {
-        let x = content_left + em_advance * (guide.depth * guide.tab_size) as f32;
+        let single_indent_width = *indent_widths.entry(guide.tab_size).or_insert_with(|| {
+            column_pixels(shaper.window, shaper.font, shaper.font_size, guide.tab_size)
+        });
+        let x = content_left + single_indent_width * guide.depth as f32;
         if x < text_left || x >= layout.text_clip_bounds.right() {
             continue;
         }
@@ -3447,6 +3463,30 @@ fn layout_indent_guides(
         }
     }
     result
+}
+
+/// 一列按编辑器字体实际塑形的像素宽度。
+///
+/// 缩进参考线必须落在文本真实的前导空白上，而不是用字形 `m` 的 advance 近似；
+/// 按同一字体塑形 `columns` 个空格取得宽度。
+fn column_pixels(window: &mut Window, font: &Font, font_size: Pixels, columns: usize) -> Pixels {
+    let run = TextRun {
+        len: columns,
+        font: font.clone(),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(
+            SharedString::from(" ".repeat(columns)),
+            font_size,
+            &[run],
+            None,
+        )
+        .width
 }
 
 fn paint_indent_guides(guides: &[IndentGuideLayout], window: &mut Window, cx: &App) {

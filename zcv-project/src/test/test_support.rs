@@ -6,24 +6,25 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
+    time::Duration,
 };
 
 use gpui::{AppContext as _, Entity, TestAppContext};
-use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
+use zcv_fs_watch::{FsEventStream, Watcher};
 use zcv_language::LanguageRegistry;
 
 use crate::Project;
 
-/// 项目测试使用的无事件监听器，避免真实 OS 事件从后台线程唤醒 GPUI 测试调度器。
-pub(crate) struct TestWatcher {
-    watcher: FsWatcher,
-}
+/// 项目测试使用的无事件监听器。
+///
+/// `watch` 返回永不产生事件的流：项目的事件消费任务照常建立（走与生产一致的路径），
+/// 但不会由真实 OS 监听线程跨线程唤醒 GPUI 测试调度器。需要事件的测试直接调用
+/// `process_fs_events` 构造批次，而不是伪造一个后台线程。
+pub(crate) struct TestWatcher;
 
 impl TestWatcher {
     pub(crate) fn new() -> Self {
-        Self {
-            watcher: FsWatcher::new(),
-        }
+        Self
     }
 }
 
@@ -36,8 +37,8 @@ impl Watcher for TestWatcher {
         Ok(())
     }
 
-    fn watch(&self, latency: std::time::Duration) -> FsEventStream {
-        self.watcher.watch(latency)
+    fn watch(&self, _latency: Duration) -> FsEventStream {
+        Box::pin(futures::stream::pending())
     }
 }
 

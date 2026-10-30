@@ -21,6 +21,20 @@
   // true 使用空格缩进；false 插入真实的 Tab 字符。
   "insert_spaces": true,
 
+  // 按语言的缩进默认，只在全局值不适合该语言时填写；键为语言展示名。
+  "languages": {
+    // 脚本类语言惯例是 2 列缩进。
+    "JavaScript": { "tab_size": 2 },
+    "JSX": { "tab_size": 2 },
+    "TypeScript": { "tab_size": 2 },
+    "TSX": { "tab_size": 2 },
+    "JSON": { "tab_size": 2 },
+    "YAML": { "tab_size": 2 },
+    "Markdown": { "tab_size": 2 },
+    // Go 使用硬 Tab 缩进（gofmt 语义）。
+    "Go": { "insert_spaces": false }
+  },
+
   // 缩进引导线设置对象；必须包含 enabled 和 line_width。
   "indent_guides": {
     // true 显示缩进引导线；false 隐藏。

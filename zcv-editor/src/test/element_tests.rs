@@ -1377,8 +1377,22 @@ fn indent_guide_columns_use_the_same_tab_size_as_text(cx: &mut TestAppContext) {
                 .iter()
                 .position(|guide| guide.depth == 1)
                 .expect("应有第二级缩进");
-            let projected =
-                layout_indent_guides(&layout, &guides, &[active_index], px(60.), px(60.), px(10.));
+            let font = window.text_style().font();
+            let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+            // 参考线的列宽必须等于该字体真实塑形的若干空格宽度。
+            let indent_width = column_pixels(window, &font, font_size, 4);
+            let projected = layout_indent_guides(
+                &layout,
+                &guides,
+                &[active_index],
+                px(60.),
+                px(60.),
+                &mut IndentGuideShaper {
+                    window: &mut *window,
+                    font: &font,
+                    font_size,
+                },
+            );
             assert_eq!(projected.len(), 2);
             let outer = projected
                 .iter()
@@ -1386,7 +1400,7 @@ fn indent_guide_columns_use_the_same_tab_size_as_text(cx: &mut TestAppContext) {
                 .expect("应有第一级缩进");
             let inner = projected
                 .iter()
-                .find(|guide| guide.origin.x == px(100.))
+                .find(|guide| guide.origin.x == px(60.) + indent_width)
                 .expect("应有第二级缩进");
             assert_eq!(outer.length, px(40.));
             assert!(!outer.active);

@@ -8,7 +8,8 @@ use super::{
     INITIAL_USER_SETTINGS,
     schema::{
         AutoIndentMode, BuiltinSettingsContent, CursorShape, IndentGuideSettings, LanguageOverride,
-        SoftWrapMode, TabConfig, UserSettingsContent, parse_builtin_settings,
+        LanguageOverrideContent, SoftWrapMode, TabConfig, UserSettingsContent,
+        parse_builtin_settings,
     },
 };
 
@@ -78,6 +79,16 @@ fn default_content() -> &'static BuiltinSettingsContent {
     &DEFAULTS
 }
 
+fn language_override(content: LanguageOverrideContent) -> LanguageOverride {
+    LanguageOverride {
+        tab_size: content.tab_size.and_then(NonZeroUsize::new),
+        insert_spaces: content.insert_spaces,
+        indent_guides: content.indent_guides,
+        remove_trailing_whitespace_on_save: content.remove_trailing_whitespace_on_save,
+        ensure_final_newline_on_save: content.ensure_final_newline_on_save,
+    }
+}
+
 impl Default for TabConfig {
     fn default() -> Self {
         let defaults = default_content();
@@ -105,9 +116,8 @@ impl Default for UserSettings {
 }
 
 impl UserSettings {
-    /// 解析某语言的 Tab / 缩进策略：全局默认为底，按语言覆盖逐字段替换。
-    ///
-    /// `language_name` 为 `None`（未识别语言）时只返回全局默认。
+    /// 解析某语言的 Tab / 缩进策略：全局默认与语言内置默认都已在 `languages` 中合并，
+    /// 这里按键取该语言的覆盖值逐字段替换全局值。
     pub fn tab_for_language(&self, language_name: Option<&str>) -> TabConfig {
         let mut tab = self.tab;
         if let Some(over) = language_name.and_then(|name| self.languages.get(name)) {
@@ -168,24 +178,33 @@ impl UserSettings {
                     .unwrap_or(defaults.tab_size),
                 insert_spaces: content.insert_spaces.unwrap_or(defaults.insert_spaces),
             },
-            languages: content
-                .languages
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(language, content)| {
-                    (
-                        language,
-                        LanguageOverride {
-                            tab_size: content.tab_size.and_then(NonZeroUsize::new),
-                            insert_spaces: content.insert_spaces,
-                            indent_guides: content.indent_guides,
-                            remove_trailing_whitespace_on_save: content
-                                .remove_trailing_whitespace_on_save,
-                            ensure_final_newline_on_save: content.ensure_final_newline_on_save,
-                        },
-                    )
-                })
-                .collect(),
+            languages: {
+                // 内置配置文件提供各语言的默认缩进；用户按语言配置逐字段覆盖。
+                let mut languages: HashMap<String, LanguageOverride> = defaults
+                    .languages
+                    .iter()
+                    .map(|(name, content)| (name.clone(), language_override(content.clone())))
+                    .collect();
+                for (name, content) in content.languages.unwrap_or_default() {
+                    let entry = languages.entry(name).or_default();
+                    if let Some(value) = content.tab_size {
+                        entry.tab_size = NonZeroUsize::new(value);
+                    }
+                    if let Some(value) = content.insert_spaces {
+                        entry.insert_spaces = Some(value);
+                    }
+                    if let Some(value) = content.indent_guides {
+                        entry.indent_guides = Some(value);
+                    }
+                    if let Some(value) = content.remove_trailing_whitespace_on_save {
+                        entry.remove_trailing_whitespace_on_save = Some(value);
+                    }
+                    if let Some(value) = content.ensure_final_newline_on_save {
+                        entry.ensure_final_newline_on_save = Some(value);
+                    }
+                }
+                languages
+            },
             indent_guides: {
                 let mut settings = IndentGuideSettings {
                     enabled: defaults.indent_guides.enabled,

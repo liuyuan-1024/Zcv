@@ -1239,6 +1239,39 @@ fn indent_guides_follow_nested_indentation_and_blank_lines(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn indent_guides_use_the_language_default_tab_size(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    // JavaScript 语言规格默认 tab_size = 2；用 2 空格缩进应产生逐级参考线。
+    let source = singleton(
+        "src/a.js",
+        "function f() {
+  if (x) {
+    return;
+  }
+}
+",
+        cx,
+    );
+    let buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
+    let snapshot = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+
+    assert_eq!(
+        snapshot.language_settings().tab.tab_size(),
+        2,
+        "未识别用户覆盖时应使用语言规格默认缩进宽度"
+    );
+
+    let mut guides = snapshot.indent_guides_in_range(Line::ZERO..Line::new(5), false);
+    guides.sort_by_key(|guide| (guide.depth, guide.start_row));
+    assert!(guides.iter().all(|guide| guide.tab_size == 2));
+    assert_eq!(
+        guides.iter().map(|guide| guide.depth).collect::<Vec<_>>(),
+        vec![0, 1],
+        "2 空格缩进的每级都必须成为一级参考线"
+    );
+}
+
+#[gpui::test]
 fn enclosing_indent_selects_the_opening_and_blank_line_block(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton(

@@ -13,21 +13,14 @@ const MAX_SEGMENTS: usize = 12;
 
 /// 文档视图顶部的路径导航。活动 Item 由所属视图显式更新。
 pub struct Breadcrumbs {
-    project: Option<Entity<Project>>,
+    project: Entity<Project>,
     item: Option<Box<dyn ItemHandle>>,
 }
 
 impl Breadcrumbs {
     pub fn new(project: Entity<Project>) -> Self {
         Self {
-            project: Some(project),
-            item: None,
-        }
-    }
-
-    pub fn without_project() -> Self {
-        Self {
-            project: None,
+            project,
             item: None,
         }
     }
@@ -41,10 +34,7 @@ impl Breadcrumbs {
 impl Render for Breadcrumbs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let typography = typography_for_window(window, cx);
-        let project_root = self
-            .project
-            .as_ref()
-            .and_then(|project| project.read(cx).root().map(Path::to_path_buf));
+        let project_root = self.project.read(cx).root().map(Path::to_path_buf);
         let segments = self
             .item
             .as_ref()

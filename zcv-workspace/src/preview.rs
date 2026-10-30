@@ -2,7 +2,7 @@
 //!
 //! 该模块不包含具体格式实现。
 //! 格式 crate 实现 [`PreviewProvider`]，并创建一个直接实现 Item 协议的具体预览视图。
-//! 预览视图自身通过 [`PreviewItem`] 暴露与源码 Item 的关联，经 `Item::as_preview_item` 桥接获取，不占用 Item 主接口。
+//! 预览视图自身通过 [`PreviewItem`] 暴露预览身份及可选的源码 Item，经 `Item::as_preview_item` 桥接获取，不占用 Item 主接口。
 
 use std::{
     any::TypeId,
@@ -19,6 +19,7 @@ use gpui::{
 };
 use zcv_actions::TogglePreview;
 use zcv_multi_buffer::MultiBuffer;
+use zcv_project::Project;
 use zcv_theme::{color, scale};
 use zcv_ui::Button;
 
@@ -348,11 +349,11 @@ pub enum PreviewDocument {
 
 /// 预览视图 Item 的 object-safe 句柄，经 `Item::as_preview_item` 获取。
 pub trait PreviewItemHandle: Send + 'static {
-    /// 预览视图对应的源码 Item（通常是编辑器）；无法暴露时返回 None。
+    /// 源码派生预览对应的源码 Item；独立预览返回 None。
     fn source_item(&self, cx: &App) -> Option<Box<dyn ItemHandle>>;
 }
 
-/// 预览视图 Item 的协议：提供与源码 Item 的关联。
+/// 预览视图 Item 的协议：独立预览没有源码 Item。
 pub trait PreviewItem: Item {
     fn source_item(&self, _cx: &App) -> Option<Box<dyn ItemHandle>> {
         None
@@ -399,23 +400,25 @@ fn provider_for_mode(path: &Path, mode: PreviewMode, cx: &App) -> Option<Arc<dyn
     })
 }
 
-/// 源码派生预览共用的工具栏：左侧源码面包屑，右侧「返回源码」按钮。
+/// 预览共用的工具栏：左侧显示文件面包屑；有源码 Item 时右侧显示「返回源码」。
 ///
 /// 工具项是 Pane 级的持久实体：活动 Item 是预览视图时显示，否则隐藏。
 /// 预览格式实现不再各自持有工具栏视图，也不再注入返回源码回调。
 pub struct PreviewToolbar {
     pane: WeakEntity<Pane>,
     breadcrumbs: Entity<Breadcrumbs>,
-    _source_subscription: Option<Subscription>,
+    has_source: bool,
+    _breadcrumb_subscription: Option<Subscription>,
 }
 
 impl PreviewToolbar {
-    pub fn new(pane: WeakEntity<Pane>, cx: &mut Context<Self>) -> Self {
-        let breadcrumbs = cx.new(|_| Breadcrumbs::without_project());
+    pub fn new(pane: WeakEntity<Pane>, project: Entity<Project>, cx: &mut Context<Self>) -> Self {
+        let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
         Self {
             pane,
             breadcrumbs,
-            _source_subscription: None,
+            has_source: false,
+            _breadcrumb_subscription: None,
         }
     }
 }
@@ -429,15 +432,23 @@ impl ToolbarItemView for PreviewToolbar {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
-        self._source_subscription = None;
+        self._breadcrumb_subscription = None;
         let preview = item.and_then(|item| item.as_preview_item(cx));
         let source = preview.as_ref().and_then(|preview| preview.source_item(cx));
+        let has_source = source.is_some();
+        if self.has_source != has_source {
+            self.has_source = has_source;
+            cx.notify();
+        }
+        let breadcrumb_item = source
+            .as_deref()
+            .or_else(|| item.filter(|_| preview.is_some()));
         self.breadcrumbs.update(cx, |breadcrumbs, cx| {
-            breadcrumbs.set_item(source.as_deref(), cx)
+            breadcrumbs.set_item(breadcrumb_item, cx)
         });
-        if let Some(source) = &source {
+        if let Some(breadcrumb_item) = breadcrumb_item {
             let this = cx.entity().downgrade();
-            self._source_subscription = Some(source.subscribe_to_item_events(
+            self._breadcrumb_subscription = Some(breadcrumb_item.subscribe_to_item_events(
                 cx,
                 Box::new(move |event, cx| {
                     if matches!(
@@ -471,19 +482,21 @@ impl Render for PreviewToolbar {
             .items_center()
             .gap(scale::S6)
             .child(div().flex_1().min_w_0().child(self.breadcrumbs.clone()))
-            .child(
-                Button::icon("preview-toolbar-source", "icons/eye_off.svg")
-                    .label("返回源码")
-                    .on_click({
-                        let pane = self.pane.clone();
-                        move |_, window, cx| {
-                            pane.update(cx, |pane, cx| {
-                                pane.toggle_preview(window, cx);
-                            })
-                            .ok();
-                        }
-                    }),
-            )
+            .when(self.has_source, |row| {
+                row.child(
+                    Button::icon("preview-toolbar-source", "icons/eye_off.svg")
+                        .label("返回源码")
+                        .on_click({
+                            let pane = self.pane.clone();
+                            move |_, window, cx| {
+                                pane.update(cx, |pane, cx| {
+                                    pane.toggle_preview(window, cx);
+                                })
+                                .ok();
+                            }
+                        }),
+                )
+            })
     }
 }
 

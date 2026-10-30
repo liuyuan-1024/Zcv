@@ -468,7 +468,8 @@ fn initialize_common_workspace(
     install_version_control(workspace, window, cx);
 
     let pane = workspace.pane().clone();
-    let preview_toolbar = cx.new(|cx| PreviewToolbar::new(pane.downgrade(), cx));
+    let project = workspace.project().clone();
+    let preview_toolbar = cx.new(|cx| PreviewToolbar::new(pane.downgrade(), project, cx));
     pane.update(cx, |pane, cx| {
         pane.toolbar().update(cx, |toolbar, cx| {
             toolbar.add_item(preview_toolbar, window, cx);

@@ -180,6 +180,7 @@ fn viewport_centers_only_after_scroll_layout_is_available(cx: &mut TestAppContex
 struct ProbeItem {
     focus: FocusHandle,
     is_preview: bool,
+    source_item: Option<Box<dyn ItemHandle>>,
 }
 
 impl EventEmitter<()> for ProbeItem {}
@@ -213,7 +214,11 @@ impl Item for ProbeItem {
     }
 }
 
-impl PreviewItem for ProbeItem {}
+impl PreviewItem for ProbeItem {
+    fn source_item(&self, _cx: &App) -> Option<Box<dyn ItemHandle>> {
+        self.source_item.clone()
+    }
+}
 
 struct TestView;
 
@@ -223,29 +228,50 @@ impl Render for TestView {
     }
 }
 
-/// 活动 Item 是预览视图时工具区显示；普通 Item 时隐藏。
+/// 独立预览显示面包屑行但没有「返回源码」，源码派生预览才显示该按钮。
 #[gpui::test]
 fn preview_toolbar_follows_preview_items(cx: &mut TestAppContext) {
     let pane = cx.new(Pane::new);
-    let toolbar = cx.new(|cx| PreviewToolbar::new(pane.downgrade(), cx));
+    let project = cx.new(|cx| Project::empty(Arc::new(zcv_language::LanguageRegistry::new()), cx));
+    let toolbar = cx.new(|cx| PreviewToolbar::new(pane.downgrade(), project, cx));
     cx.add_window_view(|window, cx| {
         let preview = cx.new(|cx| ProbeItem {
             focus: cx.focus_handle(),
             is_preview: true,
+            source_item: None,
         });
         let preview_location = toolbar.update(cx, |toolbar, cx| {
             toolbar.set_active_pane_item(Some(&preview as &dyn ItemHandle), window, cx)
         });
         assert_eq!(preview_location, ToolbarItemLocation::Secondary);
+        assert!(!toolbar.read(cx).has_source);
+
+        let source = cx.new(|cx| ProbeItem {
+            focus: cx.focus_handle(),
+            is_preview: false,
+            source_item: None,
+        });
+        let derived_preview = cx.new(|cx| ProbeItem {
+            focus: cx.focus_handle(),
+            is_preview: true,
+            source_item: Some(Box::new(source)),
+        });
+        let derived_location = toolbar.update(cx, |toolbar, cx| {
+            toolbar.set_active_pane_item(Some(&derived_preview as &dyn ItemHandle), window, cx)
+        });
+        assert_eq!(derived_location, ToolbarItemLocation::Secondary);
+        assert!(toolbar.read(cx).has_source);
 
         let plain = cx.new(|cx| ProbeItem {
             focus: cx.focus_handle(),
             is_preview: false,
+            source_item: None,
         });
         let plain_location = toolbar.update(cx, |toolbar, cx| {
             toolbar.set_active_pane_item(Some(&plain as &dyn ItemHandle), window, cx)
         });
         assert_eq!(plain_location, ToolbarItemLocation::Hidden);
+        assert!(!toolbar.read(cx).has_source);
         TestView
     });
 }

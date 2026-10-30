@@ -6,11 +6,14 @@ use std::{
 };
 
 use gpui::{
-    App, Context, EventEmitter, FocusHandle, Focusable, Image, ObjectFit, Render, RenderImage,
-    SharedString, Size, Task, Window, div, img, prelude::*,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Image, ObjectFit, Render,
+    RenderImage, SharedString, Size, Task, Window, div, img, prelude::*,
 };
 use zcv_theme::color;
-use zcv_workspace::{Item, ItemEvent, PreviewViewport, PreviewViewportOptions, SerializedPaneItem};
+use zcv_workspace::{
+    Item, ItemEvent, PreviewItem, PreviewItemHandle, PreviewViewport, PreviewViewportOptions,
+    SerializedPaneItem,
+};
 
 use crate::provider::image_format_for_path;
 
@@ -168,6 +171,14 @@ impl Item for ImagePreviewView {
         Some(SerializedPaneItem::StandalonePreview(self.path.clone()))
     }
 
+    fn as_preview_item(
+        &self,
+        self_handle: &Entity<Self>,
+        _cx: &App,
+    ) -> Option<Box<dyn PreviewItemHandle>> {
+        Some(Box::new(self_handle.clone()))
+    }
+
     fn breadcrumbs(
         &self,
         project_root: Option<&Path>,
@@ -191,6 +202,8 @@ impl Item for ImagePreviewView {
         }
     }
 }
+
+impl PreviewItem for ImagePreviewView {}
 
 #[cfg(test)]
 #[path = "test/view_tests.rs"]

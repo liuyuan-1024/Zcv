@@ -29,3 +29,25 @@ fn image_preview_loads_a_png_in_the_background(cx: &mut TestAppContext) {
         assert!(view.load_task.is_none());
     });
 }
+
+#[gpui::test]
+fn image_preview_provides_breadcrumbs_without_a_source_item(cx: &mut TestAppContext) {
+    let path = PathBuf::from("/project/assets/icon.png");
+    let view = cx.new(|cx| ImagePreviewView::new(path, cx));
+    cx.read(|cx| {
+        let preview = view
+            .read(cx)
+            .as_preview_item(&view, cx)
+            .expect("图片应被识别为预览 Item");
+        assert!(preview.source_item(cx).is_none());
+        let (segments, _) = view
+            .read(cx)
+            .breadcrumbs(Some(Path::new("/project")), cx)
+            .expect("图片应提供文件面包屑");
+        let segments: Vec<_> = segments
+            .into_iter()
+            .map(|segment| segment.to_string())
+            .collect();
+        assert_eq!(segments, ["assets", "icon.png"]);
+    });
+}

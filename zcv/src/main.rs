@@ -63,10 +63,18 @@ fn main() {
     let request = initial_open(args.iter().cloned(), None);
     let initial = initial_open(args.into_iter(), most_recent_valid_project());
     #[cfg(target_os = "windows")]
-    let instance = match single_instance::start(&request) {
-        Ok(Some(instance)) => instance,
-        Ok(None) => return,
-        Err(error) => panic!("转交文件打开请求失败：{error:#}"),
+    let instance = if single_instance::enforce_single_instance(
+        cfg!(debug_assertions),
+        std::env::var_os("ZCV_STATELESS").is_some(),
+    ) {
+        match single_instance::start(&request) {
+            Ok(Some(instance)) => Some(instance),
+            Ok(None) => return,
+            Err(error) => panic!("转交文件打开请求失败：{error:#}"),
+        }
+    } else {
+        // 开发构建允许新旧二进制并存：不创建互斥体，也不接管文件打开请求。
+        None
     };
 
     open_with::ensure_open_with_registration();
@@ -86,7 +94,9 @@ fn main() {
     #[cfg(target_os = "windows")]
     let (instance_tx, mut instance_rx) = mpsc::unbounded::<InitialOpen>();
     #[cfg(target_os = "windows")]
-    instance.listen(instance_tx);
+    if let Some(instance) = &instance {
+        instance.listen(instance_tx);
+    }
     application.on_open_urls(move |urls| {
         open_urls_tx
             .unbounded_send(urls)

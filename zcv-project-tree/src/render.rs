@@ -65,6 +65,7 @@ impl ProjectTreePanel {
                 is_dir: self.entry_name_editor.read(cx).text(cx).ends_with('/'),
                 expanded: false,
                 is_new: true,
+                is_ignored: false,
                 git_status: None,
             },
         );
@@ -163,20 +164,24 @@ pub(super) fn render_row(
             })
             .child(render_context.entry_name_editor.clone())
     } else {
-        // 淡显优先级：编辑态（外层分支）> cut 淡显 > git 颜色。
-        // 剪切项整体淡显（含其子路径），git 状态色不再叠加。
+        // 颜色优先级：编辑态（外层分支）> cut 淡显 > 忽略淡显 > git 状态色。
+        // 剪切项与被忽略项整体淡显，git 状态色不再叠加。
         let is_cut = !row.is_new
             && render_context
                 .clipboard_cut
                 .iter()
                 .any(|cut| row.path.starts_with(cut));
-        let status_color = if is_cut {
+        let status_color = if is_cut || row.is_ignored {
             None
         } else {
             row.git_status
                 .and_then(|status| git_status_color(status, cx))
         };
         tree_row_label(name)
+            // 被忽略项整体淡显，优先级低于剪切；忽略色与 Git 状态色互斥。
+            .when(row.is_ignored, |element| {
+                element.text_color(color::current(cx).text_placeholder)
+            })
             .when(is_cut, |element| {
                 element.text_color(color::current(cx).text_muted)
             })

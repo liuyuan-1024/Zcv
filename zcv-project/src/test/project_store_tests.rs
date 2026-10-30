@@ -1004,6 +1004,60 @@ fn fs_events_trigger_incremental_git_status_refresh(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn only_structural_fs_events_request_tree_rebuild(cx: &mut TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = directory.path().to_path_buf();
+    let file = root.join("a.txt");
+    fs::write(&file, "x").expect("应创建文件");
+    let project = test_project(root.clone(), cx);
+    cx.run_until_parked();
+
+    let entries_changed = Rc::new(Cell::new(0u32));
+    let counter = entries_changed.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&project, move |_, event: &ProjectEvent, _| {
+            if matches!(event, ProjectEvent::EntriesChanged) {
+                counter.set(counter.get() + 1);
+            }
+        })
+    });
+
+    // 纯内容变化不改变可见行结构：只更新 Git 状态，不请求项目树重建。
+    fs::write(&file, "y").expect("应修改文件");
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(file.clone(), Some(PathEventKind::Changed)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        entries_changed.get(),
+        0,
+        "纯内容变化不应触发 EntriesChanged"
+    );
+
+    // 新增条目改变可见行结构：请求一次重建。
+    let new_file = root.join("b.txt");
+    fs::write(&new_file, "z").expect("应创建文件");
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(new_file, Some(PathEventKind::Created)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        entries_changed.get(),
+        1,
+        "新增条目应触发一次 EntriesChanged"
+    );
+}
+
+#[gpui::test]
 fn directory_and_rescan_events_reload_open_document(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时目录");

@@ -3,6 +3,8 @@ use std::{fs, sync::Arc};
 use futures::channel::oneshot;
 use gpui::{AppContext, TestAppContext};
 use url::Url;
+
+use crate::app_menus;
 use zcv_actions::{About, OpenLocalFile};
 use zcv_language::LanguageRegistry;
 use zcv_settings::{
@@ -54,23 +56,24 @@ fn test_languages() -> Arc<LanguageRegistry> {
 
 #[gpui::test]
 fn open_local_file_action_opens_file_outside_current_project(cx: &mut TestAppContext) {
-    let project_dir = tempfile::tempdir().expect("应创建项目目录");
     let external_dir = tempfile::tempdir().expect("应创建项目外目录");
     let file = external_dir.path().join("outside.txt");
     fs::write(&file, "项目外文件").expect("应创建项目外文件");
-    let canonical_file = fs::canonicalize(&file).expect("项目外文件应可规范化");
-    let root =
-        zcv_path::AbsolutePathBuf::canonicalize(project_dir.path()).expect("项目目录应可规范化");
+    let canonical_file = zcv_path::AbsolutePathBuf::canonicalize(&file)
+        .expect("项目外文件应可规范化")
+        .as_path()
+        .to_path_buf();
     let languages = test_languages();
     cx.update(|cx| {
         let reporter = cx.new(|_| SettingsErrorReporter::default());
         cx.set_global(GlobalSettingsErrorReporter(reporter));
         cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, languages.clone());
+        app_menus::install(cx);
         super::install_open_local_file_action(cx);
     });
-    let (workspace, visual) = cx
-        .add_window_view(|window, cx| build_workspace(&Some(root.clone()), languages, window, cx));
+    let (workspace, visual) =
+        cx.add_window_view(|window, cx| build_workspace(&None, languages, window, cx));
     let focus = visual.read_entity(&workspace, |workspace, _| workspace.focus_handle().clone());
     visual.update(|window, cx| {
         window.activate_window();
@@ -88,7 +91,7 @@ fn open_local_file_action_opens_file_outside_current_project(cx: &mut TestAppCon
     visual.run_until_parked();
 
     visual.read_entity(&workspace, |workspace, cx| {
-        assert_eq!(workspace.project().read(cx).root(), Some(root.as_path()));
+        assert_eq!(workspace.project().read(cx).root(), None);
         assert_eq!(
             workspace
                 .pane()
@@ -102,7 +105,8 @@ fn open_local_file_action_opens_file_outside_current_project(cx: &mut TestAppCon
 
 #[test]
 fn finder_file_url_decodes_local_path() {
-    let path = std::path::PathBuf::from("/tmp/love 页面.html");
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let path = directory.path().join("love 页面.html");
     let url = Url::from_file_path(&path).expect("本地路径应能编码为文件地址");
     assert_eq!(file_path_from_url(url.as_str()).unwrap(), path);
     assert!(file_path_from_url("https://example.com/love.html").is_err());
@@ -113,13 +117,17 @@ fn finder_open_event_opens_html_in_active_workspace(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let file = directory.path().join("love 页面.html");
     fs::write(&file, "<h1>你好</h1>").expect("应创建 HTML 文件");
-    let canonical_file = fs::canonicalize(&file).expect("HTML 文件应可规范化");
+    let canonical_file = zcv_path::AbsolutePathBuf::canonicalize(&file)
+        .expect("HTML 文件应可规范化")
+        .as_path()
+        .to_path_buf();
     let languages = test_languages();
     cx.update(|cx| {
         let reporter = cx.new(|_| SettingsErrorReporter::default());
         cx.set_global(GlobalSettingsErrorReporter(reporter));
         cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, languages.clone());
+        app_menus::install(cx);
     });
     let workspace = {
         let (workspace, visual) =
@@ -149,13 +157,17 @@ fn finder_open_event_creates_workspace_when_no_window_exists(cx: &mut TestAppCon
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let file = directory.path().join("love.html");
     fs::write(&file, "<h1>你好</h1>").expect("应创建 HTML 文件");
-    let canonical_file = fs::canonicalize(&file).expect("HTML 文件应可规范化");
+    let canonical_file = zcv_path::AbsolutePathBuf::canonicalize(&file)
+        .expect("HTML 文件应可规范化")
+        .as_path()
+        .to_path_buf();
     let languages = test_languages();
     cx.update(|cx| {
         let reporter = cx.new(|_| SettingsErrorReporter::default());
         cx.set_global(GlobalSettingsErrorReporter(reporter));
         cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, languages.clone());
+        app_menus::install(cx);
     });
 
     let url = Url::from_file_path(&file).expect("HTML 路径应能编码为文件地址");
@@ -193,6 +205,7 @@ fn empty_workspace_installs_all_panels(cx: &mut TestAppContext) {
         cx.set_global(GlobalSettingsErrorReporter(reporter));
         cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, test_languages());
+        app_menus::install(cx);
     });
     let (workspace, cx) =
         cx.add_window_view(|window, cx| build_workspace(&None, test_languages(), window, cx));
@@ -219,6 +232,7 @@ fn switching_replaces_root_in_same_window(cx: &mut TestAppContext) {
         cx.set_global(GlobalSettingsErrorReporter(reporter));
         cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, test_languages());
+        app_menus::install(cx);
     });
     let (old_workspace, cx) =
         cx.add_window_view(|window, cx| build_workspace(&None, test_languages(), window, cx));

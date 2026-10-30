@@ -1,7 +1,7 @@
 //! Worktree —— 项目目录快照层。
 //!
 //! 职责边界：目录遍历、扫描排除规则、git 仓库发现与路径命名语义住在这一层；
-//! git 状态由项目树从 `GitStore` 的不可变快照按需派生。
+//! git 状态与忽略标志由 `Project` 在收集可见行时从 `GitStore` 的不可变快照派生。
 //! 本层只提供静态目录查询（`children`），展开、深度与可见行是项目树视图状态，由 UI 层自行构建。
 
 use std::{
@@ -18,11 +18,14 @@ use zcv_path::AbsolutePathBuf;
 const DOT_GIT: &str = ".git";
 
 /// 目录快照层的静态条目：由 Worktree 遍历产出，不含展开/深度等视图状态。
+///
+/// `is_ignored` 由 `Project` 在收集可见行时从 Git 状态快照派生并写入，与条目的 Git 状态色相互独立。
 #[derive(Debug, Clone)]
 pub struct WorktreeEntry {
     pub path: AbsolutePathBuf,
     pub name: String,
     pub is_dir: bool,
+    pub is_ignored: bool,
 }
 
 /// 项目目录快照层：持有根路径与扫描排除规则，提供静态目录查询。
@@ -71,7 +74,7 @@ impl Worktree {
 /// 项目树的过滤规则：扫描排除（glob 名单）。
 ///
 /// file_scan_exclusions 命中的条目根本不在行模型中加载；
-/// 忽略（gitignore/info/exclude）由 git 状态统一判定（`FileStatus::Ignored`）。
+/// 忽略（gitignore/info/exclude）仍由 Git 状态判定（`FileStatus::Ignored`），在收集可见行时投影为行模型的 `is_ignored`，不参与本过滤层。
 #[derive(Clone)]
 pub(crate) struct TreeFilter {
     /// 用户配置的扫描排除 glob。
@@ -134,6 +137,7 @@ fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<Worktree
                 path: AbsolutePathBuf::new(path).ok()?,
                 name,
                 is_dir,
+                is_ignored: false,
             })
         })
         .collect()
@@ -142,7 +146,7 @@ fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<Worktree
 /// 收集可见行（纯函数，可在后台线程执行）：根行 + 按 `expanded` 递归展开。
 ///
 /// 排序与排除规则与 `Worktree::children` 一致；
-/// 不含 git 状态；GitStore 快照由项目树在行模型应用后单独查询。
+/// 本函数只做静态遍历，Git 状态与忽略标志由 `Project` 在收集任务的同一次后台快照中合并。
 /// 展开、深度与选中是视图状态，由 UI 层决定。
 pub(crate) fn collect_visible_entries(
     root: &AbsolutePathBuf,
@@ -157,6 +161,7 @@ pub(crate) fn collect_visible_entries(
         path: root.clone(),
         name: root_name,
         is_dir: true,
+        is_ignored: false,
     }];
     if expanded.contains(root) {
         collect_expanded_children(root.as_path(), root.as_path(), expanded, filter, &mut rows);

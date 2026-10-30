@@ -23,7 +23,7 @@ use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_git::FileStatus;
 use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
-use zcv_project::Project;
+use zcv_project::{GitStoreEvent, Project};
 use zcv_settings::{SettingsStore, UserSettings};
 use zcv_ui::{ConfirmAnswer, tree_row_height};
 
@@ -129,6 +129,7 @@ fn project_tree_visible_render_cost(cx: &mut TestAppContext) {
                 is_dir: false,
                 expanded: false,
                 is_new: false,
+                is_ignored: false,
                 git_status: None,
             })
             .collect::<Vec<_>>();
@@ -186,6 +187,7 @@ fn rows_are_cached_until_rebuild_reinjects_them() {
             is_dir: true,
             expanded: true,
             is_new: false,
+            is_ignored: false,
             git_status: None,
         },
         ProjectTreeRow {
@@ -195,6 +197,7 @@ fn rows_are_cached_until_rebuild_reinjects_them() {
             is_dir: false,
             expanded: false,
             is_new: false,
+            is_ignored: false,
             git_status: None,
         },
     ];
@@ -212,6 +215,7 @@ fn rows_are_cached_until_rebuild_reinjects_them() {
         is_dir: true,
         expanded: true,
         is_new: false,
+        is_ignored: false,
         git_status: None,
     }]);
     assert!(!state.rows().iter().any(|row| row.path.as_path() == file));
@@ -839,6 +843,89 @@ fn git_status_events_update_row_colors(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn unchanged_git_status_refresh_keeps_row_snapshot(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (root, _temp) = test_git_repo();
+    let project = test_project(root.clone(), cx);
+    let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
+    cx.run_until_parked();
+
+    let file = root.join("tracked.txt");
+    fs::write(&file, "已修改\n").expect("应修改文件");
+    project.update(cx, |project, cx| {
+        project.git_store().update(cx, |store, cx| {
+            store.refresh_statuses_for_paths(slice::from_ref(&file), cx);
+        });
+    });
+    cx.run_until_parked();
+
+    let before = cx.read_entity(&tree, |tree, _| tree.row_snapshot.clone());
+    // 状态未变化时再次刷新：不得重建行快照，否则会触发无意义整树重绘（视觉抖动）。
+    tree.update(cx, |tree, cx| tree.refresh_git_statuses(cx));
+    cx.run_until_parked();
+    let after = cx.read_entity(&tree, |tree, _| tree.row_snapshot.clone());
+    assert!(
+        Rc::ptr_eq(&before, &after),
+        "Git 状态无变化时不应重建行快照"
+    );
+}
+
+#[gpui::test]
+fn irrelevant_git_events_do_not_rebuild_tree_snapshot(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (root, _temp) = test_git_repo();
+    let project = test_project(root.clone(), cx);
+    let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
+    cx.run_until_parked();
+
+    let file = root.join("tracked.txt");
+    fs::write(&file, "已修改\n").expect("应修改文件");
+    project.update(cx, |project, cx| {
+        project.git_store().update(cx, |store, cx| {
+            store.refresh_statuses_for_paths(slice::from_ref(&file), cx);
+        });
+    });
+    cx.run_until_parked();
+
+    let before = cx.read_entity(&tree, |tree, _| tree.row_snapshot.clone());
+    let status_before = cx.read_entity(&tree, |tree, _| {
+        tree.state
+            .borrow()
+            .rows
+            .iter()
+            .find(|row| row.path.as_path() == file)
+            .and_then(|row| row.git_status)
+    });
+    assert!(status_before.is_some_and(|status| status.is_modified()));
+
+    // 与颜色无关的 Git 事件不得触发树重绘。
+    project.update(cx, |project, cx| {
+        project.git_store().update(cx, |_, cx| {
+            cx.emit(GitStoreEvent::JobsUpdated);
+            cx.emit(GitStoreEvent::Head);
+            cx.emit(GitStoreEvent::ActiveRepositoryChanged);
+            cx.emit(GitStoreEvent::Statuses);
+        });
+    });
+    cx.run_until_parked();
+
+    let after = cx.read_entity(&tree, |tree, _| tree.row_snapshot.clone());
+    assert!(
+        Rc::ptr_eq(&before, &after),
+        "无关或状态未变化的 Git 事件不应重建行快照"
+    );
+    let status_after = cx.read_entity(&tree, |tree, _| {
+        tree.state
+            .borrow()
+            .rows
+            .iter()
+            .find(|row| row.path.as_path() == file)
+            .and_then(|row| row.git_status)
+    });
+    assert_eq!(status_before, status_after, "颜色状态不能在无关事件中丢失");
+}
+
+#[gpui::test]
 fn git_status_events_color_directories_with_changed_children(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
@@ -900,11 +987,11 @@ fn expanding_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // 展开 sub 目录（模拟 handle_tree_expand 的行重建路径）。
+    // 行重建本身应携带 Git 状态，无需再补一次状态刷新。
     tree.update(cx, |tree, cx| {
         tree.state.borrow_mut().expanded.insert(abs(sub.clone()));
         tree.rebuild_rows(cx);
     });
-    tree.update(cx, |tree, cx| tree.refresh_git_statuses(cx));
     cx.run_until_parked();
 
     let status = cx.read_entity(&tree, |tree, _| {
@@ -1005,12 +1092,12 @@ fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // 模拟鼠标/键盘逐级展开 tmp 与子目录。
+    // 行重建本身应携带状态，被忽略项在首帧即可淡显，无需补状态刷新。
     tree.update(cx, |tree, cx| {
         tree.state.borrow_mut().expanded.insert(abs(tmp.clone()));
         tree.state.borrow_mut().expanded.insert(abs(child.clone()));
         tree.rebuild_rows(cx);
     });
-    tree.update(cx, |tree, cx| tree.refresh_git_statuses(cx));
     cx.run_until_parked();
 
     let rows = cx.read_entity(&tree, |tree, _| {
@@ -1018,7 +1105,7 @@ fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
             .borrow()
             .rows
             .iter()
-            .map(|row| (row.path.clone(), row.git_status))
+            .map(|row| (row.path.clone(), row.is_ignored))
             .collect::<Vec<_>>()
     });
     // tmp、其子目录与文件都应进入行模型，且全部携带 Ignored 状态（淡显）。
@@ -1028,8 +1115,8 @@ fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
             .find(|(path, _)| path.as_path() == expected)
             .unwrap_or_else(|| panic!("{expected:?} 应在行模型中，实际：{rows:?}"));
         assert!(
-            found.1.is_some_and(|status| status.is_ignored()),
-            "{expected:?} 应为 Ignored（淡显），实际：{:?}",
+            found.1,
+            "{expected:?} 应标记为被忽略（淡显），实际：{:?}",
             found.1
         );
     }

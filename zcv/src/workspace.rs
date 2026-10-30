@@ -278,21 +278,25 @@ pub(crate) fn handle_open_paths(
                 .root::<Workspace>()
                 .flatten()
                 .expect("窗口应持有工作区");
-            workspace.update(cx, |workspace, cx| {
-                if !paths.is_empty() {
-                    workspace.open_paths(paths, window, cx);
-                }
-                for error in errors {
-                    workspace.show_toast(
-                        ToastKind::Error,
-                        error,
-                        vec![],
-                        Some(Duration::from_secs(5)),
-                        cx,
-                    );
-                }
+            // 工作区在首帧后恢复持久化标签；
+            // 打开请求必须排在其后，否则新打开的文件会被刚恢复的旧标签重新覆盖。
+            window.defer(cx, move |window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    if !paths.is_empty() {
+                        workspace.open_paths(paths, window, cx);
+                    }
+                    for error in errors {
+                        workspace.show_toast(
+                            ToastKind::Error,
+                            error,
+                            vec![],
+                            Some(Duration::from_secs(5)),
+                            cx,
+                        );
+                    }
+                });
+                window.activate_window();
             });
-            window.activate_window();
         })
         .expect("打开文件时工作区窗口应有效");
     cx.activate(true);

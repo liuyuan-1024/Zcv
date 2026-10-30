@@ -54,13 +54,17 @@ fn startup_file_opens_in_empty_workspace(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let file = directory.path().join("页面.html");
     std::fs::write(&file, "<h1>你好</h1>").expect("应创建 HTML 文件");
-    let canonical_file = std::fs::canonicalize(&file).expect("文件应可规范化");
+    let canonical_file = zcv_path::AbsolutePathBuf::canonicalize(&file)
+        .expect("文件应可规范化")
+        .as_path()
+        .to_path_buf();
     let languages = std::sync::Arc::new(LanguageRegistry::new());
     cx.update(|cx| {
         let reporter = cx.new(|_| SettingsErrorReporter::default());
         cx.set_global(GlobalSettingsErrorReporter(reporter));
         cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, languages.clone());
+        crate::app_menus::install(cx);
         open_initial(InitialOpen::File(file), languages, cx);
     });
     cx.run_until_parked();
@@ -97,6 +101,7 @@ fn incoming_file_reuses_existing_window(cx: &mut TestAppContext) {
         cx.set_global(GlobalSettingsErrorReporter(reporter));
         cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, languages.clone());
+        crate::app_menus::install(cx);
         open_initial(InitialOpen::Empty, languages.clone(), cx);
         open_initial(InitialOpen::File(file.clone()), languages, cx);
     });
@@ -130,6 +135,7 @@ fn closed_last_window_can_open_a_workspace_again(cx: &mut TestAppContext) {
         cx.set_global(GlobalSettingsErrorReporter(reporter));
         cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, languages.clone());
+        crate::app_menus::install(cx);
         open_initial(InitialOpen::Empty, languages.clone(), cx);
         assert_eq!(cx.windows().len(), 1);
     });

@@ -15,7 +15,10 @@ pub(super) struct ProjectTreeRow {
     pub(super) is_dir: bool,
     pub(super) expanded: bool,
     pub(super) is_new: bool,
-    /// git 状态（决定文件名颜色与忽略淡显；None 表示无状态）。
+    /// 是否被 Git 忽略。
+    /// 与 `git_status` 分离：忽略项不携带 Git 状态色，只按此标志淡显，避免与状态色叠加、也避免依赖状态刷新节奏。
+    pub(super) is_ignored: bool,
+    /// Git 状态（决定文件名颜色；忽略项恒为 None，None 也表示无状态）。
     pub(super) git_status: Option<FileStatus>,
 }
 

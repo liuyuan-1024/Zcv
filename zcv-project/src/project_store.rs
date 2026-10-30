@@ -244,24 +244,46 @@ impl Project {
         }
     }
 
-    /// 后台收集当前展开状态下的可见行，返回后台任务。
+    /// 后台收集当前展开状态下的可见行，并同帧派生每行的 Git 状态。
     ///
-    /// Git 状态由项目树在行模型应用后单独批量查询，避免目录扫描与状态快照之间形成竞态，也让两类派生数据拥有各自明确的失效边界。
+    /// 目录扫描与状态查询在同一个后台任务内完成，返回一份可直接渲染的完整行集，避免行模型先落地、状态再异步回填造成「无状态中间帧」。
+    /// 忽略状态也随这次派生一并确定，不再作为单独的渲染期查询。
     pub fn collect_visible_rows(
         &self,
         expanded: HashSet<AbsolutePathBuf>,
         cx: &App,
-    ) -> Task<Vec<WorktreeEntry>> {
+    ) -> Task<Vec<(WorktreeEntry, Option<FileStatus>)>> {
         let Some(worktree) = &self.worktree else {
             // 无 worktree 的空态：直接返回空结果。
             return cx
                 .background_executor()
-                .spawn(async { Vec::<WorktreeEntry>::new() });
+                .spawn(async { Vec::<(WorktreeEntry, Option<FileStatus>)>::new() });
         };
         let root = worktree.root.clone();
         let filter = worktree.snapshot.filter();
-        cx.background_executor()
-            .spawn(async move { collect_visible_entries(&root, &expanded, &filter) })
+        // 在 UI 线程捕获不可变状态快照，后台任务只读；GitStore 仍是状态的唯一所有者。
+        let snapshot: Arc<GitStatusSnapshot> = self.git_store.read(cx).status_snapshot();
+        cx.background_executor().spawn(async move {
+            let mut entries = collect_visible_entries(&root, &expanded, &filter);
+            let rows = entries
+                .iter()
+                .map(|entry| (entry.path.clone(), entry.is_dir))
+                .collect::<Vec<_>>();
+            let statuses = snapshot.statuses_for_rows(&rows);
+            // 忽略标志写在条目上，状态色则单独投影。
+            for entry in &mut entries {
+                entry.is_ignored = statuses
+                    .get(&entry.path)
+                    .is_some_and(|status| status.is_ignored());
+            }
+            entries
+                .into_iter()
+                .map(|entry| {
+                    let status = statuses.get(&entry.path).copied();
+                    (entry, status)
+                })
+                .collect()
+        })
     }
 
     /// 后台批量查询可见行的 Git 状态（Git 事件驱动，不重扫目录）。
@@ -1005,9 +1027,26 @@ impl Project {
                     store.refresh_statuses_for_paths(&changed, cx);
                 }
             });
-            cx.emit(ProjectEvent::EntriesChanged);
+            // 只有目录结构可能变化时才重建项目树行模型：
+            // 纯内容变化（Changed）不改变可见行集合，交给 Git 状态事件更新颜色即可；
+            // .git 内部事件只影响 Git 状态，不应触发整树重建。
+            let tree_changed = worktree_events.iter().any(|event| {
+                matches!(
+                    event.kind,
+                    Some(PathEventKind::Created | PathEventKind::Removed | PathEventKind::Rescan)
+                ) && !is_dot_git_path(&event.path)
+            });
+            if tree_changed {
+                cx.emit(ProjectEvent::EntriesChanged);
+            }
         }
     }
+}
+
+/// 路径是否位于 .git 内部：这些事件只更新 Git 状态，不影响项目树的可见行结构。
+fn is_dot_git_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == ".git")
 }
 
 /// 保存策略先作为源文档事务生效；后续写盘只消费新版本快照。

@@ -21,8 +21,9 @@ use gpui::{
 };
 use zcv_actions::TreeActivate;
 use zcv_editor::Editor;
+use zcv_git::FileStatus;
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
-use zcv_project::{Project, WorktreeEntry, translate_path};
+use zcv_project::{GitStoreEvent, Project, WorktreeEntry, translate_path};
 use zcv_theme::{color, fixed, scale};
 use zcv_ui::{ConfirmOverlay, RowClickAction, Scrollbar, TreeState};
 use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace, typography_for_window};
@@ -172,10 +173,13 @@ impl ProjectTreePanel {
             let root = AbsolutePathBuf::new(root.to_path_buf()).expect("项目根必须是绝对路径");
             state.expanded.insert(root);
         }
-        // git 状态变化（含忽略集变化）时刷新行颜色，不重扫目录。
+        // 仅状态/仓库集合变化才影响行颜色；
+        // Head、JobsUpdated、ActiveRepositoryChanged 等事件与树颜色无关，订阅它们会在 job 频繁启停时制造无意义重绘。
         let git_store = project.read(cx).git_store();
-        cx.subscribe(&git_store, |tree, _, _event, cx| {
-            tree.refresh_git_statuses(cx);
+        cx.subscribe(&git_store, |tree, _, event, cx| {
+            if matches!(event, GitStoreEvent::Statuses | GitStoreEvent::Repositories) {
+                tree.refresh_git_statuses(cx);
+            }
         })
         .detach();
         let scroll_handle = UniformListScrollHandle::default();
@@ -246,11 +250,11 @@ impl ProjectTreePanel {
         }));
     }
 
-    /// 应用后台收集结果：过期代次直接丢弃；转换行模型、批量回填 git 状态并刷新行快照。
+    /// 应用后台收集结果：过期代次直接丢弃；行集与 Git 状态在同一份快照内落地。
     fn apply_rebuild(
         &mut self,
         generation: u64,
-        entries: Vec<WorktreeEntry>,
+        rows: Vec<(WorktreeEntry, Option<FileStatus>)>,
         cx: &mut Context<Self>,
     ) {
         if generation != self.rebuild_generation {
@@ -261,14 +265,15 @@ impl ProjectTreePanel {
             return;
         };
         let expanded = self.state.borrow().expanded.clone();
-        let rows: Vec<ProjectTreeRow> = entries
+        let rows: Vec<ProjectTreeRow> = rows
             .into_iter()
-            .map(|entry| {
+            .map(|(entry, status)| {
                 // 深度 = 相对根的路径组件数（与递归收集的逐层 +1 等价）。
                 let path = entry.path;
                 let depth = path
                     .strip_prefix(root.as_path())
                     .map_or(0, |relative| relative.components().count());
+                let is_ignored = entry.is_ignored;
                 ProjectTreeRow {
                     expanded: entry.is_dir && expanded.contains(&path),
                     path,
@@ -276,7 +281,8 @@ impl ProjectTreePanel {
                     depth,
                     is_dir: entry.is_dir,
                     is_new: false,
-                    git_status: None,
+                    is_ignored,
+                    git_status: status.filter(|status| !status.is_ignored()),
                 }
             })
             .collect();
@@ -284,8 +290,8 @@ impl ProjectTreePanel {
         // 行集已全量替换：同步重建行快照，此后每帧渲染只做 Rc 克隆。
         self.row_snapshot = self.state.borrow().rows.clone().into();
         self.try_scroll_pending_reveal(cx);
-        // 行集变化后只按当前行集合查询一次 Git 派生状态；
-        // 这样不会使用目录扫描开始前捕获的旧 Git 快照，展开期间也能稳定补齐新出现的行。
+        // 行集与状态在同一次后台任务内派生，本次落地即完整快照，不会先渲染无状态行。
+        // 再触发一次状态刷新，吸收扫描期间到达的最新 Git 事件（只更新既有行，不产生空帧）。
         self.refresh_git_statuses(cx);
         cx.notify();
     }
@@ -326,16 +332,29 @@ impl ProjectTreePanel {
                 if generation != tree.status_refresh_generation {
                     return;
                 }
-                {
+                // 只有真实变化才重建行快照并重绘；
+                // 无变化的 Git 事件不应造成整树重绘（视觉抖动）。
+                let changed = {
                     let mut state = tree.state.borrow_mut();
+                    let mut changed = false;
                     for row in &mut state.rows {
-                        row.git_status = statuses.get(&row.path).copied();
+                        let status = statuses.get(&row.path).copied();
+                        let is_ignored = status.is_some_and(FileStatus::is_ignored);
+                        let git_status = status.filter(|status| !status.is_ignored());
+                        if row.is_ignored != is_ignored || row.git_status != git_status {
+                            row.is_ignored = is_ignored;
+                            row.git_status = git_status;
+                            changed = true;
+                        }
                     }
-                }
+                    changed
+                };
                 tree.pending_status_refresh = None;
-                // 行内容已变更：行快照必须同步重建，否则颜色更新不进渲染。
-                tree.row_snapshot = tree.state.borrow().rows.clone().into();
-                cx.notify();
+                if changed {
+                    // 行内容已变更：行快照必须同步重建，否则颜色更新不进渲染。
+                    tree.row_snapshot = tree.state.borrow().rows.clone().into();
+                    cx.notify();
+                }
             });
         }));
     }

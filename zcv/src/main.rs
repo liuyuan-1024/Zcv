@@ -13,7 +13,8 @@ use std::{ffi::OsString, path::PathBuf, sync::Arc};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{App, Application};
 use workspace::{
-    handle_open_paths, open_empty_workspace, open_empty_workspace_with_error, open_project_window,
+    default_file_watcher_factory, handle_open_paths, open_empty_workspace,
+    open_empty_workspace_with_error, open_project_window,
 };
 use zcv_assets::Assets;
 use zcv_language::LanguageRegistry;
@@ -40,19 +41,34 @@ fn initial_open(
     }
 }
 
-fn open_initial(initial: InitialOpen, languages: Arc<LanguageRegistry>, cx: &mut App) {
+fn open_initial(
+    initial: InitialOpen,
+    languages: Arc<LanguageRegistry>,
+    watcher_factory: workspace::FileWatcherFactory,
+    cx: &mut App,
+) {
     match initial {
         InitialOpen::Project(root) => {
-            if let Err(error) = open_project_window(root, Arc::clone(&languages), cx) {
-                open_empty_workspace_with_error(format!("打开项目失败：{error:#}"), languages, cx)
-                    .expect("空工作区窗口应能创建");
+            if let Err(error) = open_project_window(
+                root,
+                Arc::clone(&languages),
+                Arc::clone(&watcher_factory),
+                cx,
+            ) {
+                open_empty_workspace_with_error(
+                    format!("打开项目失败：{error:#}"),
+                    languages,
+                    watcher_factory,
+                    cx,
+                )
+                .expect("空工作区窗口应能创建");
             }
         }
         InitialOpen::File(path) => {
-            handle_open_paths(vec![path], vec![], languages, cx);
+            handle_open_paths(vec![path], vec![], languages, watcher_factory, cx);
         }
         InitialOpen::Empty => {
-            open_empty_workspace(languages, cx).expect("空工作区窗口应能创建");
+            open_empty_workspace(languages, watcher_factory, cx).expect("空工作区窗口应能创建");
         }
     }
 }
@@ -90,6 +106,7 @@ fn main() {
         application = application.with_http_client(http_client);
     }
     let languages = Arc::new(LanguageRegistry::new());
+    let watcher_factory = default_file_watcher_factory();
     let (open_urls_tx, mut open_urls_rx) = mpsc::unbounded::<Vec<String>>();
     #[cfg(target_os = "windows")]
     let (instance_tx, mut instance_rx) = mpsc::unbounded::<InitialOpen>();
@@ -104,10 +121,12 @@ fn main() {
     });
     application.on_reopen({
         let languages = Arc::clone(&languages);
+        let watcher_factory = Arc::clone(&watcher_factory);
         move |cx| {
             open_initial(
                 initial_open(std::iter::empty(), most_recent_valid_project()),
                 Arc::clone(&languages),
+                Arc::clone(&watcher_factory),
                 cx,
             );
             cx.activate(true);
@@ -146,11 +165,17 @@ fn main() {
             eprintln!("无法确认新版本启动：{error:#}");
         }
 
-        open_initial(initial, Arc::clone(&languages), cx);
+        open_initial(
+            initial,
+            Arc::clone(&languages),
+            Arc::clone(&watcher_factory),
+            cx,
+        );
 
         #[cfg(target_os = "windows")]
         cx.spawn({
             let languages = Arc::clone(&languages);
+            let watcher_factory = Arc::clone(&watcher_factory);
             async move |cx| {
                 while let Some(request) = instance_rx.next().await {
                     cx.update(|cx| match request {
@@ -165,16 +190,32 @@ fn main() {
                             }
                             cx.activate(true);
                         }
-                        request => open_initial(request, Arc::clone(&languages), cx),
+                        request => open_initial(
+                            request,
+                            Arc::clone(&languages),
+                            Arc::clone(&watcher_factory),
+                            cx,
+                        ),
                     });
                 }
             }
         })
         .detach();
 
-        cx.spawn(async move |cx| {
-            while let Some(urls) = open_urls_rx.next().await {
-                cx.update(|cx| workspace::handle_open_urls(urls, Arc::clone(&languages), cx));
+        cx.spawn({
+            let languages = Arc::clone(&languages);
+            let watcher_factory = Arc::clone(&watcher_factory);
+            async move |cx| {
+                while let Some(urls) = open_urls_rx.next().await {
+                    cx.update(|cx| {
+                        workspace::handle_open_urls(
+                            urls,
+                            Arc::clone(&languages),
+                            Arc::clone(&watcher_factory),
+                            cx,
+                        )
+                    });
+                }
             }
         })
         .detach();
@@ -182,6 +223,10 @@ fn main() {
         cx.activate(true);
     });
 }
+
+#[cfg(test)]
+#[path = "test/support.rs"]
+mod test_support;
 
 #[cfg(test)]
 #[path = "test/main_tests.rs"]

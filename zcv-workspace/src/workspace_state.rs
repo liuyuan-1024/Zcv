@@ -88,16 +88,6 @@ impl Workspace {
         self._subscriptions.push(sub);
     }
 
-    pub fn new(
-        root: AbsolutePathBuf,
-        languages: Arc<LanguageRegistry>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let project = cx.new(|cx| Project::new(root, languages, cx));
-        Self::new_with_project(project, window, cx)
-    }
-
     /// 使用已有项目创建工作区。
     ///
     /// 项目由调用方装配，工作区只负责承载其布局与界面状态。

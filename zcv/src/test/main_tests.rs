@@ -8,6 +8,7 @@ use zcv_settings::{
 use zcv_workspace::Workspace;
 
 use super::{InitialOpen, initial_open, open_initial};
+use crate::test_support::quiet_watcher_factory;
 
 #[test]
 fn startup_uses_explicit_command_line_project() {
@@ -65,7 +66,12 @@ fn startup_file_opens_in_empty_workspace(cx: &mut TestAppContext) {
         cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, languages.clone());
         crate::app_menus::install(cx);
-        open_initial(InitialOpen::File(file), languages, cx);
+        open_initial(
+            InitialOpen::File(file),
+            languages,
+            quiet_watcher_factory(),
+            cx,
+        );
     });
     cx.run_until_parked();
 
@@ -102,8 +108,18 @@ fn incoming_file_reuses_existing_window(cx: &mut TestAppContext) {
         cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, languages.clone());
         crate::app_menus::install(cx);
-        open_initial(InitialOpen::Empty, languages.clone(), cx);
-        open_initial(InitialOpen::File(file.clone()), languages, cx);
+        open_initial(
+            InitialOpen::Empty,
+            languages.clone(),
+            quiet_watcher_factory(),
+            cx,
+        );
+        open_initial(
+            InitialOpen::File(file.clone()),
+            languages,
+            quiet_watcher_factory(),
+            cx,
+        );
     });
     cx.run_until_parked();
     cx.update(|cx| {
@@ -136,7 +152,12 @@ fn closed_last_window_can_open_a_workspace_again(cx: &mut TestAppContext) {
         cx.set_global(SettingsStore::new(UserSettings::default()));
         zcv_editor::init(cx, languages.clone());
         crate::app_menus::install(cx);
-        open_initial(InitialOpen::Empty, languages.clone(), cx);
+        open_initial(
+            InitialOpen::Empty,
+            languages.clone(),
+            quiet_watcher_factory(),
+            cx,
+        );
         assert_eq!(cx.windows().len(), 1);
     });
 
@@ -150,7 +171,7 @@ fn closed_last_window_can_open_a_workspace_again(cx: &mut TestAppContext) {
 
     cx.update(|cx| {
         assert!(cx.windows().is_empty());
-        open_initial(InitialOpen::Empty, languages, cx);
+        open_initial(InitialOpen::Empty, languages, quiet_watcher_factory(), cx);
         assert_eq!(cx.windows().len(), 1);
     });
 }

@@ -180,7 +180,7 @@ impl Project {
         Self::empty_with_watcher(languages, Arc::new(FsWatcher::new()), cx)
     }
 
-    fn empty_with_watcher(
+    pub fn empty_with_watcher(
         languages: Arc<LanguageRegistry>,
         fs_watcher: Arc<dyn Watcher>,
         cx: &mut Context<Self>,

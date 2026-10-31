@@ -23,10 +23,11 @@ use zcv_actions::{
     RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleRecentProjects,
 };
 use zcv_editor::{Editor, EditorEvent};
+use zcv_fs_watch::{FsWatcher, Watcher};
 use zcv_language::LanguageRegistry;
 use zcv_project::{
     FileWatcherError, FileWatcherOperation, GitOperationKind, GitOperationOutcome, GitStoreEvent,
-    ProjectEvent,
+    Project, ProjectEvent,
 };
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_theme::{ThemeChoice, typography};
@@ -48,6 +49,17 @@ use zcv_version_control::{
     OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel, deploy_git_graph, deploy_project_diff,
     install as install_version_control, refresh_pane_git_projection,
 };
+
+/// 新建工作区所需的文件监听后端工厂。
+///
+/// 应用装配层决定平台后端：生产构建为每个工作区创建真实的 OS 监听器；测试注入静默后端，
+/// 避免真实监听线程把事件调度进确定性的 gpui 测试执行器。
+pub(crate) type FileWatcherFactory = Arc<dyn Fn() -> Arc<dyn Watcher> + Send + Sync>;
+
+/// 生产环境的文件监听后端工厂：每个工作区一份独立的 `FsWatcher`。
+pub(crate) fn default_file_watcher_factory() -> FileWatcherFactory {
+    Arc::new(|| Arc::new(FsWatcher::new()) as Arc<dyn Watcher>)
+}
 
 /// 构造打开文件回调（两个面板共用同一契约）。
 fn on_open_file_callback(weak: &WeakEntity<Workspace>) -> OnOpenFile {
@@ -127,7 +139,13 @@ fn switch_project_callback(languages: Arc<LanguageRegistry>) -> OnProjectSelecte
         }
         let languages = Arc::clone(&languages);
         window.replace_root(app, move |window, cx| {
-            let workspace = build_workspace(&Some(root), languages, window, cx);
+            let workspace = build_workspace(
+                &Some(root),
+                languages,
+                default_file_watcher_factory()(),
+                window,
+                cx,
+            );
             if let Some(message) = recent_error {
                 workspace.show_toast(
                     ToastKind::Error,
@@ -241,7 +259,12 @@ fn file_path_from_url(url: &str) -> anyhow::Result<PathBuf> {
 }
 
 /// 将系统的打开文档事件交给当前工作区，沿用应用内打开文件的 Item 管线。
-pub(crate) fn handle_open_urls(urls: Vec<String>, languages: Arc<LanguageRegistry>, cx: &mut App) {
+pub(crate) fn handle_open_urls(
+    urls: Vec<String>,
+    languages: Arc<LanguageRegistry>,
+    watcher_factory: FileWatcherFactory,
+    cx: &mut App,
+) {
     let mut paths = Vec::new();
     let mut errors = Vec::new();
     for url in urls {
@@ -250,7 +273,7 @@ pub(crate) fn handle_open_urls(urls: Vec<String>, languages: Arc<LanguageRegistr
             Err(error) => errors.push(format!("打开文件失败：{error:#}")),
         }
     }
-    handle_open_paths(paths, errors, languages, cx);
+    handle_open_paths(paths, errors, languages, watcher_factory, cx);
 }
 
 /// 系统文件事件和命令行文件入口共用同一条工作区打开管线。
@@ -258,6 +281,7 @@ pub(crate) fn handle_open_paths(
     paths: Vec<PathBuf>,
     errors: Vec<String>,
     languages: Arc<LanguageRegistry>,
+    watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) {
     if paths.is_empty() && errors.is_empty() {
@@ -265,7 +289,7 @@ pub(crate) fn handle_open_paths(
     }
 
     if cx.windows().is_empty() {
-        open_empty_workspace(languages, cx).expect("空工作区窗口应能创建");
+        open_empty_workspace(languages, watcher_factory, cx).expect("空工作区窗口应能创建");
     }
     let window = cx
         .active_window()
@@ -317,29 +341,32 @@ fn canonical_project_root(root: PathBuf) -> anyhow::Result<AbsolutePathBuf> {
 pub(crate) fn open_project_window(
     root: PathBuf,
     languages: Arc<LanguageRegistry>,
+    watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) -> anyhow::Result<()> {
     let root = canonical_project_root(root)?;
     let startup_error = add_to_recent(&root.to_string_lossy())
         .err()
         .map(|error| format!("更新最近项目列表失败：{error:#}"));
-    open_workspace_window(Some(root), languages, startup_error, cx)
+    open_workspace_window(Some(root), languages, startup_error, watcher_factory, cx)
 }
 
 /// 打开不绑定任何目录的空工作区。
 pub(crate) fn open_empty_workspace(
     languages: Arc<LanguageRegistry>,
+    watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    open_workspace_window(None, languages, None, cx)
+    open_workspace_window(None, languages, None, watcher_factory, cx)
 }
 
 pub(crate) fn open_empty_workspace_with_error(
     message: String,
     languages: Arc<LanguageRegistry>,
+    watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    open_workspace_window(None, languages, Some(message), cx)
+    open_workspace_window(None, languages, Some(message), watcher_factory, cx)
 }
 
 /// 项目与空工作区共用同一条窗口创建路径；差异只在 Project 是否含 worktree。
@@ -347,6 +374,7 @@ fn open_workspace_window(
     root: Option<AbsolutePathBuf>,
     languages: Arc<LanguageRegistry>,
     startup_error: Option<String>,
+    watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) -> anyhow::Result<()> {
     // 窗口边界恢复：项目记录 → 全局默认 → 初始居中。
@@ -370,8 +398,9 @@ fn open_workspace_window(
             ..Default::default()
         },
         |window, cx| {
+            let watcher = watcher_factory();
             let workspace = cx.new(|cx| {
-                let workspace = build_workspace(&root, languages, window, cx);
+                let workspace = build_workspace(&root, languages, watcher, window, cx);
                 if let Some(message) = startup_error {
                     workspace.show_toast(
                         ToastKind::Error,
@@ -402,13 +431,26 @@ fn open_workspace_window(
 fn build_workspace(
     root: &Option<AbsolutePathBuf>,
     languages: Arc<LanguageRegistry>,
+    watcher: Arc<dyn Watcher>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Workspace {
-    let workspace = match root {
-        Some(root) => Workspace::new(root.clone(), Arc::clone(&languages), window, cx),
-        None => Workspace::new_empty(Arc::clone(&languages), window, cx),
+    let project = match root {
+        Some(root) => {
+            let watcher = Arc::clone(&watcher);
+            let languages = Arc::clone(&languages);
+            cx.new(move |cx| {
+                Project::new_with_watcher(root.as_path().to_path_buf(), watcher, languages, cx)
+                    .expect("项目根目录应可规范化")
+            })
+        }
+        None => {
+            let watcher = Arc::clone(&watcher);
+            let languages = Arc::clone(&languages);
+            cx.new(move |cx| Project::empty_with_watcher(languages, watcher, cx))
+        }
     };
+    let workspace = Workspace::new_with_project(project, window, cx);
     finish_build_workspace(workspace, languages, window, cx)
 }
 

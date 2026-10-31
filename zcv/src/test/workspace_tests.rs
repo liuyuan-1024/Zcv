@@ -15,6 +15,7 @@ use super::{
     DockPosition, Workspace, build_workspace, file_path_from_url, handle_open_urls,
     retain_prompt_until_answer,
 };
+use crate::test_support::{quiet_watcher, quiet_watcher_factory};
 
 #[gpui::test]
 fn prompt_remains_answerable_until_dismissed(cx: &mut TestAppContext) {
@@ -33,8 +34,9 @@ fn about_action_displays_current_version(cx: &mut TestAppContext) {
         zcv_editor::init(cx, test_languages());
         crate::app_menus::install(cx);
     });
-    let (workspace, visual) =
-        cx.add_window_view(|window, cx| build_workspace(&None, test_languages(), window, cx));
+    let (workspace, visual) = cx.add_window_view(|window, cx| {
+        build_workspace(&None, test_languages(), quiet_watcher(), window, cx)
+    });
     let focus = visual.read_entity(&workspace, |workspace, _| workspace.focus_handle().clone());
     visual.update(|window, cx| window.focus(&focus, cx));
     visual.dispatch_action(About);
@@ -72,8 +74,9 @@ fn open_local_file_action_opens_file_outside_current_project(cx: &mut TestAppCon
         app_menus::install(cx);
         super::install_open_local_file_action(cx);
     });
-    let (workspace, visual) =
-        cx.add_window_view(|window, cx| build_workspace(&None, languages, window, cx));
+    let (workspace, visual) = cx.add_window_view(|window, cx| {
+        build_workspace(&None, languages, quiet_watcher(), window, cx)
+    });
     let focus = visual.read_entity(&workspace, |workspace, _| workspace.focus_handle().clone());
     visual.update(|window, cx| {
         window.activate_window();
@@ -130,14 +133,22 @@ fn finder_open_event_opens_html_in_active_workspace(cx: &mut TestAppContext) {
         app_menus::install(cx);
     });
     let workspace = {
-        let (workspace, visual) =
-            cx.add_window_view(|window, cx| build_workspace(&None, languages.clone(), window, cx));
+        let (workspace, visual) = cx.add_window_view(|window, cx| {
+            build_workspace(&None, languages.clone(), quiet_watcher(), window, cx)
+        });
         visual.update(|window, _| window.activate_window());
         workspace
     };
 
     let url = Url::from_file_path(&file).expect("HTML 路径应能编码为文件地址");
-    cx.update(|cx| handle_open_urls(vec![url.to_string()], languages, cx));
+    cx.update(|cx| {
+        handle_open_urls(
+            vec![url.to_string()],
+            languages,
+            quiet_watcher_factory(),
+            cx,
+        )
+    });
     cx.run_until_parked();
 
     cx.read_entity(&workspace, |workspace, cx| {
@@ -171,7 +182,14 @@ fn finder_open_event_creates_workspace_when_no_window_exists(cx: &mut TestAppCon
     });
 
     let url = Url::from_file_path(&file).expect("HTML 路径应能编码为文件地址");
-    cx.update(|cx| handle_open_urls(vec![url.to_string()], languages, cx));
+    cx.update(|cx| {
+        handle_open_urls(
+            vec![url.to_string()],
+            languages,
+            quiet_watcher_factory(),
+            cx,
+        )
+    });
     cx.run_until_parked();
 
     cx.update(|cx| {
@@ -207,8 +225,9 @@ fn empty_workspace_installs_all_panels(cx: &mut TestAppContext) {
         zcv_editor::init(cx, test_languages());
         app_menus::install(cx);
     });
-    let (workspace, cx) =
-        cx.add_window_view(|window, cx| build_workspace(&None, test_languages(), window, cx));
+    let (workspace, cx) = cx.add_window_view(|window, cx| {
+        build_workspace(&None, test_languages(), quiet_watcher(), window, cx)
+    });
 
     cx.read_entity(&workspace, |workspace, cx| {
         assert_eq!(workspace.dock(DockPosition::Left).read(cx).panel_count(), 3);
@@ -234,13 +253,14 @@ fn switching_replaces_root_in_same_window(cx: &mut TestAppContext) {
         zcv_editor::init(cx, test_languages());
         app_menus::install(cx);
     });
-    let (old_workspace, cx) =
-        cx.add_window_view(|window, cx| build_workspace(&None, test_languages(), window, cx));
+    let (old_workspace, cx) = cx.add_window_view(|window, cx| {
+        build_workspace(&None, test_languages(), quiet_watcher(), window, cx)
+    });
     let old_id = old_workspace.entity_id();
 
     cx.update(|window, app| {
         window.replace_root(app, |window, cx| {
-            build_workspace(&None, test_languages(), window, cx)
+            build_workspace(&None, test_languages(), quiet_watcher(), window, cx)
         });
     });
 

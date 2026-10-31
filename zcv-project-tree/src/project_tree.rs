@@ -41,8 +41,9 @@ pub type OnCreate = Rc<dyn Fn(PathBuf, bool, &mut App) -> anyhow::Result<()>>;
 
 /// 将文件或目录移到系统废纸篓回调。
 ///
-/// 带 `Window`：删除文件后需要关闭打开它的 tab，工具栏更新需要 window。
-pub type OnTrash = Rc<dyn Fn(PathBuf, &mut Window, &mut App) -> anyhow::Result<()>>;
+/// 带 `Window`：删除文件后需要关闭打开它的 tab。
+/// 命令式：实现方在内部把回收站调用放到后台执行并自行反馈错误，面板不等待完成。
+pub type OnTrash = Rc<dyn Fn(PathBuf, &mut Window, &mut App)>;
 
 /// 在项目内移动文件或目录回调（from, to, overwrite：覆盖已存在目标）。
 pub type OnMove = Rc<dyn Fn(PathBuf, PathBuf, bool, &mut App) -> anyhow::Result<()>>;

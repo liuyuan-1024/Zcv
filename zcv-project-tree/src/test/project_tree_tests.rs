@@ -718,9 +718,8 @@ fn trash_action_moves_the_selected_row_to_trash_and_selects_the_next_row(cx: &mu
     let trashed_path = Rc::clone(&trashed);
     tree.update(cx, |tree, _| {
         tree.set_on_trash(Rc::new(move |path, _, _| {
-            fs::remove_file(&path)?;
+            fs::remove_file(&path).expect("应删除测试文件");
             *trashed_path.borrow_mut() = Some(path);
-            Ok(())
         }));
         tree.state.borrow_mut().select(abs(trashed_file.clone()));
     });
@@ -757,7 +756,6 @@ fn trash_action_ignores_the_root_row(cx: &mut TestAppContext) {
     tree.update(cx, |tree, _| {
         tree.set_on_trash(Rc::new(move |_, _, _| {
             callback_called.set(true);
-            Ok(())
         }));
         tree.state
             .borrow_mut()
@@ -786,8 +784,7 @@ fn trash_action_selects_the_last_row_after_deleting_the_final_entry(cx: &mut Tes
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     tree.update(cx, |tree, _| {
         tree.set_on_trash(Rc::new(|path, _, _| {
-            fs::remove_file(path)?;
-            Ok(())
+            fs::remove_file(path).expect("应删除测试文件");
         }));
         tree.state.borrow_mut().select(abs(only_file.clone()));
     });
@@ -1373,9 +1370,8 @@ fn trash_action_deletes_multiple_selected_rows(cx: &mut TestAppContext) {
     let recorded = Rc::clone(&trashed_paths);
     tree.update(cx, |tree, _| {
         tree.set_on_trash(Rc::new(move |path, _, _| {
-            fs::remove_file(&path)?;
+            fs::remove_file(&path).expect("应删除测试文件");
             recorded.borrow_mut().push(path);
-            Ok(())
         }));
         let mut state = tree.state.borrow_mut();
         state.select(abs(file_a.clone()));

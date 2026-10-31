@@ -582,16 +582,17 @@ fn trashing_path_rejects_project_root_and_outside_entries(cx: &mut TestAppContex
 }
 
 #[gpui::test]
-fn trashing_path_moves_file_to_system_trash(cx: &mut TestAppContext) {
+async fn trashing_path_moves_file_to_system_trash(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let file = directory.path().join("to-trash.txt");
     fs::write(&file, "content").expect("应创建测试文件");
     let project = test_project(directory.path().to_path_buf(), cx);
 
-    project.update(cx, |project, cx| {
-        project.trash_path(&file, cx).expect("应移到系统废纸篓")
-    });
+    let task = project
+        .update(cx, |project, cx| project.trash_path(&file, cx))
+        .expect("校验应通过");
+    task.await.expect("应移到系统废纸篓");
 
     assert!(!file.exists(), "被删除文件应不再位于原路径");
 }

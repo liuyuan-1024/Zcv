@@ -897,9 +897,9 @@ fn initialize_workspace(
         let weak_trash = weak_self.clone();
         let on_trash: OnTrash = Rc::new(move |path, window, cx| {
             let Some(workspace) = weak_trash.upgrade() else {
-                anyhow::bail!("工作区已关闭");
+                return;
             };
-            workspace.update(cx, |workspace, cx| workspace.trash_path(&path, window, cx))
+            workspace.update(cx, |workspace, cx| workspace.trash_path(&path, window, cx));
         });
         tree.set_on_trash(on_trash);
         let weak_move = weak_self.clone();

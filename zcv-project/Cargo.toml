@@ -23,6 +23,9 @@ zcv-buffer-diff.workspace = true
 zcv-language.workspace = true
 zcv-path.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_UI_Shell"] }
+
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true

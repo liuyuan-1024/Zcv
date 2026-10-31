@@ -808,17 +808,45 @@ impl Project {
         Ok(())
     }
 
-    /// 将文件或目录移到系统废纸篓（可恢复）。
-    pub fn trash_path(&mut self, path: &Path, cx: &mut Context<Self>) -> anyhow::Result<()> {
+    /// 将文件或目录交给系统回收站。
+    ///
+    /// 同步完成路径校验后返回驱动任务：回收站调用在后台线程执行，避免 Shell 的模态消息循环
+    /// 在 UI 线程重入 gpui 导致崩溃（与 `copy_path` 的边界一致）。是否真正回收、回收站已满时
+    /// 如何处置，全部交给系统决定；本方法只转发结果并在成功后发出 `EntriesChanged`。
+    pub fn trash_path(
+        &mut self,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Task<anyhow::Result<()>>> {
         let path = normalize_for_comparison(path)?;
         let root = self
             .root()
-            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?;
+            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?
+            .to_path_buf();
         anyhow::ensure!(path.as_path() != root, "不能删除项目根目录");
-        anyhow::ensure!(path.starts_with(root), "条目不在当前项目中");
-        trash::delete(&path)?;
-        cx.emit(ProjectEvent::EntriesChanged);
-        Ok(())
+        anyhow::ensure!(path.starts_with(&root), "条目不在当前项目中");
+        let path = path.as_path().to_path_buf();
+        Ok(
+            cx.spawn(move |project: WeakEntity<Self>, asynccx: &mut AsyncApp| {
+                let mut cx = asynccx.clone();
+                async move {
+                    let target = path.clone();
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { platform::recycle(&target) })
+                        .await;
+                    match result {
+                        Ok(()) => {
+                            let _ = project.update(&mut cx, |_, cx| {
+                                cx.emit(ProjectEvent::EntriesChanged);
+                            });
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+            }),
+        )
     }
 
     /// 在项目内移动文件或目录到新位置（可跨目录），并迁移项目持有的路径状态。

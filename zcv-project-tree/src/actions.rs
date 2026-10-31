@@ -123,12 +123,11 @@ impl ProjectTreePanel {
             self.report_error("项目树删除失败：未配置项目删除服务".into(), cx);
             return;
         };
+        // 命令式删除：每条都派发到后台执行，错误由实现方（Workspace）以 toast 反馈；
+        // 面板先行把游标收拢到预计算邻居并重建行，真正的行消失由 EntriesChanged 刷新完成。
         for path in &targets {
-            if let Err(error) = on_trash(path.clone().into_path_buf(), window, cx) {
-                self.report_error(format!("项目树删除失败：{error:#}"), cx);
-            }
+            on_trash(path.clone().into_path_buf(), window, cx);
         }
-        // 游标收拢到预计算的邻居路径；重建后路径仍在，replace_rows 保留选中。
         if let Some(neighbor) = neighbor_path {
             self.state.borrow_mut().selected = Some(neighbor);
         }

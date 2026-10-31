@@ -864,18 +864,51 @@ impl Workspace {
             .update(cx, |project, cx| project.create_path(path, is_dir, cx))
     }
 
-    /// 将文件或目录移到系统废纸篓，并关闭打开它的标签页。
-    pub fn trash_path(
-        &mut self,
-        path: &Path,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> anyhow::Result<()> {
-        self.project
-            .update(cx, |project, cx| project.trash_path(path, cx))?;
-        self.pane
-            .update(cx, |pane, cx| pane.remove_path(path, window, cx));
-        Ok(())
+    /// 将文件或目录交给系统回收站，完成后关闭对应标签页。
+    ///
+    /// 只负责「移到回收站」：是否真正回收、回收站已满时如何处置，交由系统（Shell）自行决定。
+    /// 删除在后台执行（`Project::trash_path` 返回任务），避免 Shell 模态框在 UI 线程重入 gpui。
+    /// 成功关闭标签页，失败以 toast 告知。
+    pub fn trash_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let path = path.to_path_buf();
+        let created = self
+            .project
+            .update(cx, |project, cx| project.trash_path(&path, cx));
+        match created {
+            Ok(task) => {
+                cx.spawn_in(window, async move |this, cx| match task.await {
+                    Ok(()) => {
+                        let _ = this.update_in(cx, |workspace, window, cx| {
+                            workspace
+                                .pane
+                                .update(cx, |pane, cx| pane.remove_path(&path, window, cx));
+                        });
+                    }
+                    Err(error) => {
+                        let message = format!("删除失败：{error:#}");
+                        let _ = this.update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                ToastKind::Error,
+                                message,
+                                vec![],
+                                Some(Duration::from_secs(8)),
+                                cx,
+                            );
+                        });
+                    }
+                })
+                .detach();
+            }
+            Err(error) => {
+                self.show_toast(
+                    ToastKind::Error,
+                    format!("删除失败：{error:#}"),
+                    vec![],
+                    Some(Duration::from_secs(8)),
+                    cx,
+                );
+            }
+        }
     }
 
     // ═══ 命令分发 ═════════════════════════════════════════════════

@@ -5,7 +5,7 @@ use gpui::{
     TestAppContext, Window, div,
 };
 use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::MultiBuffer;
+use zcv_multi_buffer::{MultiBuffer, MultiBufferAnchor};
 use zcv_text::{Buffer, BufferConfig};
 
 use super::*;
@@ -14,6 +14,11 @@ use crate::{
     toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView},
 };
 use zcv_settings::{SettingsStore, UserSettings};
+
+thread_local! {
+    /// 记录假预览最近一次收到的源码锚点，用于断言源码→预览滚动交接。
+    static LAST_REVEALED: RefCell<Option<MultiBufferAnchor>> = const { RefCell::new(None) };
+}
 
 /// 辅助视图类型，仅用于测试中创建窗口。
 struct TestView;
@@ -221,6 +226,10 @@ impl Item for TestSourceItem {
     fn multi_buffer(&self, _cx: &App) -> Option<Entity<MultiBuffer>> {
         Some(self.multi_buffer.clone())
     }
+
+    fn visible_source_anchor(&mut self, _cx: &mut Context<Self>) -> Option<MultiBufferAnchor> {
+        Some(MultiBufferAnchor::Max)
+    }
 }
 
 struct TestCompositeItem {
@@ -313,6 +322,11 @@ impl Item for FakePreviewItem {
         _cx: &App,
     ) -> Option<Box<dyn PreviewItemHandle>> {
         Some(Box::new(self_handle.clone()))
+    }
+
+    fn reveal_source_anchor(&mut self, anchor: MultiBufferAnchor, _cx: &mut Context<Self>) -> bool {
+        LAST_REVEALED.with(|cell| *cell.borrow_mut() = Some(anchor));
+        true
     }
 }
 
@@ -1018,4 +1032,21 @@ fn clicking_empty_pane_area_moves_focus_to_pane(cx: &mut TestAppContext) {
             "焦点应转移到 pane 自身（track_focus 的聚焦点击）"
         );
     });
+}
+
+#[gpui::test]
+fn toggling_preview_hands_off_the_reading_anchor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_previews(cx);
+    LAST_REVEALED.with(|cell| *cell.borrow_mut() = None);
+    let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
+    let pane = cx.new(Pane::new);
+    open_file_in_test(cx, &pane, PathBuf::from("handoff.svg"), buffer);
+    toggle_preview_in_test(cx, &pane);
+
+    assert_eq!(
+        LAST_REVEALED.with(|cell| *cell.borrow()),
+        Some(MultiBufferAnchor::Max),
+        "从源码切到预览时，应把源码阅读锚点交给预览"
+    );
 }

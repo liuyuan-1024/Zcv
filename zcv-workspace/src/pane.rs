@@ -209,6 +209,7 @@ impl Pane {
             .unwrap_or(self.tabs.len())
             .min(self.tabs.len());
         self.tabs.insert(index, item);
+        self.handoff_visible_anchor(self.active, self.tabs[index].as_ref(), cx);
         self.active = Some(item_id);
         self.scroll_to_tab(index);
         cx.emit(PaneEvent::AddItem { item_id });
@@ -446,6 +447,33 @@ impl Pane {
         }
     }
 
+    /// 同文档切换时，把离开 Item 的阅读锚点交接给进入 Item。
+    ///
+    /// 只在源与预览共享同一路径的切换中生效，读取一次即传递，不在 Pane 保存位置副本。
+    fn handoff_visible_anchor(
+        &self,
+        outgoing_id: Option<EntityId>,
+        incoming: &dyn ItemHandle,
+        cx: &mut App,
+    ) {
+        let Some(outgoing_id) = outgoing_id else {
+            return;
+        };
+        let Some(outgoing) = self.tabs.iter().find(|item| item.item_id() == outgoing_id) else {
+            return;
+        };
+        if outgoing.item_id() == incoming.item_id() {
+            return;
+        }
+        let path = outgoing.item_path(cx);
+        if path.is_none() || path != incoming.item_path(cx) {
+            return;
+        }
+        if let Some(anchor) = outgoing.visible_source_anchor(cx) {
+            incoming.reveal_source_anchor(anchor, cx);
+        }
+    }
+
     fn activate_item_at(
         &mut self,
         index: usize,
@@ -454,6 +482,7 @@ impl Pane {
     ) -> FocusHandle {
         let item_id = self.tabs[index].item_id();
         let focus = self.tabs[index].item_focus_handle(cx);
+        self.handoff_visible_anchor(self.active, self.tabs[index].as_ref(), cx);
         self.active = Some(item_id);
         self.scroll_to_tab(index);
         cx.emit(PaneEvent::ActivateItem { item_id });
@@ -532,6 +561,7 @@ impl Pane {
             if self.active == Some(item_id) {
                 return;
             }
+            self.handoff_visible_anchor(self.active, self.tabs[pos].as_ref(), cx);
             self.active = Some(item_id);
             self.scroll_to_tab(pos);
             cx.emit(PaneEvent::ActivateItem { item_id });
@@ -553,6 +583,7 @@ impl Pane {
             Some(_) => 0,
             None => 0,
         };
+        self.handoff_visible_anchor(self.active, self.tabs[next].as_ref(), cx);
         self.active = Some(self.tabs[next].item_id());
         self.scroll_to_tab(next);
         self.update_toolbar(window, cx);
@@ -571,6 +602,7 @@ impl Pane {
             Some(i) => i - 1,
             None => 0,
         };
+        self.handoff_visible_anchor(self.active, self.tabs[prev].as_ref(), cx);
         self.active = Some(self.tabs[prev].item_id());
         self.scroll_to_tab(prev);
         self.update_toolbar(window, cx);

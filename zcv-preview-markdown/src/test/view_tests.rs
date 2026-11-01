@@ -6,18 +6,17 @@ use std::{
 };
 
 use gpui::{
-    AppContext, Context, IntoElement, Modifiers, ParentElement, Render, ScrollHandle,
-    StatefulInteractiveElement, Styled, StyledText, TestAppContext, TextAlign, TextLayout, Window,
-    div, point, prelude::*, px, size,
+    AppContext, Context, IntoElement, Modifiers, ParentElement, Render, StyledText, TestAppContext,
+    TextAlign, TextLayout, Window, div, point, px, size,
 };
 use zcv_editor::Editor;
 use zcv_theme::typography;
-use zcv_workspace::PreviewDocument;
+use zcv_workspace::{Item, PreviewDocument};
 
-use crate::document::{Inline, InlineStyle, parse};
+use crate::document::{BlockKind, Inline, InlineStyle, parse};
 
 use super::{
-    Block, InlineText, MARKDOWN_REPARSE_DEBOUNCE, MATH_PLACEHOLDER, MarkdownInlineText,
+    InlineText, MARKDOWN_REPARSE_DEBOUNCE, MATH_PLACEHOLDER, MarkdownInlineText,
     MarkdownPreviewView, MarkdownRenderContext, MathImage, MathImages, MathPlacement,
     OpenPathCallback, code_lines, heading_line_height, heading_size, highlight_code_blocks,
     inline_math_bounds, list_marker_char_count, render_block, render_math, render_mermaid,
@@ -69,8 +68,8 @@ fn heading_targets_match_chinese_titles_and_distinguish_duplicates() {
     let blocks = parse("# 资料 2\n\n# 资料 2\n\n# Foo 1\n\n# Foo\n\n# **粗体** 和 `代码`\n");
     let slugs = blocks
         .iter()
-        .map(|block| match block {
-            Block::Heading { slug, .. } => slug.as_str(),
+        .map(|block| match &block.kind {
+            BlockKind::Heading { slug, .. } => slug.as_str(),
             _ => panic!("应解析为标题"),
         })
         .collect::<Vec<_>>();
@@ -80,84 +79,61 @@ fn heading_targets_match_chinese_titles_and_distinguish_duplicates() {
     );
 
     let nested = parse("> # 引用标题\n\n- # 列表标题\n");
-    let Block::Quote(quote) = &nested[0] else {
+    let BlockKind::Quote(quote) = &nested[0].kind else {
         panic!("应解析为引用块");
     };
-    assert!(matches!(&quote[0], Block::Heading { slug, .. } if slug == "引用标题"));
-    let Block::List { items, .. } = &nested[1] else {
+    assert!(matches!(&quote[0].kind, BlockKind::Heading { slug, .. } if slug == "引用标题"));
+    let BlockKind::List { items, .. } = &nested[1].kind else {
         panic!("应解析为列表");
     };
-    assert!(matches!(&items[0][0], Block::Heading { slug, .. } if slug == "列表标题"));
+    assert!(matches!(&items[0][0].kind, BlockKind::Heading { slug, .. } if slug == "列表标题"));
 }
 
 #[gpui::test]
-fn clicking_heading_link_scrolls_within_preview(cx: &mut TestAppContext) {
+fn navigating_to_a_heading_reveals_it_in_preview(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
-    struct TestWindow {
-        scroll: ScrollHandle,
-        heading_bounds: super::HeadingBounds,
-        link: Vec<Inline>,
-        heading: Block,
-    }
-
-    impl Render for TestWindow {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let selection = Rc::default();
-            let render_context = MarkdownRenderContext {
-                source_directory: None,
-                open_path: None,
-                type_scale: typography::current(cx),
-                math_images: &Default::default(),
-                mermaid_images: &Default::default(),
-                heading_bounds: &self.heading_bounds,
-                selection: &selection,
-                scroll_handle: &self.scroll,
-                window,
+    let body = "正文段落。\n\n".repeat(80);
+    let source = format!("# 第一节\n\n{body}# 目标标题\n\n尾部正文\n");
+    let editor = cx.new(|cx| Editor::auto_height(1, None, Arc::new(LanguageRegistry::new()), cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_text(&source, cx);
+        editor.set_file_path(PathBuf::from("README.md"), cx);
+    });
+    let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let target_start = source.find("# 目标标题").expect("源文档应包含目标标题");
+    let target_end = target_start + "# 目标标题".len();
+    let (view, cx) = cx.add_window_view({
+        let source_item: Box<dyn zcv_workspace::ItemHandle> = Box::new(editor.clone());
+        move |_, cx| {
+            MarkdownPreviewView::new(
+                PreviewDocument::Source {
+                    path: PathBuf::from("README.md"),
+                    source_item,
+                    multi_buffer,
+                    open_path: None,
+                },
                 cx,
-            };
-            let heading = render_block(&self.heading, &mut 0, 0, 0, &render_context);
-            div()
-                .id("heading-link-test-scroll")
-                .size_full()
-                .overflow_y_scroll()
-                .track_scroll(&self.scroll)
-                .flex()
-                .flex_col()
-                .child(render_text_inline(&self.link, 0, &render_context))
-                .children(
-                    (1..30)
-                        .map(|index| div().h(px(40.)).flex_none().child(format!("第 {index} 项"))),
-                )
-                .child(div().h(px(40.)).flex_none().child(heading))
-                .children(
-                    (31..60)
-                        .map(|index| div().h(px(40.)).flex_none().child(format!("第 {index} 项"))),
-                )
-        }
-    }
-
-    let scroll = ScrollHandle::new();
-    let heading_bounds = super::HeadingBounds::default();
-    let blocks = parse("[跳转](#资料-2)");
-    let Block::Paragraph(link) = blocks[0].clone() else {
-        panic!("应解析为链接段落");
-    };
-    let heading = parse("# 资料 2").remove(0);
-    let (_, cx) = cx.add_window_view({
-        let scroll = scroll.clone();
-        let heading_bounds = heading_bounds.clone();
-        move |_, _| TestWindow {
-            scroll,
-            heading_bounds,
-            link,
-            heading,
+            )
         }
     });
-    cx.refresh().expect("预览应完成首次绘制");
-    assert!(heading_bounds.borrow().contains_key("资料-2"));
-    cx.simulate_click(point(px(12.), px(8.)), Modifiers::none());
-    cx.refresh().expect("点击后应更新滚动位置");
-    assert_eq!(scroll.top_item(), 30);
+    cx.run_until_parked();
+    cx.update(|_, app| {
+        view.update(app, |view, cx| {
+            assert!(
+                view.navigate_to_byte_range(target_start..target_end, cx),
+                "合法字节范围应被接受"
+            );
+        });
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("揭示请求应在下一帧消费");
+    cx.run_until_parked();
+    let offset = cx.read_entity(&view, |view, _| view.scroll_handle.offset());
+    assert!(
+        offset.y < px(0.),
+        "预览应滚动到目标标题位置：offset={:?}",
+        offset
+    );
 }
 
 #[gpui::test]
@@ -172,17 +148,17 @@ fn clicking_relative_file_link_uses_the_workspace_opener(cx: &mut TestAppContext
     impl Render for TestWindow {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let selection = Rc::default();
-            let heading_bounds = super::HeadingBounds::default();
-            let scroll_handle = ScrollHandle::new();
+            let heading_anchors = std::collections::HashMap::new();
+            let pending_reveal = Rc::new(RefCell::new(None));
             let render_context = MarkdownRenderContext {
                 source_directory: Some(self.directory.as_path()),
                 open_path: Some(&self.open_path),
                 type_scale: typography::current(cx),
                 math_images: &Default::default(),
                 mermaid_images: &Default::default(),
-                heading_bounds: &heading_bounds,
+                heading_anchors: &heading_anchors,
+                pending_reveal: &pending_reveal,
                 selection: &selection,
-                scroll_handle: &scroll_handle,
                 window,
                 cx,
             };
@@ -198,7 +174,7 @@ fn clicking_relative_file_link_uses_the_workspace_opener(cx: &mut TestAppContext
         })
     };
     let blocks = parse("[Rust 示例](./main.rs)");
-    let Block::Paragraph(content) = blocks[0].clone() else {
+    let BlockKind::Paragraph(content) = blocks[0].kind.clone() else {
         panic!("应解析为段落");
     };
     let directory = PathBuf::from("/project/docs");
@@ -394,11 +370,11 @@ fn applies_language_highlights_to_fenced_code_blocks() {
         &SnippetHighlightCancellation::default()
     ));
     assert!(matches!(
-        blocks.as_slice(),
-        [Block::Code {
-            highlights: Some(highlights),
+        blocks[0].kind,
+        BlockKind::Code {
+            highlights: Some(ref highlights),
             ..
-        }] if !highlights.spans.is_empty()
+        } if !highlights.spans.is_empty()
     ));
 }
 
@@ -424,14 +400,18 @@ fn preview_rebuilds_when_source_document_changes(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     cx.read_entity(&view, |view, _| {
-        assert_eq!(
-            view.blocks.as_ref(),
-            &vec![Block::Heading {
-                level: 1,
-                content: vec![plain("初始标题")],
-                slug: "初始标题".into(),
-            }]
-        );
+        assert_eq!(view.blocks.len(), 1);
+        let BlockKind::Heading {
+            level,
+            content,
+            slug,
+        } = &view.blocks[0].kind
+        else {
+            panic!("应解析为标题");
+        };
+        assert_eq!(*level, 1);
+        assert_eq!(content, &vec![plain("初始标题")]);
+        assert_eq!(slug.as_str(), "初始标题");
     });
 
     editor.update(cx, |editor, cx| editor.set_text("更新后的正文", cx));
@@ -439,8 +419,8 @@ fn preview_rebuilds_when_source_document_changes(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.read_entity(&view, |view, _| {
         assert_eq!(
-            view.blocks.as_ref(),
-            &vec![Block::Paragraph(vec![plain("更新后的正文")])]
+            view.blocks[0].kind,
+            BlockKind::Paragraph(vec![plain("更新后的正文")])
         );
     });
 }
@@ -471,8 +451,8 @@ fn preview_coalesces_rapid_document_changes(cx: &mut TestAppContext) {
     editor.update(cx, |editor, cx| editor.set_text("最终内容", cx));
     cx.read_entity(&view, |view, _| {
         assert_eq!(
-            view.blocks.as_ref(),
-            &vec![Block::Paragraph(vec![plain("初始正文")])]
+            view.blocks[0].kind,
+            BlockKind::Paragraph(vec![plain("初始正文")])
         );
     });
 
@@ -480,8 +460,8 @@ fn preview_coalesces_rapid_document_changes(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.read_entity(&view, |view, _| {
         assert_eq!(
-            view.blocks.as_ref(),
-            &vec![Block::Paragraph(vec![plain("最终内容")])]
+            view.blocks[0].kind,
+            BlockKind::Paragraph(vec![plain("最终内容")])
         );
     });
 }
@@ -549,6 +529,8 @@ fn inline_math_reserves_width_in_the_text_flow(cx: &mut TestAppContext) {
         let type_scale = typography::current(app);
         let math_size = size(px(40.), px(20.));
         let selection = Rc::default();
+        let heading_anchors = std::collections::HashMap::new();
+        let pending_reveal = Rc::new(RefCell::new(None));
         let mut math_images = MathImages::new();
         math_images.insert(
             "x^2".to_owned(),
@@ -563,9 +545,9 @@ fn inline_math_reserves_width_in_the_text_flow(cx: &mut TestAppContext) {
             type_scale,
             math_images: &math_images,
             mermaid_images: &Default::default(),
-            heading_bounds: &Default::default(),
+            heading_anchors: &heading_anchors,
+            pending_reveal: &pending_reveal,
             selection: &selection,
-            scroll_handle: &Default::default(),
             window,
             cx: app,
         };
@@ -660,15 +642,17 @@ fn list_marker_height_matches_the_first_line_of_a_wrapped_item(cx: &mut TestAppC
                 }),
             );
             let selection = Rc::default();
+            let heading_anchors = std::collections::HashMap::new();
+            let pending_reveal = Rc::new(RefCell::new(None));
             let render_context = MarkdownRenderContext {
                 source_directory: None,
                 open_path: None,
                 type_scale,
                 math_images: &math_images,
                 mermaid_images: &Default::default(),
-                heading_bounds: &Default::default(),
+                heading_anchors: &heading_anchors,
+                pending_reveal: &pending_reveal,
                 selection: &selection,
-                scroll_handle: &Default::default(),
                 window,
                 cx: app,
             };
@@ -705,7 +689,7 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
     let cx = cx.add_empty_window();
     let source = "例如，一个点对的距离和三个角度分别为 $(44\\text{ mm},32^\\circ,67^\\circ,114^\\circ)$，量化后得到键 $(5,1,3,6)$。另一个点对的数值如果略有不同，但仍落在这四个相同的格子里，也会得到同一个键，因而可以通过哈希表互相查到。";
     let blocks = parse(source);
-    let Block::Paragraph(content) = &blocks[0] else {
+    let BlockKind::Paragraph(content) = &blocks[0].kind else {
         panic!("应解析为段落");
     };
     let content = content.clone();
@@ -731,15 +715,17 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
                 );
             }
             let selection = Rc::default();
+            let heading_anchors = std::collections::HashMap::new();
+            let pending_reveal = Rc::new(RefCell::new(None));
             let render_context = MarkdownRenderContext {
                 source_directory: None,
                 open_path: None,
                 type_scale,
                 math_images: &math_images,
                 mermaid_images: &Default::default(),
-                heading_bounds: &Default::default(),
+                heading_anchors: &heading_anchors,
+                pending_reveal: &pending_reveal,
                 selection: &selection,
-                scroll_handle: &Default::default(),
                 window,
                 cx: app,
             };

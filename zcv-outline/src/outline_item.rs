@@ -71,7 +71,7 @@ pub(crate) fn render(
     window: &Window,
     cx: &App,
     on_toggle: impl Fn(OutlineRowKey, &mut App) + 'static,
-    on_navigate: impl Fn(Arc<OutlineEntry>, &mut Window, &mut App) + 'static,
+    on_navigate: impl Fn(Arc<OutlineEntry>, usize, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let context = RowContext { window, cx };
     match row.kind {
@@ -100,7 +100,7 @@ fn render_symbol(
     highlights: Vec<(Range<usize>, HighlightStyle)>,
     context: RowContext<'_>,
     on_toggle: impl Fn(OutlineRowKey, &mut App) + 'static,
-    on_navigate: impl Fn(Arc<OutlineEntry>, &mut Window, &mut App) + 'static,
+    on_navigate: impl Fn(Arc<OutlineEntry>, usize, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let key = OutlineRowKey::Symbol(OutlineItemKey::from_item(&entry.item));
     let label = StyledText::new(entry.item.text.clone()).with_highlights(highlights);
@@ -116,8 +116,8 @@ fn render_symbol(
         ));
     }
     row.interactive(row_element_id(&key, "row"), context.window, context.cx)
-        .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
-            on_navigate(entry.clone(), window, cx);
+        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+            on_navigate(entry.clone(), event.click_count, window, cx);
             cx.stop_propagation();
         })
         .into_any_element()

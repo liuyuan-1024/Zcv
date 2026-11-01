@@ -21,6 +21,7 @@ zcv-language.workspace = true
 zcv-actions.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-project.workspace = true
+zcv-text.workspace = true
 zcv-theme.workspace = true
 zcv-ui.workspace = true
 zcv-workspace.workspace = true

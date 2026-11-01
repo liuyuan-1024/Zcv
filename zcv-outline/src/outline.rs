@@ -249,6 +249,7 @@ impl Render for OutlinePanel {
         let visible_rows = self.visible_rows();
         let rows_len = visible_rows.len();
         let active_editor = self.active_editor.clone();
+        let pane = self.pane.clone();
         let weak_panel = cx.weak_entity();
         let weak_panel_for_toggle = weak_panel.clone();
         let list = uniform_list("outline-items", rows_len, move |range, window, cx| {
@@ -256,6 +257,8 @@ impl Render for OutlinePanel {
                 .map(|index| {
                     let (row, has_children, collapsed) = visible_rows[index].clone();
                     let editor = active_editor.clone();
+                    let source_editor_id = active_editor.as_ref().map(Entity::entity_id);
+                    let pane = pane.clone();
                     let highlights = match &row.kind {
                         OutlineRowKind::Symbol(entry) => {
                             Editor::outline_item_highlights(&entry.item, cx)
@@ -279,13 +282,32 @@ impl Render for OutlinePanel {
                                 panel.update(cx, |panel, cx| panel.toggle_row(key, cx));
                             }
                         },
-                        move |entry, window, cx| {
+                        move |entry, click_count, window, cx| {
                             if let Some(editor) = editor.clone() {
                                 editor.update(cx, |editor, cx| {
-                                    if editor.navigate_to_outline_item(&entry.item, cx) {
-                                        window.focus(&editor.focus_handle(), cx);
-                                    }
+                                    editor.navigate_to_outline_item(&entry.item, cx);
                                 });
+                            }
+                            // 导航只更新源码选择；活动呈现者若为预览等非编辑器 Item，
+                            // 再把同一源码锚点交给它揭示，避免只滚动隐藏的源码编辑器。
+                            let anchor = entry.item.name_range.start;
+                            let active = pane.read(cx).active_item().map(|item| {
+                                (
+                                    item.item_id(),
+                                    item.boxed_clone(),
+                                    item.item_focus_handle(cx),
+                                )
+                            });
+                            let Some((active_id, active_item, focus_handle)) = active else {
+                                return;
+                            };
+                            let is_source_editor = source_editor_id == Some(active_id);
+                            if !is_source_editor {
+                                active_item.reveal_source_anchor(anchor, cx);
+                            }
+                            // 单击保持焦点在大纲面板，双击才把焦点交给活动呈现者。
+                            if click_count >= 2 {
+                                window.focus(&focus_handle, cx);
                             }
                         },
                     )

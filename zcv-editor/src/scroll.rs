@@ -105,6 +105,11 @@ impl ScrollManager {
         self.display_point
     }
 
+    /// 视口顶部对应的长期源码锚点（位置权威）。
+    pub(super) fn scroll_anchor(&self) -> MultiBufferAnchor {
+        self.anchor.anchor
+    }
+
     pub(super) fn offset(&self) -> Point<Pixels> {
         self.anchor.offset
     }

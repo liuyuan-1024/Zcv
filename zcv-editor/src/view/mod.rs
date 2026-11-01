@@ -2465,6 +2465,21 @@ impl Editor {
             .request_scroll_to_top(anchor, offset_rows);
     }
 
+    /// 当前视口顶部源码锚点，供源码/预览滚动交接读取。
+    pub(crate) fn scroll_anchor_multibuffer(&self) -> MultiBufferAnchor {
+        self.scroll_manager.scroll_anchor()
+    }
+
+    /// 按源码锚点揭示位置，不改动选择。
+    pub(crate) fn reveal_scroll_anchor(
+        &mut self,
+        anchor: MultiBufferAnchor,
+        cx: &mut Context<Self>,
+    ) {
+        self.scroll_manager.request_scroll_to_top(anchor, 0);
+        cx.notify();
+    }
+
     /// 显示投影推进入口。
     ///
     /// DisplayMap 是显示投影的唯一推进者；Editor 只驱动它同步，不保存第二份显示快照。

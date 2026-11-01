@@ -5,12 +5,17 @@
 
 mod platform;
 
+#[cfg(any(target_os = "windows", test))]
 use anyhow::{Result, ensure};
 
 /// 与 macOS 打包共用的文档扩展名清单；每行一个纯小写字母数字扩展名。
+///
+/// 仅 Windows 注册后端与测试消费；其他平台不编译，避免成为无用代码。
+#[cfg(any(target_os = "windows", test))]
 const DOCUMENT_EXTENSIONS: &str = include_str!("../../assets/document-extensions.txt");
 
 /// 解析扩展名清单；空行忽略，任何非法行都是开发错误。
+#[cfg(any(target_os = "windows", test))]
 fn parse_document_extensions(content: &str) -> Result<Vec<String>> {
     let mut extensions = Vec::new();
     for line in content.lines() {
@@ -29,6 +34,7 @@ fn parse_document_extensions(content: &str) -> Result<Vec<String>> {
     Ok(extensions)
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn document_extensions() -> Result<Vec<String>> {
     parse_document_extensions(DOCUMENT_EXTENSIONS)
 }

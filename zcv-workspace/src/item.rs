@@ -15,7 +15,7 @@ use gpui::{
     AnyEntity, AnyView, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable, Font,
     Render, SharedString, Subscription, Task, Window,
 };
-use zcv_multi_buffer::MultiBuffer;
+use zcv_multi_buffer::{MultiBuffer, MultiBufferAnchor};
 use zcv_project::{FileSaveConflictPolicy, Project};
 
 use crate::{SerializedPaneItem, preview::PreviewItemHandle, searchable::SearchableItemHandle};
@@ -94,6 +94,20 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
 
     /// 把 Item 定位到 UTF-8 字节范围；不支持文本定位的 Item 返回 false。
     fn navigate_to_byte_range(&mut self, _range: Range<usize>, _cx: &mut Context<Self>) -> bool {
+        false
+    }
+
+    /// 当前视口顶部对应的源码锚点；不支持该能力的 Item 返回 None。
+    fn visible_source_anchor(&mut self, _cx: &mut Context<Self>) -> Option<MultiBufferAnchor> {
+        None
+    }
+
+    /// 按源码锚点揭示位置；不支持该能力的 Item 返回 false。
+    fn reveal_source_anchor(
+        &mut self,
+        _anchor: MultiBufferAnchor,
+        _cx: &mut Context<Self>,
+    ) -> bool {
         false
     }
 
@@ -188,6 +202,8 @@ pub trait ItemHandle: Send + 'static {
     fn close(&self, window: &mut Window, cx: &mut App);
     fn multi_buffer(&self, cx: &App) -> Option<Entity<MultiBuffer>>;
     fn navigate_to_byte_range(&self, range: Range<usize>, cx: &mut App) -> bool;
+    fn visible_source_anchor(&self, cx: &mut App) -> Option<MultiBufferAnchor>;
+    fn reveal_source_anchor(&self, anchor: MultiBufferAnchor, cx: &mut App) -> bool;
     fn navigate_to_line_column(&self, line: usize, column: usize, cx: &mut App) -> bool;
     fn can_navigate_to_line_column(&self, line: usize, column: usize, cx: &App) -> bool;
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>>;
@@ -287,6 +303,14 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn navigate_to_byte_range(&self, range: Range<usize>, cx: &mut App) -> bool {
         self.update(cx, |item, cx| item.navigate_to_byte_range(range, cx))
+    }
+
+    fn visible_source_anchor(&self, cx: &mut App) -> Option<MultiBufferAnchor> {
+        self.update(cx, |item, cx| item.visible_source_anchor(cx))
+    }
+
+    fn reveal_source_anchor(&self, anchor: MultiBufferAnchor, cx: &mut App) -> bool {
+        self.update(cx, |item, cx| item.reveal_source_anchor(anchor, cx))
     }
 
     fn navigate_to_line_column(&self, line: usize, column: usize, cx: &mut App) -> bool {

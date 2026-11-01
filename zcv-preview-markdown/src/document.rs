@@ -2,6 +2,7 @@ use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Par
 use std::{
     collections::{HashMap, HashSet},
     mem,
+    ops::Range,
 };
 use zcv_language::SnippetHighlights;
 
@@ -22,8 +23,18 @@ pub(crate) struct Inline {
     pub(crate) style: InlineStyle,
 }
 
+/// 一个在预览中渲染的块。
+///
+/// source 是块在源码组合文档（MultiBuffer 输出字节空间）中的来源区间，用于把预览几何
+/// 与源码偏移关联：内部 #slug 锚点、大纲跳转和源码/预览滚动交接都依赖它。
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Block {
+pub(crate) struct Block {
+    pub(crate) source: Range<usize>,
+    pub(crate) kind: BlockKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum BlockKind {
     Heading {
         level: u8,
         content: Vec<Inline>,
@@ -60,14 +71,26 @@ pub(crate) enum Block {
 }
 
 enum ActiveBlock {
-    Heading(u8),
-    Paragraph,
-    Code(Option<String>),
+    Heading {
+        level: u8,
+        source: Range<usize>,
+    },
+    Paragraph {
+        source: Range<usize>,
+    },
+    Code {
+        language: Option<String>,
+        source: Range<usize>,
+    },
 }
 
 enum Container {
-    Quote(Vec<Block>),
+    Quote {
+        source: Range<usize>,
+        blocks: Vec<Block>,
+    },
     List {
+        source: Range<usize>,
         start: Option<u64>,
         items: Vec<Vec<Block>>,
     },
@@ -75,6 +98,7 @@ enum Container {
 }
 
 struct Table {
+    source: Range<usize>,
     alignments: Vec<Alignment>,
     in_header: bool,
     header: Vec<Vec<Inline>>,
@@ -92,20 +116,33 @@ struct ParseState {
 impl ParseState {
     fn push_block(&mut self, block: Block) {
         match self.containers.last_mut() {
-            Some(Container::Quote(blocks)) | Some(Container::Item(blocks)) => blocks.push(block),
+            Some(Container::Quote { blocks, .. }) | Some(Container::Item(blocks)) => {
+                blocks.push(block)
+            }
             Some(Container::List { .. }) | None => self.blocks.push(block),
         }
     }
 
     fn finish_quote(&mut self) {
-        if let Some(Container::Quote(blocks)) = self.containers.pop() {
-            self.push_block(Block::Quote(blocks));
+        if let Some(Container::Quote { source, blocks }) = self.containers.pop() {
+            self.push_block(Block {
+                source,
+                kind: BlockKind::Quote(blocks),
+            });
         }
     }
 
     fn finish_list(&mut self) {
-        if let Some(Container::List { start, items }) = self.containers.pop() {
-            self.push_block(Block::List { start, items });
+        if let Some(Container::List {
+            source,
+            start,
+            items,
+        }) = self.containers.pop()
+        {
+            self.push_block(Block {
+                source,
+                kind: BlockKind::List { start, items },
+            });
         }
     }
 
@@ -134,8 +171,13 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
     let mut options = Options::all();
     options.insert(Options::ENABLE_MATH);
 
-    let (source, display_math_blocks) = extract_display_math_blocks(source);
-    for event in Parser::new_ext(&source, options) {
+    let NormalizedSource {
+        text: normalized,
+        math_blocks: display_math_blocks,
+        offsets,
+    } = extract_display_math_blocks(source);
+    for (event, range) in Parser::new_ext(&normalized, options).into_offset_iter() {
+        let source = offsets.range(range);
         match event {
             // 元数据只描述文档，不属于 Markdown 正文。
             // 必须在解析阶段丢弃，避免其文本被后续块（尤其是第一个标题）意外收集。
@@ -144,40 +186,53 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
             _ if in_metadata_block => {}
             Event::Start(Tag::Heading { level, .. }) => {
                 finish_active(&mut active, &mut active_content, &mut state);
-                active = Some(ActiveBlock::Heading(heading_level(level)));
+                active = Some(ActiveBlock::Heading {
+                    level: heading_level(level),
+                    source,
+                });
             }
             Event::Start(Tag::Paragraph) if state.table.is_none() => {
                 if active.is_none() {
-                    active = Some(ActiveBlock::Paragraph);
+                    active = Some(ActiveBlock::Paragraph { source });
                 }
             }
             Event::Start(Tag::CodeBlock(kind)) => {
                 finish_active(&mut active, &mut active_content, &mut state);
-                active = Some(ActiveBlock::Code(code_language(kind)));
+                active = Some(ActiveBlock::Code {
+                    language: code_language(kind),
+                    source,
+                });
             }
-            Event::InlineMath(source) => append_inline(
+            Event::InlineMath(math_source) => append_inline(
                 &mut active_content,
                 &mut state.table,
-                &source,
+                &math_source,
                 &InlineStyle {
                     math: true,
                     ..style.clone()
                 },
             ),
-            Event::DisplayMath(source) => {
+            Event::DisplayMath(math_source) => {
                 finish_active(&mut active, &mut active_content, &mut state);
-                state.push_block(Block::Math {
-                    source: source.into_string(),
-                    display: true,
+                state.push_block(Block {
+                    source,
+                    kind: BlockKind::Math {
+                        source: math_source.into_string(),
+                        display: true,
+                    },
                 });
             }
             Event::Start(Tag::BlockQuote(_)) => {
                 finish_active(&mut active, &mut active_content, &mut state);
-                state.containers.push(Container::Quote(Vec::new()));
+                state.containers.push(Container::Quote {
+                    source,
+                    blocks: Vec::new(),
+                });
             }
             Event::Start(Tag::List(start)) => {
                 finish_active(&mut active, &mut active_content, &mut state);
                 state.containers.push(Container::List {
+                    source,
                     start,
                     items: Vec::new(),
                 });
@@ -185,11 +240,12 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
             Event::Start(Tag::Item) => {
                 finish_active(&mut active, &mut active_content, &mut state);
                 state.containers.push(Container::Item(Vec::new()));
-                active = Some(ActiveBlock::Paragraph);
+                active = Some(ActiveBlock::Paragraph { source });
             }
             Event::Start(Tag::Table(alignments)) => {
                 finish_active(&mut active, &mut active_content, &mut state);
                 state.table = Some(Table {
+                    source,
                     alignments,
                     in_header: false,
                     header: Vec::new(),
@@ -267,10 +323,13 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
             }
             Event::End(TagEnd::Table) => {
                 if let Some(table) = state.table.take() {
-                    state.push_block(Block::Table {
-                        alignments: table.alignments,
-                        header: table.header,
-                        rows: table.rows,
+                    state.push_block(Block {
+                        source: table.source,
+                        kind: BlockKind::Table {
+                            alignments: table.alignments,
+                            header: table.header,
+                            rows: table.rows,
+                        },
                     });
                 }
             }
@@ -310,7 +369,10 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
             ),
             Event::Rule => {
                 finish_active(&mut active, &mut active_content, &mut state);
-                state.push_block(Block::Rule);
+                state.push_block(Block {
+                    source,
+                    kind: BlockKind::Rule,
+                });
             }
             _ => {}
         }
@@ -329,8 +391,8 @@ fn assign_heading_slugs(blocks: &mut [Block]) {
         used: &mut HashSet<String>,
     ) {
         for block in blocks {
-            match block {
-                Block::Heading { content, slug, .. } => {
+            match &mut block.kind {
+                BlockKind::Heading { content, slug, .. } => {
                     let text = content
                         .iter()
                         .map(|inline| inline.text.as_str())
@@ -353,8 +415,8 @@ fn assign_heading_slugs(blocks: &mut [Block]) {
                     used.insert(candidate.clone());
                     *slug = candidate;
                 }
-                Block::Quote(children) => visit(children, counts, used),
-                Block::List { items, .. } => {
+                BlockKind::Quote(children) => visit(children, counts, used),
+                BlockKind::List { items, .. } => {
                     for item in items {
                         visit(item, counts, used);
                     }
@@ -384,17 +446,86 @@ fn heading_slug(text: &str) -> String {
 struct DisplayMathBlock {
     token: String,
     source: String,
+    /// 公式块在原始源码中的区间。
+    range: Range<usize>,
 }
 
-fn extract_display_math_blocks(source: &str) -> (String, Vec<DisplayMathBlock>) {
+/// 归一化后的解析输入，以及归一化偏移回到原始源码偏移的映射。
+struct NormalizedSource {
+    text: String,
+    math_blocks: Vec<DisplayMathBlock>,
+    offsets: SourceOffsetMap,
+}
+
+/// 归一化文本的连续片段到原始源码起点的映射。
+///
+/// extract_display_math_blocks 会把多行 $$ 块压缩为单行占位标记，导致归一化文本与
+/// 原始源码的字节偏移不再一致。每个写入片段记录其在两个坐标空间中的起点，即可把解析器
+/// 给出的归一化区间还原为原始源码区间；片段内部按等长平移，跨片段边界处从目标片段重新取值。
+struct SourceOffsetMap {
+    segments: Vec<OffsetSegment>,
+}
+
+struct OffsetSegment {
+    normalized_start: usize,
+    original_start: usize,
+}
+
+impl SourceOffsetMap {
+    fn new() -> Self {
+        Self {
+            segments: Vec::new(),
+        }
+    }
+
+    fn begin(&mut self, normalized_start: usize, original_start: usize) {
+        self.segments.push(OffsetSegment {
+            normalized_start,
+            original_start,
+        });
+    }
+
+    fn to_original(&self, offset: usize) -> usize {
+        match self
+            .segments
+            .binary_search_by(|segment| segment.normalized_start.cmp(&offset))
+        {
+            Ok(index) => self.segments[index].original_start,
+            Err(0) => self
+                .segments
+                .first()
+                .map_or(0, |segment| segment.original_start),
+            Err(index) => {
+                let segment = &self.segments[index - 1];
+                segment.original_start + (offset - segment.normalized_start)
+            }
+        }
+    }
+
+    fn range(&self, range: Range<usize>) -> Range<usize> {
+        self.to_original(range.start)..self.to_original(range.end)
+    }
+}
+
+fn extract_display_math_blocks(source: &str) -> NormalizedSource {
     let lines = source.split_inclusive('\n').collect::<Vec<_>>();
+    let mut line_starts = Vec::with_capacity(lines.len() + 1);
+    let mut accumulated = 0;
+    for line in &lines {
+        line_starts.push(accumulated);
+        accumulated += line.len();
+    }
+    line_starts.push(accumulated);
+
     let mut normalized = String::with_capacity(source.len());
+    let mut offsets = SourceOffsetMap::new();
     let mut display_math_blocks = Vec::new();
     let mut fenced_code = None;
     let mut line_index = 0;
 
     while let Some(line) = lines.get(line_index).copied() {
         if let Some(fence) = fenced_code {
+            offsets.begin(normalized.len(), line_starts[line_index]);
             normalized.push_str(line);
             if closes_fenced_code(line, fence) {
                 fenced_code = None;
@@ -404,6 +535,7 @@ fn extract_display_math_blocks(source: &str) -> (String, Vec<DisplayMathBlock>) 
         }
 
         if let Some(fence) = starts_fenced_code(line) {
+            offsets.begin(normalized.len(), line_starts[line_index]);
             normalized.push_str(line);
             fenced_code = Some(fence);
             line_index += 1;
@@ -417,22 +549,29 @@ fn extract_display_math_blocks(source: &str) -> (String, Vec<DisplayMathBlock>) 
                 "\u{e000}zcv-display-math-{}\u{e001}",
                 display_math_blocks.len()
             );
+            offsets.begin(normalized.len(), line_starts[line_index]);
             normalized.push_str(prefix);
             normalized.push_str(&token);
             normalized.push_str(line_ending);
             display_math_blocks.push(DisplayMathBlock {
                 token,
                 source: math_source,
+                range: line_starts[line_index]..line_starts[next_line_index],
             });
             line_index = next_line_index;
             continue;
         }
 
+        offsets.begin(normalized.len(), line_starts[line_index]);
         normalized.push_str(line);
         line_index += 1;
     }
 
-    (normalized, display_math_blocks)
+    NormalizedSource {
+        text: normalized,
+        math_blocks: display_math_blocks,
+        offsets,
+    }
 }
 
 fn extract_display_math_block<'a>(
@@ -472,7 +611,7 @@ fn strip_container_prefix<'a>(line: &'a str, prefix: &str) -> &'a str {
 fn starts_fenced_code(line: &str) -> Option<(u8, usize)> {
     let content = line.trim_start().as_bytes();
     let marker = *content.first()?;
-    if marker != b'`' && marker != b'~' {
+    if marker != 0x60 && marker != b'~' {
         return None;
     }
     let length = content.iter().take_while(|byte| **byte == marker).count();
@@ -487,9 +626,9 @@ fn closes_fenced_code(line: &str, (marker, minimum_length): (u8, usize)) -> bool
 
 fn restore_display_math_blocks(blocks: &mut Vec<Block>, display_math_blocks: &[DisplayMathBlock]) {
     let mut restored = Vec::with_capacity(blocks.len());
-    for block in blocks.drain(..) {
-        match block {
-            Block::Paragraph(content) => {
+    for Block { source, kind } in blocks.drain(..) {
+        match kind {
+            BlockKind::Paragraph(content) => {
                 let mut paragraph = Vec::new();
                 let mut after_math = false;
                 for inline in content {
@@ -507,10 +646,13 @@ fn restore_display_math_blocks(blocks: &mut Vec<Block>, display_math_blocks: &[D
                                 style: inline.style.clone(),
                             });
                         }
-                        push_math_paragraph(&mut restored, &mut paragraph, after_math);
-                        restored.push(Block::Math {
-                            source: math.source.clone(),
-                            display: true,
+                        push_math_paragraph(&mut restored, &mut paragraph, after_math, &source);
+                        restored.push(Block {
+                            source: math.range.clone(),
+                            kind: BlockKind::Math {
+                                source: math.source.clone(),
+                                display: true,
+                            },
                         });
                         remaining = &remaining[position + math.token.len()..];
                         after_math = true;
@@ -523,28 +665,42 @@ fn restore_display_math_blocks(blocks: &mut Vec<Block>, display_math_blocks: &[D
                     }
                 }
                 if after_math {
-                    push_math_paragraph(&mut restored, &mut paragraph, true);
+                    push_math_paragraph(&mut restored, &mut paragraph, true, &source);
                 } else {
-                    restored.push(Block::Paragraph(paragraph));
+                    restored.push(Block {
+                        source,
+                        kind: BlockKind::Paragraph(paragraph),
+                    });
                 }
             }
-            Block::Quote(mut children) => {
+            BlockKind::Quote(mut children) => {
                 restore_display_math_blocks(&mut children, display_math_blocks);
-                restored.push(Block::Quote(children));
+                restored.push(Block {
+                    source,
+                    kind: BlockKind::Quote(children),
+                });
             }
-            Block::List { start, mut items } => {
+            BlockKind::List { start, mut items } => {
                 for item in &mut items {
                     restore_display_math_blocks(item, display_math_blocks);
                 }
-                restored.push(Block::List { start, items });
+                restored.push(Block {
+                    source,
+                    kind: BlockKind::List { start, items },
+                });
             }
-            block => restored.push(block),
+            kind => restored.push(Block { source, kind }),
         }
     }
     *blocks = restored;
 }
 
-fn push_math_paragraph(blocks: &mut Vec<Block>, content: &mut Vec<Inline>, trim_start: bool) {
+fn push_math_paragraph(
+    blocks: &mut Vec<Block>,
+    content: &mut Vec<Inline>,
+    trim_start: bool,
+    source: &Range<usize>,
+) {
     if trim_start {
         while let Some(first) = content.first_mut() {
             first.text = first.text.trim_start_matches('\n').to_owned();
@@ -562,7 +718,10 @@ fn push_math_paragraph(blocks: &mut Vec<Block>, content: &mut Vec<Inline>, trim_
         content.pop();
     }
     if !content.is_empty() {
-        blocks.push(Block::Paragraph(mem::take(content)));
+        blocks.push(Block {
+            source: source.clone(),
+            kind: BlockKind::Paragraph(mem::take(content)),
+        });
     }
 }
 
@@ -622,30 +781,37 @@ fn finish_active(
     if content.is_empty() {
         return;
     }
-    let block = match active {
-        ActiveBlock::Heading(level) => Block::Heading {
-            level,
-            content,
-            slug: String::new(),
-        },
-        ActiveBlock::Paragraph => standalone_image(&content).unwrap_or(Block::Paragraph(content)),
-        ActiveBlock::Code(language) => {
+    let (source, kind) = match active {
+        ActiveBlock::Heading { level, source } => (
+            source,
+            BlockKind::Heading {
+                level,
+                content,
+                slug: String::new(),
+            },
+        ),
+        ActiveBlock::Paragraph { source } => (
+            source,
+            standalone_image(&content).unwrap_or(BlockKind::Paragraph(content)),
+        ),
+        ActiveBlock::Code { language, source } => {
             let text = content.into_iter().map(|inline| inline.text).collect();
-            if language.as_deref() == Some("mermaid") {
-                Block::Mermaid { source: text }
+            let kind = if language.as_deref() == Some("mermaid") {
+                BlockKind::Mermaid { source: text }
             } else {
-                Block::Code {
+                BlockKind::Code {
                     language,
                     text,
                     highlights: None,
                 }
-            }
+            };
+            (source, kind)
         }
     };
-    state.push_block(block);
+    state.push_block(Block { source, kind });
 }
 
-fn standalone_image(content: &[Inline]) -> Option<Block> {
+fn standalone_image(content: &[Inline]) -> Option<BlockKind> {
     let [inline] = content else {
         return None;
     };
@@ -653,7 +819,7 @@ fn standalone_image(content: &[Inline]) -> Option<Block> {
     if !inline.style.image {
         return None;
     }
-    Some(Block::Image {
+    Some(BlockKind::Image {
         source,
         alt: inline
             .text

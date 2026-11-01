@@ -27,8 +27,9 @@ use zcv_language::{
     HighlightSpan, LanguageRegistry, SnippetHighlightCancellation, SnippetHighlights,
     highlight_snippet_with_cancellation,
 };
-use zcv_multi_buffer::{MultiBuffer, MultiBufferEvent};
+use zcv_multi_buffer::{MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot};
 use zcv_project::Project;
+use zcv_text::Affinity;
 use zcv_theme::{color, fixed, scale, syntax, typography};
 use zcv_ui::Scrollbar;
 use zcv_workspace::{
@@ -36,7 +37,7 @@ use zcv_workspace::{
     typography_for_window,
 };
 
-use crate::document::{Block, Inline, InlineStyle, parse};
+use crate::document::{Block, BlockKind, Inline, InlineStyle, parse};
 
 const MARKDOWN_REPARSE_DEBOUNCE: Duration = Duration::from_millis(200);
 const INLINE_CODE_CHIP_VERTICAL_INSET: f32 = 0.1;
@@ -198,7 +199,19 @@ struct MathImage {
 
 type MathImages = HashMap<String, Result<MathImage, String>>;
 type MermaidImages = HashMap<String, Result<MathImage, String>>;
-type HeadingBounds = Rc<RefCell<HashMap<String, Bounds<Pixels>>>>;
+
+/// 每个根块在最近一次布局中的几何，供源码偏移定位与可见锚点回报使用。
+#[derive(Clone)]
+struct BlockGeometry {
+    source: Range<usize>,
+    bounds: Bounds<Pixels>,
+}
+
+/// 预览当前帧的块几何索引。由渲染逐帧重建，不是位置权威：位置由其所有者以锚点保存。
+#[derive(Default)]
+struct PreviewLayout {
+    blocks: RefCell<Vec<BlockGeometry>>,
+}
 
 struct MarkdownRenderContext<'a> {
     source_directory: Option<&'a Path>,
@@ -206,9 +219,9 @@ struct MarkdownRenderContext<'a> {
     type_scale: typography::Typography,
     math_images: &'a MathImages,
     mermaid_images: &'a MermaidImages,
-    heading_bounds: &'a HeadingBounds,
+    heading_anchors: &'a HashMap<String, MultiBufferAnchor>,
+    pending_reveal: &'a Rc<RefCell<Option<MultiBufferAnchor>>>,
     selection: &'a Rc<RefCell<MarkdownTextSelection>>,
-    scroll_handle: &'a ScrollHandle,
     window: &'a Window,
     cx: &'a App,
 }
@@ -224,6 +237,12 @@ pub(crate) struct MarkdownPreviewView {
     selection: Rc<RefCell<MarkdownTextSelection>>,
     scrollbar: Scrollbar<ScrollHandle>,
     blocks: Arc<Vec<Block>>,
+    /// 根块的 slug 到源码锚点映射；内部 #slug 锚点据此定位。
+    heading_anchors: HashMap<String, MultiBufferAnchor>,
+    /// 最近一次布局的根块几何；渲染逐帧重建，仅用于把源码偏移换算为预览滚动位置。
+    layout: Rc<PreviewLayout>,
+    /// 待执行的滚动揭示请求。以源码锚点保存，重解析或 debounce 后仍能按当前快照解析。
+    pending_reveal: Rc<RefCell<Option<MultiBufferAnchor>>>,
     code_highlight_generation: u64,
     code_highlight_cancellation: Option<SnippetHighlightCancellation>,
     code_highlight_task: Option<Task<()>>,
@@ -293,6 +312,9 @@ impl MarkdownPreviewView {
             scroll_handle,
             selection: Rc::default(),
             blocks: Arc::new(Vec::new()),
+            heading_anchors: HashMap::new(),
+            layout: Rc::new(PreviewLayout::default()),
+            pending_reveal: Rc::new(RefCell::new(None)),
             code_highlight_generation: 0,
             code_highlight_cancellation: None,
             code_highlight_task: None,
@@ -336,12 +358,12 @@ impl MarkdownPreviewView {
             cancellation.cancel();
         }
         // 预览渲染需要整份文档文本；这是只读边界，不进入编辑/显示热路径。
-        let text = String::from_utf8(
-            self.multi_buffer
-                .update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
-        )
-        .expect("编辑器文档应为 UTF-8");
+        let snapshot = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let text = String::from_utf8(snapshot.text_bytes()).expect("编辑器文档应为 UTF-8");
         self.blocks = Arc::new(parse(&text));
+        self.heading_anchors = collect_heading_anchors(&self.blocks, &snapshot);
         self.ensure_mermaid_render(cx);
         self.math_render_generation = self.math_render_generation.wrapping_add(1);
         self.math_content_size = None;
@@ -479,16 +501,27 @@ impl Render for MarkdownPreviewView {
             .as_deref()
             .and_then(Path::parent)
             .map(Path::to_path_buf);
-        let heading_bounds = HeadingBounds::default();
+        // 待执行的揭示请求在渲染时解析为当前快照下的源码偏移；解析失败即丢弃，不猜测坐标。
+        let reveal_offset = self
+            .pending_reveal
+            .borrow_mut()
+            .take()
+            .and_then(|anchor| {
+                self.multi_buffer.update(cx, |buffer, cx| {
+                    buffer.snapshot(cx).anchor_offset(&anchor).ok()
+                })
+            })
+            .map(|offset| offset.get());
+        self.layout.blocks.borrow_mut().clear();
         let render_context = MarkdownRenderContext {
             source_directory: source_directory.as_deref(),
             open_path: self.open_path.as_ref(),
             type_scale,
             math_images: &self.math_images,
             mermaid_images: &self.mermaid_images,
-            heading_bounds: &heading_bounds,
+            heading_anchors: &self.heading_anchors,
+            pending_reveal: &self.pending_reveal,
             selection: &self.selection,
-            scroll_handle: &self.scroll_handle,
             window,
             cx,
         };
@@ -498,6 +531,8 @@ impl Render for MarkdownPreviewView {
             .enumerate()
             .map(|(index, block)| {
                 let mut next_key = 0;
+                let layout = Rc::clone(&self.layout);
+                let source = block.source.clone();
                 div()
                     .w_full()
                     .flex_none()
@@ -508,6 +543,14 @@ impl Render for MarkdownPreviewView {
                         index,
                         &render_context,
                     ))
+                    .on_children_prepainted(move |bounds, _, _| {
+                        if let Some(bounds) = bounds.first() {
+                            layout.blocks.borrow_mut().push(BlockGeometry {
+                                source: source.clone(),
+                                bounds: *bounds,
+                            });
+                        }
+                    })
                     .into_any_element()
             })
             .collect::<Vec<_>>();
@@ -574,6 +617,15 @@ impl Render for MarkdownPreviewView {
             .bg(color::current(cx).editor_background)
             .child(
                 div()
+                    .on_children_prepainted({
+                        let layout = Rc::clone(&self.layout);
+                        let scroll_handle = self.scroll_handle.clone();
+                        move |_bounds, window, _cx| {
+                            if let Some(offset) = reveal_offset {
+                                reveal_offset_in_layout(&layout, &scroll_handle, offset, window);
+                            }
+                        }
+                    })
                     .id("markdown-preview-scroll-container")
                     .size_full()
                     .overflow_y_scroll()
@@ -594,6 +646,28 @@ impl Render for MarkdownPreviewView {
 }
 
 impl MarkdownPreviewView {
+    /// 当前视口顶部最近的根块所对应的源码锚点；无布局信息时返回 None。
+    fn top_visible_source_anchor(&self, cx: &mut App) -> Option<MultiBufferAnchor> {
+        let offset = {
+            let blocks = self.layout.blocks.borrow();
+            let viewport_top = self.scroll_handle.bounds().top();
+            let mut best: Option<&BlockGeometry> = None;
+            for geometry in blocks.iter() {
+                if geometry.bounds.bottom() <= viewport_top {
+                    continue;
+                }
+                match best {
+                    Some(current) if current.bounds.top() <= geometry.bounds.top() => {}
+                    _ => best = Some(geometry),
+                }
+            }
+            best.map(|geometry| geometry.source.start)?
+        };
+        Some(self.multi_buffer.update(cx, |buffer, cx| {
+            buffer.snapshot(cx).anchor_at(offset, Affinity::Before)
+        }))
+    }
+
     fn handle_select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
         self.selection.borrow_mut().select_all();
         cx.notify();
@@ -604,6 +678,73 @@ impl MarkdownPreviewView {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
+}
+
+/// 收集标题 slug 到源码锚点的映射，供预览内部 #slug 锚点定位。
+///
+/// 锚点在解析时按当前快照生成，源码随后变化时由快照重新解析，不保存裸偏移。
+fn collect_heading_anchors(
+    blocks: &[Block],
+    snapshot: &MultiBufferSnapshot,
+) -> HashMap<String, MultiBufferAnchor> {
+    fn visit(
+        blocks: &[Block],
+        snapshot: &MultiBufferSnapshot,
+        anchors: &mut HashMap<String, MultiBufferAnchor>,
+    ) {
+        for block in blocks {
+            match &block.kind {
+                BlockKind::Heading { slug, .. } if !slug.is_empty() => {
+                    anchors.insert(
+                        slug.clone(),
+                        snapshot.anchor_at(block.source.start, Affinity::Before),
+                    );
+                }
+                BlockKind::Quote(children) => visit(children, snapshot, anchors),
+                BlockKind::List { items, .. } => {
+                    for item in items {
+                        visit(item, snapshot, anchors);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut anchors = HashMap::new();
+    visit(blocks, snapshot, &mut anchors);
+    anchors
+}
+
+/// 把源码偏移换算为预览滚动位移，使命中块的顶边对齐到视口顶部。
+///
+/// 只消费一次布局结果；若偏移落在块间隙，取其后最近块，末尾则取最后一块。
+fn reveal_offset_in_layout(
+    layout: &PreviewLayout,
+    scroll_handle: &ScrollHandle,
+    offset: usize,
+    window: &mut Window,
+) {
+    let blocks = layout.blocks.borrow();
+    let geometry = blocks
+        .iter()
+        .filter(|geometry| geometry.source.start <= offset && offset < geometry.source.end)
+        .max_by_key(|geometry| geometry.source.start)
+        .or_else(|| {
+            blocks
+                .iter()
+                .filter(|geometry| geometry.source.start <= offset)
+                .max_by_key(|geometry| geometry.source.start)
+        })
+        .or_else(|| blocks.iter().min_by_key(|geometry| geometry.source.start));
+    let Some(geometry) = geometry else {
+        return;
+    };
+    let current = scroll_handle.offset();
+    let scroll_top = scroll_handle.bounds().top();
+    let target = current.y + scroll_top - geometry.bounds.top();
+    let max = scroll_handle.max_offset().y;
+    scroll_handle.set_offset(point(current.x, target.clamp(-max, Pixels::ZERO)));
+    window.refresh();
 }
 
 fn render_block(
@@ -620,30 +761,19 @@ fn render_block(
     let cx = render_context.cx;
     let key = *next_key;
     *next_key += 1;
-    match block {
-        Block::Heading {
-            level,
-            content,
-            slug,
-        } => {
+    match &block.kind {
+        BlockKind::Heading { level, content, .. } => {
             let size = heading_size(*level, type_scale);
             let line_height = heading_line_height(*level, size, type_scale)
                 .max(inline_math_height(content, math_images).unwrap_or(Pixels::ZERO));
-            let slug = slug.clone();
-            let heading_bounds = Rc::clone(render_context.heading_bounds);
             div()
                 .text_size(size)
                 .line_height(line_height)
                 .font_weight(FontWeight::BOLD)
                 .child(render_inline(content, key, render_context))
-                .on_children_prepainted(move |bounds, _, _| {
-                    if let Some(bounds) = bounds.first().filter(|_| !slug.is_empty()) {
-                        heading_bounds.borrow_mut().insert(slug.clone(), *bounds);
-                    }
-                })
                 .into_any_element()
         }
-        Block::Paragraph(content) => div()
+        BlockKind::Paragraph(content) => div()
             .whitespace_normal()
             .line_height(
                 type_scale
@@ -652,7 +782,7 @@ fn render_block(
             )
             .child(render_inline(content, key, render_context))
             .into_any_element(),
-        Block::Code {
+        BlockKind::Code {
             language,
             text,
             highlights,
@@ -699,7 +829,7 @@ fn render_block(
             }
             code.into_any_element()
         }
-        Block::Quote(blocks) => {
+        BlockKind::Quote(blocks) => {
             let children = blocks
                 .iter()
                 .map(|block| render_block(block, next_key, list_depth, namespace, render_context))
@@ -715,7 +845,7 @@ fn render_block(
                 .children(children)
                 .into_any_element()
         }
-        Block::List { start, items } => {
+        BlockKind::List { start, items } => {
             let marker_width = list_marker_width(*start, items.len(), type_scale);
             let children = items
                 .iter()
@@ -791,7 +921,7 @@ fn render_block(
                 .children(children)
                 .into_any_element()
         }
-        Block::Table {
+        BlockKind::Table {
             alignments,
             header,
             rows,
@@ -829,14 +959,14 @@ fn render_block(
             }
             table.into_any_element()
         }
-        Block::Image { source, alt } => render_image(source, alt, source_directory, cx),
-        Block::Math { source, display } => {
+        BlockKind::Image { source, alt } => render_image(source, alt, source_directory, cx),
+        BlockKind::Math { source, display } => {
             render_math_block(source, *display, key, math_images, cx)
         }
-        Block::Mermaid { source } => {
+        BlockKind::Mermaid { source } => {
             render_mermaid_block(source, namespace, key, render_context.mermaid_images, cx)
         }
-        Block::Rule => div()
+        BlockKind::Rule => div()
             .h(fixed::HAIRLINE)
             .w_full()
             .bg(color::current(cx).border)
@@ -863,13 +993,13 @@ fn block_line_height(
     type_scale: typography::Typography,
     math_images: &MathImages,
 ) -> Pixels {
-    match block {
-        Block::Heading { level, content, .. } => {
+    match &block.kind {
+        BlockKind::Heading { level, content, .. } => {
             let size = heading_size(*level, type_scale);
             heading_line_height(*level, size, type_scale)
                 .max(inline_math_height(content, math_images).unwrap_or(Pixels::ZERO))
         }
-        Block::Paragraph(content) => type_scale
+        BlockKind::Paragraph(content) => type_scale
             .content_line()
             .max(inline_math_height(content, math_images).unwrap_or(Pixels::ZERO)),
         _ => type_scale.content_line(),
@@ -1104,17 +1234,14 @@ impl InlineText {
         } else {
             let source_directory = render_context.source_directory.map(Path::to_path_buf);
             let open_path = render_context.open_path.cloned();
-            let heading_bounds = Rc::clone(render_context.heading_bounds);
-            let scroll_handle = (*render_context.scroll_handle).clone();
+            let heading_anchors = render_context.heading_anchors.clone();
+            let pending_reveal = Rc::clone(render_context.pending_reveal);
             InteractiveText::new(("markdown-link", key), text)
                 .on_click(link_ranges, move |index, window, cx| {
                     let link = &links[index];
                     if let Some(slug) = link.strip_prefix('#') {
-                        if let Some(bounds) = heading_bounds.borrow().get(slug).copied() {
-                            let offset = scroll_handle.offset();
-                            let scroll_top = scroll_handle.bounds().top();
-                            scroll_handle
-                                .set_offset(point(offset.x, offset.y + scroll_top - bounds.top()));
+                        if let Some(anchor) = heading_anchors.get(slug).copied() {
+                            *pending_reveal.borrow_mut() = Some(anchor);
                             window.refresh();
                         }
                         return;
@@ -1547,14 +1674,14 @@ fn collect_math_sources(blocks: &[Block]) -> HashMap<String, bool> {
     }
     fn visit(blocks: &[Block], sources: &mut HashMap<String, bool>) {
         for block in blocks {
-            match block {
-                Block::Math { source, display } => {
+            match &block.kind {
+                BlockKind::Math { source, display } => {
                     sources.entry(source.clone()).or_insert(*display);
                 }
-                Block::Heading { content, .. } | Block::Paragraph(content) => {
+                BlockKind::Heading { content, .. } | BlockKind::Paragraph(content) => {
                     collect_inline(content, sources);
                 }
-                Block::Table { header, rows, .. } => {
+                BlockKind::Table { header, rows, .. } => {
                     for cell in header {
                         collect_inline(cell, sources);
                     }
@@ -1564,8 +1691,8 @@ fn collect_math_sources(blocks: &[Block]) -> HashMap<String, bool> {
                         }
                     }
                 }
-                Block::Quote(children) => visit(children, sources),
-                Block::List { items, .. } => {
+                BlockKind::Quote(children) => visit(children, sources),
+                BlockKind::List { items, .. } => {
                     for item in items {
                         visit(item, sources);
                     }
@@ -1616,12 +1743,12 @@ fn render_math(
 fn collect_mermaid_sources(blocks: &[Block]) -> Vec<String> {
     fn visit(blocks: &[Block], sources: &mut Vec<String>) {
         for block in blocks {
-            match block {
-                Block::Mermaid { source } if !sources.contains(source) => {
+            match &block.kind {
+                BlockKind::Mermaid { source } if !sources.contains(source) => {
                     sources.push(source.clone())
                 }
-                Block::Quote(children) => visit(children, sources),
-                Block::List { items, .. } => {
+                BlockKind::Quote(children) => visit(children, sources),
+                BlockKind::List { items, .. } => {
                     for item in items {
                         visit(item, sources);
                     }
@@ -1714,8 +1841,8 @@ fn highlight_code_blocks(
         if cancellation.is_cancelled() {
             return false;
         }
-        match block {
-            Block::Code {
+        match &mut block.kind {
+            BlockKind::Code {
                 language: Some(language),
                 text,
                 highlights,
@@ -1727,26 +1854,26 @@ fn highlight_code_blocks(
                     cancellation,
                 )
             }
-            Block::Quote(blocks) => {
+            BlockKind::Quote(blocks) => {
                 if !highlight_code_blocks(blocks, language_registry, cancellation) {
                     return false;
                 }
             }
-            Block::List { items, .. } => {
+            BlockKind::List { items, .. } => {
                 for item in items {
                     if !highlight_code_blocks(item, language_registry, cancellation) {
                         return false;
                     }
                 }
             }
-            Block::Heading { .. }
-            | Block::Paragraph(_)
-            | Block::Code { language: None, .. }
-            | Block::Table { .. }
-            | Block::Image { .. }
-            | Block::Math { .. }
-            | Block::Mermaid { .. }
-            | Block::Rule => {}
+            BlockKind::Heading { .. }
+            | BlockKind::Paragraph(_)
+            | BlockKind::Code { language: None, .. }
+            | BlockKind::Table { .. }
+            | BlockKind::Image { .. }
+            | BlockKind::Math { .. }
+            | BlockKind::Mermaid { .. }
+            | BlockKind::Rule => {}
         }
     }
     !cancellation.is_cancelled()
@@ -1881,6 +2008,31 @@ impl Item for MarkdownPreviewView {
 
     fn item_path(&self, cx: &App) -> Option<PathBuf> {
         self.source_item.item_path(cx)
+    }
+
+    fn navigate_to_byte_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> bool {
+        let len = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx).len_bytes().get());
+        if range.end > len {
+            return false;
+        }
+        let anchor = self.multi_buffer.update(cx, |buffer, cx| {
+            buffer.snapshot(cx).anchor_at(range.start, Affinity::Before)
+        });
+        *self.pending_reveal.borrow_mut() = Some(anchor);
+        cx.notify();
+        true
+    }
+
+    fn visible_source_anchor(&mut self, cx: &mut Context<Self>) -> Option<MultiBufferAnchor> {
+        self.top_visible_source_anchor(cx)
+    }
+
+    fn reveal_source_anchor(&mut self, anchor: MultiBufferAnchor, cx: &mut Context<Self>) -> bool {
+        *self.pending_reveal.borrow_mut() = Some(anchor);
+        cx.notify();
+        true
     }
 
     fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {

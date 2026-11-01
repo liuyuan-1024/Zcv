@@ -765,7 +765,7 @@ impl BlockSnapshot {
     ///
     /// 同一文件的后续 excerpt 只有分隔块，但它同样会更新标题所代表的 excerpt，使“打开文件”等操作仍以当前可见片段为目标。
     ///
-    /// 与 Zed `BlockSnapshot::sticky_header_excerpt` 相同：以视口顶行为 key 在块变换树上 seek，再回退到最近的块边界，
+    /// 与 `BlockSnapshot::sticky_header_excerpt` 相同：以视口顶行为 key 在块变换树上 seek，再回退到最近的块边界，
     /// 成本是 O(log 变换数 + 相邻块数)，不随组合文档规模增长。
     /// 下一个文件标题属于当前帧的可见布局，由渲染层从可见块派生，本查询不向前扫描。
     pub(super) fn sticky_buffer_header(&self, top_row: DisplayRow) -> Option<StickyBufferHeader> {

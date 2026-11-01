@@ -272,7 +272,7 @@ fn inline_code_chip_outsets_text_and_uses_rounded_background(cx: &mut TestAppCon
             code_color: chip_color,
             math_placements: Vec::new(),
             selection: None,
-            selection_color: gpui::black().into(),
+            selection_color: gpui::black(),
         }
     });
 
@@ -748,7 +748,7 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
                 code_color: gpui::black(),
                 math_placements: inline_text.math_placements,
                 selection: None,
-                selection_color: gpui::black().into(),
+                selection_color: gpui::black(),
             }
         },
     );

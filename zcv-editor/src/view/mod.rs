@@ -349,7 +349,7 @@ pub struct Editor {
     autoclose_regions: Vec<AutocloseRegion>,
     /// 未换行模式下最长行的像素宽度；按文本版本、显示行和字体失效。
     line_width_cache: Option<LineWidthCache>,
-    /// 滚动条慢标记缓存；由显示版本失效、后台计算（对齐 Zed ScrollbarMarkerState）。
+    /// 滚动条慢标记缓存；由显示版本失效、后台计算（对齐 ScrollbarMarkerState）。
     scrollbar_marker_state: ScrollbarMarkerState,
 }
 
@@ -2490,7 +2490,7 @@ impl Editor {
     }
 
     fn advance_snapshots_for_change(&mut self, projection_appended: bool, cx: &mut Context<Self>) {
-        // 单文件用该语言的 tab_size，组合文档用全局 tab_size；与 Zed 的显示投影一致。
+        // 单文件用该语言的 tab_size，组合文档用全局 tab_size；与显示投影一致。
         self.display_map.update(cx, |map, cx| {
             let snapshot = map.snapshot(cx);
             let tab_width = Self::display_tab_size(snapshot.buffer_snapshot(), cx);

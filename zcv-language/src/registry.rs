@@ -220,7 +220,7 @@ impl Language {
         }
     }
 
-    /// 本语言的词边界分类策略（对齐 Zed 的 `LanguageConfig::word_characters`）。
+    /// 本语言的词边界分类策略（对齐 `LanguageConfig::word_characters`）。
     pub fn word_boundary(&self) -> WordBoundaryPolicy {
         WordBoundaryPolicy {
             word_characters: self.word_characters,

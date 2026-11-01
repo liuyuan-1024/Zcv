@@ -10,7 +10,7 @@ use sum_tree::{Bias, ContextLessSummary, Dimension, Item, SumTree};
 
 use crate::types::TextRange;
 
-/// 一段文本的多维长度摘要，对齐 Zed `text::TextSummary` 的 `longest_row` 维度。
+/// 一段文本的多维长度摘要，对齐 `text::TextSummary` 的 `longest_row` 维度。
 ///
 /// 字节、Unicode scalar、UTF-16 code unit 与换行数来自同一份文本；
 /// `first_line_chars` / `last_line_chars` 只描述行宽，`longest_row` 是相对本摘要起点的行号，并列时取更早的行。

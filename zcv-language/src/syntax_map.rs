@@ -325,7 +325,7 @@ impl SyntaxMap {
     /// 只把旧树推进到新坐标，不在调用线程执行解析。
     ///
     /// 编辑区间由 `interpolated_version` 与当前快照推导；调用方无需携带订阅批次，
-    /// 因此快照读取与 observer 唤醒可以各自幂等推进（对齐 Zed `Buffer::snapshot()`）。
+    /// 因此快照读取与 observer 唤醒可以各自幂等推进（对齐 `Buffer::snapshot()`）。
     pub(crate) fn interpolate(&mut self, new_snapshot: &Snapshot) {
         let (parsed_version, interpolated_version) = interpolate_state(
             &self.language,

@@ -1,6 +1,6 @@
 //! 基线派生快照：在只读基线上规划编辑，并在版本校验后整体安装。
 //!
-//! 对齐 Zed 的 Buffer::snapshot_with_edits / fast_forward / EditedBufferSnapshot：
+//! 对齐 Buffer::snapshot_with_edits / fast_forward / EditedBufferSnapshot：
 //! 规划阶段在克隆的存储、日志、坐标索引与历史上完成全部可失败步骤，不推进主文档；
 //! 安装阶段在版本校验通过后整体换入派生状态，并发布订阅批次。
 

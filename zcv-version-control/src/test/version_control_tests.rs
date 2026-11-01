@@ -251,7 +251,7 @@ fn directories_aggregate_status_and_diff_and_respect_expansion() {
 fn change_tree_uses_same_directory_and_name_order_as_file_tree() {
     let root = absolute(PathBuf::from("/project")).into_path_buf();
     let snapshot = snapshot(&[
-        ("Zed/child.rs", FileStatus::Untracked),
+        ("Zeta/child.rs", FileStatus::Untracked),
         ("file10.rs", FileStatus::Untracked),
         ("File2.rs", FileStatus::Untracked),
         ("file2.rs", FileStatus::Untracked),
@@ -261,7 +261,7 @@ fn change_tree_uses_same_directory_and_name_order_as_file_tree() {
     assert_eq!(
         entry_keys(&rows),
         vec![
-            (GitSection::Unstaged, "Zed".into()),
+            (GitSection::Unstaged, "Zeta".into()),
             (GitSection::Unstaged, "file2.rs".into()),
             (GitSection::Unstaged, "File2.rs".into()),
             (GitSection::Unstaged, "file10.rs".into()),

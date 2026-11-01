@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Buffer 的稳定身份。
 ///
-/// 它对应 Zed 的 `remote_id`：本地模式同样必须为没有文件路径的 Buffer 提供可比较、可排序的身份，不能把所有匿名 Buffer 归并为空路径。
+/// 它对应 `remote_id`：本地模式同样必须为没有文件路径的 Buffer 提供可比较、可排序的身份，不能把所有匿名 Buffer 归并为空路径。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferId(u64);
 

@@ -43,8 +43,10 @@ fn resolved_hunks(
 /// D-E：行宽缓存必须按显示版本失效；tab 宽度变化不推进文本版本，却改变实际行宽。
 #[gpui::test]
 fn longest_line_width_cache_invalidates_when_only_the_display_changes(cx: &mut TestAppContext) {
-    let mut settings = UserSettings::default();
-    settings.soft_wrap = SoftWrapMode::None;
+    let settings = UserSettings {
+        soft_wrap: SoftWrapMode::None,
+        ..UserSettings::default()
+    };
     cx.set_global(SettingsStore::new(settings));
     let buffer = test_buffer(cx, "\tX\n");
     let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx));
@@ -1914,8 +1916,10 @@ fn single_line_editor_never_wraps_and_follows_caret_horizontally(cx: &mut TestAp
 
 #[gpui::test]
 fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppContext) {
-    let mut settings = UserSettings::default();
-    settings.soft_wrap = SoftWrapMode::None;
+    let settings = UserSettings {
+        soft_wrap: SoftWrapMode::None,
+        ..UserSettings::default()
+    };
     cx.set_global(SettingsStore::new(settings));
     let source = test_buffer(
         cx,
@@ -2205,8 +2209,10 @@ fn long_line_highlight_query_is_clipped_to_render_budget(cx: &mut TestAppContext
 
 #[gpui::test]
 fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppContext) {
-    let mut settings = UserSettings::default();
-    settings.soft_wrap = SoftWrapMode::None;
+    let settings = UserSettings {
+        soft_wrap: SoftWrapMode::None,
+        ..UserSettings::default()
+    };
     cx.set_global(SettingsStore::new(settings));
     // 未换行 + 超长行：非光标行只合成/塑形可见列窗口（±边距）内的文本，
     // 并回报窗口起点列供渲染端补偿行原点；光标行保持整行 shaping（autoscroll 依赖光标像素）。

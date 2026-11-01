@@ -2,7 +2,7 @@
 //!
 //! 高亮是从语法快照派生的可丢弃数据：
 //! 缓存由拥有语言状态的 Buffer 持有，随文本版本变化或解析安装整体替换，不进入不可变的 `SyntaxSnapshot`。
-//! 容量以条目字节成本为预算，超出后按最近最少使用淘汰（对齐 Zed `ChunkHighlightCache`）。
+//! 容量以条目字节成本为预算，超出后按最近最少使用淘汰（对齐 `ChunkHighlightCache`）。
 
 use lru::LruCache;
 use std::sync::{Arc, Mutex};

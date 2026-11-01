@@ -968,7 +968,7 @@ impl<'a> DisplayPointConverter<'a> {
 /// `DisplayMap` 是唯一文本变更消费者：它把批次换算成组合文本编辑后交给 FoldMap，
 /// 其后各层只消费上层编辑，不再回读文本层的 PositionMap。
 ///
-/// 与 Zed 一样，显示层只按实际 `patch` 编辑同步：重载的文本差异保持增量，真正的整篇替换必须由生产方发布覆盖全文的编辑。
+/// 显示层只按实际 `patch` 编辑同步：重载的文本差异保持增量，真正的整篇替换必须由生产方发布覆盖全文的编辑。
 pub(crate) fn buffer_edits_from_batch(
     batch: &TextChangeBatch,
 ) -> Vec<ProjectionEdit<MultiBufferOffset>> {
@@ -1349,7 +1349,7 @@ impl DisplayMap {
         cx: &mut Context<Self>,
     ) {
         let current_snapshot = current_snapshot.into();
-        // 同步始终逐层推进（对齐 Zed DisplayMap::sync_through_wrap）：
+        // 同步始终逐层推进（对齐 DisplayMap::sync_through_wrap）：
         // 无变化的批次由 WrapMap 丢弃、Block 层复用变换树，不在这里做提前返回。
         let buffer_edits = buffer_edits_from_batch(&batch);
         let (fold_snapshot, fold_edits) = self.fold_map.read(current_snapshot, buffer_edits);

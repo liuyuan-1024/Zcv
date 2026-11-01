@@ -1202,7 +1202,7 @@ impl MultiBuffer {
         changed_range: Option<Range<Anchor>>,
         cx: &mut Context<Self>,
     ) {
-        // 对齐 Zed 的 buffer_diff_changed：先把待同步的源快照纳入当前帧，
+        // 对齐 buffer_diff_changed 的处理：先把待同步的源快照纳入当前帧，
         // 再更新 diff transform，最后只发布一次组合投影版本。
         self.begin_projection_sync();
         self.sync_pending_sources(cx);

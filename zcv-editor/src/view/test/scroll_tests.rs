@@ -388,8 +388,10 @@ fn vertical_movement_preserves_goal_column_across_short_rows(cx: &mut TestAppCon
 
 #[gpui::test]
 fn vertical_movement_keeps_pixel_goal_beyond_render_window(cx: &mut TestAppContext) {
-    let mut settings = UserSettings::default();
-    settings.soft_wrap = SoftWrapMode::None;
+    let settings = UserSettings {
+        soft_wrap: SoftWrapMode::None,
+        ..UserSettings::default()
+    };
     cx.set_global(SettingsStore::new(settings));
     let line = "a".repeat(1500);
     let buffer = test_buffer(cx, format!("{line}\n{line}"));
@@ -503,8 +505,10 @@ fn wheel_input_updates_editor_scroll_state(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn wheel_gesture_filters_to_dominant_axis_and_unlocks_on_reversal(cx: &mut TestAppContext) {
-    let mut settings = UserSettings::default();
-    settings.soft_wrap = SoftWrapMode::None;
+    let settings = UserSettings {
+        soft_wrap: SoftWrapMode::None,
+        ..UserSettings::default()
+    };
     cx.set_global(SettingsStore::new(settings));
     let text = (0..120)
         .map(|row| format!("{row} {}\n", "long content ".repeat(40)))
@@ -567,8 +571,10 @@ fn wheel_gesture_filters_to_dominant_axis_and_unlocks_on_reversal(cx: &mut TestA
 
 #[gpui::test]
 fn line_wheel_delta_uses_character_width_horizontally(cx: &mut TestAppContext) {
-    let mut settings = UserSettings::default();
-    settings.soft_wrap = SoftWrapMode::None;
+    let settings = UserSettings {
+        soft_wrap: SoftWrapMode::None,
+        ..UserSettings::default()
+    };
     cx.set_global(SettingsStore::new(settings));
     let text = (0..120)
         .map(|row| format!("{row} {}\n", "long content ".repeat(40)))
@@ -602,8 +608,10 @@ fn line_wheel_delta_uses_character_width_horizontally(cx: &mut TestAppContext) {
 }
 #[gpui::test]
 fn horizontal_scroll_stops_at_content_edge_and_caret_autoscrolls(cx: &mut TestAppContext) {
-    let mut settings = UserSettings::default();
-    settings.soft_wrap = SoftWrapMode::None;
+    let settings = UserSettings {
+        soft_wrap: SoftWrapMode::None,
+        ..UserSettings::default()
+    };
     cx.set_global(SettingsStore::new(settings));
     let text = "修改 zcv 模块时，请先阅读 zcv/docs/下的所有文档规范。同时查阅**[zed编辑器](https://github.com/zed-industries/zed)**的源码，看看zed是如何实现的，参考zed的实现方式，甚至是直接照搬zed的实现方式。".repeat(4);
     let buffer = test_buffer(cx, text.clone());

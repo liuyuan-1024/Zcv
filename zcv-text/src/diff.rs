@@ -2,7 +2,7 @@
 //!
 //! `Buffer::replace_text` 等外部文本更新场景用 diff 生成真实的 old -> new 编辑；
 //! 替换文本与旧区间一起产出，消费方不再用区间切分原文。
-//! 行级与词级 diff 都基于 imara-diff，与 Zed 的 `text_diff` 使用同一套 token 化与差异原语。
+//! 行级与词级 diff 都基于 imara-diff，与 `text_diff` 使用同一套 token 化与差异原语。
 
 use std::ops::Range;
 
@@ -16,7 +16,7 @@ use crate::{
 
 /// 把 `old` 变为 `new` 的净变化编辑序列；匹配区域不产生编辑。
 ///
-/// 先做行级 diff，再对规模受限且两侧都非空的替换块做行内词级 diff（对齐 Zed `text_diff`）。
+/// 先做行级 diff，再对规模受限且两侧都非空的替换块做行内词级 diff（对齐 `text_diff`）。
 /// 契约：产出的每个编辑区间都落在旧文本的 UTF-8 字符边界上，替换文本由本函数切片。
 pub fn diff_edits(old: &str, new: &str) -> Vec<Edit> {
     let mut edits = Vec::new();
@@ -53,7 +53,7 @@ pub fn diff_edits(old: &str, new: &str) -> Vec<Edit> {
     edits
 }
 
-/// 行级替换块是否细化到词级：两侧都非空，且字节数与行数都在阈值内（对齐 Zed）。
+/// 行级替换块是否细化到词级：两侧都非空，且字节数与行数都在阈值内。
 fn should_refine_inline(
     old_rows: &Range<u32>,
     old_bytes: &Range<usize>,

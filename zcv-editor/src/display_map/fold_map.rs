@@ -2,7 +2,7 @@
 //!
 //! FoldMap 是唯一写入口，向上层发布 FoldSnapshot 与 FoldEdit。
 //!
-//! 折叠模型对齐 Zed 的字节偏移文本变换：变换树的输入是组合文本字节，输出是折叠后的字节；
+//! 折叠模型对齐字节偏移文本变换：变换树的输入是组合文本字节，输出是折叠后的字节；
 //! 每个折叠变换把被折区间替换为占位符文本，区间前后的文本是相邻的同构变换。
 //! 折叠段不再产生投影行，合并行由输出变换自然给出（anchor 文本 + 占位符 + 闭合行尾段）。
 //! 折叠编辑按旧/新变换树映射到精确的输出字节区间，不依赖全局行数守恒锚点。
@@ -47,7 +47,7 @@ pub(crate) enum ChunkRendererId {
 
 /// 一段文本被替换为自定义元素时的渲染描述。
 ///
-/// 对齐 Zed `ChunkRenderer` 的渲染契约：`render` 产出元素，`constrain_width` 决定它是否按占位符文本的塑形宽度约束。
+/// 对齐 `ChunkRenderer` 的渲染契约：`render` 产出元素，`constrain_width` 决定它是否按占位符文本的塑形宽度约束。
 #[derive(Clone)]
 pub(crate) struct ChunkRenderer {
     pub(crate) id: ChunkRendererId,
@@ -310,7 +310,7 @@ pub(crate) enum FoldBias {
 /// 默认折叠占位符文本。
 pub(crate) const FOLD_PLACEHOLDER: &str = "\u{22ef}";
 
-/// 折叠占位符描述，对齐 Zed `FoldPlaceholder`。
+/// 折叠占位符描述，对齐 `FoldPlaceholder`。
 ///
 /// `render` 由调用方提供，用来把折叠区间渲染成任意元素；
 /// `collapsed_text` 为 None 时使用默认省略号；
@@ -323,7 +323,7 @@ pub(crate) type FoldRenderer =
 
 #[derive(Clone)]
 pub(crate) struct FoldPlaceholder {
-    /// 把折叠渲染成元素；默认渲染空元素，与 Zed 默认实现一致。
+    /// 把折叠渲染成元素；默认渲染空元素，与默认实现一致。
     pub(crate) render: FoldRenderer,
     pub(crate) collapsed_text: Option<Arc<str>>,
     pub(crate) constrain_width: bool,
@@ -372,7 +372,7 @@ impl FoldPlaceholder {
 
     /// 编辑器默认的可见占位符：把省略号渲染成带占位色的文本元素。
     ///
-    /// `Default::default()` 与 Zed 一致渲染空元素；
+    /// `Default::default()` 同样渲染空元素；
     /// 需要可见折叠提示的编辑器折叠入口使用本构造。
     pub(crate) fn ellipsis() -> Self {
         Self {
@@ -659,7 +659,7 @@ impl FoldSnapshot {
 
     /// 覆盖该字节偏移的最外层折叠变换及其占位符字符数。
     ///
-    /// 与 Zed FoldSnapshot::placeholder_range_at 相同，直接查询变换树，不维护跨快照的解析缓存。
+    /// 与 FoldSnapshot::placeholder_range_at 相同，直接查询变换树，不维护跨快照的解析缓存。
     fn covering_fold(
         &self,
         offset: MultiBufferOffset,
@@ -701,7 +701,7 @@ impl FoldSnapshot {
     /// 指定源行范围内的折叠入口行。
     ///
     /// 只保留未被外层折叠遮蔽的入口行；
-    /// 与 Zed `FoldSnapshot::folds_in_range` 相同，用折叠树的 `min_start`/`max_end` 摘要做子树剪枝，
+    /// 与 `FoldSnapshot::folds_in_range` 相同，用折叠树的 `min_start`/`max_end` 摘要做子树剪枝，
     /// 只解析与可见范围相交的折叠，滚动帧不随折叠总数线性增长。
     pub(super) fn fold_anchor_lines_in_range(&self, line_range: Range<Line>) -> Vec<Line> {
         let snapshot = &self.input;
@@ -1192,7 +1192,7 @@ impl FoldMap {
 
     /// 用下层文本编辑推进变换树，并把每条编辑映射到本层输出字节区间。
     ///
-    /// 对齐 Zed FoldMap::sync：重建受编辑影响的变换，未变区域直接搬运旧变换；
+    /// 对齐 FoldMap::sync：重建受编辑影响的变换，未变区域直接搬运旧变换；
     /// 每条编辑经旧/新变换树映射，端点落在折叠内时吸附到折叠边界，产出精确的 FoldEdit。
     fn sync(
         &mut self,
@@ -1448,7 +1448,7 @@ impl FoldMap {
     ///
     /// 只检查与编辑旧范围相交的折叠（前缀和摘要剪枝），并用新快照惰性解析；
     /// 未相交的折叠要么不受影响，要么由查询时的惰性解析跳过。
-    /// 与 Zed `FoldMap::sync` 一样是局部同步，不随折叠总数增长。
+    /// 与 `FoldMap::sync` 一样是局部同步，不随折叠总数增长。
     fn drop_folds_broken_by_edits(
         &mut self,
         input: &MultiBufferSnapshot,

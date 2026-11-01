@@ -1,7 +1,7 @@
 //! alacritty_terminal fork 的薄封装：类型别名、事件监听器、PTY 发送器、构造序列与操作函数。
 //!
-//! 依赖的 alacritty_terminal 是 Zed 维护的 fork（MIT/Apache-2.0），与上游差异仅在 tty 进程组管理。
-//! 本模块参考 Zed 对上游的职责划分（其代码为 GPL-3.0，本文件独立实现）。
+//! 依赖的 alacritty_terminal 是第三方维护的 fork（MIT/Apache-2.0），与上游差异仅在 tty 进程组管理。
+//! 本模块参考成熟实现对上游的职责划分（其代码为 GPL-3.0，本文件独立实现）。
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;

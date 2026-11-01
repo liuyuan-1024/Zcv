@@ -5,7 +5,6 @@ use crate::display_map::{
 
 use super::*;
 use zcv_settings::{SettingsStore, UserSettings};
-use zcv_ui::selection_autoscroll_delta;
 
 #[path = "ligature_text_system.rs"]
 mod ligature_text_system;
@@ -17,24 +16,6 @@ fn cursor_params(shape: CursorShape) -> CursorLayoutParams {
         font_size: px(16.),
         shape,
     }
-}
-
-#[test]
-fn selection_autoscroll_only_uses_exceeded_edges() {
-    let bounds = Bounds::new(point(px(20.), px(30.)), size(px(400.), px(200.)));
-    let line_height = px(20.);
-    assert_eq!(
-        selection_autoscroll_delta(point(px(419.), px(120.)), bounds, line_height),
-        point(px(0.), px(0.))
-    );
-    let vertical = selection_autoscroll_delta(point(px(419.), px(240.)), bounds, line_height);
-    assert_eq!(vertical.x, px(0.));
-    assert!(vertical.y < px(0.));
-    let horizontal = selection_autoscroll_delta(point(px(430.), px(120.)), bounds, line_height);
-    assert!(horizontal.x < px(0.));
-    assert_eq!(horizontal.y, px(0.));
-    let diagonal = selection_autoscroll_delta(point(px(430.), px(240.)), bounds, line_height);
-    assert!(diagonal.x < px(0.) && diagonal.y < px(0.));
 }
 
 #[test]
@@ -185,7 +166,7 @@ fn inline_highlight_adjusts_only_text_with_insufficient_contrast() {
     assert_eq!(
         backgrounds.contrast_color_at(1, contrast),
         None,
-        "语法样式背景自身不触发 Zed 的字色修正"
+        "语法样式背景自身不触发字色修正"
     );
     backgrounds.highlights.push((0..3, deleted_word));
     assert_eq!(
@@ -514,7 +495,7 @@ fn word_diff_background_keeps_changed_operator_out_of_adjacent_ligatures(cx: &mu
                 assert_eq!(
                     selected[0].color,
                     composite_background(expected_color, selection_color),
-                    "选区应按 Zed 顺序叠加在词级背景上"
+                    "选区应按既定顺序叠加在词级背景上"
                 );
                 let mut byte = 0;
                 for fragment in &line.line.fragments {

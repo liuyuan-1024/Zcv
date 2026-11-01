@@ -759,8 +759,10 @@ fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn mouse_dragging_beyond_right_edge_autoscrolls_horizontally(cx: &mut TestAppContext) {
-    let mut settings = UserSettings::default();
-    settings.soft_wrap = SoftWrapMode::None;
+    let settings = UserSettings {
+        soft_wrap: SoftWrapMode::None,
+        ..UserSettings::default()
+    };
     cx.set_global(SettingsStore::new(settings));
     let buffer = test_buffer(cx, "long content ".repeat(300));
     let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx));

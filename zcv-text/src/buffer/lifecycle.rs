@@ -78,7 +78,7 @@ impl Buffer {
         self.version
     }
 
-    /// 与 Zed `Buffer::remote_id` 对齐的稳定 Buffer 身份。
+    /// 与 `Buffer::remote_id` 对齐的稳定 Buffer 身份。
     ///
     /// Zcv 当前不引入协作或远程同步；本地创建时分配进程内唯一 ID，重载文本不会改变它。
     pub fn buffer_id(&self) -> BufferId {

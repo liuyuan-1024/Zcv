@@ -41,7 +41,7 @@ Anchor 查询通过路径键、源身份与 excerpt 摘要中的末端 Anchor �
 
 diff 显示拓扑由 `diff_projection` 持有：`DiffFile`、`DiffDisplaySnapshot`、`DisplayHunk`、`ResolvedDiffHunk`、`WordDiffs`。唯一 diff 事实来自 `zcv-buffer-diff`，组合层只把它叠加为投影，不把 diff 视图做成另一种文档类型。
 
-每个文件独立记录已采用后台 hunk 结果的版本。excerpt 物化对齐 Zed 的 `update_excerpts_for_path`：`add_diff` 按调用方给出的可见范围同步建立该路径的 excerpts，后台 diff 结果只补充旧侧行与词级范围，不决定文件能否进入投影；结果就绪后只替换该源路径的全部 excerpts，新增路径也走同一入口。`set_excerpts_for_path` 保持替换语义，不能把它当作无条件追加。整体替换列表时移除退出列表的路径，仍在计算的文件保留已有映射；文件移除时取消其 diff 订阅，后续结果不再进入投影。
+每个文件独立记录已采用后台 hunk 结果的版本。excerpt 物化对齐 `update_excerpts_for_path`：`add_diff` 按调用方给出的可见范围同步建立该路径的 excerpts，后台 diff 结果只补充旧侧行与词级范围，不决定文件能否进入投影；结果就绪后只替换该源路径的全部 excerpts，新增路径也走同一入口。`set_excerpts_for_path` 保持替换语义，不能把它当作无条件追加。整体替换列表时移除退出列表的路径，仍在计算的文件保留已有映射；文件移除时取消其 diff 订阅，后续结果不再进入投影。
 
 用户选择的展开／折叠状态按 working 源与区块起点 `Anchor` 保存，在当前源快照上匹配；差异类型不参与身份判断。同一区块在删除与修改之间转换，或起点插入文本后重算，保留已有选择。
 

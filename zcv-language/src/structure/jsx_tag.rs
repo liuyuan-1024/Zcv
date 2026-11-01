@@ -84,7 +84,7 @@ fn tag_node_name_equals(node: &Node, name: &str, text: &Snapshot) -> bool {
 /// 从开放标签所在子树统计同名开放与闭合标签，判断是否存在未闭合的开放标签。
 ///
 /// 只沿 `jsx_element` 向下遍历，并在错误节点或不同名元素处停止向上回看；
-/// 与 Zed 的朴素计数一致，不尝试构造完整错误恢复树。
+/// 与朴素计数一致，不尝试构造完整错误恢复树。
 fn has_unclosed_open_tag(
     open_tag: &Node,
     config: &JsxTagAutoCloseConfig,

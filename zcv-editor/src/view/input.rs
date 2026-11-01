@@ -470,7 +470,7 @@ impl Editor {
 
     /// 自动闭合区域的失效清理：只保留锚点可解析、闭合符仍在、且仍与当前选择相交的区域。
     ///
-    /// 对齐 Zed `invalidate_autoclose_regions`：区域是随选择存在的编辑辅助状态，
+    /// 对齐 `invalidate_autoclose_regions`：区域是随选择存在的编辑辅助状态，
     /// 存在性判据集中在这里，选择/编辑落地统一调用，避免只增不减的无界累积。
     pub(super) fn invalidate_autoclose_regions(&mut self, cx: &App) {
         if self.autoclose_regions.is_empty() {

@@ -20,7 +20,7 @@ const SCROLLBAR_BORDER: Pixels = px(1.);
 /// marker 最小高度。
 const MIN_MARKER_HEIGHT: Pixels = px(5.);
 
-/// 光标快速标记的固定高度（对齐 Zed `LINE_MARKER_HEIGHT`）。
+/// 光标快速标记的固定高度（对齐 `LINE_MARKER_HEIGHT`）。
 const CURSOR_MARKER_HEIGHT: Pixels = px(2.);
 
 /// 垂直滚动轴的逐帧布局：track hitbox、thumb 几何与三态。
@@ -55,7 +55,7 @@ pub(super) enum ScrollbarMarkerKind {
     Search,
 }
 
-/// 滚动条慢标记的 editor 拥有缓存（对齐 Zed ScrollbarMarkerState）。
+/// 滚动条慢标记的 editor 拥有缓存（对齐 ScrollbarMarkerState）。
 ///
 /// 标记几何按显示版本与滚动条尺寸缓存，计算在后台执行；
 /// EditorElement 只读取缓存并触发刷新，不在渲染帧内做随文档规模增长的派生。

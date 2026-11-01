@@ -331,8 +331,10 @@ fn save_whitespace_settings_apply_independently(cx: &mut TestAppContext) {
     let path = directory.path().join("document.txt");
     fs::write(&path, "a  \nb  \n\n").unwrap();
     cx.update(|cx| {
-        let mut settings = UserSettings::default();
-        settings.remove_trailing_whitespace_on_save = false;
+        let settings = UserSettings {
+            remove_trailing_whitespace_on_save: false,
+            ..UserSettings::default()
+        };
         cx.set_global(SettingsStore::new(settings));
     });
     let project = test_project(directory.path().to_path_buf(), cx);
@@ -358,8 +360,10 @@ fn disabling_final_newline_keeps_extra_blank_lines_after_trimming(cx: &mut TestA
     let path = directory.path().join("document.txt");
     fs::write(&path, "a  \nb  \n\n").unwrap();
     cx.update(|cx| {
-        let mut settings = UserSettings::default();
-        settings.ensure_final_newline_on_save = false;
+        let settings = UserSettings {
+            ensure_final_newline_on_save: false,
+            ..UserSettings::default()
+        };
         cx.set_global(SettingsStore::new(settings));
     });
     let project = test_project(directory.path().to_path_buf(), cx);

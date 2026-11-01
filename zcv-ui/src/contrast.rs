@@ -2,7 +2,7 @@
 
 use gpui::Hsla;
 
-/// 与 Zed 一致的 APCA 0.0.98G-4g W3 参数。
+/// 采用 APCA 0.0.98G-4g W3 参数。
 struct ApcaConstants {
     main_trc: f32,
     s_rco: f32,

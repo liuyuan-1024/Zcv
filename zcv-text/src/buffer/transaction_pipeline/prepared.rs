@@ -19,7 +19,7 @@ pub(in crate::buffer) struct PreparedTransaction {
 
 /// 一次事务在克隆状态上计划出的完整结果；安装时整体换入 Buffer。
 ///
-/// 对齐 Zed 的 EditedBufferSnapshot：规划阶段不触碰主文档，安装阶段只做 move 换入与订阅发布，
+/// 对齐 EditedBufferSnapshot：规划阶段不触碰主文档，安装阶段只做 move 换入与订阅发布，
 /// 因此不再需要先提交文本、再重放派生编辑。
 pub(in crate::buffer) struct DerivedBufferState {
     pub(in crate::buffer) storage: RopeyStorage,

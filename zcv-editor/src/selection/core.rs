@@ -1,7 +1,7 @@
 //! Selection 类型：泛型选区，偏移态与源锚点态共用同一套语义。
 //!
 //! 单个选区只维护有序端点、方向与垂直移动目标；排序、合并和 primary 归属在 SelectionSet。
-//! 对齐 Zed 的 text::Selection<T>：start/end 始终有序，方向由 reversed 表达。
+//! 对齐 text::Selection<T>：start/end 始终有序，方向由 reversed 表达。
 
 use zcv_multi_buffer::{
     MultiBufferAnchor, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,

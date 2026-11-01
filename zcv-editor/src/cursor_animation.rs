@@ -1,4 +1,4 @@
-//! 本地光标移动动画：单矩形 + Zed 式阻尼弹簧。
+//! 本地光标移动动画：单矩形 + 阻尼弹簧。
 //!
 //! 状态由 `Editor` 持有，目标几何与视口由当前帧的 `EditorElement` 提供。
 //! 布局变化直接吸附，滚动只平移不重启动画，短移动使用短时长，重定向保留弹簧速度，因此连续输入不会累积滞后。
@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use gpui::{Bounds, Pixels, Point, point, px, size};
 use zcv_multi_buffer::MultiBufferOffset;
 
-// 动力学常量对齐 Zed cursor_animation.rs。
+// 动力学常量对齐经典阻尼弹簧参数。
 const MAX_FRAME_DURATION: Duration = Duration::from_millis(33);
 const SPRING_RESET_EPSILON: f32 = 0.001;
 const RECT_ACTIVE_DISTANCE: f32 = 0.5;
@@ -51,7 +51,7 @@ impl CursorViewport {
     }
 }
 
-/// 临界阻尼弹簧的位移与速度，公式与 Zed `DampedSpringAnimation` 相同。
+/// 临界阻尼弹簧的位移与速度，公式与 `DampedSpringAnimation` 相同。
 #[derive(Clone, Copy, Default)]
 struct DampedSpring {
     position: f32,

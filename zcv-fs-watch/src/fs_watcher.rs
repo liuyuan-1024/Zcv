@@ -62,7 +62,7 @@ fn absolute_event_path(path: PathBuf) -> AbsolutePathBuf {
 /// 监听器的事件批次流：每个元素是一批已按 latency 合并的路径事件。
 /// 仅由防抖计时触发、但没有实际事件的空唤醒不会产生元素。
 ///
-/// 对齐 Zed 的 Fs::watch 返回流；Zcv 没有 Fs 门面，因此订阅入口挂在 Watcher 上。
+/// 对齐 Fs::watch 的返回流；Zcv 没有 Fs 门面，因此订阅入口挂在 Watcher 上。
 pub type FsEventStream = Pin<Box<dyn Stream<Item = Vec<PathEvent>> + Send>>;
 
 /// 文件监听器：路径注册与事件订阅属于同一个来源，避免注册和消费落在不同实例。

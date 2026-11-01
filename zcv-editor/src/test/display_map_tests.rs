@@ -247,7 +247,7 @@ fn display_pipeline_receives_the_source_transaction_batch(cx: &mut TestAppContex
 /// 回归：块分类不能只缓存逻辑边界的下标。
 ///
 /// diff 文件集合更新时，某个位置可从文件 B 的首片段变成文件 A 的后续片段，也可反向变化；两种情况下边界下标都不变。
-/// Zed 按当前相邻 excerpt 的 BufferId分类，Zcv 必须据当前路径重建 header/divider，不能把旧实体块留在新拓扑中。
+/// 按当前相邻 excerpt 的 BufferId 分类，Zcv 必须据当前路径重建 header/divider，不能把旧实体块留在新拓扑中。
 #[gpui::test]
 fn block_boundaries_reclassify_when_their_file_changes(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
@@ -347,7 +347,7 @@ fn block_boundaries_reclassify_when_their_file_changes(cx: &mut TestAppContext) 
 
 /// 匿名 Buffer 没有文件路径时仍是不同的组合实体。
 ///
-/// Zed 用 BufferId（其本地 Buffer 的 `remote_id`）区分这类来源；
+/// 用 BufferId（其本地 Buffer 的 `remote_id`）区分这类来源；
 /// Zcv 用本地 `buffer_id` 承担同一职责，不能把它们归并到空路径并吞掉后一个 header。
 /// 折叠占位符在 chunk 流中携带行内替换描述；普通文本 chunk 不携带。
 #[gpui::test]

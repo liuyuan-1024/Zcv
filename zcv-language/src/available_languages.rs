@@ -123,7 +123,7 @@ pub(crate) struct LanguageSpec {
     pub(crate) auto_close_pairs: &'static [AutoClosePair],
     pub(crate) autoclose_before: &'static str,
     pub(crate) input: LanguageInputConfig,
-    /// 除字母数字与 `_` 外，本语言额外视为词字符的字符集合（对齐 Zed 的 word_characters）。
+    /// 除字母数字与 `_` 外，本语言额外视为词字符的字符集合（对齐 word_characters）。
     pub(crate) word_characters: &'static str,
     /// `overrides.scm` 捕获名到额外词字符的完整覆盖值。
     pub(crate) word_character_overrides: &'static [(&'static str, &'static str)],
@@ -170,7 +170,7 @@ impl LanguageSpec {
         }
     }
 
-    /// 声明语言的额外词字符（对齐 Zed `LanguageConfig::word_characters`）。
+    /// 声明语言的额外词字符（对齐 `LanguageConfig::word_characters`）。
     fn with_word_characters(mut self, word_characters: &'static str) -> Self {
         self.word_characters = word_characters;
         self
@@ -418,7 +418,7 @@ const HTML_INPUT: LanguageInputConfig = LanguageInputConfig {
     ..LanguageInputConfig::empty()
 };
 
-/// JavaScript 与 JSX 的标签自动闭合节点配置（对齐 Zed `javascript/config.toml`）。
+/// JavaScript 与 JSX 的标签自动闭合节点配置（对齐 `javascript/config.toml`）。
 const JAVASCRIPT_JSX_TAG_AUTO_CLOSE: JsxTagAutoCloseConfig = JsxTagAutoCloseConfig {
     open_tag_node_name: "jsx_opening_element",
     close_tag_node_name: "jsx_closing_element",
@@ -427,7 +427,7 @@ const JAVASCRIPT_JSX_TAG_AUTO_CLOSE: JsxTagAutoCloseConfig = JsxTagAutoCloseConf
     tag_name_node_alternates: &[],
 };
 
-/// TSX 的标签自动闭合节点配置；成员表达式标签名需要额外种类（对齐 Zed `tsx/config.toml`）。
+/// TSX 的标签自动闭合节点配置；成员表达式标签名需要额外种类（对齐 `tsx/config.toml`）。
 const TSX_JSX_TAG_AUTO_CLOSE: JsxTagAutoCloseConfig = JsxTagAutoCloseConfig {
     open_tag_node_name: "jsx_opening_element",
     close_tag_node_name: "jsx_closing_element",

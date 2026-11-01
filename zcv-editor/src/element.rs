@@ -56,7 +56,7 @@ const CARET_WIDTH: Pixels = px(2.);
 ///
 /// 元素实测宽度是元素与占位符文本的纯函数，正常一次回写即收敛；
 /// 该上限只保证极端情况下（例如回写同时触发水平自动滚动、改变了裁剪窗口）
-/// 不会无限递归，与 Zed 的 prepaint 深度上限同义。
+/// 不会无限递归，与 prepaint 深度上限同义。
 const MAX_WIDTH_WRITEBACK_PASSES: usize = 2;
 
 pub(super) struct EditorElement {
@@ -133,7 +133,7 @@ impl EditorElement {
 /// 显示行的一个片段：普通文本，或折叠占位符替换出的元素。
 ///
 /// 元素片段占用占位符文本的字节长度 `len` 与它实际布局出的宽度 `size.width`；
-/// 两者分别参与字节坐标映射与像素布局，和 Zed 的 `LineFragment` 契约一致。
+/// 两者分别参与字节坐标映射与像素布局，和 `LineFragment` 契约一致。
 enum LineFragment {
     Text(Box<ShapedLine>),
     Element {
@@ -180,7 +180,7 @@ impl FragmentedLine {
 
     /// 完整行文本内第 `index` 字节的 x 坐标（相对行原点）。
     ///
-    /// 落在元素内部的索引吸附到元素起点，和 Zed 的 `x_for_index` 一致。
+    /// 落在元素内部的索引吸附到元素起点，和 `x_for_index` 一致。
     fn x_for_index(&self, index: usize) -> Pixels {
         let mut x = Pixels::ZERO;
         let mut start = 0usize;
@@ -347,7 +347,7 @@ fn composite_background(bottom: Rgba, top: Rgba) -> Rgba {
     }
 }
 
-/// 行内背景的层叠顺序与 Zed 绘制一致；整行 Git 背景不参与字色修正。
+/// 行内背景的层叠顺序与既有绘制一致；整行 Git 背景不参与字色修正。
 fn inline_background_color(
     runs: impl IntoIterator<Item = Rgba>,
     diffs: impl IntoIterator<Item = Rgba>,
@@ -2511,7 +2511,7 @@ impl Element for EditorElement {
                     marker_color,
                 ));
             }
-            // 光标位置快速标记：满宽短标记，覆盖在慢标记之上（对齐 Zed fast markers）。
+            // 光标位置快速标记：满宽短标记，覆盖在慢标记之上（对齐 fast markers）。
             for bounds in &scrollbar.cursor_markers {
                 window.paint_quad(fill(*bounds, colors.editor_cursor));
             }

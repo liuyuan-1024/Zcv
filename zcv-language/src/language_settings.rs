@@ -1,6 +1,6 @@
 //! 语言解析后的编辑器设置。
 //!
-//! 对齐 Zed `LanguageSettings`：设置按 buffer/language 解析，消费方读取 Buffer 的解析结果，而不是在 Editor/DisplayMap 各处直接拼全局设置。
+//! 对齐 `LanguageSettings`：设置按 buffer/language 解析，消费方读取 Buffer 的解析结果，而不是在 Editor/DisplayMap 各处直接拼全局设置。
 //! 全局默认来自 `zcv-settings`，语言级覆盖以语言展示名为键。
 
 use std::sync::Arc;

@@ -118,7 +118,7 @@ impl Item for Transform {
 struct TransformSummary {
     input: TabPoint,
     output_rows: usize,
-    /// 输出区间内最长行的相对行号与字符数；对齐 Zed `TextSummary` 的 `longest_row` 维度。
+    /// 输出区间内最长行的相对行号与字符数；对齐 `TextSummary` 的 `longest_row` 维度。
     longest_row: usize,
     longest_row_chars: usize,
 }

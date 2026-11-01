@@ -35,7 +35,7 @@ use super::{
     worktree::{Worktree, WorktreeEntry, collect_visible_entries},
 };
 
-/// 项目文件监听的合并窗口；对齐 Zed worktree 的 FS_WATCH_LATENCY。
+/// 项目文件监听的合并窗口；对齐 worktree 的 FS_WATCH_LATENCY。
 const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
 /// 外部写入期间文件暂时不可读时，重载任务保持存活并逐步退避。
 const RELOAD_RETRY_INITIAL: Duration = Duration::from_millis(100);

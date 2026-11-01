@@ -76,7 +76,7 @@ impl Snapshot {
 
     /// 返回自 `since` 版本到本快照版本的净编辑批次。
     ///
-    /// 这是 Zed BufferSnapshot::edits_since_in_range 的本地等价：
+    /// 这是 BufferSnapshot::edits_since_in_range 的本地等价：
     /// Buffer 是版本化编辑的唯一事实，组合文档不再依赖订阅的瞬时批次。
     pub fn edits_since(&self, since: BufferVersion) -> TextResult<TextChangeBatch> {
         self.edit_log.batch_since(since, self.version)
@@ -105,7 +105,7 @@ impl Snapshot {
 
     /// 自 `since` 版本到本快照版本，可见片段集合是否发生变化。
     ///
-    /// 对齐 Zed `BufferSnapshot::has_edits_since` 的 fragment 可见性语义：
+    /// 对齐 `BufferSnapshot::has_edits_since` 的 fragment 可见性语义：
     /// 逐个片段比较「在 since 时是否可见」与「现在是否可见」，因此「插入后删除」以及「删除后用 undo 原位还原同一文本」都判为无编辑。
     ///
     /// `since` 晚于当前版本时显式失败。片段可见性不随编辑日志预算衰减，因此不要求 `since` 在编辑日志窗口内。

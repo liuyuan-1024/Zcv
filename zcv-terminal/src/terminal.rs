@@ -1,6 +1,6 @@
 //! zcv-terminal：嵌入式终端面板。
 //!
-//! 模拟器核心使用 Zed 维护的 alacritty_terminal fork（MIT/Apache-2.0），本 crate 提供薄封装（`alacritty` 模块）、终端状态机（`Terminal`）与视图/面板（`view` / `panel` 模块）。
+//! 模拟器核心使用第三方维护的 alacritty_terminal fork（MIT/Apache-2.0），本 crate 提供薄封装（`alacritty` 模块）、终端状态机（`Terminal`）与视图/面板（`view` / `panel` 模块）。
 //! 事件流分层：alacritty IO 线程 → 事件通道 → 主线程批处理队列 → 每帧渲染快照。
 
 mod alacritty;

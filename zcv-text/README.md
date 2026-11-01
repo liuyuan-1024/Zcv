@@ -33,7 +33,7 @@ Zcv 的纯文本内核：文本存储、坐标模型、事务变异、历史系�
 
 ## 行宽度摘要
 
-`TextSummary` 是一段文本的多维长度摘要：字节、Unicode scalar、UTF-16 code unit、换行数、首行/末行字符数与最长行，语义对齐 Zed `text::TextSummary` 的 `longest_row` 维度。
+`TextSummary` 是一段文本的多维长度摘要：字节、Unicode scalar、UTF-16 code unit、换行数、首行/末行字符数与最长行，语义对齐 `text::TextSummary` 的 `longest_row` 维度。
 
 `Snapshot::text_summary_for_range` 按 byte range 聚合摘要：只重测首尾不完整行，中间完整行读取按行索引的持久树摘要，不扫描整个范围。
 该行索引是存储的派生状态，与 `RopeyStorage` / `Snapshot` 同版本，并在每次存储编辑中只 splice 受影响行；构造与整体替换是唯一允许全量构建的显式边界。

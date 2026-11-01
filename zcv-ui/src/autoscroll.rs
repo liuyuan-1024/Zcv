@@ -57,7 +57,7 @@ impl DragAutoscroll {
 ///
 /// 竖直方向保留 `min(行高, 视口高/3)` 的死区，水平方向无死区；
 /// 越界距离按线性系数放大，单次增量按视口尺寸封顶，避免快速甩动猛跳。
-pub fn selection_autoscroll_delta(
+pub(crate) fn selection_autoscroll_delta(
     position: Point<Pixels>,
     bounds: Bounds<Pixels>,
     line_height: Pixels,
@@ -77,7 +77,7 @@ pub fn selection_autoscroll_delta(
 /// 正的 `y` 表示内容向上回看，负的 `y`表示继续查看下方内容；
 /// 正的 `x` 表示内容向左回看，负的 `x` 表示继续查看右侧内容；
 /// 调用方负责按照自身滚动模型应用并钳制结果。
-pub fn drag_autoscroll_delta(
+pub(crate) fn drag_autoscroll_delta(
     position: Point<Pixels>,
     bounds: Bounds<Pixels>,
     edge_margin: Point<Pixels>,

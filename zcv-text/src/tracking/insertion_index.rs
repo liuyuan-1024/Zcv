@@ -1,6 +1,6 @@
 //! 插入索引：文本位置到稳定文档序身份的映射。
 //!
-//! 对齐 Zed 的 insertion fragments + Locator + UndoMap：文本按「插入」划分为稳定身份，每次插入分配一个 Locator；
+//! 对齐 insertion fragments + Locator + UndoMap：文本按「插入」划分为稳定身份，每次插入分配一个 Locator；
 //! 编辑只切分既有插入并记录删除操作，不重编号已有 Locator。
 //! 片段可见性由每个片段的插入/删除操作与撤销计数推导，undo/redo 只切换撤销计数，不重写片段状态。
 //! 因此以 (插入身份, 插入内偏移) 表示的 Anchor 顺序在编辑前后保持稳定，比较不再需要解析文本坐标。
@@ -23,7 +23,7 @@ impl InsertionId {
 /// 插入内的一段；切分后同一插入会有多段。
 ///
 /// `inserted_at` 是本次插入的操作版本，`deletions` 是删除过该片段的操作版本。
-/// 片段可见性由二者与 `undos` 推导，undo 不重写片段状态（对齐 Zed 的 Fragment + UndoMap）。
+/// 片段可见性由二者与 `undos` 推导，undo 不重写片段状态（对齐 Fragment + UndoMap）。
 #[derive(Clone, Debug)]
 struct Piece {
     len: u32,
@@ -97,7 +97,7 @@ pub(crate) struct InsertionIndex {
     pieces: TreeMap<PieceKey, Piece>,
     runs: SumTree<Run>,
     next_id: u64,
-    /// 每个操作版本的撤销次数记录；奇偶决定该操作是否被撤销（对齐 Zed 的 UndoMap）。
+    /// 每个操作版本的撤销次数记录；奇偶决定该操作是否被撤销（对齐 UndoMap）。
     undos: TreeMap<BufferVersion, Vec<BufferVersion>>,
 }
 
@@ -182,7 +182,7 @@ impl InsertionIndex {
 
     /// 切换 `[start, end]` 版本区间内操作的撤销计数，并重建位置索引。
     ///
-    /// 对齐 Zed 的 UndoMap：undo/redo 都是撤销操作，按奇偶切换对应操作的撤销次数；
+    /// 对齐 UndoMap：undo/redo 都是撤销操作，按奇偶切换对应操作的撤销次数；
     /// 片段可见性由 `deletions` 与 `undos` 推导，不重写片段状态。
     pub(crate) fn undone(
         &self,
@@ -238,7 +238,7 @@ impl InsertionIndex {
                 .all(|deletion| self.is_undone(*deletion))
     }
 
-    /// 片段在 `version` 时的可见性，对齐 Zed 的 Fragment::was_visible。
+    /// 片段在 `version` 时的可见性，对齐 Fragment::was_visible。
     fn piece_was_visible(&self, piece: &Piece, version: BufferVersion) -> bool {
         version >= piece.inserted_at
             && !self.was_undone(piece.inserted_at, version)
@@ -271,7 +271,7 @@ impl InsertionIndex {
 
     /// `since` 到当前之间，可见片段集合是否发生变化。
     ///
-    /// 对齐 Zed 的 `BufferSnapshot::has_edits_since`：逐片段比较「在 since 时是否可见」与「现在是否可见」。
+    /// 对齐 `BufferSnapshot::has_edits_since`：逐片段比较「在 since 时是否可见」与「现在是否可见」。
     pub(crate) fn has_edits_since(&self, since: BufferVersion) -> bool {
         self.pieces
             .values()

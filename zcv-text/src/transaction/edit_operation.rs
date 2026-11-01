@@ -7,7 +7,7 @@ use crate::types::{BufferVersion, TransactionId};
 
 /// 一次提交中已接受的编辑事实。
 ///
-/// 坐标仍以旧文本为基准；对应 Zed `text::EditOperation` 的版本推进语义。
+/// 坐标仍以旧文本为基准；对应 `text::EditOperation` 的版本推进语义。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditOperation {
     /// 事务应用前的 BufferVersion。

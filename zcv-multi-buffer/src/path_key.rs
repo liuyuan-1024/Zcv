@@ -2,7 +2,7 @@
 //!
 //! 同一路径在文档内共享一份底层 Path：克隆只增加引用计数。
 //! 有文件路径时按路径标识；顺序由组合文档在创建时固定。
-//! 匿名 Buffer 则以稳定 buffer_id 作路径标识，与 Zed 的 PathKey::for_buffer 用 remote_id 承担同一职责。
+//! 匿名 Buffer 则以稳定 buffer_id 作路径标识，与 PathKey::for_buffer 用 remote_id 承担同一职责。
 
 use std::{
     cmp::Ordering,

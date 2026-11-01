@@ -181,7 +181,7 @@ impl EditLog {
 
     /// 取 `[start, end]` 版本区间的逆编辑与原始版本区间，按 undo 回放顺序（版本倒序）返回。
     ///
-    /// 原始版本区间供插入索引回退片段可见性，对齐 Zed 的 undo map。
+    /// 原始版本区间供插入索引回退片段可见性，对齐 undo map。
     pub(crate) fn undo_batches(
         &self,
         start: BufferVersion,

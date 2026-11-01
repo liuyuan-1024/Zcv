@@ -819,7 +819,7 @@ impl BufferDiff {
     /// 把新的 optimistic pending hunks 合并进当前集合，并通知显示层重新物化。
     ///
     /// 与既有 pending 按 working 锚点顺序合并：新 hunk 重叠或相邻的旧 pending 被替换，其余保留。
-    /// 这样同一文件连续多次操作时，新状态覆盖旧状态（对齐 Zed 的 set_pending_hunks）。
+    /// 这样同一文件连续多次操作时，新状态覆盖旧状态（对齐 `set_pending_hunks` 的语义）。
     pub fn set_pending_hunks(&mut self, hunks: Vec<PendingHunk>, cx: &mut Context<Self>) {
         if hunks.is_empty() {
             return;

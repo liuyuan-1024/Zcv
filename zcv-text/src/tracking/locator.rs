@@ -1,6 +1,6 @@
 //! Locator：有序集合中的稳定位置标识。
 //!
-//! 对齐 Zed 的 text::Locator：用分数索引在相邻标识之间插入新标识，无需重编号已有元素。
+//! 对齐 text::Locator：用分数索引在相邻标识之间插入新标识，无需重编号已有元素。
 //! 初始集合应使用 `Locator::between(min, max)`，为前后插入都留出空间。
 
 use std::iter;

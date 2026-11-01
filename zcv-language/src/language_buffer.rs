@@ -517,7 +517,7 @@ impl LanguageBuffer {
         {
             let mut state = self.state.lock().expect("语言 Buffer 状态锁不应中毒");
             state.syntax_map.interpolate(&text);
-            // 文本版本变化：高亮结果整体失效（对齐 Zed 的 Buffer::invalidate_tree_sitter_data）。
+            // 文本版本变化：高亮结果整体失效（对齐 Buffer::invalidate_tree_sitter_data 的语义）。
             state.highlight_cache = Arc::new(HighlightCache::new());
 
             let next_first_line = first_line(&text);

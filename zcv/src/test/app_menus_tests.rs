@@ -66,5 +66,15 @@ fn application_menus_expose_existing_editor_commands(cx: &mut TestAppContext) {
                 "editor::SelectAll"
             ]
         );
+        assert_eq!(
+            action_names(4),
+            [
+                "workspace::FocusQuickAccess",
+                "workspace::FocusLineColumn",
+                "search::DeployFind",
+                "search::DeployReplace",
+                "project_search::DeployProjectSearch"
+            ]
+        );
     });
 }

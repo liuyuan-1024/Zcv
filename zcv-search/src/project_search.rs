@@ -10,7 +10,7 @@ use gpui::{
     ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
     prelude::*,
 };
-use zcv_actions::{DeployBufferSearch, DeployProjectSearch};
+use zcv_actions::{DeployFind, DeployProjectSearch};
 use zcv_editor::{Editor, EditorEvent};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_project::{FileSaveConflictPolicy, Project, SearchQuery};
@@ -224,7 +224,6 @@ impl ProjectSearchView {
                     SearchBarConfig {
                         id_prefix: "project-search",
                         key_context: "ProjectSearchBar",
-                        supports_replace: false,
                         query_placeholder: "搜索...",
                         replace_placeholder: "替换为...",
                         presentation: SearchBarPresentation::Persistent,
@@ -388,7 +387,7 @@ impl Render for ProjectSearchView {
             .key_context("ProjectSearchView")
             .on_action({
                 let search_bar = self.search_bar.downgrade();
-                move |_: &DeployBufferSearch, window, cx| {
+                move |_: &DeployFind, window, cx| {
                     if let Some(search_bar) = search_bar.upgrade() {
                         search_bar.update(cx, |bar, cx| bar.deploy(None, window, cx));
                     }
@@ -523,7 +522,8 @@ impl Item for ProjectSearchView {
 }
 
 impl SearchableItem for ProjectSearchView {
-    fn supports_replace(&self) -> bool {
+    /// 项目搜索结果只读，不支持替换。
+    fn supports_replace(&self, _cx: &App) -> bool {
         false
     }
 
@@ -564,24 +564,6 @@ impl SearchableItem for ProjectSearchView {
         });
         cx.emit(SearchEvent::ActiveMatchChanged);
         cx.notify();
-    }
-
-    fn replace_current(
-        &mut self,
-        _replacement: &str,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> bool {
-        false
-    }
-
-    fn replace_all(
-        &mut self,
-        _replacement: &str,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> usize {
-        0
     }
 }
 

@@ -90,24 +90,6 @@ impl SearchableItem for TestItem {
         _cx: &mut Context<Self>,
     ) {
     }
-
-    fn replace_current(
-        &mut self,
-        _replacement: &str,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> bool {
-        false
-    }
-
-    fn replace_all(
-        &mut self,
-        _replacement: &str,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> usize {
-        0
-    }
 }
 
 /// 组合 Item：通过 `act_as_type` 暴露内层编辑器，但自身不是编辑器。

@@ -280,7 +280,8 @@
       "cmd-w": "pane::CloseTab",
 
       // 当前 Pane 搜索
-      "cmd-f": "pane::DeployBufferSearch"
+      "cmd-f": "search::DeployFind",
+      "cmd-r": "search::DeployReplace"
     }
   },
 
@@ -294,12 +295,6 @@
       "cmd-alt-c": "search::ToggleCaseSensitive",
       "cmd-alt-w": "search::ToggleWholeWord",
       "cmd-alt-x": "search::ToggleRegex",
-
-      // =========================
-      // 替换
-      // =========================
-
-      "cmd-r": "search::ToggleReplace",
 
       // =========================
       // 查找 / 退出 / 焦点切换

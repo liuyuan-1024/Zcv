@@ -15,7 +15,7 @@ use gpui::{
 };
 use regex::RegexBuilder;
 use zcv_actions::{
-    Backtab, DeployBufferSearch, FindNext, FindPrevious, Tab, ToggleCaseSensitive, ToggleRegex,
+    Backtab, DeployFind, FindNext, FindPrevious, Tab, ToggleCaseSensitive, ToggleRegex,
     ToggleWholeWord,
 };
 use zcv_git::GraphCommit;
@@ -195,7 +195,6 @@ impl GitGraphView {
                 SearchBarConfig {
                     id_prefix: "git-graph",
                     key_context: "GitGraphSearchBar",
-                    supports_replace: false,
                     query_placeholder: "搜索…",
                     replace_placeholder: "替换为…",
                     presentation: SearchBarPresentation::Persistent,
@@ -395,7 +394,7 @@ impl Render for GitGraphView {
             .key_context("GitGraphSearchBar")
             .on_action({
                 let bar = self.search_bar.downgrade();
-                move |_: &DeployBufferSearch, window, cx| {
+                move |_: &DeployFind, window, cx| {
                     if let Some(bar) = bar.upgrade() {
                         bar.update(cx, |bar, cx| bar.deploy(None, window, cx));
                     }
@@ -721,7 +720,8 @@ impl GitGraphView {
 }
 
 impl SearchableItem for GitGraphView {
-    fn supports_replace(&self) -> bool {
+    /// 提交图只读，不支持替换。
+    fn supports_replace(&self, _cx: &App) -> bool {
         false
     }
 
@@ -745,24 +745,6 @@ impl SearchableItem for GitGraphView {
         cx: &mut Context<Self>,
     ) {
         self.move_active_match(direction, count, cx);
-    }
-
-    fn replace_current(
-        &mut self,
-        replacement: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        GitGraphView::replace_current(self, replacement, window, cx)
-    }
-
-    fn replace_all(
-        &mut self,
-        replacement: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> usize {
-        GitGraphView::replace_all(self, replacement, window, cx)
     }
 }
 
@@ -848,24 +830,6 @@ impl GitGraphView {
         self.scroll_to_active_match();
         cx.emit(SearchEvent::ActiveMatchChanged);
         cx.notify();
-    }
-
-    fn replace_current(
-        &mut self,
-        _replacement: &str,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> bool {
-        false
-    }
-
-    fn replace_all(
-        &mut self,
-        _replacement: &str,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> usize {
-        0
     }
 }
 

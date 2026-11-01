@@ -402,7 +402,7 @@ async fn cmd_f_in_project_search_results_reuses_project_query(cx: &mut TestAppCo
     let results_focus = view.read_with(cx, |view, cx| view.results_editor.read(cx).focus_handle());
     cx.update(|window, cx| window.focus(&results_focus, cx));
     cx.refresh().unwrap();
-    cx.dispatch_action(DeployBufferSearch);
+    cx.dispatch_action(DeployFind);
 
     let query_focus = view.read_with(cx, |view, cx| {
         let bar = view.search_bar.read(cx);
@@ -411,7 +411,7 @@ async fn cmd_f_in_project_search_results_reuses_project_query(cx: &mut TestAppCo
         bar.query_focus_handle(cx)
     });
     cx.update(|window, _| assert!(query_focus.is_focused(window)));
-    cx.dispatch_action(DeployBufferSearch);
+    cx.dispatch_action(DeployFind);
     cx.update(|window, _| assert!(query_focus.is_focused(window)));
     assert_eq!(
         view.read_with(cx, |view, cx| view.search_bar.read(cx).query_text(cx)),

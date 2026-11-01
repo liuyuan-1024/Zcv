@@ -13,7 +13,7 @@ mod test;
 pub use search_bar::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
 
 use gpui::{App, AppContext, Context, Window};
-use zcv_actions::{DeployBufferSearch, DeployProjectSearch};
+use zcv_actions::{DeployFind, DeployProjectSearch, DeployReplace};
 use zcv_workspace::Workspace;
 
 use project_search::{
@@ -65,9 +65,16 @@ pub fn install(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<
 
     // Item 自持的搜索栏在自身焦点链上接收搜索快捷键；根节点只服务直接打开的 Editor。
     let document_toolbar_for_action = document_toolbar_item.clone();
-    workspace.register_action(move |_workspace, _: &DeployBufferSearch, window, cx| {
+    workspace.register_action(move |_workspace, _: &DeployFind, window, cx| {
         document_toolbar_for_action.update(cx, |toolbar, cx| {
             toolbar.deploy(None, window, cx);
+        });
+    });
+
+    let document_toolbar_for_replace = document_toolbar_item.clone();
+    workspace.register_action(move |_workspace, _: &DeployReplace, window, cx| {
+        document_toolbar_for_replace.update(cx, |toolbar, cx| {
+            toolbar.toggle_replace(window, cx);
         });
     });
 

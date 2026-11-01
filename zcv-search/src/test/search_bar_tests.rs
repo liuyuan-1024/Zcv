@@ -3,7 +3,7 @@ use std::sync::Arc;
 use gpui::{
     AppContext, Context, FocusHandle, Render, TestAppContext, VisualTestContext, Window, div,
 };
-use zcv_actions::DeployBufferSearch;
+use zcv_actions::DeployFind;
 use zcv_workspace::{Item, SearchableItem};
 
 use super::*;
@@ -49,7 +49,6 @@ fn closing_document_search_only_returns_focus_when_search_owns_it(cx: &mut TestA
                 SearchBarConfig {
                     id_prefix: "test-search-focus",
                     key_context: "BufferSearchBar",
-                    supports_replace: false,
                     query_placeholder: "搜索...",
                     replace_placeholder: "替换为...",
                     presentation: SearchBarPresentation::OnDemand,
@@ -96,7 +95,6 @@ fn find_from_query_input_uses_target_selection(cx: &mut TestAppContext) {
             SearchBarConfig {
                 id_prefix: "test-find-input",
                 key_context: "BufferSearchBar",
-                supports_replace: true,
                 query_placeholder: "搜索...",
                 replace_placeholder: "替换为...",
                 presentation: SearchBarPresentation::OnDemand,
@@ -120,7 +118,56 @@ fn find_from_query_input_uses_target_selection(cx: &mut TestAppContext) {
         assert!(<Editor as Item>::navigate_to_byte_range(editor, 6..10, cx));
     });
     cx.refresh().unwrap();
-    cx.dispatch_action(DeployBufferSearch);
+    cx.dispatch_action(DeployFind);
+    assert_eq!(bar.read_with(cx, |bar, cx| bar.query_text(cx)), "beta");
+}
+
+#[gpui::test]
+fn toggle_replace_from_hidden_opens_search_bar_with_replace(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let registry = Arc::new(LanguageRegistry::new());
+    let editor = cx.new({
+        let registry = Arc::clone(&registry);
+        move |cx| Editor::single_line(registry, cx)
+    });
+    editor.update(cx, |editor, cx| editor.set_text("alpha beta", cx));
+    let bar = cx.new(|cx| {
+        SearchBar::new(
+            SearchBarConfig {
+                id_prefix: "test-toggle-replace",
+                key_context: "BufferSearchBar",
+                query_placeholder: "搜索...",
+                replace_placeholder: "替换为...",
+                presentation: SearchBarPresentation::OnDemand,
+            },
+            registry,
+            cx,
+        )
+    });
+    let (_, cx) = cx.add_window_view({
+        let bar = bar.clone();
+        move |_, _| SearchBarHost { bar }
+    });
+    // 选中 "beta"：从编辑器直接进入替换时用它作为查询种子。
+    editor.update(cx, |editor, cx| {
+        assert!(<Editor as Item>::navigate_to_byte_range(editor, 6..10, cx));
+    });
+    cx.update(|window, cx| {
+        bar.update(cx, |bar, cx| {
+            bar.set_target(Some(Box::new(editor.downgrade())), window, cx);
+            assert!(!bar.visible(), "前置条件：搜索栏应处于关闭态");
+            bar.toggle_replace(window, cx);
+        });
+    });
+    cx.update(|window, cx| {
+        let bar = bar.read(cx);
+        assert!(bar.visible(), "关闭态触发替换应打开搜索栏");
+        assert!(bar.show_replace, "关闭态触发替换应展开替换行");
+        assert!(
+            bar.replace_input.read(cx).focus_handle().is_focused(window),
+            "存在选区时焦点应落在替换框"
+        );
+    });
     assert_eq!(bar.read_with(cx, |bar, cx| bar.query_text(cx)), "beta");
 }
 
@@ -142,7 +189,6 @@ fn search_bar_with_text<'a>(
             SearchBarConfig {
                 id_prefix: "test-search",
                 key_context: "BufferSearchBar",
-                supports_replace: true,
                 query_placeholder: "搜索...",
                 replace_placeholder: "替换为...",
                 presentation: SearchBarPresentation::OnDemand,

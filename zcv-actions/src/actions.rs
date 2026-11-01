@@ -175,19 +175,20 @@ described_actions!(
         CloseTab => ("关闭标签页", "关闭当前标签页"),
         NextTab => ("切换到下一个标签页", "激活右侧的标签页"),
         PrevTab => ("切换到上一个标签页", "激活左侧的标签页"),
-        TogglePreview => ("切换预览", "显示或隐藏当前文档的预览"),
-        DeployBufferSearch => ("查找当前文档", "在当前文档中搜索文本")
+        TogglePreview => ("切换预览", "显示或隐藏当前文档的预览")
     ]
 );
 
 // ── 文件内搜索（搜索条的全部动作；handler 由 SearchBar 统一持有）──
 
-actions!(
+described_actions!(
     search,
+    SEARCH_COMMANDS,
     [
+        DeployFind => ("在当前文档中查找", "在当前文档中搜索文本"),
+        DeployReplace => ("在当前文档中替换", "在当前文档中搜索文本并替换"),
         FindNext,
         FindPrevious,
-        ToggleReplace,
         ReplaceNext,
         ReplaceAll,
         ClearSearch,
@@ -283,6 +284,7 @@ pub fn commands() -> impl Iterator<Item = &'static CommandMetadata> {
         TERMINAL_COMMANDS,
         DOCK_COMMANDS,
         PANE_COMMANDS,
+        SEARCH_COMMANDS,
         WINDOW_COMMANDS,
         BRANCH_PICKER_COMMANDS,
         PROJECT_SEARCH_COMMANDS,

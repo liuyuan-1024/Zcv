@@ -147,6 +147,11 @@ impl EditorSearch {
 }
 
 impl SearchableItem for Editor {
+    /// 只有可编辑的文档才允许替换；大文件自动只读、只读组合文档据此自动禁用替换。
+    fn supports_replace(&self, cx: &App) -> bool {
+        !self.is_read_only(cx)
+    }
+
     /// 主选区文本作为查询建议；空选区（仅光标）不种入。
     fn query_suggestion(&self, cx: &App) -> Option<String> {
         let range = self.resolved_selections(cx).primary().range();

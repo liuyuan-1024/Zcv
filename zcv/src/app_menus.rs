@@ -2,7 +2,7 @@
 
 use gpui::{App, Menu, MenuItem, OsAction};
 use zcv_actions::{
-    About, CheckForUpdates, CloseTab, Copy, Cut, DeployBufferSearch, DeployProjectSearch,
+    About, CheckForUpdates, CloseTab, Copy, Cut, DeployFind, DeployProjectSearch, DeployReplace,
     FocusLineColumn, FocusQuickAccess, MinimizeWindow, OpenLocalDirectory, OpenLocalFile,
     OpenSettings, Paste, QuitWindow, Redo, Save, SelectAll, ToggleBottomDock, ToggleLeftDock,
     ToggleMaximizeWindow, Undo,
@@ -43,7 +43,8 @@ pub(crate) fn install(cx: &App) {
             MenuItem::action("快速打开…", FocusQuickAccess),
             MenuItem::action("跳转到行列…", FocusLineColumn),
             MenuItem::separator(),
-            MenuItem::action("查找当前文档…", DeployBufferSearch),
+            MenuItem::action("在文件中查找", DeployFind),
+            MenuItem::action("在文件中替换", DeployReplace),
             MenuItem::action("搜索项目内容…", DeployProjectSearch),
         ]),
         Menu::new("窗口").items([

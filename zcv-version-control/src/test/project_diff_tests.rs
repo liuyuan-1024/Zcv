@@ -2,12 +2,13 @@ use std::{fs, path::Path, process::Command, slice, sync::Arc};
 
 use gpui::{AvailableSpace, TestAppContext, px};
 
-use zcv_actions::DeployBufferSearch;
+use zcv_actions::DeployFind;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging, PendingHunk};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DiffExcerptRanges, ExcerptDiffKind, MultiBufferOffset};
 use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
+use zcv_workspace::SearchableItem;
 
 #[test]
 fn includes_matches_section_membership_for_every_status() {
@@ -1227,6 +1228,10 @@ fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestApp
     assert!(!unstaged_text.contains("line2"));
     cx.read_entity(&staged_view, |view, cx| {
         assert!(view.multi_buffer.read(cx).is_read_only());
+        assert!(
+            !view.editor.read(cx).supports_replace(cx),
+            "只读的已暂存差异不应支持替换"
+        );
         assert_eq!(view.tab_content_text(cx), "已暂存更改");
         assert_eq!(
             view.tab_icon(cx).map(|icon| icon.to_string()),
@@ -1235,6 +1240,10 @@ fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestApp
     });
     cx.read_entity(&unstaged_view, |view, cx| {
         assert!(!view.multi_buffer.read(cx).is_read_only());
+        assert!(
+            view.editor.read(cx).supports_replace(cx),
+            "可编辑的未暂存差异应支持替换"
+        );
         assert_eq!(view.tab_content_text(cx), "未暂存更改");
         assert_eq!(
             view.tab_icon(cx).map(|icon| icon.to_string()),
@@ -2032,7 +2041,7 @@ fn assert_project_diff_find_seeds_query_from_editor_selection(
         window.focus(&view.read(cx).editor.read(cx).focus_handle(), cx);
     });
     cx.refresh().unwrap();
-    cx.dispatch_action(DeployBufferSearch);
+    cx.dispatch_action(DeployFind);
     let query = view.read_with(cx, |view, cx| view.search_bar.read(cx).query_text(cx));
     assert_eq!(query, "beta");
 
@@ -2041,7 +2050,7 @@ fn assert_project_diff_find_seeds_query_from_editor_selection(
             assert!(<Editor as Item>::navigate_to_byte_range(editor, 0..5, cx));
         });
     });
-    cx.dispatch_action(DeployBufferSearch);
+    cx.dispatch_action(DeployFind);
     let query = view.read_with(cx, |view, cx| view.search_bar.read(cx).query_text(cx));
     assert_eq!(query, "alpha");
 
@@ -2050,7 +2059,7 @@ fn assert_project_diff_find_seeds_query_from_editor_selection(
             assert!(<Editor as Item>::navigate_to_byte_range(editor, 0..0, cx));
         });
     });
-    cx.dispatch_action(DeployBufferSearch);
+    cx.dispatch_action(DeployFind);
     let query = view.read_with(cx, |view, cx| view.search_bar.read(cx).query_text(cx));
     assert_eq!(query, "alpha");
 }

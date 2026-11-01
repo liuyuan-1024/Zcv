@@ -31,8 +31,10 @@ pub enum Direction {
 /// 实现方持有匹配结果与活动位置；搜索会话控制器通过本协议派发统一的
 /// [`zcv_project::SearchQuery`]。
 pub trait SearchableItem: Item + EventEmitter<SearchEvent> {
-    /// 是否支持替换。项目搜索等只读搜索目标返回 false，SearchBar 据此禁用替换入口。
-    fn supports_replace(&self) -> bool {
+    /// 目标自身是否支持替换。只读目标（如只读差异、项目搜索结果）返回 false，搜索条据此隐藏替换入口。
+    ///
+    /// 替换能力只由目标决定，搜索栏不另存副本。
+    fn supports_replace(&self, _cx: &App) -> bool {
         true
     }
 
@@ -62,20 +64,27 @@ pub trait SearchableItem: Item + EventEmitter<SearchEvent> {
     );
 
     /// 替换活动匹配；返回是否实际替换。
+    ///
+    /// 搜索条只在目标支持替换时调用；
+    /// 不支持替换的目标无需覆写，默认不执行任何操作。
     fn replace_current(
         &mut self,
-        replacement: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool;
+        _replacement: &str,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> bool {
+        false
+    }
 
-    /// 替换全部匹配；返回替换数量。
+    /// 替换全部匹配；返回替换数量。不支持替换的目标无需覆写，默认返回 0。
     fn replace_all(
         &mut self,
-        replacement: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> usize;
+        _replacement: &str,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> usize {
+        0
+    }
 }
 
 /// SearchableItem 的类型擦除句柄。
@@ -141,7 +150,7 @@ impl<T: SearchableItem> SearchableItemHandle for Entity<T> {
     }
 
     fn supports_replace(&self, cx: &App) -> bool {
-        self.read(cx).supports_replace()
+        self.read(cx).supports_replace(cx)
     }
 
     fn query_suggestion(&self, cx: &App) -> Option<String> {

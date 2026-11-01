@@ -18,7 +18,7 @@ use gpui::{
     ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
     prelude::*,
 };
-use zcv_actions::DeployBufferSearch;
+use zcv_actions::{DeployFind, DeployReplace};
 use zcv_buffer_diff::{BufferDiff, BufferDiffEvent, BufferDiffInput, diff_line_boundary};
 use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorHunk, HunkControlTarget};
 use zcv_git::{ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode};
@@ -638,8 +638,6 @@ impl DiffView {
                     SearchBarConfig {
                         id_prefix: "project-diff",
                         key_context: "ProjectDiffSearchBar",
-                        // 仅未暂存差异支持替换。
-                        supports_replace: kind == ProjectDiffKind::Unstaged,
                         query_placeholder: "搜索...",
                         replace_placeholder: "替换为...",
                         presentation: SearchBarPresentation::Persistent,
@@ -1257,9 +1255,17 @@ impl Render for DiffView {
             .key_context("DiffView")
             .on_action({
                 let search_bar = self.search_bar.downgrade();
-                move |_: &DeployBufferSearch, window, cx| {
+                move |_: &DeployFind, window, cx| {
                     if let Some(search_bar) = search_bar.upgrade() {
                         search_bar.update(cx, |bar, cx| bar.deploy(None, window, cx));
+                    }
+                }
+            })
+            .on_action({
+                let search_bar = self.search_bar.downgrade();
+                move |_: &DeployReplace, window, cx| {
+                    if let Some(search_bar) = search_bar.upgrade() {
+                        search_bar.update(cx, |bar, cx| bar.toggle_replace(window, cx));
                     }
                 }
             })

@@ -452,6 +452,28 @@ fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn replace_capability_follows_editor_read_only_state(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+
+    let source = test_buffer(cx, "只读内容\n");
+    let combined = cx.new(MultiBuffer::empty_read_only);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..1, cx)], cx)
+    });
+
+    let (editable, cx) = editor_with_text(cx, "alpha");
+    cx.read_entity(&editable, |editor, cx| {
+        assert!(editor.supports_replace(cx), "可编辑文档应支持替换");
+    });
+
+    let (read_only, cx) = cx.add_window_view(move |_, cx| Editor::for_multi_buffer(combined, cx));
+    cx.read_entity(&read_only, |editor, cx| {
+        assert!(editor.is_read_only(cx));
+        assert!(!editor.supports_replace(cx), "只读文档不应支持替换");
+    });
+}
+
+#[gpui::test]
 fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     use std::ops::Range;

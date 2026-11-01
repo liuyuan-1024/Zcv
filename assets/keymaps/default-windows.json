@@ -288,7 +288,8 @@
       "ctrl-w": "pane::CloseTab",
 
       // 当前 Pane 搜索
-      "ctrl-f": "pane::DeployBufferSearch"
+      "ctrl-f": "search::DeployFind",
+      "ctrl-r": "search::DeployReplace"
     }
   },
 
@@ -302,12 +303,6 @@
       "alt-c": "search::ToggleCaseSensitive",
       "alt-w": "search::ToggleWholeWord",
       "alt-x": "search::ToggleRegex",
-
-      // =========================
-      // 替换
-      // =========================
-
-      "ctrl-r": "search::ToggleReplace",
 
       // =========================
       // 查找 / 退出 / 焦点切换

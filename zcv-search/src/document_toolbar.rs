@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use gpui::{Context, Entity, EventEmitter, ParentElement, Render, Styled, Window, div, prelude::*};
-use zcv_actions::{ClearSearch, DeployBufferSearch};
+use zcv_actions::{ClearSearch, DeployFind, DeployReplace};
 use zcv_editor::Editor;
 use zcv_keymap::display_shortcut;
 use zcv_language::LanguageRegistry;
@@ -39,7 +39,6 @@ impl DocumentToolbar {
                 SearchBarConfig {
                     id_prefix: "buffer-search",
                     key_context: "BufferSearchBar",
-                    supports_replace: true,
                     query_placeholder: "搜索...",
                     replace_placeholder: "替换为...",
                     presentation: SearchBarPresentation::OnDemand,
@@ -67,6 +66,12 @@ impl DocumentToolbar {
                 bar.deploy(query_seed, window, cx);
             }
         });
+    }
+
+    /// 在活动普通文档上切换替换行；搜索栏未打开时以替换方式部署。
+    pub(super) fn toggle_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_bar
+            .update(cx, |bar, cx| bar.toggle_replace(window, cx));
     }
 }
 
@@ -120,6 +125,7 @@ impl Render for DocumentToolbar {
             .items_center()
             .gap(scale::S6)
             .on_action(cx.listener(Self::handle_deploy))
+            .on_action(cx.listener(Self::handle_toggle_replace))
             .child(div().flex_1().min_w_0().child(self.breadcrumbs.clone()))
             .child(self.preview_button.clone())
             // 搜索按钮：未打开时提示 cmd-f（搜索）；
@@ -141,7 +147,7 @@ impl Render for DocumentToolbar {
                 if visible {
                     search_toggle.shortcut(display_shortcut(&ClearSearch, cx))
                 } else {
-                    search_toggle.shortcut(display_shortcut(&DeployBufferSearch, cx))
+                    search_toggle.shortcut(display_shortcut(&DeployFind, cx))
                 }
             })
             .into_any_element();
@@ -162,13 +168,17 @@ impl Render for DocumentToolbar {
 }
 
 impl DocumentToolbar {
-    fn handle_deploy(
+    fn handle_deploy(&mut self, _: &DeployFind, window: &mut Window, cx: &mut Context<Self>) {
+        self.deploy(None, window, cx);
+    }
+
+    fn handle_toggle_replace(
         &mut self,
-        _: &DeployBufferSearch,
+        _: &DeployReplace,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.deploy(None, window, cx);
+        self.toggle_replace(window, cx);
     }
 }
 

@@ -12,8 +12,8 @@ use gpui::{
 };
 use std::sync::Arc;
 use zcv_actions::{
-    Backtab, ClearSearch, DeployBufferSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext,
-    SelectAll, Tab, ToggleCaseSensitive, ToggleRegex, ToggleReplace, ToggleWholeWord,
+    Backtab, ClearSearch, DeployFind, DeployReplace, FindNext, FindPrevious, ReplaceAll,
+    ReplaceNext, SelectAll, Tab, ToggleCaseSensitive, ToggleRegex, ToggleWholeWord,
 };
 use zcv_editor::{Editor, EditorEvent};
 use zcv_keymap::display_shortcut;
@@ -36,8 +36,6 @@ pub struct SearchBarConfig {
     pub id_prefix: &'static str,
     /// 键位上下文名（BufferSearchBar / ProjectSearchBar / ProjectDiffSearchBar / GitGraphSearchBar）。
     pub key_context: &'static str,
-    /// 宿主是否允许替换；目标自身不支持替换时仍然禁用。
-    pub supports_replace: bool,
     pub query_placeholder: &'static str,
     pub replace_placeholder: &'static str,
     /// 按需显示的搜索栏初始隐藏；常驻搜索栏随宿主显示。
@@ -132,12 +130,10 @@ impl SearchBar {
         self.search_target().is_some()
     }
 
-    /// 是否支持替换：宿主配置与目标能力同时成立才启用。
+    /// 是否支持替换：由当前目标自身声明；目标已释放时自然禁用。
     pub fn supports_replace(&self, cx: &App) -> bool {
-        self.config.supports_replace
-            && self
-                .search_target()
-                .is_some_and(|item| item.supports_replace(cx))
+        self.search_target()
+            .is_some_and(|item| item.supports_replace(cx))
     }
 
     /// 由宿主注入/更换搜索目标；订阅目标的搜索事件以刷新计数与高亮。
@@ -195,6 +191,19 @@ impl SearchBar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.deploy_inner(query_seed, false, window, cx);
+    }
+
+    /// 部署搜索条的唯一实现；`replace_enabled` 决定是否同时展开替换行。
+    ///
+    /// 查找与替换共用同一条部署路径：命令层只表达“是否替换”，见性、替换开关与焦点仍由搜索会话自行决定。
+    fn deploy_inner(
+        &mut self,
+        query_seed: Option<String>,
+        replace_enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let was_visible = self.visible;
         self.visible = true;
         self.ensure_input_subscription(window, cx);
@@ -213,9 +222,18 @@ impl SearchBar {
             self.query_input
                 .update(cx, |editor, cx| editor.set_text(&seed, cx));
         }
-        window.focus(&self.query_input.read(cx).focus_handle(), cx);
-        // 全选查询文本：直接击键即可整体替换。
-        window.dispatch_action(Box::new(SelectAll), cx);
+        let replace_enabled = replace_enabled && self.supports_replace(cx);
+        if replace_enabled {
+            self.show_replace = true;
+        }
+        // 带选区直接进入替换时，焦点落在替换框（替换的是选中文本）；
+        // 否则聚焦查询框并全选，便于直接击键覆盖查询。
+        if replace_enabled && seeded {
+            window.focus(&self.replace_input.read(cx).focus_handle(), cx);
+        } else {
+            window.focus(&self.query_input.read(cx).focus_handle(), cx);
+            window.dispatch_action(Box::new(SelectAll), cx);
+        }
         if !was_visible || seeded {
             self.run_search(window, cx);
         }
@@ -290,8 +308,15 @@ impl SearchBar {
         self.run_search(window, cx);
     }
 
-    fn toggle_replace_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 切换替换行；搜索栏尚未部署时先以替换方式部署。
+    ///
+    /// 这条命令同时服务“搜索栏内切换”和“从编辑器直接进入替换”两种入口，由命令层在 Pane 上下文统一分发。
+    pub fn toggle_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.supports_replace(cx) {
+            return;
+        }
+        if !self.visible {
+            self.deploy_inner(None, true, window, cx);
             return;
         }
         let closing = self.show_replace;
@@ -383,7 +408,7 @@ impl SearchBar {
         let replace_toggle = weak.clone();
         let on_toggle_replace = move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
             if let Some(bar) = replace_toggle.upgrade() {
-                bar.update(cx, |bar, cx| bar.toggle_replace_mode(window, cx));
+                bar.update(cx, |bar, cx| bar.toggle_replace(window, cx));
             }
         };
         let previous = weak.clone();
@@ -434,7 +459,7 @@ impl SearchBar {
                     "icons/replace.svg",
                 )
                 .label("替换")
-                .shortcut(display_shortcut(&ToggleReplace, cx))
+                .shortcut(display_shortcut(&DeployReplace, cx))
                 .color(if self.show_replace {
                     colors.icon_accent
                 } else {
@@ -507,12 +532,7 @@ impl SearchBar {
 // ═══ SearchBar actions（keymap 搜索上下文绑定）═══
 
 impl SearchBar {
-    fn handle_deploy(
-        &mut self,
-        _: &DeployBufferSearch,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn handle_deploy(&mut self, _: &DeployFind, window: &mut Window, cx: &mut Context<Self>) {
         self.deploy(None, window, cx);
     }
 
@@ -556,11 +576,11 @@ impl SearchBar {
 
     fn handle_toggle_replace(
         &mut self,
-        _: &ToggleReplace,
+        _: &DeployReplace,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_replace_mode(window, cx);
+        self.toggle_replace(window, cx);
     }
 
     fn handle_replace_next(

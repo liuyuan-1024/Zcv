@@ -1,4 +1,4 @@
-use zcv_actions::DeployBufferSearch;
+use zcv_actions::DeployFind;
 
 use super::*;
 use crate::test::test_project;
@@ -34,7 +34,7 @@ fn git_graph_find_from_content_focuses_its_search_bar(cx: &mut TestAppContext) {
         window.focus(&focus, cx);
     });
     cx.refresh().unwrap();
-    cx.dispatch_action(DeployBufferSearch);
+    cx.dispatch_action(DeployFind);
     let query_focus = view.read_with(cx, |view, cx| {
         let bar = view.search_bar.read(cx);
         assert!(bar.visible());

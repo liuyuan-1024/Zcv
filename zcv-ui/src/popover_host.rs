@@ -1,4 +1,6 @@
-//! 顶栏浮层的开合、互斥、焦点归还与展示外壳。
+//! 锚定浮层的会话：开合、互斥与焦点归还。
+//!
+//! 呈现（定位、窗口收缩、点击外部关闭）由 overlay 原语承担，内容外观由各内容组件自带。
 
 use std::{
     cell::RefCell,
@@ -6,11 +8,10 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use gpui::{
-    Anchor, App, FocusHandle, MouseButton, MouseDownEvent, Pixels, WeakFocusHandle, Window,
-    anchored, deferred, div, point, prelude::*,
-};
+use gpui::{App, FocusHandle, WeakFocusHandle, Window, div, prelude::*};
 use zcv_theme::{color, scale};
+
+use crate::{OverlayAnchor, OverlayOutside, overlay};
 
 /// 浮层内容视图调用的关闭回调。
 pub type PopoverDismissHandler = Box<dyn Fn(&mut Window, &mut App)>;
@@ -26,7 +27,7 @@ impl OverlayId {
     }
 }
 
-/// 同一顶栏的所有浮层共享一个活动会话；其他窗口拥有独立实例。
+/// 同一浮层域的所有浮层共享一个活动会话；其他窗口拥有独立实例。
 #[derive(Clone, Default)]
 pub struct PopoverLayer {
     active: Rc<RefCell<Option<ActiveOverlay>>>,
@@ -121,7 +122,7 @@ impl PopoverLayer {
     }
 }
 
-/// 顶栏浮层与焦点会话外壳；调用方负责内容和目标焦点。
+/// 浮层会话外壳；调用方负责内容和目标焦点。
 pub struct PopoverHost {
     id: OverlayId,
     focus: FocusHandle,
@@ -152,7 +153,7 @@ impl PopoverHost {
         window.refresh();
     }
 
-    /// 焦点已转移到其他目标时，仅结束本入口在顶栏浮层中的登记。
+    /// 焦点已转移到其他目标时，仅结束本入口在浮层会话中的登记。
     pub fn clear(&self) {
         self.layer.dismiss(self.id);
     }
@@ -176,7 +177,7 @@ impl PopoverHost {
         }
     }
 
-    /// 浮层保持打开时更换焦点域并聚焦新目标（如顶栏菜单悬停切换面板）。
+    /// 浮层保持打开时更换焦点域并聚焦新目标（如菜单悬停切换、右键换行重开）。
     ///
     /// deferred 弹层的焦点不挂在宿主元素的焦点域下，焦点域必须跟随当前浮层内容；焦点归还目标保持打开时记录的那个。
     pub fn refocus(
@@ -220,33 +221,7 @@ impl PopoverHost {
         self.overlay_inner(window, cx, content, true)
     }
 
-    /// 菜单弹层使用外部点击事件关闭，保留顶栏相邻菜单的鼠标命中。
-    ///
-    /// 面板外观由菜单内容自带（`ContextMenu` 统一菜单外观），这里只负责锚定定位与点击拦截。
-    pub fn menu_overlay(
-        &self,
-        window: &Window,
-        content: impl IntoElement,
-        on_outside: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-    ) -> impl IntoElement {
-        let panel = div()
-            .occlude()
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                cx.stop_propagation();
-            })
-            .on_mouse_down_out(on_outside);
-
-        deferred(
-            anchored()
-                .anchor(Anchor::TopLeft)
-                .position(point(Pixels::ZERO, Pixels::ZERO))
-                .position_mode(gpui::AnchoredPositionMode::Local)
-                .snap_to_window_with_margin(scale::to_pixels(scale::S6, window))
-                .child(panel.child(content)),
-        )
-        .with_priority(1)
-    }
-
+    /// 选择器浮层：锚定挂载交给浮层原语，这里只保留选择器面板外观。
     fn overlay_inner(
         &self,
         window: &Window,
@@ -257,60 +232,28 @@ impl PopoverHost {
         let id = self.id;
         let layer = self.layer.clone();
         let win_size = window.bounds().size;
-        let panel = div()
-            .occlude()
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                cx.stop_propagation();
-            });
+        let panel_body = div()
+            .flex()
+            .flex_col()
+            .max_h(win_size.height - scale::to_pixels(scale::S6, window) * 2.0)
+            .bg(color::current(cx).elevated_surface_background)
+            .border_l_3()
+            .border_color(color::current(cx).border_focused)
+            .border_1()
+            .border_color(color::current(cx).border)
+            .rounded_lg()
+            .overflow_hidden()
+            .child(content);
 
-        div()
-            .when(intercept_background, |overlay| {
-                overlay.child(
-                    deferred(
-                        div()
-                            .absolute()
-                            .top(Pixels::ZERO)
-                            .left(Pixels::ZERO)
-                            .w(win_size.width)
-                            .h(win_size.height)
-                            .occlude()
-                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                                if let Some(active) = layer.dismiss(id) {
-                                    active.restore_focus(window, cx);
-                                }
-                                window.refresh();
-                            }),
-                    )
-                    .with_priority(0),
-                )
-            })
-            .child(
-                deferred(
-                    anchored()
-                        .anchor(Anchor::TopLeft)
-                        .position(point(Pixels::ZERO, Pixels::ZERO))
-                        .position_mode(gpui::AnchoredPositionMode::Local)
-                        .snap_to_window_with_margin(scale::to_pixels(scale::S6, window))
-                        .child(
-                            panel.child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .max_h(
-                                        win_size.height - scale::to_pixels(scale::S6, window) * 2.0,
-                                    )
-                                    .bg(color::current(cx).elevated_surface_background)
-                                    .border_l_3()
-                                    .border_color(color::current(cx).border_focused)
-                                    .border_1()
-                                    .border_color(color::current(cx).border)
-                                    .rounded_lg()
-                                    .overflow_hidden()
-                                    .child(content),
-                            ),
-                        ),
-                )
-                .with_priority(1),
-            )
+        let mut mounted = overlay(window).anchor(OverlayAnchor::AtSlot);
+        if intercept_background {
+            mounted = mounted.outside(OverlayOutside::Intercept(Box::new(move |_, window, cx| {
+                if let Some(active) = layer.dismiss(id) {
+                    active.restore_focus(window, cx);
+                }
+                window.refresh();
+            })));
+        }
+        mounted.child(panel_body)
     }
 }

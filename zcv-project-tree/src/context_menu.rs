@@ -61,16 +61,25 @@ impl ProjectTreePanel {
             }
         }
         let menu = self.build_context_menu(window, cx);
-        window.focus(&menu.focus_handle(cx), cx);
-        let _subscription = cx.subscribe(&menu, |tree, _, _: &DismissEvent, cx| {
-            tree.context_menu = None;
-            cx.notify();
-        });
+        let menu_focus = menu.focus_handle(cx);
+        // 先替换面板与订阅，再转移焦点：旧面板失焦时发出的关闭事件因此无人接收，不会误关整个浮层会话。
+        let _subscription =
+            cx.subscribe_in(&menu, window, |tree, _, _: &DismissEvent, window, cx| {
+                tree.dismiss_context_menu(window, cx);
+            });
         self.context_menu = Some(DeployedContextMenu {
             menu,
             position,
             _subscription,
         });
+        // 菜单开着时右键另一行：会话内换面（焦点域转移，归还目标保持首次打开时的面板）。
+        if self.menu_host.is_open() {
+            self.menu_host
+                .refocus(menu_focus.clone(), menu_focus, window, cx);
+        } else {
+            let focus_scope = menu_focus.clone();
+            self.menu_host.toggle(focus_scope, menu_focus, window, cx);
+        }
         cx.notify();
     }
 
@@ -127,9 +136,12 @@ impl ProjectTreePanel {
     }
 
     /// 关闭已部署的右键菜单并把焦点还给面板；未部署时无操作。
+    ///
+    /// 焦点归还由浮层会话承担：焦点仍在菜单域时还给打开时记录的面板；
+    /// 确认菜单项后焦点已在面板，会话不再抢焦点。
     pub(super) fn dismiss_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.context_menu.take().is_some() {
-            window.focus(&self.focus, cx);
+            self.menu_host.dismiss(window, cx);
             cx.notify();
         }
     }

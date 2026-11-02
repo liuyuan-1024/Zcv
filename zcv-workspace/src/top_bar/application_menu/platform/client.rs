@@ -5,7 +5,10 @@ use gpui::{
     OwnedMenu, OwnedMenuItem, Render, Subscription, Window, div, prelude::*,
 };
 use zcv_theme::{color, scale};
-use zcv_ui::{Button, ContextMenu, ContextMenuEntry, PopoverHost, PopoverLayer};
+use zcv_ui::{
+    Button, ContextMenu, ContextMenuEntry, OverlayAnchor, OverlayOutside, PopoverHost,
+    PopoverLayer, overlay,
+};
 
 use super::super::super::TopBar;
 
@@ -227,8 +230,20 @@ impl Render for ApplicationMenuView {
             if expanded && self.active_menu == menu_index {
                 slot = slot.bg(color::current(cx).element_selected);
                 if let Some(menu) = self.menu.clone() {
-                    let on_outside = cx.listener(Self::close_on_outside_click);
-                    slot = slot.child(self.host.menu_overlay(window, menu, on_outside));
+                    let view = cx.entity();
+                    let on_outside =
+                        OverlayOutside::Passthrough(Box::new(move |event, window, cx| {
+                            view.update(cx, |view, cx| {
+                                view.close_on_outside_click(event, window, cx)
+                            });
+                        }));
+                    slot = slot.child(
+                        overlay(window)
+                            .anchor(OverlayAnchor::AtSlot)
+                            .min_width(ContextMenu::SUGGESTED_WIDTH)
+                            .outside(on_outside)
+                            .child(menu),
+                    );
                 }
             }
             root = root.child(slot);

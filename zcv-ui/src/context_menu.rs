@@ -1,22 +1,19 @@
 //! `ContextMenu` —— 通用菜单面板。
 //!
 //! 承载菜单项呈现、键盘导航与确认派发，不决定浮层挂载方式：
-//! 顶栏等互斥浮层由调用方经 `PopoverHost` 挂载，右键等自由定位场景由调用方用 `anchored` + `deferred` 挂载。
+//! 挂载呈现由调用方经浮层原语完成，开合会话由 PopoverHost 承担。
 //! 菜单外观（背景、边框、勾选列、尾部说明列）由本组件统一提供。
 
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, SharedString,
-    Subscription, Window, div, prelude::*, px,
+    Action, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Pixels,
+    SharedString, Subscription, Window, div, prelude::*, px,
 };
 use zcv_actions::menu::{Cancel, Confirm, SelectFirst, SelectLast, SelectNext, SelectPrevious};
 use zcv_theme::{color, scale};
 
 use crate::{ListItem, SvgIcon};
-
-/// 菜单建议宽度：内容不足时保持体面宽度，窗口不够宽时收缩到窗口内。
-const MIN_WIDTH: f32 = 200.0;
 
 /// 菜单项确认回调；参数为菜单打开时的焦点上下文。
 type EntryHandler = Rc<dyn Fn(Option<&FocusHandle>, &mut Window, &mut App)>;
@@ -116,6 +113,9 @@ impl EventEmitter<DismissEvent> for ContextMenu {}
 impl FluentBuilder for ContextMenu {}
 
 impl ContextMenu {
+    /// 菜单建议宽度：内容不足时保持体面宽度；由浮层挂载方消费（窗口收缩在浮层原语）。
+    pub const SUGGESTED_WIDTH: Pixels = px(200.0);
+
     /// 构建菜单面板实体。
     pub fn build(
         window: &mut Window,
@@ -334,9 +334,6 @@ impl Render for ContextMenu {
             .any(|item| matches!(item, ContextMenuItem::Entry(entry) if entry.checked));
         let window_margin = scale::to_pixels(scale::S12, window);
         let max_height = window.bounds().size.height - window_margin;
-        // 窗口过窄时建议宽度让位于窗口边界，菜单始终收缩在窗口内。
-        let available_width = window.bounds().size.width - window_margin;
-        let suggested_width = available_width.min(px(MIN_WIDTH));
 
         let mut rows = div()
             .id("context-menu-rows")
@@ -365,7 +362,6 @@ impl Render for ContextMenu {
 
         div()
             .id("context-menu")
-            .debug_selector(|| "context-menu-panel".into())
             .occlude()
             .track_focus(&self.focus_handle)
             .key_context("menu")
@@ -379,9 +375,6 @@ impl Render for ContextMenu {
             .border_1()
             .border_color(colors.border)
             .rounded_lg()
-            // 建议宽度保底、窗口宽度封顶：短内容不局促，超长内容不溢出窗口。
-            .min_w(suggested_width)
-            .max_w(available_width)
             .child(rows)
     }
 }

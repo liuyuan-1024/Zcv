@@ -1,6 +1,6 @@
 use std::{cell::Cell, rc::Rc};
 
-use crate::toggle_picker;
+use crate::{PICKER_WIDTH, toggle_picker};
 use gpui::{
     AppContext, Entity, FocusHandle, KeyBinding, ScrollDelta, ScrollEvent, TestAppContext, actions,
     anchored, deferred, point, px, size,
@@ -661,6 +661,39 @@ fn picker_list_scrolls_inside_host_overlay(cx: &mut TestAppContext) {
             .expect("滚动后 footer 仍可见"),
         footer
     );
+}
+
+/// 窗口不够宽时选择器浮层收缩到窗口内：固定宽内容由面板外观裁剪，不溢出窗口。
+#[gpui::test]
+fn picker_overlay_shrinks_in_narrow_window(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init(cx);
+    let (wrapper, cx) = cx.add_window_view(|window, cx| {
+        let picker = cx.new(|cx| {
+            Picker::new(
+                ScrollDelegate {
+                    selected_index: Rc::new(Cell::new(0)),
+                },
+                PICKER_WIDTH,
+                window,
+                cx,
+            )
+        });
+        let mut host = PopoverHost::new(cx.focus_handle(), PopoverLayer::default());
+        toggle_picker(&mut host, &picker, window, cx);
+        HostPopoverWrapper { host, picker }
+    });
+    // 窗口 300px 窄于选择器固定宽 360px：浮层应收缩到窗口内。
+    cx.simulate_window_resize(cx.windows()[0], size(px(300.0), px(300.0)));
+
+    let panel = cx
+        .debug_bounds("overlay-panel")
+        .expect("选择器浮层应参与布局");
+    assert!(
+        panel.size.width <= px(300.0),
+        "窄窗口中选择器浮层不应超出窗口：{panel:?}"
+    );
+    let _ = wrapper;
 }
 
 #[gpui::test]

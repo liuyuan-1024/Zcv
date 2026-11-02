@@ -16,8 +16,8 @@ use std::{
 use gpui::{
     App, AsyncApp, Bounds, Context, DragMoveEvent, Entity, EventEmitter, ExternalPaths,
     FileDropEvent, FocusHandle, KeyContext, MouseButton, MouseExitEvent, Pixels, Point,
-    ScrollStrategy, Task, UniformListScrollHandle, WeakEntity, Window, anchored, deferred, div,
-    point, prelude::*, px, relative,
+    ScrollStrategy, Task, UniformListScrollHandle, WeakEntity, Window, div, point, prelude::*, px,
+    relative,
 };
 use zcv_actions::TreeActivate;
 use zcv_editor::Editor;
@@ -25,7 +25,10 @@ use zcv_git::FileStatus;
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_project::{GitStoreEvent, Project, WorktreeEntry, translate_path};
 use zcv_theme::{color, fixed, scale};
-use zcv_ui::{ConfirmOverlay, RowClickAction, Scrollbar, TreeState};
+use zcv_ui::{
+    ConfirmOverlay, ContextMenu, OverlayAnchor, OverlayOutside, PopoverHost, PopoverLayer,
+    RowClickAction, Scrollbar, TreeState, overlay,
+};
 use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace, typography_for_window};
 
 use zcv_settings::SettingsStore;
@@ -133,6 +136,8 @@ pub struct ProjectTreePanel {
     /// 当前打开的右键菜单会话；右键部署时创建，
     /// 确认、取消或点击外部关闭后清除（未打开时为 None）。
     context_menu: Option<DeployedContextMenu>,
+    /// 右键菜单的浮层会话：互斥与焦点归还。
+    menu_host: PopoverHost,
     /// 防抖刷新任务：新调度直接覆盖旧任务。
     refresh_task: Option<Task<()>>,
     /// 防抖会话代次：每次调度自增，到期任务校验代次未变才执行刷新。
@@ -166,6 +171,7 @@ pub struct ProjectTreePanel {
 impl ProjectTreePanel {
     pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
+        let menu_host = PopoverHost::new(focus.clone(), PopoverLayer::default());
         // 复用 Project 持有的唯一语言注册表，编辑内嵌输入框不自建。
         let language_registry = project.read(cx).language_registry();
         let entry_name_editor = cx.new(move |cx| Editor::single_line(language_registry, cx));
@@ -215,6 +221,7 @@ impl ProjectTreePanel {
             pending_clean_items: Vec::new(),
             active_transfer: None,
             context_menu: None,
+            menu_host,
             refresh_task: None,
             refresh_generation: 0,
             rebuild_generation: 0,
@@ -853,24 +860,19 @@ impl gpui::Render for ProjectTreePanel {
             .child(content)
             .children(progress)
             .children(conflict_overlay)
-            // 右键菜单：光标位置锚定；点击浮层外立即关闭并把焦点还给面板。
+            // 右键菜单：光标位置锚定；点击浮层外关闭（事件穿透，下层行同时响应）。
             .children(self.context_menu.as_ref().map(|deployed| {
                 let weak = cx.weak_entity();
-                deferred(
-                    anchored().position(deployed.position).child(
-                        div()
-                            .occlude()
-                            .on_mouse_down_out(move |_, window, cx| {
-                                if let Some(tree) = weak.upgrade() {
-                                    tree.update(cx, |tree, cx| {
-                                        tree.dismiss_context_menu(window, cx)
-                                    });
-                                }
-                            })
-                            .child(deployed.menu.clone()),
-                    ),
-                )
-                .with_priority(3)
+                let on_outside = OverlayOutside::Passthrough(Box::new(move |_, window, cx| {
+                    if let Some(tree) = weak.upgrade() {
+                        tree.update(cx, |tree, cx| tree.dismiss_context_menu(window, cx));
+                    }
+                }));
+                overlay(window)
+                    .anchor(OverlayAnchor::AtPosition(deployed.position))
+                    .min_width(ContextMenu::SUGGESTED_WIDTH)
+                    .outside(on_outside)
+                    .child(deployed.menu.clone())
             }))
     }
 }

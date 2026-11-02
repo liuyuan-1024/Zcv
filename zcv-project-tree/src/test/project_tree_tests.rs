@@ -3298,6 +3298,74 @@ fn context_menu_opens_at_right_clicked_row(cx: &mut TestAppContext) {
     });
 }
 
+/// 菜单开着时右键另一行：会话内换面（面板实体替换、焦点域转移），归还目标保持面板。
+#[gpui::test]
+fn context_menu_redeploy_switches_face_in_session(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (_temp, project, _root, _file_a, _file_b, _file_c, _target) = drag_project(cx);
+    let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project.clone(), cx));
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+    let right_click = |cx: &mut VisualTestContext, row: usize| {
+        cx.simulate_mouse_down(
+            point(px(10.), row_y(row)),
+            MouseButton::Right,
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
+    };
+
+    right_click(cx, 2);
+    let first_menu = cx.read_entity(&tree, |tree, _| {
+        tree.context_menu
+            .as_ref()
+            .expect("右键 a.txt 应部署菜单")
+            .menu
+            .clone()
+    });
+
+    // 菜单开着时右键浮层外的行（菜单从行 2 向下展开，行 1 不被遮挡）：换面而不是先关再开。
+    right_click(cx, 1);
+    let second_menu = cx.read_entity(&tree, |tree, _| {
+        tree.context_menu
+            .as_ref()
+            .expect("再次右键应部署新菜单")
+            .menu
+            .clone()
+    });
+    assert_ne!(
+        first_menu.entity_id(),
+        second_menu.entity_id(),
+        "会话内换面应替换菜单面板实体"
+    );
+    cx.read_entity(&tree, |tree, _| {
+        assert!(tree.menu_host.is_open(), "换面应保持浮层会话打开");
+    });
+    cx.update(|window, cx| {
+        assert!(
+            second_menu.read(cx).focus_handle(cx).is_focused(window),
+            "换面后焦点应转移到新菜单"
+        );
+    });
+
+    // 取消新菜单：会话关闭，焦点还给首次打开时记录的面板。
+    cx.dispatch_action(menu::Cancel);
+    cx.run_until_parked();
+    cx.read_entity(&tree, |tree, _| {
+        assert!(tree.context_menu.is_none(), "取消后菜单应清除");
+        assert!(!tree.menu_host.is_open(), "取消后浮层会话应关闭");
+    });
+    cx.update(|window, cx| {
+        assert!(
+            tree.read(cx).focus_handle(cx).is_focused(window),
+            "取消后焦点应还给面板"
+        );
+    });
+}
+
 /// 菜单确认在面板派发 Action：导航到「复制」确认后剪贴板更新、菜单关闭、焦点回面板。
 #[gpui::test]
 fn context_menu_confirm_runs_action_on_panel(cx: &mut TestAppContext) {

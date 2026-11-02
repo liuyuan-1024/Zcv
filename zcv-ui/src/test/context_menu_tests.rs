@@ -1,8 +1,8 @@
 use std::{cell::Cell, rc::Rc};
 
 use gpui::{
-    App, Context, DismissEvent, Entity, Pixels, Render, Size, TestAppContext, VisualTestContext,
-    Window, div, px, size,
+    App, Context, DismissEvent, Entity, Pixels, Render, TestAppContext, VisualTestContext, Window,
+    div, px, size,
 };
 use zcv_actions::{About, menu};
 use zcv_theme::scale;
@@ -35,21 +35,12 @@ fn open_menu(
     cx: &mut TestAppContext,
     build: impl FnOnce(ContextMenu, &mut Window, &mut Context<ContextMenu>) -> ContextMenu,
 ) -> (Entity<ContextMenu>, &mut VisualTestContext) {
-    open_menu_in_window(cx, build, size(px(720.0), px(600.0)))
-}
-
-/// 同 open_menu，但指定窗口尺寸；验证窗口宽度约束时使用。
-fn open_menu_in_window(
-    cx: &mut TestAppContext,
-    build: impl FnOnce(ContextMenu, &mut Window, &mut Context<ContextMenu>) -> ContextMenu,
-    window_size: Size<Pixels>,
-) -> (Entity<ContextMenu>, &mut VisualTestContext) {
     let (host, visual) = cx.add_window_view(move |window, cx| {
         let menu = ContextMenu::build(window, cx, build);
         MenuHost { menu }
     });
     let window = *visual.windows().last().expect("窗口应已创建");
-    visual.simulate_window_resize(window, window_size);
+    visual.simulate_window_resize(window, size(px(720.0), px(600.0)));
     let menu = visual.read_entity(&host, |host, _| host.menu.clone());
     (menu, visual)
 }
@@ -174,67 +165,6 @@ fn rows_align_label_and_end_slot_without_reserved_blank(cx: &mut TestAppContext)
     assert!(
         cx.debug_bounds("context-menu-shortcut-2").is_none(),
         "没有行尾说明的菜单项不应留出空白占位"
-    );
-}
-
-/// 面板宽度 = 建议宽度与内容宽度的较大者：短内容不局促，长内容撑开面板。
-#[gpui::test]
-fn panel_width_keeps_minimum_and_grows_with_content(cx: &mut TestAppContext) {
-    let (_, cx) = open_menu(cx, |menu, _, _| menu.entry(ContextMenuEntry::new("撤销")));
-    let short = cx
-        .debug_bounds("context-menu-panel")
-        .expect("短标签菜单应参与布局")
-        .size
-        .width;
-
-    let (_, cx) = open_menu(cx, |menu, _, _| {
-        menu.entry(ContextMenuEntry::new(
-            "切换到上一个标签页的完整标题显示文本内容示例",
-        ))
-    });
-    let long = cx
-        .debug_bounds("context-menu-panel")
-        .expect("长标签菜单应参与布局")
-        .size
-        .width;
-
-    // 短内容撑到建议宽度（200px + 边框），不被内容宽度限制得局促。
-    assert!(
-        short >= px(200.0),
-        "短标签菜单应保持建议宽度：实际 {short:?}"
-    );
-    assert!(
-        long > short,
-        "面板宽度应随菜单内容增长：短标签 {short:?}，长标签 {long:?}"
-    );
-}
-
-/// 窗口不够宽时菜单收缩到窗口内，不超出窗口边界。
-#[gpui::test]
-fn panel_width_shrinks_in_narrow_window(cx: &mut TestAppContext) {
-    let (_, cx) = open_menu_in_window(
-        cx,
-        |menu, _, _| {
-            menu.entry(ContextMenuEntry::new(
-                "切换到上一个标签页的完整标题显示文本内容示例",
-            ))
-        },
-        size(px(150.0), px(300.0)),
-    );
-    let width = cx
-        .debug_bounds("context-menu-panel")
-        .expect("窄窗口菜单应参与布局")
-        .size
-        .width;
-
-    // 窗口 150px 减 S12 边距为宽度上限；建议宽度在窄窗口内让位于窗口边界。
-    assert!(
-        width <= px(150.0),
-        "窄窗口中菜单不应超出窗口宽度：实际 {width:?}"
-    );
-    assert!(
-        width >= px(130.0),
-        "窄窗口中菜单应尽量利用窗口宽度：实际 {width:?}"
     );
 }
 

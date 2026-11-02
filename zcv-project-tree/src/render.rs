@@ -305,9 +305,24 @@ pub(super) fn render_row(
             }
         })
         .when(!is_editing, |row| {
-            // 预先克隆路径：下方 mouse_down 与 on_click 两个 move 闭包各自消费一份。
+            // 预先克隆路径：下方两个 mouse_down 与 on_click 各自消费一份。
             let click_path = path.clone();
-            row.on_mouse_down(MouseButton::Left, {
+            // 右键部署上下文菜单：右键行不在选中集时收拢为单选，集合操作语义见 deploy_context_menu。
+            row.on_mouse_down(MouseButton::Right, {
+                let focus = render_context.focus.clone();
+                let weak = render_context.weak.clone();
+                let menu_path = path.clone();
+                move |event, window, cx| {
+                    window.focus(&focus, cx);
+                    if let Some(tree) = weak.upgrade() {
+                        tree.update(cx, |tree, cx| {
+                            tree.deploy_context_menu(&menu_path, event.position, window, cx);
+                        });
+                    }
+                    cx.stop_propagation();
+                }
+            })
+            .on_mouse_down(MouseButton::Left, {
                 // 焦点句柄与 weak 引用先取出，避免 move 整个 render_context。
                 let focus = render_context.focus.clone();
                 let weak = render_context.weak.clone();

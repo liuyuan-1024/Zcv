@@ -4,7 +4,10 @@ use std::{collections::HashSet, time::Duration};
 
 use gpui::{ClipboardEntry, ClipboardItem, Context, ExternalPaths, Window};
 
-use zcv_actions::{TreeCancelConflict, TreeClearClipboard, TreeCopy, TreeCut, TreePaste};
+use zcv_actions::{
+    TreeCancelConflict, TreeClearClipboard, TreeCopy, TreeCopyAbsolutePath, TreeCopyRelativePath,
+    TreeCut, TreePaste,
+};
 use zcv_path::AbsolutePathBuf;
 use zcv_ui::ConfirmAnswer;
 
@@ -28,6 +31,61 @@ impl ProjectTreePanel {
         cx: &mut Context<Self>,
     ) {
         self.set_clipboard(TreeClipboard::Copied, cx);
+    }
+
+    pub(super) fn handle_tree_copy_absolute_path(
+        &mut self,
+        _: &TreeCopyAbsolutePath,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.copy_paths_as_text(|path, _| path.to_string_lossy().into_owned(), cx);
+    }
+
+    pub(super) fn handle_tree_copy_relative_path(
+        &mut self,
+        _: &TreeCopyRelativePath,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.copy_paths_as_text(
+            |path, root| {
+                path.strip_prefix(root)
+                    .expect("净化后的选中路径必在项目根下")
+                    .to_string_lossy()
+                    .into_owned()
+            },
+            cx,
+        );
+    }
+
+    /// 把净化选中集的路径文本写入系统剪贴板，每行一条。
+    ///
+    /// 只写文本，不进入文件复制/剪切会话（面板剪贴板状态不变）。
+    fn copy_paths_as_text(
+        &mut self,
+        render: impl Fn(&std::path::Path, &std::path::Path) -> String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.edit_state.is_some() || self.conflict.is_some() {
+            return;
+        }
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let paths = self.sanitized_selection();
+        if paths.is_empty() {
+            return;
+        }
+        let text = paths
+            .iter()
+            .map(|path| render(path.as_path(), root.as_path()))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
     pub(super) fn handle_tree_cut(&mut self, _: &TreeCut, _: &mut Window, cx: &mut Context<Self>) {

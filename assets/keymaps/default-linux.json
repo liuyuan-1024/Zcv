@@ -1,9 +1,16 @@
 [
   {
-    "context": "ApplicationMenu",
+    "context": "menu",
     "bindings": {
-      // 关闭应用菜单
-      "escape": "app_menu::CloseMenu"
+      // 菜单面板键盘导航
+      "up": "menu::SelectPrevious",
+      "down": "menu::SelectNext",
+      "home": "menu::SelectFirst",
+      "end": "menu::SelectLast",
+      "pageup": "menu::SelectFirst",
+      "pagedown": "menu::SelectLast",
+      "enter": "menu::Confirm",
+      "escape": "menu::Cancel"
     }
   },
 

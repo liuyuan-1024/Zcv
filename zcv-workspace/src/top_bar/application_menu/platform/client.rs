@@ -1,12 +1,11 @@
 //! 非 macOS 的窗口内应用菜单；内容来自 GPUI 的应用菜单定义。
 
 use gpui::{
-    AnyElement, App, Context, Entity, MouseDownEvent, OwnedMenu, OwnedMenuItem, Render,
-    StatefulInteractiveElement, Subscription, Window, div, prelude::*, px,
+    AnyElement, App, Context, DismissEvent, Entity, FocusHandle, Focusable, MouseDownEvent,
+    OwnedMenu, OwnedMenuItem, Render, Subscription, Window, div, prelude::*,
 };
-use zcv_actions::CloseMenu;
 use zcv_theme::{color, scale};
-use zcv_ui::{Button, ListItem, PopoverHost, PopoverLayer, SvgIcon};
+use zcv_ui::{Button, ContextMenu, ContextMenuEntry, PopoverHost, PopoverLayer};
 
 use super::super::super::TopBar;
 
@@ -38,6 +37,12 @@ struct ApplicationMenuView {
     menus: Vec<OwnedMenu>,
     active_menu: usize,
     host: PopoverHost,
+    /// 当前展开的菜单面板；随顶层菜单切换重建。
+    menu: Option<Entity<ContextMenu>>,
+    /// 打开菜单时的焦点上下文；
+    /// 确认 action 前把焦点归还到这里，使 action 在打开菜单前的焦点链上派发。
+    menu_context: Option<FocusHandle>,
+    _menu_subscription: Option<Subscription>,
 }
 
 impl ApplicationMenuView {
@@ -60,6 +65,9 @@ impl ApplicationMenuView {
             menus,
             active_menu: 0,
             host: PopoverHost::new(cx.focus_handle(), layer),
+            menu: None,
+            menu_context: None,
+            _menu_subscription: None,
         }
     }
 
@@ -67,36 +75,66 @@ impl ApplicationMenuView {
         self.host.is_open()
     }
 
+    /// 打开或切换到指定顶层菜单。
+    ///
+    /// 首次打开记录焦点上下文并进入浮层会话；
+    /// 已展开时（悬停切换）只重建面板并转移焦点，浮层会话保持不变。
     fn open_menu(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.active_menu = index;
         if !self.host.is_open() {
-            let focus = self.host.focus_handle();
-            self.host.toggle(focus.clone(), focus, window, cx);
+            self.menu_context = window.focused(cx);
+        }
+        let context = self.menu_context.clone();
+        let menu = Self::build_panel(&self.menus[index], context, window, cx);
+        let menu_focus = menu.read(cx).focus_handle(cx);
+        // 先替换面板与订阅，再转移焦点：旧面板失焦时发出的关闭事件因此无人接收，不会误关整个浮层会话。
+        self.menu = Some(menu.clone());
+        self._menu_subscription =
+            Some(
+                cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
+                    this.dismiss_open_menu(window, cx);
+                }),
+            );
+        if self.host.is_open() {
+            self.host
+                .refocus(menu_focus.clone(), menu_focus, window, cx);
+        } else {
+            let focus_scope = menu_focus.clone();
+            self.host.toggle(focus_scope, menu_focus, window, cx);
         }
         cx.notify();
     }
 
     fn toggle_menu(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.host.is_open() && self.active_menu == index {
-            self.host.dismiss(window, cx);
-            cx.notify();
+            self.dismiss_open_menu(window, cx);
         } else {
             self.open_menu(index, window, cx);
         }
     }
 
-    fn hover_menu(&mut self, index: usize, entered: bool, cx: &mut Context<Self>) {
+    /// 鼠标悬停切换顶层菜单；仅在已展开时生效。
+    fn hover_menu(
+        &mut self,
+        index: usize,
+        entered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if entered && self.host.is_open() && self.active_menu != index {
-            self.active_menu = index;
-            cx.notify();
+            self.open_menu(index, window, cx);
         }
     }
 
-    fn close(&mut self, _: &CloseMenu, window: &mut Window, cx: &mut Context<Self>) {
+    fn dismiss_open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        self.menu_context = None;
+        self._menu_subscription = None;
         self.host.dismiss(window, cx);
         cx.notify();
     }
 
+    /// 点击面板外时关闭；若点击的是相邻菜单的触发器，悬停切换已接管会话，不在此关闭。
     fn close_on_outside_click(
         &mut self,
         _: &MouseDownEvent,
@@ -108,59 +146,26 @@ impl ApplicationMenuView {
         window.defer(cx, move |window, cx| {
             let _ = menu.update(cx, |menu, cx| {
                 if menu.active_menu == active_menu && menu.host.is_open() {
-                    menu.host.dismiss(window, cx);
-                    cx.notify();
+                    menu.dismiss_open_menu(window, cx);
                 }
             });
         });
     }
 
-    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.host.is_open() {
-            return;
-        }
-        let Some(OwnedMenuItem::Action {
-            action,
-            disabled: false,
-            ..
-        }) = self.menus[self.active_menu].items.get(index)
-        else {
-            return;
-        };
-        let action = action.boxed_clone();
-        self.host.dismiss(window, cx);
-        window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
-        cx.notify();
-    }
-
-    /// 单个菜单的面板内容：名称靠左、快捷键靠行尾。
-    ///
-    /// 面板宽度由内容撑开；勾选列只在菜单含勾选项时占用，普通菜单项不预留缩进。
-    fn render_panel(&self, menu: &OwnedMenu, window: &Window, cx: &Context<Self>) -> AnyElement {
-        let colors = *color::current(cx);
-        let has_toggles = menu
-            .items
-            .iter()
-            .any(|item| matches!(item, OwnedMenuItem::Action { checked: true, .. }));
-        let mut rows = div()
-            .id("application-menu-rows")
-            // test cfg 下注册 debug bounds，供面板宽度断言使用。
-            .debug_selector(|| "application-menu-rows".into())
-            .max_h(window.bounds().size.height - scale::to_pixels(scale::S12, window))
-            .py(scale::S4)
-            .overflow_y_scroll();
-
-        for (item_index, item) in menu.items.iter().enumerate() {
-            match item {
-                OwnedMenuItem::Separator => {
-                    rows = rows.child(
-                        div()
-                            .h(px(1.0))
-                            .my(scale::S4)
-                            .mx(scale::S8)
-                            .bg(colors.border),
-                    );
-                }
+    /// 把 GPUI 应用菜单定义转换成菜单面板；快捷键文本来自 keymap。
+    fn build_panel(
+        menu: &OwnedMenu,
+        context: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<ContextMenu> {
+        ContextMenu::build(window, cx, |panel, _, cx| {
+            let panel = match context {
+                Some(context) => panel.context(context),
+                None => panel,
+            };
+            menu.items.iter().fold(panel, |panel, item| match item {
+                OwnedMenuItem::Separator => panel.separator(),
                 OwnedMenuItem::Action {
                     name,
                     action,
@@ -168,74 +173,17 @@ impl ApplicationMenuView {
                     disabled,
                     ..
                 } => {
-                    let checked = *checked;
-                    let disabled = *disabled;
-                    let label_color = if disabled {
-                        colors.text_disabled
-                    } else {
-                        colors.text
-                    };
-                    let shortcut_color = if disabled {
-                        colors.text_disabled
-                    } else {
-                        colors.text_placeholder
-                    };
-                    let row = ListItem::new(("application-menu-item", item_index))
-                        .disabled(disabled)
-                        .child(
-                            div()
-                                .debug_selector(move || {
-                                    format!("application-menu-label-{item_index}")
-                                })
-                                .text_color(label_color)
-                                .child(name.clone()),
-                        )
-                        // 快捷键与顶栏按钮同一数据源；没有绑定的菜单项不留占位。
-                        .when_some(
-                            zcv_keymap::display_shortcut(&**action, cx),
-                            move |row, shortcut| {
-                                row.end_slot(
-                                    div()
-                                        .debug_selector(move || {
-                                            format!("application-menu-shortcut-{item_index}")
-                                        })
-                                        .text_color(shortcut_color)
-                                        .child(shortcut),
-                                )
-                            },
-                        )
-                        .when(has_toggles, move |row| {
-                            row.start_slot(
-                                div()
-                                    .debug_selector(move || {
-                                        format!("application-menu-check-{item_index}")
-                                    })
-                                    // 未勾选的项用不可见占位保持同列对齐。
-                                    .when(!checked, |slot| slot.invisible())
-                                    .child(SvgIcon::new("icons/check.svg").color(if disabled {
-                                        colors.text_disabled
-                                    } else {
-                                        colors.icon_accent
-                                    })),
-                            )
-                        });
-                    rows = rows.child(
-                        div()
-                            .id(("application-menu-row", item_index))
-                            .debug_selector(move || format!("application-menu-item-{item_index}"))
-                            .when(!disabled, |row| {
-                                row.on_click(cx.listener(move |this, _, window, cx| {
-                                    this.activate(item_index, window, cx)
-                                }))
-                            })
-                            .child(row),
-                    );
+                    let mut entry = ContextMenuEntry::action(name.clone(), action.boxed_clone())
+                        .checked(*checked)
+                        .disabled(*disabled);
+                    if let Some(shortcut) = zcv_keymap::display_shortcut(&**action, cx) {
+                        entry = entry.end_slot_text(shortcut);
+                    }
+                    panel.entry(entry)
                 }
                 _ => unreachable!("菜单内容已经在构造时校验"),
-            }
-        }
-
-        rows.into_any_element()
+            })
+        })
     }
 }
 
@@ -248,8 +196,6 @@ impl Render for ApplicationMenuView {
         let expanded = self.host.is_open();
         let mut root = div()
             .track_focus(&self.host.focus_handle())
-            .key_context("ApplicationMenu")
-            .on_action(cx.listener(Self::close))
             .flex()
             .items_center()
             .gap(scale::S2);
@@ -275,18 +221,15 @@ impl Render for ApplicationMenuView {
                 .relative()
                 .rounded_sm()
                 .child(trigger)
-                .on_hover(cx.listener(move |this, entered, _, cx| {
-                    this.hover_menu(menu_index, *entered, cx)
+                .on_hover(cx.listener(move |this, entered, window, cx| {
+                    this.hover_menu(menu_index, *entered, window, cx)
                 }));
             if expanded && self.active_menu == menu_index {
                 slot = slot.bg(color::current(cx).element_selected);
-                let panel = self.render_panel(menu, window, cx);
-                slot = slot.child(self.host.menu_overlay(
-                    window,
-                    cx,
-                    panel,
-                    cx.listener(Self::close_on_outside_click),
-                ));
+                if let Some(menu) = self.menu.clone() {
+                    let on_outside = cx.listener(Self::close_on_outside_click);
+                    slot = slot.child(self.host.menu_overlay(window, menu, on_outside));
+                }
             }
             root = root.child(slot);
         }

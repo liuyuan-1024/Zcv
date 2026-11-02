@@ -653,6 +653,25 @@ fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext)
 
     let target_offset = MultiBufferOffset::new(text.find("行内").expect("测试文本应包含 行内"));
     let target_end = MultiBufferOffset::new(target_offset.get() + "行内".len());
+    // 目标文本可能仍在视口外（折叠块较小时）；
+    // 显式滚动到目标行，不依赖"折叠大块恰好把目标拉进视口"的偶然布局。
+    let target_top = cx.read_entity(&editor, |editor, cx| {
+        let row = editor
+            .display_snapshot(cx)
+            .offset_to_display_point(target_end)
+            .expect("目标文本应有显示位置")
+            .row()
+            .get();
+        let line_height = editor
+            .input_layout
+            .as_ref()
+            .expect("刷新后应有输入命中布局")
+            .line_height();
+        line_height * row as f32
+    });
+    editor.update(cx, |editor, cx| editor.scroll_to(target_top, cx));
+    cx.refresh().expect("滚动后的编辑器应能刷新");
+
     let (click, line_height) = cx.read_entity(&editor, |editor, _| {
         let layout = editor
             .input_layout

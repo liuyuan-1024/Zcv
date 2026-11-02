@@ -15,8 +15,6 @@ use zcv_theme::{color, scale};
 /// 浮层内容视图调用的关闭回调。
 pub type PopoverDismissHandler = Box<dyn Fn(&mut Window, &mut App)>;
 
-type OutsideClickHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App)>;
-
 /// 浮层身份：同身份重复打开 = 关闭（toggle 语义）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct OverlayId(usize);
@@ -73,6 +71,16 @@ impl PopoverLayer {
             .borrow()
             .as_ref()
             .is_some_and(|active| active.id == id)
+    }
+
+    /// 浮层会话保持打开时更换焦点域；焦点归还目标不变。
+    fn refocus(&self, id: OverlayId, focus_scope: FocusHandle) {
+        let mut active = self.active.borrow_mut();
+        if let Some(active) = active.as_mut()
+            && active.id == id
+        {
+            active.focus_scope = focus_scope;
+        }
     }
 
     fn toggle(
@@ -168,6 +176,21 @@ impl PopoverHost {
         }
     }
 
+    /// 浮层保持打开时更换焦点域并聚焦新目标（如顶栏菜单悬停切换面板）。
+    ///
+    /// deferred 弹层的焦点不挂在宿主元素的焦点域下，焦点域必须跟随当前浮层内容；焦点归还目标保持打开时记录的那个。
+    pub fn refocus(
+        &self,
+        focus_scope: FocusHandle,
+        focus_target: FocusHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.layer.refocus(self.id, focus_scope);
+        window.focus(&focus_target, cx);
+        window.refresh();
+    }
+
     /// 打开时聚焦目标；关闭时把焦点还给发起位置。
     pub fn toggle(
         &mut self,
@@ -194,18 +217,34 @@ impl PopoverHost {
         cx: &App,
         content: impl IntoElement,
     ) -> impl IntoElement {
-        self.overlay_inner(window, cx, content, true, None)
+        self.overlay_inner(window, cx, content, true)
     }
 
     /// 菜单弹层使用外部点击事件关闭，保留顶栏相邻菜单的鼠标命中。
+    ///
+    /// 面板外观由菜单内容自带（`ContextMenu` 统一菜单外观），这里只负责锚定定位与点击拦截。
     pub fn menu_overlay(
         &self,
         window: &Window,
-        cx: &App,
         content: impl IntoElement,
         on_outside: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
-        self.overlay_inner(window, cx, content, false, Some(Box::new(on_outside)))
+        let panel = div()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+            })
+            .on_mouse_down_out(on_outside);
+
+        deferred(
+            anchored()
+                .anchor(Anchor::TopLeft)
+                .position(point(Pixels::ZERO, Pixels::ZERO))
+                .position_mode(gpui::AnchoredPositionMode::Local)
+                .snap_to_window_with_margin(scale::to_pixels(scale::S6, window))
+                .child(panel.child(content)),
+        )
+        .with_priority(1)
     }
 
     fn overlay_inner(
@@ -214,19 +253,15 @@ impl PopoverHost {
         cx: &App,
         content: impl IntoElement,
         intercept_background: bool,
-        on_outside: Option<OutsideClickHandler>,
     ) -> impl IntoElement {
         let id = self.id;
         let layer = self.layer.clone();
         let win_size = window.bounds().size;
-        let mut panel = div()
+        let panel = div()
             .occlude()
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
             });
-        if let Some(on_outside) = on_outside {
-            panel = panel.on_mouse_down_out(on_outside);
-        }
 
         div()
             .when(intercept_background, |overlay| {

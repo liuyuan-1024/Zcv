@@ -11,12 +11,12 @@ use std::{
 
 use gpui::{
     App, AppContext, AvailableSpace, ClipboardEntry, ClipboardItem, Context, Entity, ExternalPaths,
-    FileDropEvent, FocusHandle, KeyBinding, Modifiers, MouseButton, Render, TestAppContext,
-    VisualTestContext, Window, div, point, px,
+    FileDropEvent, FocusHandle, Focusable, KeyBinding, Modifiers, MouseButton, Render,
+    TestAppContext, VisualTestContext, Window, div, point, px,
 };
 use zcv_actions::{
     TreeActivate, TreeCancelConflict, TreeCancelEdit, TreeClearClipboard, TreeConfirmEdit,
-    TreeCopy, TreeCut, TreeNewEntry, TreePaste, TreeRename, TreeSelectNextExtend, TreeTrash,
+    TreeCopy, TreeCut, TreeNewEntry, TreePaste, TreeRename, TreeSelectNextExtend, TreeTrash, menu,
 };
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 
@@ -3255,5 +3255,251 @@ fn clicking_blank_area_without_prior_row_click_keeps_fallback_selection(cx: &mut
             "空白点击不应写入多选集合"
         );
         assert!(state.selected_set().is_empty(), "全程不应出现多选标记");
+    });
+}
+
+// ═══ 右键菜单 ═══════════════════════════════════
+
+/// 右键行部署菜单：右键行不在选中集时收拢为单选，焦点进入菜单面板。
+#[gpui::test]
+fn context_menu_opens_at_right_clicked_row(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (_temp, project, _root, _file_a, file_b, _file_c, _target) = drag_project(cx);
+    let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project.clone(), cx));
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+
+    // 先单选 a.txt（行 2），右键 b.txt（行 3，不在选中集）。
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_mouse_down(
+        point(px(10.), row_y(3)),
+        MouseButton::Right,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+
+    let menu = cx.read_entity(&tree, |tree, _| {
+        let deployed = tree.context_menu.as_ref().expect("右键应部署菜单");
+        assert_eq!(
+            tree.state.borrow().selected,
+            Some(abs(file_b.clone())),
+            "右键行不在选中集时应收拢为单选"
+        );
+        deployed.menu.clone()
+    });
+    cx.update(|window, cx| {
+        assert!(
+            menu.read(cx).focus_handle(cx).is_focused(window),
+            "部署后焦点应在菜单面板"
+        );
+    });
+}
+
+/// 菜单确认在面板派发 Action：导航到「复制」确认后剪贴板更新、菜单关闭、焦点回面板。
+#[gpui::test]
+fn context_menu_confirm_runs_action_on_panel(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (_temp, project, _root, file_a, _file_b, _file_c, _target) = drag_project(cx);
+    let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project.clone(), cx));
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+    cx.simulate_mouse_down(
+        point(px(10.), row_y(2)),
+        MouseButton::Right,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    let menu = cx.read_entity(&tree, |tree, _| {
+        tree.context_menu
+            .as_ref()
+            .expect("右键应部署菜单")
+            .menu
+            .clone()
+    });
+
+    // 文件行菜单项序：新建(0) | 重命名(2) 剪切(3) 复制(4) 粘贴(5) | 删除(7)。
+    menu.update_in(&mut *cx, |menu, window, cx| {
+        menu.select_first(&menu::SelectFirst, window, cx);
+        menu.select_next(&menu::SelectNext, window, cx);
+        menu.select_next(&menu::SelectNext, window, cx);
+        menu.select_next(&menu::SelectNext, window, cx);
+        assert_eq!(menu.selected_index(), Some(4), "应导航到复制项");
+        menu.confirm(&menu::Confirm, window, cx);
+    });
+    cx.run_until_parked();
+
+    cx.read_entity(&tree, |tree, _| {
+        assert!(tree.context_menu.is_none(), "确认后菜单应关闭");
+        assert!(
+            matches!(tree.clipboard, Some(TreeClipboard::Copied(_))),
+            "确认复制应更新面板剪贴板"
+        );
+    });
+    cx.update(|window, cx| {
+        let focus = cx.read_entity(&tree, |tree, _| tree.focus.clone());
+        assert!(focus.is_focused(window), "确认后焦点应回到面板");
+        let _ = file_a;
+    });
+}
+
+/// 根行菜单：重命名/剪切/复制/粘贴/删除禁用，键盘导航只在可用项间移动。
+#[gpui::test]
+fn context_menu_root_row_disables_entry_actions(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (_temp, project, _root, _file_a, _file_b, _file_c, _target) = drag_project(cx);
+    let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project.clone(), cx));
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+    cx.simulate_mouse_down(
+        point(px(10.), row_y(0)),
+        MouseButton::Right,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    let menu = cx.read_entity(&tree, |tree, _| {
+        tree.context_menu
+            .as_ref()
+            .expect("右键根行应部署菜单")
+            .menu
+            .clone()
+    });
+
+    // 根行是目录，项序：新建(0) | 重命名(2) 剪切(3) 复制(4) 粘贴(5) | 复制绝对(7) 复制相对(8) | 展开(10) 折叠(11) | 删除(13)。
+    menu.update_in(&mut *cx, |menu, window, cx| {
+        menu.select_first(&menu::SelectFirst, window, cx);
+        assert_eq!(menu.selected_index(), Some(0), "首个可用项应为新建");
+        // 重命名/剪切/复制/粘贴/复制路径（无剪贴板）全部禁用：导航直接跳到展开。
+        menu.select_next(&menu::SelectNext, window, cx);
+        assert_eq!(
+            menu.selected_index(),
+            Some(10),
+            "禁用项应被跳过，目录行的展开可选"
+        );
+        menu.select_next(&menu::SelectNext, window, cx);
+        assert_eq!(menu.selected_index(), Some(11), "折叠应可选");
+        // 删除对根行禁用：导航环绕回首项。
+        menu.select_next(&menu::SelectNext, window, cx);
+        assert_eq!(
+            menu.selected_index(),
+            Some(0),
+            "根行删除禁用，导航应环绕回首项"
+        );
+    });
+}
+
+/// 有键位绑定的菜单项显示快捷键尾注（重命名绑定 enter）。
+#[gpui::test]
+fn context_menu_entries_show_shortcuts(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    cx.update(|cx| zcv_keymap::init(cx).expect("内置键位应可加载"));
+    let (_temp, project, _root, _file_a, _file_b, _file_c, _target) = drag_project(cx);
+    let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project.clone(), cx));
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+    cx.simulate_mouse_down(
+        point(px(10.), row_y(2)),
+        MouseButton::Right,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+
+    // 文件行第 2 项是重命名（绑定 enter）：尾注元素应渲染。
+    assert!(
+        cx.debug_bounds("context-menu-shortcut-2").is_some(),
+        "有键位绑定的菜单项应显示快捷键尾注"
+    );
+}
+
+/// 复制路径菜单项：确认后系统剪贴板收到对应文本，面板剪贴板会话不受影响。
+#[gpui::test]
+fn context_menu_copy_paths_to_system_clipboard(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (_temp, project, root, _file_a, _file_b, _file_c, _target) = drag_project(cx);
+    let file_a = root.join("a.txt");
+    let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project.clone(), cx));
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+
+    // 右键 a.txt（行 2）→ 导航到「复制相对路径」（第 8 项）确认。
+    cx.simulate_mouse_down(
+        point(px(10.), row_y(2)),
+        MouseButton::Right,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    let menu = cx.read_entity(&tree, |tree, _| {
+        tree.context_menu
+            .as_ref()
+            .expect("右键应部署菜单")
+            .menu
+            .clone()
+    });
+    menu.update_in(&mut *cx, |menu, window, cx| {
+        menu.select_first(&menu::SelectFirst, window, cx);
+        // 粘贴在无剪贴板时禁用被跳过：0→2→3→4→7→8 共 5 次。
+        for _ in 0..5 {
+            menu.select_next(&menu::SelectNext, window, cx);
+        }
+        assert_eq!(menu.selected_index(), Some(8), "应导航到复制相对路径项");
+        menu.confirm(&menu::Confirm, window, cx);
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let text = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .expect("确认后系统剪贴板应有文本");
+        assert_eq!(text, "a.txt", "相对路径应去掉项目根前缀");
+    });
+
+    // 再次右键 → 导航到「复制绝对路径」（第 7 项）确认。
+    cx.simulate_mouse_down(
+        point(px(10.), row_y(2)),
+        MouseButton::Right,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    let menu = cx.read_entity(&tree, |tree, _| {
+        tree.context_menu
+            .as_ref()
+            .expect("再次右键应重新部署菜单")
+            .menu
+            .clone()
+    });
+    menu.update_in(&mut *cx, |menu, window, cx| {
+        menu.select_first(&menu::SelectFirst, window, cx);
+        // 同上，0→2→3→4→7 共 4 次。
+        for _ in 0..4 {
+            menu.select_next(&menu::SelectNext, window, cx);
+        }
+        assert_eq!(menu.selected_index(), Some(7), "应导航到复制绝对路径项");
+        menu.confirm(&menu::Confirm, window, cx);
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let text = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .expect("确认后系统剪贴板应有文本");
+        assert_eq!(text, file_a.to_string_lossy(), "绝对路径应保留完整前缀");
+    });
+    // 复制路径只写系统剪贴板文本，不进入文件复制/剪切会话。
+    cx.read_entity(&tree, |tree, _| {
+        assert!(tree.clipboard.is_none(), "复制路径不应建立面板剪贴板会话");
     });
 }

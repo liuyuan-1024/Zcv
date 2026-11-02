@@ -144,7 +144,31 @@ described_actions!(
     ]
 );
 
-actions!(app_menu, [CloseMenu]);
+/// 菜单面板的键盘导航语义；keymap 绑定在 "menu" 上下文。
+///
+/// 独立模块避免与 version_control 等命名空间的同名类型冲突；
+/// action 名称仍为 `menu::Confirm` 等，与 keymap JSON 保持一致。
+pub mod menu {
+    use gpui::actions;
+
+    actions!(
+        menu,
+        [
+            /// 确认当前选中的菜单项。
+            Confirm,
+            /// 关闭菜单。
+            Cancel,
+            /// 选中下一项。
+            SelectNext,
+            /// 选中上一项。
+            SelectPrevious,
+            /// 选中第一项。
+            SelectFirst,
+            /// 选中最后一项。
+            SelectLast
+        ]
+    );
+}
 
 described_actions!(
     terminal,
@@ -269,6 +293,9 @@ actions!(
         TreeCopy,
         TreeCut,
         TreePaste,
+        // 把选中条目的路径文本写入系统剪贴板（不进入文件复制/剪切会话）。
+        TreeCopyAbsolutePath,
+        TreeCopyRelativePath,
         TreeCancelConflict,
         // 取消挂起的复制/剪切状态，清空面板剪贴板（非编辑态按 escape 触发）。
         TreeClearClipboard

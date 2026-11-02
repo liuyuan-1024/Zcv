@@ -16,8 +16,8 @@ use std::{
 use gpui::{
     App, AsyncApp, Bounds, Context, DragMoveEvent, Entity, EventEmitter, ExternalPaths,
     FileDropEvent, FocusHandle, KeyContext, MouseButton, MouseExitEvent, Pixels, Point,
-    ScrollStrategy, Task, UniformListScrollHandle, WeakEntity, Window, div, point, prelude::*, px,
-    relative,
+    ScrollStrategy, Task, UniformListScrollHandle, WeakEntity, Window, anchored, deferred, div,
+    point, prelude::*, px, relative,
 };
 use zcv_actions::TreeActivate;
 use zcv_editor::Editor;
@@ -49,6 +49,7 @@ pub type OnTrash = Rc<dyn Fn(PathBuf, &mut Window, &mut App)>;
 pub type OnMove = Rc<dyn Fn(PathBuf, PathBuf, bool, &mut App) -> anyhow::Result<()>>;
 
 mod actions;
+mod context_menu;
 mod drag;
 mod editing;
 mod execute;
@@ -56,6 +57,7 @@ mod item;
 mod render;
 mod transfer;
 
+use context_menu::DeployedContextMenu;
 use drag::TreeDrag;
 use editing::EditState;
 use item::ProjectTreeRow;
@@ -128,6 +130,9 @@ pub struct ProjectTreePanel {
     pending_clean_items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
     /// 复制进度（已完成数, 总数)：进度条数据源，None 时不渲染。
     active_transfer: Option<(usize, usize)>,
+    /// 当前打开的右键菜单会话；右键部署时创建，
+    /// 确认、取消或点击外部关闭后清除（未打开时为 None）。
+    context_menu: Option<DeployedContextMenu>,
     /// 防抖刷新任务：新调度直接覆盖旧任务。
     refresh_task: Option<Task<()>>,
     /// 防抖会话代次：每次调度自增，到期任务校验代次未变才执行刷新。
@@ -209,6 +214,7 @@ impl ProjectTreePanel {
             pending_click_intent: None,
             pending_clean_items: Vec::new(),
             active_transfer: None,
+            context_menu: None,
             refresh_task: None,
             refresh_generation: 0,
             rebuild_generation: 0,
@@ -808,6 +814,8 @@ impl gpui::Render for ProjectTreePanel {
             .on_action(cx.listener(Self::handle_tree_new_entry))
             .on_action(cx.listener(Self::handle_tree_trash))
             .on_action(cx.listener(Self::handle_tree_copy))
+            .on_action(cx.listener(Self::handle_tree_copy_absolute_path))
+            .on_action(cx.listener(Self::handle_tree_copy_relative_path))
             .on_action(cx.listener(Self::handle_tree_cut))
             .on_action(cx.listener(Self::handle_tree_paste))
             .on_action(cx.listener(Self::handle_tree_clear_clipboard))
@@ -845,6 +853,25 @@ impl gpui::Render for ProjectTreePanel {
             .child(content)
             .children(progress)
             .children(conflict_overlay)
+            // 右键菜单：光标位置锚定；点击浮层外立即关闭并把焦点还给面板。
+            .children(self.context_menu.as_ref().map(|deployed| {
+                let weak = cx.weak_entity();
+                deferred(
+                    anchored().position(deployed.position).child(
+                        div()
+                            .occlude()
+                            .on_mouse_down_out(move |_, window, cx| {
+                                if let Some(tree) = weak.upgrade() {
+                                    tree.update(cx, |tree, cx| {
+                                        tree.dismiss_context_menu(window, cx)
+                                    });
+                                }
+                            })
+                            .child(deployed.menu.clone()),
+                    ),
+                )
+                .with_priority(3)
+            }))
     }
 }
 

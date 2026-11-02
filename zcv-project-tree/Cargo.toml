@@ -13,6 +13,7 @@ gpui.workspace = true
 zcv-actions.workspace = true
 zcv-editor.workspace = true
 zcv-git.workspace = true
+zcv-keymap.workspace = true
 zcv-project.workspace = true
 zcv-path.workspace = true
 zcv-settings.workspace = true

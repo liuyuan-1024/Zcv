@@ -1176,6 +1176,6 @@ impl Drop for Terminal {
 #[path = "test/terminal_tests.rs"]
 mod tests;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "test/terminal_view_tests.rs"]
 mod terminal_view_tests;

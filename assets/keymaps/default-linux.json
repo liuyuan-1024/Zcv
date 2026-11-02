@@ -357,6 +357,7 @@
 
       // 剪贴板
       "ctrl-shift-c": "editor::Copy",
+      "ctrl-v": "editor::Paste",
       "ctrl-shift-v": "editor::Paste",
 
       // 清屏
@@ -369,6 +370,14 @@
       "ctrl-=": "terminal::IncreaseFontSize",
       "ctrl--": "terminal::DecreaseFontSize",
       "ctrl-0": "terminal::ResetFontSize"
+    }
+  },
+
+  {
+    // 有选区时 ctrl-c 优先复制；无选区时回落到 Terminal 上下文的 ctrl-c 中止。
+    "context": "Terminal && selection",
+    "bindings": {
+      "ctrl-c": "editor::Copy"
     }
   },
 

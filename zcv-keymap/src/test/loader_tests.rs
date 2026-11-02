@@ -385,7 +385,7 @@ fn editor_keymap_covers_line_selection_extensions(cx: &mut TestAppContext) {
     });
 }
 
-/// Ctrl-C 在终端中必须发送中断字符，不能落到编辑器复制或全局取消动作。
+/// 无选区时终端的 Ctrl-C 必须发送中断字符；有选区时的复制由 `Terminal && selection` 上下文单独声明（见下方优先级测试）。
 #[test]
 fn terminal_keymap_binds_ctrl_c_to_interrupt_on_every_platform() {
     for source in [
@@ -404,6 +404,78 @@ fn terminal_keymap_binds_ctrl_c_to_interrupt_on_every_platform() {
             "{source} 的 Ctrl-C 必须发送终端中断"
         );
     }
+}
+
+/// 终端粘贴键位在 Windows 与 Linux 保持一致：ctrl-v 与 ctrl-shift-v 都是粘贴。
+/// 有意偏离 Zed 的 Linux 惯例（把 ctrl-v 留给 shell 的 literal-next）：
+/// Zcv 的终端键位跨平台统一，极少使用的 literal-next 可由用户自定义 keymap 找回。
+#[test]
+fn terminal_paste_shortcuts_are_uniform_across_platforms() {
+    for source in ["default-linux.json", "default-windows.json"] {
+        let groups = parse_builtin_keymap(source);
+        let terminal = groups
+            .iter()
+            .find(|group| group.context.as_deref() == Some("Terminal"))
+            .unwrap_or_else(|| panic!("{source} 缺少 Terminal 上下文"));
+        assert_eq!(
+            terminal.bindings.get("ctrl-v").map(RawAction::name),
+            Some("editor::Paste"),
+            "{source} 终端的 ctrl-v 应为粘贴"
+        );
+        assert_eq!(
+            terminal.bindings.get("ctrl-shift-v").map(RawAction::name),
+            Some("editor::Paste"),
+            "{source} 终端的 ctrl-shift-v 应保持粘贴"
+        );
+    }
+}
+
+/// 有选区时终端的 ctrl-c 优先解析为复制，无选区时保持中断；
+/// 两个平台共用同一组绑定，行为不得分叉。
+#[gpui::test]
+fn terminal_ctrl_c_prefers_copy_when_selection_exists(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        for source in ["default-linux.json", "default-windows.json"] {
+            let json = zcv_assets::text(&format!("keymaps/{source}"))
+                .unwrap_or_else(|_| panic!("缺少内置快捷键 {source}"));
+            let keybindings = load_json(source, &json, cx)
+                .unwrap_or_else(|error| panic!("{source} 应能加载：{error}"));
+            let keymap = Keymap::new(keybindings.bindings);
+            let keystroke = [Keystroke::parse("ctrl-c").expect("ctrl-c 应合法")];
+
+            let with_selection = keymap.bindings_for_input(
+                &keystroke,
+                &[
+                    KeyContext::parse("Workspace").expect("工作区上下文应合法"),
+                    KeyContext::parse("Terminal selection").expect("选区上下文应合法"),
+                ],
+            );
+            assert_eq!(
+                with_selection
+                    .0
+                    .first()
+                    .map(|binding| binding.action().name()),
+                Some("editor::Copy"),
+                "{source} 有选区时 ctrl-c 应优先复制"
+            );
+
+            let without_selection = keymap.bindings_for_input(
+                &keystroke,
+                &[
+                    KeyContext::parse("Workspace").expect("工作区上下文应合法"),
+                    KeyContext::parse("Terminal").expect("终端上下文应合法"),
+                ],
+            );
+            assert_eq!(
+                without_selection
+                    .0
+                    .first()
+                    .map(|binding| binding.action().name()),
+                Some("terminal::Interrupt"),
+                "{source} 无选区时 ctrl-c 应保持中断"
+            );
+        }
+    });
 }
 
 /// 内容与 UI 缩放均为全局快捷键；终端在自身上下文覆盖内容缩放键位。

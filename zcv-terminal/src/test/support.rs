@@ -31,7 +31,11 @@ pub(crate) fn display_only_terminal(
     );
     let initial_content = alacritty::make_content(&term.lock(), None);
 
+    // unix 上传无效 tty fd 作哨兵；Windows 无前台进程组查询，仅回退 pid。
+    #[cfg(unix)]
     let pid_getter = ProcessIdGetter::new(-1, 0);
+    #[cfg(windows)]
+    let pid_getter = ProcessIdGetter::new(0);
 
     Terminal {
         term,

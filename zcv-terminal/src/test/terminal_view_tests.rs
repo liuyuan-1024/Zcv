@@ -6,9 +6,11 @@ use crate::{
     test::support::{display_only_terminal, write_output},
 };
 use gpui::{
-    Context, Entity, EntityInputHandler, IntoElement, Modifiers, MouseButton, Render,
-    TestAppContext, VisualTestContext, Window, div, point, prelude::*, px, size,
+    ClipboardItem, Context, Entity, EntityInputHandler, IntoElement, KeyBinding, Modifiers,
+    MouseButton, Render, TestAppContext, VisualTestContext, Window, div, point, prelude::*, px,
+    size,
 };
+use zcv_actions::{Copy, Interrupt, Paste};
 use zcv_settings::{SettingsStore, UserSettings};
 
 #[derive(Default)]
@@ -297,4 +299,175 @@ async fn releasing_selection_outside_the_terminal_ends_the_pointer_gesture(
         selection_after_return, selection_before_release,
         "释放后无按键移动不得继续扩展选择"
     );
+}
+
+/// 绑定与内置 keymap 相同的两组 ctrl-c：Terminal 中断、有选区时复制。
+fn bind_ctrl_c_conflict(cx: &mut TestAppContext) {
+    cx.update(|app| {
+        app.bind_keys([
+            KeyBinding::new("ctrl-c", Interrupt, Some("Terminal")),
+            KeyBinding::new("ctrl-c", Copy, Some("Terminal && selection")),
+        ]);
+    });
+}
+
+/// 有选区时 ctrl-c 应命中 `Terminal && selection` 的复制绑定：
+/// 剪贴板收到选中文本，且不回落到 Interrupt（其用户输入语义会清除选区）。
+#[gpui::test]
+async fn ctrl_c_copies_selection_instead_of_interrupting(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    bind_ctrl_c_conflict(cx);
+    let terminal = build_terminal(cx);
+    let terminal_for_view = terminal.clone();
+    let (view, cx) =
+        cx.add_window_view(move |_window, cx| TerminalView::new(terminal_for_view, cx));
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        terminal.update(cx, |t, cx| {
+            write_output(t, b"hello terminal\r\n", cx);
+            t.select_range(
+                SelectionType::Simple,
+                SelectionPoint {
+                    point: Point { line: 0, column: 0 },
+                    side: SelectionSide::Left,
+                },
+                Some(SelectionPoint {
+                    point: Point { line: 0, column: 5 },
+                    side: SelectionSide::Left,
+                }),
+                cx,
+            );
+            t.sync(cx);
+        });
+    });
+    let selected = cx.update(|_window, cx| terminal.read(cx).last_content().selection_text.clone());
+    assert_eq!(selected.as_deref(), Some("hello"), "应选中 hello");
+
+    cx.update(|window, cx| window.focus(&view.read(cx).focus_handle(), cx));
+    cx.refresh().expect("建立选区后应能刷新");
+    cx.simulate_keystrokes("ctrl-c");
+    cx.run_until_parked();
+
+    let (clipboard, has_selection) = cx.update(|_window, cx| {
+        (
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            terminal.update(cx, |t, cx| {
+                t.sync(cx);
+                t.last_content().selection.is_some()
+            }),
+        )
+    });
+    assert_eq!(
+        clipboard.as_deref(),
+        Some("hello"),
+        "有选区时 ctrl-c 应把选区复制到剪贴板"
+    );
+    assert!(
+        has_selection,
+        "复制不应清除选区；选区消失说明 Interrupt 也被分发"
+    );
+}
+
+/// ctrl-v 应把剪贴板内容粘贴进终端。
+///
+/// 粘贴走 write_input（滚回底部），且仅在剪贴板有内容时发生；
+/// 空剪贴板阶段用于排除其他按键动作造成相同副作用的假阳性。
+#[gpui::test]
+async fn ctrl_v_pastes_clipboard_into_terminal(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    cx.update(|app| {
+        app.bind_keys([KeyBinding::new("ctrl-v", Paste, Some("Terminal"))]);
+    });
+    let terminal = build_terminal(cx);
+    let terminal_for_view = terminal.clone();
+    let (view, cx) =
+        cx.add_window_view(move |_window, cx| TerminalView::new(terminal_for_view, cx));
+    cx.run_until_parked();
+
+    // 写入远超一屏的输出并向上回看，制造非底部状态。
+    cx.update(|_window, cx| {
+        terminal.update(cx, |t, cx| {
+            let mut output = Vec::new();
+            for i in 0..500 {
+                output.extend_from_slice(format!("line-{i:03}\r\n").as_bytes());
+            }
+            write_output(t, &output, cx);
+            t.sync(cx);
+            t.scroll_lines(3, cx);
+            t.sync(cx);
+        });
+    });
+    let offset = cx.update(|_window, cx| terminal.read(cx).last_content().display_offset);
+    assert!(offset > 0, "按键前应已滚离底部");
+
+    cx.update(|window, cx| window.focus(&view.read(cx).focus_handle(), cx));
+    cx.refresh().expect("聚焦后应能刷新");
+
+    // 阶段一：剪贴板为空，粘贴不应产生用户输入副作用。
+    cx.simulate_keystrokes("ctrl-v");
+    cx.update(|_window, cx| {
+        terminal.update(cx, |t, cx| t.sync(cx));
+    });
+    let offset = cx.update(|_window, cx| terminal.read(cx).last_content().display_offset);
+    assert!(offset > 0, "空剪贴板时粘贴不应改变视口");
+
+    // 阶段二：剪贴板有内容，粘贴把它作为用户输入写入（滚回底部）。
+    cx.update(|_window, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string("pasted text".to_string()));
+    });
+    cx.simulate_keystrokes("ctrl-v");
+    cx.update(|_window, cx| {
+        terminal.update(cx, |t, cx| t.sync(cx));
+    });
+    let offset = cx.update(|_window, cx| terminal.read(cx).last_content().display_offset);
+    assert_eq!(offset, 0, "粘贴应把视口带回底部");
+}
+
+/// 无选区时 ctrl-c 应回落到 Terminal 上下文的 Interrupt：
+/// 用户输入语义生效（滚回底部），且不写剪贴板。
+#[gpui::test]
+async fn ctrl_c_interrupts_without_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    bind_ctrl_c_conflict(cx);
+    let terminal = build_terminal(cx);
+    let terminal_for_view = terminal.clone();
+    let (view, cx) =
+        cx.add_window_view(move |_window, cx| TerminalView::new(terminal_for_view, cx));
+    cx.run_until_parked();
+
+    // 写入远超一屏的输出并向上回看，制造非底部状态；
+    // 行数需覆盖任意测试窗口尺寸，保证滚动历史非空。
+    cx.update(|_window, cx| {
+        terminal.update(cx, |t, cx| {
+            let mut output = Vec::new();
+            for i in 0..500 {
+                output.extend_from_slice(format!("line-{i:03}\r\n").as_bytes());
+            }
+            write_output(t, &output, cx);
+            t.sync(cx);
+            t.scroll_lines(3, cx);
+            t.sync(cx);
+        });
+    });
+    let offset = cx.update(|_window, cx| terminal.read(cx).last_content().display_offset);
+    assert!(offset > 0, "按键前应已滚离底部");
+
+    cx.update(|window, cx| window.focus(&view.read(cx).focus_handle(), cx));
+    cx.refresh().expect("滚动后应能刷新");
+    cx.simulate_keystrokes("ctrl-c");
+    cx.run_until_parked();
+
+    let (offset, clipboard) = cx.update(|_window, cx| {
+        terminal.update(cx, |t, cx| t.sync(cx));
+        (
+            terminal.read(cx).last_content().display_offset,
+            cx.read_from_clipboard().and_then(|item| item.text()),
+        )
+    });
+    assert_eq!(
+        offset, 0,
+        "无选区时 ctrl-c 应分发 Interrupt，其用户输入语义滚回底部"
+    );
+    assert!(clipboard.is_none(), "无选区时 ctrl-c 不应写剪贴板");
 }

@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
-    IntoElement, KeyDownEvent, Pixels, Render, ScrollEvent, SharedString, Subscription,
+    IntoElement, KeyContext, KeyDownEvent, Pixels, Render, ScrollEvent, SharedString, Subscription,
     UTF16Selection, Window, div, prelude::*, px,
 };
 
@@ -117,6 +117,20 @@ impl TerminalView {
 
     pub(crate) fn should_show_cursor(&self, focused: bool, _cx: &App) -> bool {
         focused
+    }
+
+    /// 终端焦点的按键分发上下文。
+    ///
+    /// 基础上下文为 Terminal，存在选区时追加 selection。
+    /// 终端中存在选区时，复制优先于中止。
+    /// 选区变化经 SelectionsChanged 触发重绘，每帧重新求值。
+    pub(crate) fn dispatch_context(&self, cx: &App) -> KeyContext {
+        let mut context = KeyContext::new_with_defaults(cx.platform_info().os);
+        context.add("Terminal");
+        if self.terminal.read(cx).last_content().selection.is_some() {
+            context.add("selection");
+        }
+        context
     }
 
     fn handle_key_down(
@@ -406,7 +420,7 @@ impl Render for TerminalView {
 
         div()
             .track_focus(&self.focus)
-            .key_context("Terminal")
+            .key_context(self.dispatch_context(cx))
             .tab_index(0)
             .size_full()
             .overflow_hidden()

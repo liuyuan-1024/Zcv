@@ -110,7 +110,11 @@
     "context": "MarkdownPreview",
     "bindings": {
       "ctrl-a": "editor::SelectAll",
-      "ctrl-c": "editor::Copy"
+      "ctrl-c": "editor::Copy",
+      "shift-left": "editor::SelectLeft",
+      "shift-right": "editor::SelectRight",
+      "shift-up": "editor::SelectUp",
+      "shift-down": "editor::SelectDown"
     }
   },
 

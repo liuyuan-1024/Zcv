@@ -829,6 +829,11 @@ fn standalone_image(content: &[Inline]) -> Option<BlockKind> {
     })
 }
 
+/// 代码块文本的行切分：去掉解析器补上的结尾换行，保留中间空行。
+pub(crate) fn code_lines(text: &str) -> impl Iterator<Item = &str> {
+    text.strip_suffix('\n').unwrap_or(text).split('\n')
+}
+
 #[cfg(test)]
 #[path = "test/document_tests.rs"]
 mod tests;

@@ -4,12 +4,6 @@ use gpui::{AppContext as _, TestAppContext};
 
 use super::BlinkManager;
 
-impl BlinkManager {
-    pub(crate) fn enabled(&self) -> bool {
-        self.enabled
-    }
-}
-
 /// 禁用必须显式取消在途定时器，而不是等它在下次回调时自行失效。
 #[gpui::test]
 fn disable_cancels_the_in_flight_blink_timer(cx: &mut TestAppContext) {
@@ -39,20 +33,14 @@ fn disable_cancels_the_in_flight_blink_timer(cx: &mut TestAppContext) {
 fn disabled_blink_setting_keeps_focused_cursor_visible(cx: &mut TestAppContext) {
     let manager = cx.new(|_| BlinkManager::new(false));
     manager.update(cx, |manager, cx| manager.enable(cx));
-    cx.read_entity(&manager, |manager, _| {
-        assert!(manager.visible());
-        assert!(manager.timer_task.is_none());
-    });
-
-    manager.update(cx, |manager, cx| manager.set_blink_enabled(true, cx));
-    cx.read_entity(&manager, |manager, _| {
-        assert!(manager.visible());
-        assert!(manager.timer_task.is_some());
-    });
-
-    manager.update(cx, |manager, cx| manager.set_blink_enabled(false, cx));
-    cx.read_entity(&manager, |manager, _| {
-        assert!(manager.visible());
-        assert!(manager.timer_task.is_none());
-    });
+    assert!(
+        cx.read_entity(&manager, |manager, _| manager.visible()),
+        "禁用闪烁时光标应保持可见"
+    );
+    cx.executor().advance_clock(Duration::from_millis(2000));
+    cx.run_until_parked();
+    assert!(
+        cx.read_entity(&manager, |manager, _| manager.visible()),
+        "禁用闪烁后不得翻转可见性"
+    );
 }

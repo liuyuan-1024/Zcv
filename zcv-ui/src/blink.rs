@@ -2,6 +2,7 @@
 //!
 //! 通过递归异步定时器实现光标可见性的交替切换。
 //! 闪烁循环仅在 `enable()` 后启动，`disable()` 后停止。
+//! 焦点驱动启停，交互时暂停闪烁。
 
 use std::time::Duration;
 
@@ -10,14 +11,15 @@ use gpui::{Context, Task};
 /// 光标闪烁间隔。
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 
-pub(crate) struct BlinkManager {
+pub struct BlinkManager {
     blink_interval: Duration,
     blink_epoch: usize,
     blinking_paused: bool,
     visible: bool,
     enabled: bool,
     blink_enabled: bool,
-    /// 当前在途的暂停 / 闪烁定时任务；替换或禁用时丢弃即取消，与实体同生命周期。
+    /// 当前在途的暂停 / 闪烁定时任务；
+    /// 替换或禁用时丢弃即取消，与实体同生命周期。
     timer_task: Option<Task<()>>,
 }
 
@@ -28,7 +30,7 @@ impl Default for BlinkManager {
 }
 
 impl BlinkManager {
-    pub(crate) fn new(blink_enabled: bool) -> Self {
+    pub fn new(blink_enabled: bool) -> Self {
         Self {
             blink_interval: CURSOR_BLINK_INTERVAL,
             blink_epoch: 0,
@@ -46,7 +48,7 @@ impl BlinkManager {
     }
 
     /// 输入时暂停闪烁：立即显示光标，500ms 后恢复闪烁。
-    pub(crate) fn pause_blinking(&mut self, cx: &mut Context<Self>) {
+    pub fn pause_blinking(&mut self, cx: &mut Context<Self>) {
         self.show_cursor(cx);
 
         let epoch = self.next_blink_epoch();
@@ -81,15 +83,15 @@ impl BlinkManager {
     }
 
     /// 确保光标可见。
-    pub(crate) fn show_cursor(&mut self, cx: &mut Context<Self>) {
+    pub fn show_cursor(&mut self, cx: &mut Context<Self>) {
         if !self.visible {
             self.visible = true;
             cx.notify();
         }
     }
 
-    /// 启用闪烁（编辑器获得焦点时调用）。
-    pub(crate) fn enable(&mut self, cx: &mut Context<Self>) {
+    /// 启用闪烁（获得焦点时调用）。
+    pub fn enable(&mut self, cx: &mut Context<Self>) {
         if self.enabled {
             return;
         }
@@ -98,13 +100,12 @@ impl BlinkManager {
             self.show_cursor(cx);
             return;
         }
-        // 先设为不可见，blink_cursors 会立刻翻转为 true，
-        // 这样下一帧渲染时光标就是可见的。
+        // 先设为不可见，blink_cursors 会立刻翻转为 true，这样下一帧渲染时光标就是可见的。
         self.visible = false;
         self.blink_cursors(self.blink_epoch, cx);
     }
 
-    pub(crate) fn set_blink_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+    pub fn set_blink_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.blink_enabled == enabled {
             return;
         }
@@ -119,8 +120,8 @@ impl BlinkManager {
         }
     }
 
-    /// 禁用闪烁（编辑器失去焦点时调用）。
-    pub(crate) fn disable(&mut self, cx: &mut Context<Self>) {
+    /// 禁用闪烁（失去焦点时调用）。
+    pub fn disable(&mut self, cx: &mut Context<Self>) {
         let was_visible = self.visible;
         self.visible = false;
         self.enabled = false;
@@ -132,10 +133,16 @@ impl BlinkManager {
     }
 
     /// 光标当前应绘制。
-    pub(crate) fn visible(&self) -> bool {
+    pub fn visible(&self) -> bool {
         self.visible
+    }
+
+    /// 闪烁循环是否启用（焦点生命周期的一部分）。
+    pub fn enabled(&self) -> bool {
+        self.enabled
     }
 }
 
 #[cfg(test)]
-mod test;
+#[path = "test/blink_tests.rs"]
+mod tests;

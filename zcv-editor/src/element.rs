@@ -28,7 +28,12 @@ use zcv_multi_buffer::{
 use zcv_settings::{CursorShape, IndentGuideSettings, SettingsStore};
 use zcv_text::Line;
 use zcv_theme::{color, fixed, scale};
-use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, ensure_minimum_contrast};
+use zcv_ui::{
+    ALL_STRAIGHT, BOTTOM_LEFT, BOTTOM_RIGHT, Button, ButtonSize, ButtonStyle, Corner, CornerStyle,
+    SelectionContourLine, SelectionSegmentShape, SvgIcon, TOP_LEFT, TOP_RIGHT,
+    ensure_minimum_contrast, paint_selection_segment, selection_corner_radius,
+    selection_line_end_overshoot, selection_segment_shapes,
+};
 
 use crate::{cursor_animation::CursorViewport, selection::SelectionSet};
 use unicode_segmentation::UnicodeSegmentation;
@@ -793,48 +798,6 @@ fn contains_hunk_region(bounds: Bounds<Pixels>, point: Point<Pixels>) -> bool {
         && point.y <= bounds.bottom()
 }
 
-/// 背景片段合成管线：把选区与 run 背景（搜索高亮、语法背景）合成为每行互不重叠的着色片段，一次绘制。
-/// 源按边界切分、重叠处按 base → 选区 → run 顺序混合（维持既有视觉层级），选区片段携带角样式（轮廓首末行外角圆角、行阶梯处宽行内凹/窄行外凸），run 片段为直角矩形。
-const TOP_LEFT: usize = 0;
-const TOP_RIGHT: usize = 1;
-const BOTTOM_RIGHT: usize = 2;
-const BOTTOM_LEFT: usize = 3;
-
-/// 片段角样式。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum CornerStyle {
-    /// 直角（内部接缝与 run 片段）。
-    Straight,
-    /// 外角圆角（选区轮廓首末行）。
-    Round,
-    /// 内凹切角（阶梯处更宽一行）。
-    Concave,
-    /// 外凸补角（阶梯处更窄一行）。
-    Convex,
-}
-
-/// 角样式 + 曲线横向跨度（Round 取轮廓行宽，阶梯角取两行外缘差，均封顶圆角半径）。
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Corner {
-    style: CornerStyle,
-    width: Pixels,
-}
-
-const STRAIGHT_CORNER: Corner = Corner {
-    style: CornerStyle::Straight,
-    width: Pixels::ZERO,
-};
-
-const ALL_STRAIGHT: [Corner; 4] = [STRAIGHT_CORNER; 4];
-
-/// 选区在单行的投影片段：角样式携带轮廓上下文（首末行圆角、阶梯宽行内凹/窄行外凸）。
-#[derive(Clone, Debug)]
-struct SelectionLineSegment {
-    start_x: Pixels,
-    end_x: Pixels,
-    corners: [Corner; 4],
-}
-
 /// 合成后的背景片段：一行内互不重叠的着色区间。
 #[derive(Debug)]
 struct BackgroundFragment {
@@ -849,168 +812,13 @@ struct BackgroundFragment {
 impl BackgroundFragment {
     /// 全直角片段直接画矩形；带角样式的选区片段按四角规则构建轮廓路径。
     fn paint(&self, y: Pixels, line_height: Pixels, corner_radius: Pixels, window: &mut Window) {
-        let top_left = point(self.start_x, y);
-        let top_right = point(self.end_x, y);
-        let bottom_right = point(self.end_x, y + line_height);
-        let bottom_left = point(self.start_x, y + line_height);
-        let curve_height = point(Pixels::ZERO, corner_radius);
-        let [
-            top_left_corner,
-            top_right_corner,
-            bottom_right_corner,
-            bottom_left_corner,
-        ] = self.corners;
-
-        if self
-            .corners
-            .iter()
-            .all(|corner| corner.style == CornerStyle::Straight)
-        {
-            window.paint_quad(fill(
-                Bounds::from_corners(top_left, bottom_right),
-                self.color,
-            ));
-            return;
-        }
-
-        // 顺时针：左上 → 顶边 → 右上 → 右边 → 右下 → 底边 → 左下 → 左边。
-        let mut builder = PathBuilder::fill();
-        builder.move_to(match top_left_corner.style {
-            CornerStyle::Round | CornerStyle::Concave => {
-                top_left + point(top_left_corner.width, Pixels::ZERO)
-            }
-            CornerStyle::Convex => top_left - point(top_left_corner.width, Pixels::ZERO),
-            CornerStyle::Straight => top_left,
-        });
-        match top_right_corner.style {
-            CornerStyle::Straight => builder.line_to(top_right),
-            CornerStyle::Round | CornerStyle::Concave => {
-                builder.line_to(top_right - point(top_right_corner.width, Pixels::ZERO));
-                builder.curve_to(top_right + curve_height, top_right);
-            }
-            CornerStyle::Convex => {
-                builder.line_to(top_right + point(top_right_corner.width, Pixels::ZERO));
-                builder.curve_to(top_right + curve_height, top_right);
-            }
-        }
-        match bottom_right_corner.style {
-            CornerStyle::Straight => builder.line_to(bottom_right),
-            CornerStyle::Round | CornerStyle::Concave => {
-                builder.line_to(bottom_right - curve_height);
-                builder.curve_to(
-                    bottom_right - point(bottom_right_corner.width, Pixels::ZERO),
-                    bottom_right,
-                );
-            }
-            CornerStyle::Convex => {
-                builder.line_to(bottom_right - curve_height);
-                builder.curve_to(
-                    bottom_right + point(bottom_right_corner.width, Pixels::ZERO),
-                    bottom_right,
-                );
-            }
-        }
-        match bottom_left_corner.style {
-            CornerStyle::Straight => builder.line_to(bottom_left),
-            CornerStyle::Round | CornerStyle::Concave => {
-                builder.line_to(bottom_left + point(bottom_left_corner.width, Pixels::ZERO));
-                builder.curve_to(bottom_left - curve_height, bottom_left);
-            }
-            CornerStyle::Convex => {
-                builder.line_to(bottom_left - point(bottom_left_corner.width, Pixels::ZERO));
-                builder.curve_to(bottom_left - curve_height, bottom_left);
-            }
-        }
-        match top_left_corner.style {
-            CornerStyle::Straight => builder.line_to(top_left),
-            CornerStyle::Round | CornerStyle::Concave => {
-                builder.line_to(top_left + curve_height);
-                builder.curve_to(
-                    top_left + point(top_left_corner.width, Pixels::ZERO),
-                    top_left,
-                );
-            }
-            CornerStyle::Convex => {
-                builder.line_to(top_left + curve_height);
-                builder.curve_to(
-                    top_left - point(top_left_corner.width, Pixels::ZERO),
-                    top_left,
-                );
-            }
-        }
-        if let Ok(path) = builder.build() {
-            window.paint_path(path, self.color);
-        }
-    }
-}
-
-/// 阶梯角：本行外缘比邻行更远（右缘更大、左缘更小）→ 本行更宽 → 内凹；反之外凸；齐平 → 直角。
-fn step_corner(own: Pixels, other: Pixels, right_side: bool, corner_radius: Pixels) -> Corner {
-    if own == other {
-        return STRAIGHT_CORNER;
-    }
-    let width = if own > other {
-        own - other
-    } else {
-        other - own
-    };
-    let wider = if right_side { own > other } else { own < other };
-    Corner {
-        style: if wider {
-            CornerStyle::Concave
-        } else {
-            CornerStyle::Convex
-        },
-        width: (width / 2.).min(corner_radius),
-    }
-}
-
-/// 按轮廓上下文为每行计算四角样式：首行外角圆角、末行下外角圆角，行阶梯处宽行内凹/窄行外凸。
-fn finish_selection_contour(
-    contour: &[(usize, Pixels, Pixels)],
-    corner_radius: Pixels,
-    per_line: &mut [Vec<SelectionLineSegment>],
-) {
-    let count = contour.len();
-    if count == 0 {
-        return;
-    }
-    for (index, &(line_ix, start_x, end_x)) in contour.iter().enumerate() {
-        let round_width = ((end_x - start_x) / 2.).min(corner_radius);
-        let mut corners = ALL_STRAIGHT;
-        if index == 0 {
-            corners[TOP_LEFT] = Corner {
-                style: CornerStyle::Round,
-                width: round_width,
-            };
-            corners[TOP_RIGHT] = Corner {
-                style: CornerStyle::Round,
-                width: round_width,
-            };
-        } else {
-            let (_, prev_start, prev_end) = contour[index - 1];
-            corners[TOP_LEFT] = step_corner(start_x, prev_start, false, corner_radius);
-            corners[TOP_RIGHT] = step_corner(end_x, prev_end, true, corner_radius);
-        }
-        if index == count - 1 {
-            corners[BOTTOM_LEFT] = Corner {
-                style: CornerStyle::Round,
-                width: round_width,
-            };
-            corners[BOTTOM_RIGHT] = Corner {
-                style: CornerStyle::Round,
-                width: round_width,
-            };
-        } else {
-            let (_, next_start, next_end) = contour[index + 1];
-            corners[BOTTOM_LEFT] = step_corner(start_x, next_start, false, corner_radius);
-            corners[BOTTOM_RIGHT] = step_corner(end_x, next_end, true, corner_radius);
-        }
-        per_line[line_ix].push(SelectionLineSegment {
-            start_x,
-            end_x,
-            corners,
-        });
+        paint_selection_segment(
+            Bounds::from_corners(point(self.start_x, y), point(self.end_x, y + line_height)),
+            self.corners,
+            corner_radius,
+            self.color.into(),
+            window,
+        );
     }
 }
 
@@ -2409,7 +2217,7 @@ impl Element for EditorElement {
                 paint_indent_guides(&prepaint.layout.indent_guides, window, cx);
                 // 选区片段在前、其余背景在后，维持原有绘制层级。
                 let line_height = prepaint.layout.line_height;
-                let corner_radius = line_height * 0.15;
+                let corner_radius = selection_corner_radius(line_height);
                 for (ix, line) in prepaint.layout.lines.iter().enumerate() {
                     for fragment in prepaint.background_fragments[ix]
                         .iter()
@@ -3544,7 +3352,7 @@ fn layout_selections(
     cursor: CursorLayoutParams,
     window: &mut Window,
     cx: &App,
-) -> (Vec<Vec<SelectionLineSegment>>, Vec<CursorPaint>) {
+) -> (Vec<Vec<SelectionSegmentShape>>, Vec<CursorPaint>) {
     let mut per_line_segments = vec![Vec::new(); layout.lines.len()];
     let mut caret_quads = Vec::new();
 
@@ -3668,15 +3476,15 @@ fn layout_selection_segments(
     range: DisplayRange,
     layout: &EditorLayout,
     line_height: Pixels,
-    per_line: &mut [Vec<SelectionLineSegment>],
+    per_line: &mut [Vec<SelectionSegmentShape>],
 ) {
-    let corner_radius = line_height * 0.15;
-    let line_end_overshoot = corner_radius * 2.;
+    let corner_radius = selection_corner_radius(line_height);
+    let line_end_overshoot = selection_line_end_overshoot(corner_radius);
     let start = range.start();
     let end = range.end();
 
-    // 轮廓：连续显示行（行间隙处断开），行内为 (布局行索引, 起点 x, 终点 x)。
-    let mut contour: Vec<(usize, Pixels, Pixels)> = Vec::new();
+    // 轮廓：连续显示行（行间隙处断开），行内为布局行索引与行内水平区间。
+    let mut contour: Vec<SelectionContourLine> = Vec::new();
     let mut previous_y: Option<Pixels> = None;
     for (ix, line) in layout.lines.iter().enumerate() {
         let row = line.row;
@@ -3707,19 +3515,35 @@ fn layout_selection_segments(
             continue;
         }
         if previous_y.is_some_and(|previous| line.origin.y != previous + line_height) {
-            finish_selection_contour(&contour, corner_radius, per_line);
+            push_segment_shapes(&contour, corner_radius, per_line);
             contour.clear();
         }
-        contour.push((ix, start_x, end_x));
+        contour.push(SelectionContourLine {
+            index: ix,
+            start_x,
+            end_x,
+        });
         previous_y = Some(line.origin.y);
     }
-    finish_selection_contour(&contour, corner_radius, per_line);
+    push_segment_shapes(&contour, corner_radius, per_line);
 }
 
-/// 背景片段合成：词级差异、选区与文本样式共用当前行的片段几何。
+/// 把连续行轮廓转成片段形状并按行分发。
+fn push_segment_shapes(
+    contour: &[SelectionContourLine],
+    corner_radius: Pixels,
+    per_line: &mut [Vec<SelectionSegmentShape>],
+) {
+    for shape in selection_segment_shapes(contour, corner_radius) {
+        per_line[shape.index].push(shape);
+    }
+}
+
+/// 背景片段合成管线：把选区与 run 背景（搜索高亮、语法背景）合成为每行互不重叠的着色片段，一次绘制。
+/// 源按边界切分、重叠处按 base → 选区 → run 顺序混合（维持既有视觉层级），选区片段携带角样式（轮廓首末行外角圆角、行阶梯处宽行内凹/窄行外凸），run 片段为直角矩形。
 fn layout_background_fragments(
     layout: &EditorLayout,
-    selection_segments: &[Vec<SelectionLineSegment>],
+    selection_segments: &[Vec<SelectionSegmentShape>],
     cx: &App,
 ) -> Vec<Vec<BackgroundFragment>> {
     let colors = color::current(cx);
@@ -3736,7 +3560,7 @@ fn layout_background_fragments(
 
 fn layout_line_background_fragments(
     line: &LayoutLine,
-    selection_segments: &[SelectionLineSegment],
+    selection_segments: &[SelectionSegmentShape],
     selection_background: Rgba,
 ) -> Vec<BackgroundFragment> {
     // 按所有背景源的边界切分，再合并相邻同色段。
@@ -3832,7 +3656,7 @@ fn layout_line_background_fragments(
 }
 
 /// 片段角样式：只有与选区轮廓外缘重合的角才携带样式，内部接缝一律直角。
-fn segment_corners(segment: &SelectionLineSegment, start_x: Pixels, end_x: Pixels) -> [Corner; 4] {
+fn segment_corners(segment: &SelectionSegmentShape, start_x: Pixels, end_x: Pixels) -> [Corner; 4] {
     let mut corners = ALL_STRAIGHT;
     if start_x == segment.start_x {
         corners[TOP_LEFT] = segment.corners[TOP_LEFT];

@@ -485,7 +485,8 @@ fn word_diff_background_keeps_changed_operator_out_of_adjacent_ligatures(cx: &mu
                 );
                 let selected = layout_line_background_fragments(
                     line,
-                    &[SelectionLineSegment {
+                    &[SelectionSegmentShape {
+                        index: 0,
                         start_x: backgrounds[0].start_x,
                         end_x: backgrounds[0].end_x,
                         corners: ALL_STRAIGHT,

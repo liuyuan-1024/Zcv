@@ -6,22 +6,23 @@ use std::{
 };
 
 use gpui::{
-    AppContext, Context, IntoElement, Modifiers, ParentElement, Render, StyledText, TestAppContext,
+    AppContext, Context, Focusable, IntoElement, Modifiers, Render, StyledText, TestAppContext,
     TextAlign, TextLayout, Window, div, point, px, size,
 };
+use zcv_actions::{SelectLeft, SelectRight};
 use zcv_editor::Editor;
 use zcv_theme::typography;
 use zcv_workspace::{Item, PreviewDocument};
 
-use crate::document::{BlockKind, Inline, InlineStyle, parse};
+use crate::document::{BlockKind, Inline, InlineStyle, code_lines, parse};
+use crate::selection::{SelectableText, SelectionLayout};
 
 use super::{
     InlineText, MARKDOWN_REPARSE_DEBOUNCE, MATH_PLACEHOLDER, MarkdownInlineText,
     MarkdownPreviewView, MarkdownRenderContext, MathImage, MathImages, MathPlacement,
-    OpenPathCallback, code_lines, heading_line_height, heading_size, highlight_code_blocks,
-    inline_math_bounds, list_marker_char_count, render_block, render_math, render_mermaid,
-    render_mermaid_svg, render_text_inline, resolve_markdown_file_link,
-    visible_highlights_for_line,
+    OpenPathCallback, heading_line_height, heading_size, highlight_code_blocks, inline_math_bounds,
+    list_marker_char_count, render_block, render_math, render_mermaid, render_mermaid_svg,
+    resolve_markdown_file_link, visible_highlights_for_line,
 };
 use zcv_language::{HighlightSpan, LanguageRegistry, SnippetHighlightCancellation};
 use zcv_settings::{SettingsStore, UserSettings};
@@ -136,62 +137,6 @@ fn navigating_to_a_heading_reveals_it_in_preview(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui::test]
-fn clicking_relative_file_link_uses_the_workspace_opener(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
-    struct TestWindow {
-        content: Vec<Inline>,
-        directory: PathBuf,
-        open_path: OpenPathCallback,
-    }
-
-    impl Render for TestWindow {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let selection = Rc::default();
-            let heading_anchors = std::collections::HashMap::new();
-            let pending_reveal = Rc::new(RefCell::new(None));
-            let render_context = MarkdownRenderContext {
-                source_directory: Some(self.directory.as_path()),
-                open_path: Some(&self.open_path),
-                type_scale: typography::current(cx),
-                math_images: &Default::default(),
-                mermaid_images: &Default::default(),
-                heading_anchors: &heading_anchors,
-                pending_reveal: &pending_reveal,
-                selection: &selection,
-                window,
-                cx,
-            };
-            div().child(render_text_inline(&self.content, 0, &render_context))
-        }
-    }
-
-    let opened_path = Rc::new(RefCell::new(None));
-    let open_path: OpenPathCallback = {
-        let opened_path = opened_path.clone();
-        Rc::new(move |path, _, _| {
-            *opened_path.borrow_mut() = Some(path);
-        })
-    };
-    let blocks = parse("[Rust 示例](./main.rs)");
-    let BlockKind::Paragraph(content) = blocks[0].kind.clone() else {
-        panic!("应解析为段落");
-    };
-    let directory = PathBuf::from("/project/docs");
-    let (_, cx) = cx.add_window_view(move |_, _| TestWindow {
-        content,
-        directory,
-        open_path,
-    });
-    cx.refresh().expect("测试窗口应完成首次绘制");
-    cx.simulate_click(point(px(12.), px(8.)), Modifiers::none());
-
-    assert_eq!(
-        opened_path.borrow().as_deref(),
-        Some(Path::new("/project/docs/./main.rs"))
-    );
-}
-
 #[test]
 fn code_line_highlights_scan_each_span_once_except_for_its_covered_lines() {
     let spans = [
@@ -273,6 +218,7 @@ fn inline_code_chip_outsets_text_and_uses_rounded_background(cx: &mut TestAppCon
             math_placements: Vec::new(),
             selection: None,
             selection_color: gpui::black(),
+            caret_color: gpui::black(),
         }
     });
 
@@ -528,9 +474,7 @@ fn inline_math_reserves_width_in_the_text_flow(cx: &mut TestAppContext) {
     cx.update(|window, app| {
         let type_scale = typography::current(app);
         let math_size = size(px(40.), px(20.));
-        let selection = Rc::default();
-        let heading_anchors = std::collections::HashMap::new();
-        let pending_reveal = Rc::new(RefCell::new(None));
+        let selection_layout: Rc<RefCell<SelectionLayout>> = Rc::default();
         let mut math_images = MathImages::new();
         math_images.insert(
             "x^2".to_owned(),
@@ -541,13 +485,12 @@ fn inline_math_reserves_width_in_the_text_flow(cx: &mut TestAppContext) {
         );
         let render_context = MarkdownRenderContext {
             source_directory: None,
-            open_path: None,
             type_scale,
             math_images: &math_images,
             mermaid_images: &Default::default(),
-            heading_anchors: &heading_anchors,
-            pending_reveal: &pending_reveal,
-            selection: &selection,
+            selection_layout: &selection_layout,
+            selection: None,
+            caret: None,
             window,
             cx: app,
         };
@@ -641,18 +584,19 @@ fn list_marker_height_matches_the_first_line_of_a_wrapped_item(cx: &mut TestAppC
                     size: size(px(60.), math_height),
                 }),
             );
-            let selection = Rc::default();
-            let heading_anchors = std::collections::HashMap::new();
-            let pending_reveal = Rc::new(RefCell::new(None));
+            let selectable = SelectableText::from_blocks(&blocks);
+            let selection_layout: Rc<RefCell<SelectionLayout>> = Rc::default();
+            selection_layout
+                .borrow_mut()
+                .begin_frame(selectable.segments());
             let render_context = MarkdownRenderContext {
                 source_directory: None,
-                open_path: None,
                 type_scale,
                 math_images: &math_images,
                 mermaid_images: &Default::default(),
-                heading_anchors: &heading_anchors,
-                pending_reveal: &pending_reveal,
-                selection: &selection,
+                selection_layout: &selection_layout,
+                selection: None,
+                caret: None,
                 window,
                 cx: app,
             };
@@ -714,18 +658,15 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
                     }),
                 );
             }
-            let selection = Rc::default();
-            let heading_anchors = std::collections::HashMap::new();
-            let pending_reveal = Rc::new(RefCell::new(None));
+            let selection_layout: Rc<RefCell<SelectionLayout>> = Rc::default();
             let render_context = MarkdownRenderContext {
                 source_directory: None,
-                open_path: None,
                 type_scale,
                 math_images: &math_images,
                 mermaid_images: &Default::default(),
-                heading_anchors: &heading_anchors,
-                pending_reveal: &pending_reveal,
-                selection: &selection,
+                selection_layout: &selection_layout,
+                selection: None,
+                caret: None,
                 window,
                 cx: app,
             };
@@ -749,6 +690,7 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
                 math_placements: inline_text.math_placements,
                 selection: None,
                 selection_color: gpui::black(),
+                caret_color: gpui::black(),
             }
         },
     );
@@ -789,4 +731,235 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
         line_height,
         "占位符从换行边界开始时，公式应画在新行而不是上一行末尾"
     );
+}
+#[gpui::test]
+fn selection_survives_renders_and_presentation_updates(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let source = "前缀段落\n\n中间 $x^2$ 公式段落\n\n后缀段落\n";
+    let editor = cx.new(|cx| Editor::auto_height(1, None, Arc::new(LanguageRegistry::new()), cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_text(source, cx);
+        editor.set_file_path(PathBuf::from("README.md"), cx);
+    });
+    let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let (view, cx) = cx.add_window_view({
+        let source_item: Box<dyn zcv_workspace::ItemHandle> = Box::new(editor.clone());
+        move |_, cx| {
+            MarkdownPreviewView::new(
+                PreviewDocument::Source {
+                    path: PathBuf::from("README.md"),
+                    source_item,
+                    multi_buffer,
+                    open_path: None,
+                },
+                cx,
+            )
+        }
+    });
+    cx.run_until_parked();
+
+    // 在公式段落上建立选择，随后经历多次渲染与呈现缓存更新。
+    view.update(cx, |view, cx| {
+        let start = view.selectable.text().find("中间").expect("应包含目标文本");
+        let end = start + "中间".len();
+        view.selection
+            .begin_selection(&view.selectable, start, 1, false);
+        view.selection.update_selection(&view.selectable, end);
+        view.selection.end_selection();
+        assert_eq!(view.selection.range(), Some(start..end));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("应完成一次渲染");
+    cx.run_until_parked();
+
+    // 模拟异步公式渲染完成：只更新呈现缓存，块树不变。
+    view.update(cx, |view, cx| {
+        let mut math_images = MathImages::new();
+        math_images.insert(
+            "x^2".to_owned(),
+            Ok(MathImage {
+                image: test_render_image(cx),
+                size: size(px(40.), px(20.)),
+            }),
+        );
+        view.math_images = Arc::new(math_images);
+        cx.notify();
+    });
+    cx.refresh().expect("应完成一次渲染");
+    cx.run_until_parked();
+
+    view.update(cx, |view, _| {
+        let start = view.selectable.text().find("中间").expect("应包含目标文本");
+        let end = start + "中间".len();
+        // 选择锚定块树投影，公式加载只改变呈现缓存，选区保持不变。
+        assert_eq!(view.selection.range(), Some(start..end));
+        assert_eq!(
+            view.selection.selected_text(&view.selectable).as_deref(),
+            Some("中间")
+        );
+    });
+}
+#[gpui::test]
+fn keyboard_actions_extend_selection_from_click_anchor(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let source = "hello world\n";
+    let editor = cx.new(|cx| Editor::auto_height(1, None, Arc::new(LanguageRegistry::new()), cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_text(source, cx);
+        editor.set_file_path(PathBuf::from("README.md"), cx);
+    });
+    let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let (view, cx) = cx.add_window_view({
+        let source_item: Box<dyn zcv_workspace::ItemHandle> = Box::new(editor.clone());
+        move |_, cx| {
+            MarkdownPreviewView::new(
+                PreviewDocument::Source {
+                    path: PathBuf::from("README.md"),
+                    source_item,
+                    multi_buffer,
+                    open_path: None,
+                },
+                cx,
+            )
+        }
+    });
+    cx.run_until_parked();
+
+    // 聚焦预览并模拟单击落定：锚点与活动端在 5。
+    cx.update(|window, cx| {
+        let focus = view.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    view.update(cx, |view, cx| {
+        view.selection
+            .begin_selection(&view.selectable, 5, 1, false);
+        view.selection.end_selection();
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    // Shift+右 两次：从锚点向右扩展两个字素。
+    cx.dispatch_action(SelectRight);
+    cx.dispatch_action(SelectRight);
+    view.update(cx, |view, _| {
+        assert_eq!(view.selection.range(), Some(5..7));
+    });
+
+    // Shift+左 三次：收缩回锚点后反向扩展。
+    cx.dispatch_action(SelectLeft);
+    cx.dispatch_action(SelectLeft);
+    cx.dispatch_action(SelectLeft);
+    view.update(cx, |view, _| {
+        assert_eq!(view.selection.range(), Some(4..5));
+        assert_eq!(view.selection.head(), 4);
+    });
+
+    // 复制结果来自稳定投影。
+    view.update(cx, |view, _| {
+        assert_eq!(
+            view.selection.selected_text(&view.selectable).as_deref(),
+            Some("o")
+        );
+    });
+}
+
+#[gpui::test]
+fn table_cell_click_hits_the_clicked_cell(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let source = "前导段落文本\n\n| 甲列 | 乙列 |\n| -- | -- |\n| 丙格 | 丁格 |\n";
+    let editor = cx.new(|cx| Editor::auto_height(1, None, Arc::new(LanguageRegistry::new()), cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_text(source, cx);
+        editor.set_file_path(PathBuf::from("TABLE.md"), cx);
+    });
+    let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let (view, cx) = cx.add_window_view({
+        let editor = editor.clone();
+        move |_, cx| {
+            let source_item: Box<dyn zcv_workspace::ItemHandle> = Box::new(editor.clone());
+            MarkdownPreviewView::new(
+                PreviewDocument::Source {
+                    path: PathBuf::from("TABLE.md"),
+                    source_item,
+                    multi_buffer,
+                    open_path: None,
+                },
+                cx,
+            )
+        }
+    });
+    cx.run_until_parked();
+    // 表格同一行有多个横向并列的单元格 run；点击坐标取自默认测试窗口下
+    // 表头两格的文本位置（第一格约 x=10 起，第二格约 x=963 起）。
+    view.update(cx, |view, _| {
+        // 点击表头第一格的文本：命中第一格的投影区间 19..=25。
+        let hit_first = view
+            .selection_layout
+            .borrow()
+            .index_for_position(point(px(20.), px(60.)))
+            .expect("表格内点击必须有命中");
+        assert!(
+            (19..=25).contains(&hit_first),
+            "点击第一格应命中第一格文本：{hit_first}"
+        );
+        // 点击表头第二格的文本：命中第二格的投影区间 26..=32，
+        // 不得被第一格的行内钳制吞掉。
+        let hit_second = view
+            .selection_layout
+            .borrow()
+            .index_for_position(point(px(975.), px(60.)))
+            .expect("表格内点击必须有命中");
+        assert!(
+            (26..=32).contains(&hit_second),
+            "点击第二格应命中第二格文本：{hit_second}"
+        );
+    });
+}
+
+#[gpui::test]
+fn clicking_file_link_in_preview_opens_the_path(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let source = "[跳转目标](./target.md)\n";
+    let editor = cx.new(|cx| Editor::auto_height(1, None, Arc::new(LanguageRegistry::new()), cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_text(source, cx);
+        editor.set_file_path(PathBuf::from("/project/docs/LINK.md"), cx);
+    });
+    let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let opened_path = Rc::new(RefCell::new(None));
+    let (view, cx) = cx.add_window_view({
+        let editor = editor.clone();
+        let opened_path = opened_path.clone();
+        move |_, cx| {
+            let source_item: Box<dyn zcv_workspace::ItemHandle> = Box::new(editor.clone());
+            let open_path: OpenPathCallback = {
+                let opened_path = opened_path.clone();
+                Rc::new(move |path, _, _| {
+                    *opened_path.borrow_mut() = Some(path);
+                })
+            };
+            MarkdownPreviewView::new(
+                PreviewDocument::Source {
+                    path: PathBuf::from("/project/docs/LINK.md"),
+                    source_item,
+                    multi_buffer,
+                    open_path: Some(open_path),
+                },
+                cx,
+            )
+        }
+    });
+    cx.run_until_parked();
+    // 点击链接文本：应通过 open_path 回调打开相对源目录解析的目标文件。
+    cx.simulate_click(point(px(30.), px(30.)), Modifiers::none());
+    assert_eq!(
+        opened_path.borrow().as_deref(),
+        Some(Path::new("/project/docs/./target.md")),
+        "点击预览中的文件链接应触发打开回调"
+    );
+    // 链接命中优先于选择：点击不落下光标。
+    view.update(cx, |view, _| {
+        assert!(!view.selection.has_anchor(), "点链接不应落下光标");
+    });
 }

@@ -7,7 +7,6 @@ use gpui::{AnyElement, App, AppContext, Entity, IntoElement, Subscription, Windo
 use zcv_language::LanguageRegistry;
 use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
 
-mod blink_manager;
 mod cursor_animation;
 mod display_map;
 mod element;

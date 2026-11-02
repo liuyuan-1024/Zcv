@@ -5,6 +5,7 @@
 
 mod document;
 mod provider;
+mod selection;
 mod view;
 
 use std::sync::Arc;

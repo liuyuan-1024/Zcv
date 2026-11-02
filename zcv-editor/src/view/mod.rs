@@ -35,13 +35,12 @@ use zcv_text::{
     TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_theme::{color, typography};
-use zcv_ui::{AUTOSCROLL_INTERVAL, DragAutoscroll};
+use zcv_ui::{AUTOSCROLL_INTERVAL, BlinkManager, DragAutoscroll};
 use zcv_workspace::typography_for_window;
 
 use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerState};
 
 use super::{
-    blink_manager::BlinkManager,
     cursor_animation::{CursorAnimation, CursorViewport},
     display_map::{
         ChunkRendererId, DisplayMap, DisplayPoint, DisplayRow, DisplayRowEvent, DisplaySnapshot,

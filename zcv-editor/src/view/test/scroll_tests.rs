@@ -17,8 +17,10 @@ impl Render for EditorInWindow {
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
 use zcv_text::{Line, LogicalColumn, Position};
 
+use zcv_multi_buffer::DisplayHunk;
+
 use super::common::{
-    focus_editor, inject_editor_diff, scrollbar_geometry, scrolling_text, test_buffer,
+    diff_hunks, focus_editor, inject_editor_diff, scrollbar_geometry, scrolling_text, test_buffer,
 };
 
 use super::*;
@@ -101,7 +103,7 @@ fn new_file_diff_reaches_the_git_scrollbar_marker(cx: &mut TestAppContext) {
         "只查询最后一行时也应找到新增 hunk"
     );
     assert_eq!(
-        editor.read_with(cx, |editor, cx| editor.diff_hunks(cx)[0].range.clone()),
+        editor.read_with(cx, |editor, cx| diff_hunks(editor, cx)[0].range.clone()),
         0..4,
         "没有末尾换行时，整文件新增应覆盖最后一行"
     );
@@ -170,7 +172,9 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
     });
     let old_location = cx.read_entity(&combined, |buffer, _| {
         buffer
-            .location_for_offset(old_output_offset)
+            .location_for_range(
+                MultiBufferRange::new(old_output_offset, old_output_offset).unwrap(),
+            )
             .expect("旧视口顶部应映射到底层文件")
     });
 
@@ -192,7 +196,9 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
     });
     let new_location = cx.read_entity(&combined, |buffer, _| {
         buffer
-            .location_for_offset(new_output_offset)
+            .location_for_range(
+                MultiBufferRange::new(new_output_offset, new_output_offset).unwrap(),
+            )
             .expect("新视口顶部应映射到底层文件")
     });
     assert_eq!(new_location, old_location);
@@ -285,7 +291,9 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
     });
     let old_location = cx.read_entity(&combined, |buffer, _| {
         buffer
-            .location_for_offset(old_output_offset)
+            .location_for_range(
+                MultiBufferRange::new(old_output_offset, old_output_offset).unwrap(),
+            )
             .expect("折叠前视口顶部应映射到底层文件")
     });
 
@@ -303,7 +311,9 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
     });
     let new_location = cx.read_entity(&combined, |buffer, _| {
         buffer
-            .location_for_offset(new_output_offset)
+            .location_for_range(
+                MultiBufferRange::new(new_output_offset, new_output_offset).unwrap(),
+            )
             .expect("折叠后视口顶部应映射到底层文件")
     });
 

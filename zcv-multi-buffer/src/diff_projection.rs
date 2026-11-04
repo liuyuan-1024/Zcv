@@ -1043,67 +1043,12 @@ impl MultiBuffer {
         self.refresh_diff_display_after_hunk_update(cx);
     }
 
-    /// 显示坐标 hunks（组合坐标，跨文件展平）。
-    ///
-    /// 从当前变换树全量派生，仅供低频调用；帧路径使用快照的可见范围查询。
-    pub fn diff_hunks(&self) -> Vec<DisplayHunk> {
-        self.current_resolved_diff_hunks()
-            .into_iter()
-            .map(|(_, resolved)| resolved.hunk)
-            .collect()
-    }
-
     /// 已挂接 diff 的显示路径集合（按组合文档顺序）。
     pub fn diff_paths(&self) -> Vec<PathBuf> {
         self.diffs
             .iter()
             .map(|file| file.display_path.as_path().to_path_buf())
             .collect()
-    }
-
-    /// 每个 hunk 在组合文档中的旧侧显示行范围。
-    pub fn diff_hunk_old_ranges(&self) -> Vec<Option<Range<usize>>> {
-        self.current_resolved_diff_hunks()
-            .into_iter()
-            .map(|(_, resolved)| resolved.old_range)
-            .collect()
-    }
-
-    /// 与 MultiBuffer::diff_hunks 平行的词级变化片段（组合文档字节范围 + 新增/删除色）。
-    pub fn diff_hunk_word_diffs(&self) -> Vec<WordDiffs> {
-        self.current_resolved_diff_hunks()
-            .into_iter()
-            .map(|(_, resolved)| resolved.word_diffs)
-            .collect()
-    }
-
-    /// 与 MultiBuffer::diff_hunks 平行的展开标志（渲染层按显示 hunk 索引查询）。
-    pub fn diff_hunk_expanded(&self) -> Vec<bool> {
-        self.current_resolved_diff_hunks()
-            .into_iter()
-            .map(|(_, resolved)| resolved.expanded)
-            .collect()
-    }
-
-    fn current_resolved_diff_hunks(&self) -> Vec<(usize, ResolvedDiffHunk)> {
-        let Some(diff_display) = self.diff.as_deref() else {
-            return Vec::new();
-        };
-        let end = self
-            .state
-            .diff_transforms
-            .summary()
-            .output
-            .lines
-            .saturating_add(1);
-        resolved_diff_hunks_in_lines(
-            &self.state.excerpts,
-            &self.state.diff_transforms,
-            Sources::Workspace(self.state.sources.as_slice()),
-            diff_display,
-            0..end,
-            0..self.state.diff_transforms.summary().output.len,
-        )
     }
 
     /// 把打开请求中的 Deleted 片段换算为工作区文件中的合法定位行列（0-based）。

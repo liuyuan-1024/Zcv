@@ -18,8 +18,8 @@ fn buffer_text(buffer: &Buffer) -> String {
         .snapshot()
         .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
         .unwrap()
-        .into_text()
-        .into_owned()
+        .as_str()
+        .to_owned()
 }
 
 #[test]

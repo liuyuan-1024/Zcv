@@ -9,7 +9,12 @@ use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging
 use zcv_language::LanguageRegistry;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
 
-use super::common::{buffer_text, focus_editor, inject_editor_diff, inject_file_diff, test_buffer};
+use zcv_multi_buffer::WordDiffs;
+
+use super::common::{
+    buffer_text, diff_hunk_expanded, diff_hunk_old_ranges, diff_hunk_word_diffs, diff_hunks,
+    focus_editor, inject_editor_diff, inject_file_diff, test_buffer,
+};
 use super::*;
 use crate::display_map::{
     DisplayColumn, DisplayPoint, DisplayRow, DisplayRowEvent, HighlightStyles, hunk_rendering,
@@ -148,14 +153,14 @@ fn single_file_diff_uses_the_composite_projection_path(cx: &mut TestAppContext) 
                 .count(),
             1
         );
-        assert_eq!(editor.diff_hunks(cx).len(), 1);
-        assert_eq!(editor.diff_hunk_old_ranges(cx), &[None]);
-        assert_eq!(editor.diff_hunk_expanded(cx), vec![false]);
+        assert_eq!(diff_hunks(editor, cx).len(), 1);
+        assert_eq!(diff_hunk_old_ranges(editor, cx), &[None]);
+        assert_eq!(diff_hunk_expanded(editor, cx), vec![false]);
     });
 
     editor.update(cx, |editor, cx| editor.clear_diffs(cx));
     assert_eq!(buffer_text(&source, cx), "a\nworking\nc\n");
-    assert!(cx.read_entity(&editor, |editor, cx| editor.diff_hunks(cx).is_empty()));
+    assert!(cx.read_entity(&editor, |editor, cx| diff_hunks(editor, cx).is_empty()));
 }
 
 #[gpui::test]
@@ -651,8 +656,9 @@ fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext)
     });
     cx.refresh().expect("折叠后的编辑器应能刷新");
 
-    let target_offset = MultiBufferOffset::new(text.find("行内").expect("测试文本应包含 行内"));
-    let target_end = MultiBufferOffset::new(target_offset.get() + "行内".len());
+    let target_offset =
+        MultiBufferOffset::new(text.find("结构化选择").expect("测试文本应包含 结构化选择"));
+    let target_end = MultiBufferOffset::new(target_offset.get() + "结构化选择".len());
     // 目标文本可能仍在视口外（折叠块较小时）；
     // 显式滚动到目标行，不依赖"折叠大块恰好把目标拉进视口"的偶然布局。
     let target_top = cx.read_entity(&editor, |editor, cx| {
@@ -693,7 +699,7 @@ fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext)
         assert_eq!(
             editor.selections(cx).primary().head(),
             target_end,
-            "折叠块后的点击必须保持视觉列，不能把 行内 命中到 局部 后面"
+            "折叠块后的点击必须保持视觉列，不能把 结构化选择 命中到 选择 后面"
         );
     });
 }
@@ -834,8 +840,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
     );
     assert!(
         cx.read_entity(&editor, |editor, cx| {
-            !editor
-                .diff_hunk_expanded(cx)
+            !diff_hunk_expanded(editor, cx)
                 .iter()
                 .any(|&expanded| expanded)
         }),
@@ -897,8 +902,7 @@ fn added_hunk_strip_expands_from_any_row(cx: &mut TestAppContext) {
     let row_y = |row: f32| window_bounds.top() + line_height * (row + 0.5);
     let expanded = |cx: &mut TestAppContext| {
         cx.read_entity(&editor, |editor, cx| {
-            editor
-                .diff_hunk_expanded(cx)
+            diff_hunk_expanded(editor, cx)
                 .first()
                 .copied()
                 .unwrap_or(false)
@@ -967,8 +971,7 @@ fn added_hunk_strip_clickable_when_start_scrolled_out(cx: &mut TestAppContext) {
     );
     cx.run_until_parked();
     assert!(
-        cx.read_entity(&editor, |editor, cx| editor
-            .diff_hunk_expanded(cx)
+        cx.read_entity(&editor, |editor, cx| diff_hunk_expanded(editor, cx)
             .iter()
             .any(|&expanded| expanded)),
         "起点滚出视口后，可见色带仍应可点击展开"
@@ -1483,7 +1486,7 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
     cx.refresh().expect("折叠后的编辑器应能刷新");
     let click_offset = MultiBufferOffset::new(after_offset.get() + 3);
     let next_offset = MultiBufferOffset::new(click_offset.get() + 1);
-    let (click, next, line_height, origin) = cx.read_entity(&editor, |editor, _| {
+    let (click, next, line_height) = cx.read_entity(&editor, |editor, _| {
         let layout = editor.input_layout.as_ref().expect("刷新后应有输入布局");
         (
             layout
@@ -1493,13 +1496,12 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
                 .caret_position_for_offset(next_offset)
                 .expect("折叠后的下一字符应可见"),
             layout.line_height(),
-            editor.last_bounds.expect("刷新后应有编辑器范围").origin,
         )
     });
     cx.simulate_click(
         point(
-            origin.x + click.x + (next.x - click.x) * 0.25,
-            origin.y + click.y + line_height * 0.5,
+            click.x + (next.x - click.x) * 0.25,
+            click.y + line_height * 0.5,
         ),
         Modifiers::default(),
     );
@@ -1586,7 +1588,7 @@ fn diff_hunks_follow_buffer_edits_without_losing_highlight(cx: &mut TestAppConte
     );
     editor.update(cx, |editor, cx| {
         assert_eq!(
-            editor.diff_hunks(cx),
+            diff_hunks(editor, cx),
             &[DisplayHunk {
                 range: 1..2,
                 old_range: 1..2,
@@ -1610,7 +1612,7 @@ fn diff_hunks_follow_buffer_edits_without_losing_highlight(cx: &mut TestAppConte
     // hunk 重算由 BufferDiff 自行完成并异步发出事件：等一轮 effect 后再断言。
     cx.run_until_parked();
     assert!(
-        cx.read_entity(&editor, |editor, cx| editor.diff_hunks(cx).iter().any(
+        cx.read_entity(&editor, |editor, cx| diff_hunks(editor, cx).iter().any(
             |hunk| hunk
                 == &DisplayHunk {
                     range: 2..3,
@@ -1624,7 +1626,7 @@ fn diff_hunks_follow_buffer_edits_without_losing_highlight(cx: &mut TestAppConte
     // 后续 Git 刷新仍可用新的权威结果替换当前投影（base 为空 → 整份新增）。
     inject_editor_diff(&editor, &source, Vec::new(), None, cx);
     editor.update(cx, |editor, cx| {
-        assert_eq!(editor.diff_hunks(cx).len(), 1, "重新注入后应恢复");
+        assert_eq!(diff_hunks(editor, cx).len(), 1, "重新注入后应恢复");
     });
 }
 
@@ -1830,7 +1832,7 @@ fn external_reparse_refreshes_added_diff_syntax_highlights(cx: &mut TestAppConte
 
     cx.read_entity(&editor, |editor, cx| {
         let snapshot = editor.display_snapshot(cx);
-        let hunk = &editor.diff_hunks(cx)[0];
+        let hunk = &diff_hunks(editor, cx)[0];
         let buffer = snapshot.buffer_snapshot();
         let start = buffer
             .line_start_byte(Line::new(hunk.range.start))
@@ -2592,8 +2594,8 @@ fn single_file_diff_expansion_uses_composite_projection(cx: &mut TestAppContext)
     cx.run_until_parked();
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "a\nold1\nold2\nb\nc");
-        assert_eq!(editor.diff_hunk_expanded(cx), vec![true]);
-        assert_eq!(editor.diff_hunk_old_ranges(cx), &[Some(1..3)]);
+        assert_eq!(diff_hunk_expanded(editor, cx), vec![true]);
+        assert_eq!(diff_hunk_old_ranges(editor, cx), &[Some(1..3)]);
     });
 
     // 展开态是编辑器投影状态；编辑工作区源后，hunk 仍应保持展开，
@@ -2612,8 +2614,7 @@ fn single_file_diff_expansion_uses_composite_projection(cx: &mut TestAppContext)
     cx.run_until_parked();
     cx.read_entity(&editor, |editor, cx| {
         assert!(
-            editor
-                .diff_hunk_expanded(cx)
+            diff_hunk_expanded(editor, cx)
                 .iter()
                 .all(|&expanded| expanded)
         );
@@ -2632,7 +2633,7 @@ fn single_file_diff_expansion_uses_composite_projection(cx: &mut TestAppContext)
     cx.run_until_parked();
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "a\nedited\nb\nc");
-        assert_eq!(editor.diff_hunk_expanded(cx), vec![false]);
+        assert_eq!(diff_hunk_expanded(editor, cx), vec![false]);
     });
 }
 
@@ -2669,10 +2670,10 @@ fn folded_deleted_hunk_anchor_is_at_the_deletion_row_boundary(cx: &mut TestAppCo
         let rendering = hunk_rendering(
             &snapshot,
             resolved_hunks(
-                editor.diff_hunks(cx),
-                editor.diff_hunk_expanded(cx),
-                editor.diff_hunk_old_ranges(cx),
-                editor.diff_hunk_word_diffs(cx),
+                diff_hunks(editor, cx),
+                diff_hunk_expanded(editor, cx),
+                diff_hunk_old_ranges(editor, cx),
+                diff_hunk_word_diffs(editor, cx),
             )
             .into_iter(),
         );
@@ -2709,7 +2710,7 @@ fn refreshing_diff_hunks_removes_stale_expanded_excerpt(cx: &mut TestAppContext)
     inject_editor_diff(&editor, &source, Vec::new(), None, cx);
     editor.update(cx, |editor, cx| {
         assert_eq!(editor.text(cx), "a\nb\nc");
-        assert!(editor.diff_hunk_old_ranges(cx).iter().all(Option::is_none));
+        assert!(diff_hunk_old_ranges(editor, cx).iter().all(Option::is_none));
     });
 }
 
@@ -2745,8 +2746,7 @@ fn refreshing_diff_hunks_migrates_expansion_across_hunk_boundary_changes(cx: &mu
     );
     editor.update(cx, |editor, cx| {
         assert!(
-            editor
-                .diff_hunk_expanded(cx)
+            diff_hunk_expanded(editor, cx)
                 .iter()
                 .all(|&expanded| expanded),
             "展开状态应按旧侧行范围锚点迁移到新 hunk"
@@ -2788,8 +2788,7 @@ fn refreshing_diff_hunks_drops_state_of_disappeared_hunk_only(cx: &mut TestAppCo
     );
     editor.update(cx, |editor, cx| {
         assert!(
-            editor
-                .diff_hunk_expanded(cx)
+            diff_hunk_expanded(editor, cx)
                 .iter()
                 .all(|&expanded| expanded)
         );
@@ -2827,8 +2826,7 @@ fn refreshing_diff_hunks_preserves_collapsed_hunk_in_default_expanded_mode(
     editor.update(cx, |editor, cx| {
         editor.toggle_diff_hunk_at(0, cx);
         assert!(
-            !editor
-                .diff_hunk_expanded(cx)
+            !diff_hunk_expanded(editor, cx)
                 .iter()
                 .any(|&expanded| expanded),
             "默认展开模式下显式折叠后不应再展开"
@@ -2850,8 +2848,7 @@ fn refreshing_diff_hunks_preserves_collapsed_hunk_in_default_expanded_mode(
     );
     editor.update(cx, |editor, cx| {
         assert!(
-            !editor
-                .diff_hunk_expanded(cx)
+            !diff_hunk_expanded(editor, cx)
                 .iter()
                 .any(|&expanded| expanded),
             "折叠状态应按旧侧行范围锚点迁移到新 hunk"
@@ -2888,8 +2885,7 @@ fn reset_diff_hunk_expansion_state_restores_default_strategy(cx: &mut TestAppCon
 
         editor.reset_diff_hunk_expansion_state(cx);
         assert!(
-            !editor
-                .diff_hunk_expanded(cx)
+            !diff_hunk_expanded(editor, cx)
                 .iter()
                 .any(|&expanded| expanded)
         );
@@ -2935,10 +2931,10 @@ fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut 
         let rendering = hunk_rendering(
             &snapshot,
             resolved_hunks(
-                editor.diff_hunks(cx),
-                editor.diff_hunk_expanded(cx),
-                editor.diff_hunk_old_ranges(cx),
-                editor.diff_hunk_word_diffs(cx),
+                diff_hunks(editor, cx),
+                diff_hunk_expanded(editor, cx),
+                diff_hunk_old_ranges(editor, cx),
+                diff_hunk_word_diffs(editor, cx),
             )
             .into_iter(),
         );
@@ -2978,8 +2974,7 @@ fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut 
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "a\nnew\nc");
         assert!(
-            !editor
-                .diff_hunk_expanded(cx)
+            !diff_hunk_expanded(editor, cx)
                 .iter()
                 .any(|&expanded| expanded),
             "点击展开块的 gutter 色带应折叠 hunk"
@@ -3186,7 +3181,7 @@ fn staging_a_deleted_hunk_with_soft_wrap_keeps_wrap_map_invariant(cx: &mut TestA
     let source = buffer.clone();
     inject_editor_diff(&editor, &source, Vec::new(), Some(Arc::from(base)), cx);
     assert!(
-        cx.read_entity(&editor, |editor, cx| !editor.diff_hunks(cx).is_empty()),
+        cx.read_entity(&editor, |editor, cx| !diff_hunks(editor, cx).is_empty()),
         "必须先出现删除型 hunk"
     );
     editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
@@ -3264,7 +3259,7 @@ fn caret_source_range(editor: &Entity<Editor>, cx: &TestAppContext) -> TextRange
         editor
             .multi_buffer()
             .read(cx)
-            .location_for_offset(caret)
+            .location_for_range(MultiBufferRange::new(caret, caret).unwrap())
             .expect("光标必须落在可见 excerpt 内")
             .source_range
     })
@@ -3287,7 +3282,7 @@ fn diff_expansion_preserves_selection_source_anchor(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     assert_eq!(
-        cx.read_entity(&editor, |editor, cx| editor.diff_hunk_expanded(cx)),
+        cx.read_entity(&editor, |editor, cx| diff_hunk_expanded(editor, cx)),
         vec![true],
         "切换后 hunk 应处于展开态"
     );
@@ -3304,7 +3299,7 @@ fn diff_expansion_preserves_selection_source_anchor(cx: &mut TestAppContext) {
 fn empty_diff_projection_keeps_selection_at_the_structural_boundary(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = test_file_buffer(cx, "src/a.rs", "a\nworking\nc\n");
-    let combined = cx.new(MultiBuffer::empty_read_only);
+    let combined = cx.new(MultiBuffer::empty_tree_ordered_read_only);
     let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
     inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
 

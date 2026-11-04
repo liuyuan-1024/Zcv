@@ -11,7 +11,13 @@ use gpui::{
 };
 
 use super::{DockPosition, LAYOUT_SAVE_THROTTLE, Workspace};
-use crate::{Item, Panel, dock::DockData, layout_state, panel::PanelEvent};
+use crate::test_support::empty_workspace;
+use crate::{
+    Item, Panel,
+    dock::{Dock, DockData},
+    layout_state,
+    panel::PanelEvent,
+};
 use zcv_actions::{FocusOrHidePanel, Save};
 use zcv_language::LanguageRegistry;
 use zcv_project::{FileSaveConflictPolicy, Project};
@@ -107,7 +113,7 @@ fn lost_window_focus_returns_to_the_active_pane(cx: &mut TestAppContext) {
     }
 
     let (host, cx) = cx.add_window_view(|window, cx| FocusLossHost {
-        workspace: cx.new(|cx| Workspace::new_empty(test_languages(), window, cx)),
+        workspace: cx.new(|cx| empty_workspace(test_languages(), window, cx)),
         temporary: cx.focus_handle(),
         show_temporary: true,
     });
@@ -133,7 +139,7 @@ fn saving_a_conflicted_item_shows_one_persistent_choice_toast(cx: &mut TestAppCo
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let path = directory.path().join("conflict-item.txt");
     let (workspace, cx) =
-        cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
+        cx.add_window_view(|window, cx| empty_workspace(test_languages(), window, cx));
     cx.update(|_, cx| cx.set_reduce_motion(true));
     let conflicted = Rc::new(Cell::new(true));
     let saves = Rc::new(RefCell::new(Vec::new()));
@@ -227,7 +233,7 @@ impl Render for TestPanel {
 fn empty_workspace_has_a_project_without_a_worktree(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (workspace, cx) =
-        cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
+        cx.add_window_view(|window, cx| empty_workspace(test_languages(), window, cx));
     let project = cx.read_entity(&workspace, |workspace, _| workspace.project().clone());
     assert!(!cx.read_entity(&project, |project, _| project.has_worktree()));
 }
@@ -236,9 +242,9 @@ fn empty_workspace_has_a_project_without_a_worktree(cx: &mut TestAppContext) {
 fn typography_override_belongs_to_one_workspace(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (first, cx) =
-        cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
+        cx.add_window_view(|window, cx| empty_workspace(test_languages(), window, cx));
     let (second, cx) =
-        cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
+        cx.add_window_view(|window, cx| empty_workspace(test_languages(), window, cx));
     let original = cx.read_entity(&second, |workspace, _| {
         f32::from(workspace.typography().content_size())
     });
@@ -265,7 +271,7 @@ fn typography_override_belongs_to_one_workspace(cx: &mut TestAppContext) {
 fn font_size_override_projects_through_window_typography(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (workspace, cx) =
-        cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
+        cx.add_window_view(|window, cx| empty_workspace(test_languages(), window, cx));
     let baseline = cx.update(|window, cx| crate::typography_for_window(window, cx).content_size());
     let global_before = cx.update(|_, cx| typography::content_size(cx));
 
@@ -284,17 +290,21 @@ fn font_size_override_projects_through_window_typography(cx: &mut TestAppContext
 fn workspace_restores_visible_dock(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (workspace, cx) = cx.add_window_view(|window, cx| {
-        let mut workspace = Workspace::new_empty(test_languages(), window, cx);
-        workspace.bottom_dock.update(cx, |dock, cx| {
-            dock.set_serialized_state(
-                DockData {
+        let mut workspace = empty_workspace(test_languages(), window, cx);
+        // 生产重启路径：Dock 创建时携带序列化状态，面板注册后恢复。
+        workspace.bottom_dock = cx.new(|cx| {
+            Dock::new(
+                DockPosition::Bottom,
+                Vec::new(),
+                DockPosition::Bottom.default_size(),
+                Some(DockData {
                     visible: true,
                     active_panel: Some("test-panel".into()),
                     size: Some(200.0),
-                },
+                }),
                 window,
                 cx,
-            );
+            )
         });
         let panel = cx.new(|cx| TestPanel {
             focus: cx.focus_handle(),
@@ -320,7 +330,7 @@ fn dock_open_change_saves_layout(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let layout_path = directory.path().join("layout.json");
     let (workspace, cx) = cx.add_window_view(|window, cx| {
-        let mut workspace = Workspace::new_empty(test_languages(), window, cx);
+        let mut workspace = empty_workspace(test_languages(), window, cx);
         let panel = cx.new(|cx| TestPanel {
             focus: cx.focus_handle(),
             activation_focus: cx.focus_handle(),
@@ -352,7 +362,7 @@ fn dock_resize_and_reset_save_layout(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let layout_path = directory.path().join("layout.json");
     let (workspace, cx) = cx.add_window_view(|window, cx| {
-        let mut workspace = Workspace::new_empty(test_languages(), window, cx);
+        let mut workspace = empty_workspace(test_languages(), window, cx);
         let panel = cx.new(|cx| TestPanel {
             focus: cx.focus_handle(),
             activation_focus: cx.focus_handle(),
@@ -404,7 +414,7 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
     let directory = tempfile::tempdir().unwrap();
     let layout_path = directory.path().join("layout.json");
     let (workspace, cx) = cx.add_window_view(|window, cx| {
-        let mut workspace = Workspace::new_empty(test_languages(), window, cx);
+        let mut workspace = empty_workspace(test_languages(), window, cx);
         let panel = cx.new(|cx| TestPanel {
             focus: cx.focus_handle(),
             activation_focus: cx.focus_handle(),
@@ -504,7 +514,7 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
 fn later_workspace_navigation_keeps_the_latest_focus(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (workspace, cx) = cx.add_window_view(|window, cx| {
-        let mut workspace = Workspace::new_empty(test_languages(), window, cx);
+        let mut workspace = empty_workspace(test_languages(), window, cx);
         let panel = cx.new(|cx| TestPanel {
             focus: cx.focus_handle(),
             activation_focus: cx.focus_handle(),
@@ -534,7 +544,7 @@ fn closing_focused_panel_returns_focus_to_the_center_pane(cx: &mut TestAppContex
     });
     let panel_for_registration = panel.clone();
     let (workspace, cx) = cx.add_window_view(move |window, cx| {
-        let mut workspace = Workspace::new_empty(test_languages(), window, cx);
+        let mut workspace = empty_workspace(test_languages(), window, cx);
         workspace.register_panel(panel_for_registration, DockPosition::Bottom, window, cx);
         workspace
     });
@@ -569,7 +579,7 @@ fn closing_inactive_panel_preserves_active_panel_focus(cx: &mut TestAppContext) 
     let active_focus = cx.read_entity(&active, |panel, _| panel.activation_focus.clone());
     let inactive_for_registration = inactive.clone();
     let (workspace, cx) = cx.add_window_view(move |window, cx| {
-        let mut workspace = Workspace::new_empty(test_languages(), window, cx);
+        let mut workspace = empty_workspace(test_languages(), window, cx);
         workspace.register_panel(inactive_for_registration, DockPosition::Bottom, window, cx);
         workspace.register_panel(active, DockPosition::Bottom, window, cx);
         workspace

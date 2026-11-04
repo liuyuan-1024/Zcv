@@ -49,7 +49,6 @@ struct CompiledLanguageQueries {
     indents: Option<Arc<Query>>,
     folds: Option<Arc<Query>>,
     outline: Option<Arc<Query>>,
-    locals: Option<Arc<Query>>,
     overrides: Option<Arc<Query>>,
 }
 
@@ -206,13 +205,6 @@ impl Language {
         }
     }
 
-    pub(crate) fn locals(&self) -> Option<&Arc<Query>> {
-        match &self.syntax {
-            LanguageSyntax::PlainText => None,
-            LanguageSyntax::TreeSitter { queries, .. } => queries.locals.as_ref(),
-        }
-    }
-
     pub(crate) fn overrides(&self) -> Option<&Arc<Query>> {
         match &self.syntax {
             LanguageSyntax::PlainText => None,
@@ -320,7 +312,6 @@ fn compile_queries(
         indents: compile_optional_query(language_name, "缩进", grammar, sources.indents),
         folds: compile_optional_query(language_name, "折叠", grammar, sources.folds),
         outline: compile_optional_query(language_name, "大纲", grammar, sources.outline),
-        locals: compile_optional_query(language_name, "局部语义", grammar, sources.locals),
         overrides: compile_optional_query(language_name, "覆盖作用域", grammar, sources.overrides),
     }
 }

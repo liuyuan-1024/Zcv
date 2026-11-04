@@ -39,9 +39,6 @@
       "cmd-v": "editor::Paste",
       "cmd-x": "editor::Cut",
 
-      // 在光标处重命名当前文件内可确定的局部绑定。
-      "f2": "editor::RenameLocal",
-
       "cmd-z": "editor::Undo",
       "cmd-shift-z": "editor::Redo",
 
@@ -122,15 +119,6 @@
       "shift-right": "editor::SelectRight",
       "shift-up": "editor::SelectUp",
       "shift-down": "editor::SelectDown"
-    }
-  },
-
-  {
-    // 行内局部重命名输入框。
-    "context": "Editor && mode == single_line",
-    "bindings": {
-      "enter": "editor::ConfirmLocalRename",
-      "escape": "editor::CancelLocalRename"
     }
   },
 

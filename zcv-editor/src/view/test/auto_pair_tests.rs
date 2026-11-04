@@ -801,7 +801,7 @@ fn markdown_nested_empty_list_item_unindents_and_read_only_newline_is_ignored(
     cx.update_entity(&editor, |editor, cx| editor.redo(cx));
     assert_eq!(buffer_text(&buffer, cx), "- ");
 
-    let read_only = cx.new(MultiBuffer::empty_read_only);
+    let read_only = cx.new(MultiBuffer::empty_tree_ordered_read_only);
     cx.update_entity(&read_only, |combined, cx| {
         combined.set_excerpts_for_path(
             vec![ExcerptRange::new(

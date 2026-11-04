@@ -129,7 +129,7 @@ fn build_editor(
         })
         .collect();
     let multi = cx.new(if staged {
-        MultiBuffer::empty_read_only
+        MultiBuffer::empty_tree_ordered_read_only
     } else {
         MultiBuffer::empty
     });

@@ -257,35 +257,6 @@ impl MultiBufferSnapshot {
             .suggested_newline_indent(source_offset, &source.text)
     }
 
-    /// 查询严格包围组合范围的最小 source 语法节点，并映射回组合坐标。
-    pub fn ancestor_range(&self, range: Range<usize>) -> Option<Range<usize>> {
-        self.expand_selection_range(range)
-    }
-
-    /// 返回组合坐标中光标所在的最深语法节点。
-    pub fn node_at(&self, offset: impl Into<MultiBufferOffset>) -> Option<SyntaxNode> {
-        let offset: MultiBufferOffset = offset.into();
-        let offset = ByteOffset::new(offset.get());
-        let (mapping, source, source_offset) = self.source_point(offset)?;
-        let node = source.syntax.node_at(source_offset.get(), &source.text)?;
-        project_syntax_node(&node, mapping.source_range.range(), mapping.output_range)
-    }
-
-    /// 返回组合坐标中选区所在语法层的节点链，顺序为最小节点到语法根节点。
-    pub fn node_ancestors(&self, range: Range<usize>) -> Vec<SyntaxNode> {
-        let Some((mapping, source, source_range)) = self.source_range(range.clone()) else {
-            return Vec::new();
-        };
-        source
-            .syntax
-            .node_ancestors(source_range, &source.text)
-            .into_iter()
-            .filter_map(|node| {
-                project_syntax_node(&node, mapping.source_range.range(), mapping.output_range)
-            })
-            .collect()
-    }
-
     /// 将选区扩展到当前语法层中严格包围它的下一个节点。
     pub fn expand_selection_range(&self, range: Range<usize>) -> Option<Range<usize>> {
         let (mapping, source, source_range) = self.source_range(range.clone())?;
@@ -293,27 +264,5 @@ impl MultiBufferSnapshot {
             .syntax
             .expand_selection_range(source_range, &source.text)?;
         project_range(ancestor, mapping.source_range.range(), mapping.output_range)
-    }
-
-    /// 返回普通单文件组合文档中的局部绑定。
-    ///
-    /// 局部绑定仍以源文件字节范围为语义；
-    /// 多文件 excerpt 可能只展示作用域的一部分，因而这里不返回不完整的绑定，避免编辑器把组合坐标误当成源坐标执行重命名。
-    pub fn local_bindings(&self) -> Vec<LocalBinding> {
-        if self.excerpts.summary().count != 1 {
-            return Vec::new();
-        }
-        let Some(excerpt) = self.excerpts.first() else {
-            return Vec::new();
-        };
-        let Some(source) = self.source_snapshot(excerpt.source_index) else {
-            return Vec::new();
-        };
-        let source_len = source.text.len_bytes().get();
-        if excerpt.source_range.start().get() != 0 || excerpt.source_range.end().get() != source_len
-        {
-            return Vec::new();
-        }
-        source.syntax.local_bindings(0..source_len, &source.text)
     }
 }

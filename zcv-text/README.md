@@ -26,10 +26,7 @@ Zcv 的纯文本内核：文本存储、坐标模型、事务变异、历史系�
 
 - `has_edits_since`：按 fragment 可见性语义判断自旧版本以来可见片段集合是否变化（插入后删除判为无编辑）。
 - `has_edits_since_in_range`：按源 `Anchor` 范围判断片段可见性是否变化，不依赖带文本编辑日志的保留窗口。
-- `offsets_to_version` / `range_to_version`：通过 `PositionMap` 的反向映射把当前快照坐标映射回旧版本。
-- `text_for_version`：按版本倒序应用编辑日志保留的逆编辑，重建该历史版本的文本。
-
-逆编辑在进入历史的事务与 undo/redo 回放中保留，放弃历史的事务不保留；目标版本退出编辑日志窗口返回 `TextError::VersionEvicted`，区间内存在放弃历史的大事务时返回 `TextError::HistoryTextUnavailable`。
+逆编辑在进入历史的事务与 undo/redo 回放中保留，放弃历史的事务不保留；目标版本退出编辑日志窗口时相关查询返回 `TextError::VersionEvicted`。
 
 ## 行宽度摘要
 

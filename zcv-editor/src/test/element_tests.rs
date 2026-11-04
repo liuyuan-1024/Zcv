@@ -4,6 +4,7 @@ use crate::display_map::{
 };
 
 use super::*;
+use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_settings::{SettingsStore, UserSettings};
 
 #[path = "ligature_text_system.rs"]

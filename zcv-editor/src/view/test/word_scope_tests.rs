@@ -322,7 +322,7 @@ fn read_only_word_delete_keeps_text_and_selection(cx: &mut TestAppContext) {
             cx,
         )
     });
-    let combined = cx.new(MultiBuffer::empty_read_only);
+    let combined = cx.new(MultiBuffer::empty_tree_ordered_read_only);
     combined.update(cx, |combined, cx| {
         combined.set_excerpts_for_path(
             vec![ExcerptRange::new(

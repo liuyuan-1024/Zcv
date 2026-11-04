@@ -206,34 +206,6 @@ impl EditLog {
         Ok(batches)
     }
 
-    /// 取 `[start, end]` 版本区间的逆编辑，按版本倒序返回，供按旧版本重建文本。
-    ///
-    /// 与 undo 回放不同：重建历史文本允许区间内存在未保留逆编辑的事务（放弃历史的大事务），
-    /// 此时返回显式错误，调用方必须丢弃而不是猜测文本。
-    pub(crate) fn reverse_batches(
-        &self,
-        start: BufferVersion,
-        end: BufferVersion,
-    ) -> TextResult<Vec<EditList>> {
-        let range = self.entries_for_range(start, end)?;
-        let mut batches = Vec::with_capacity(range.len());
-        let mut cursor = self.entries.cursor::<EntryCount>(());
-        cursor.seek(&EntryCount(range.end), Bias::Right);
-        cursor.prev();
-        for _ in range {
-            let entry = cursor.item().expect("历史区间必须存在编辑条目");
-            let Some(undo) = &entry.undo else {
-                return Err(TextError::HistoryTextUnavailable {
-                    requested: start,
-                    current: end,
-                });
-            };
-            batches.push(undo.clone());
-            cursor.prev();
-        }
-        Ok(batches)
-    }
-
     /// 取 `[start, end]` 版本区间的向前编辑与原始版本区间，按 redo 回放顺序（版本正序）返回。
     pub(crate) fn redo_batches(
         &self,

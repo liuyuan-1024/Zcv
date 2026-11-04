@@ -249,7 +249,6 @@ fn merged_transaction_undo_publishes_one_composed_change_batch() {
 #[test]
 fn merge_with_previous_after_undo_and_redo_replays_the_whole_node() {
     let mut buffer = buffer("abc");
-    let v0 = buffer.version();
     buffer
         .edit([Edit::insert(b(3), "A").unwrap()], metadata("A"))
         .unwrap();
@@ -270,7 +269,6 @@ fn merge_with_previous_after_undo_and_redo_replays_the_whole_node() {
         .unwrap()
         .expect("跨越回放区间的合并节点应可撤销");
     assert_eq!(buffer_text(&buffer), "abc");
-    assert_eq!(buffer.snapshot().text_for_version(v0).unwrap(), "abc");
 }
 
 #[test]

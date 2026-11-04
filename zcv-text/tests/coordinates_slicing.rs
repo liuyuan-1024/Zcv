@@ -21,10 +21,6 @@ fn col(value: usize) -> LogicalColumn {
     LogicalColumn::new(value)
 }
 
-fn line_range(start: usize, end: usize) -> LineRange {
-    LineRange::new(line(start), line(end)).unwrap()
-}
-
 #[test]
 fn byte_char_and_position_projection_should_preserve_explicit_coordinate_domains() {
     let buffer = buffer("a你\n😀z");
@@ -121,7 +117,12 @@ fn crlf_input_uses_lf_line_coordinates() {
         )
         .unwrap();
     assert_eq!(buffer_text(&buffer), "a\nxb");
-    assert_eq!(buffer.line_start_char(line(1)).unwrap(), c(2));
+    assert_eq!(
+        buffer
+            .byte_to_char(buffer.line_start_byte(line(1)).unwrap())
+            .unwrap(),
+        c(2)
+    );
     assert_eq!(buffer.line_start_byte(line(1)).unwrap(), b(2));
 }
 
@@ -149,7 +150,14 @@ fn grapheme_boundary_should_reject_combining_mark_middle_and_map_to_nearest_boun
     assert!(buffer.is_grapheme_boundary(c(1)).unwrap());
     assert!(!buffer.is_grapheme_boundary(c(2)).unwrap());
     assert!(matches!(
-        buffer.validate_grapheme_boundary(c(2)).unwrap_err(),
+        buffer
+            .movement_boundary(
+                WordBoundaryPolicy::default(),
+                c(2),
+                MovementDirection::Next,
+                MovementUnit::Grapheme
+            )
+            .unwrap_err(),
         TextError::Coordinate(CoordinateError::InvalidGraphemeBoundary(offset)) if offset == b(2)
     ));
     assert_eq!(buffer.previous_grapheme_boundary(c(3)).unwrap(), c(1));
@@ -161,13 +169,11 @@ fn text_and_line_slices_should_preserve_byte_ranges_and_newline_boundaries() {
     let buffer = buffer("one\n二三\nlast");
     let slice = buffer.slice_text(range(4, 10)).unwrap();
     let line_slice = buffer.slice_line(line(1)).unwrap();
-    let range_slice = buffer.slice_line_range(line_range(1, 3)).unwrap();
 
     assert_eq!(slice.as_str(), "二三");
     assert_eq!(slice.range(), range(4, 10));
     assert_eq!(line_slice.as_str(), "二三\n");
     assert_eq!(line_slice.range(), range(4, 11));
-    assert_eq!(range_slice.as_str(), "二三\nlast");
 }
 
 #[test]

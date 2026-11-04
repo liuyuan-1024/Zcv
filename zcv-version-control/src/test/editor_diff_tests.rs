@@ -12,10 +12,24 @@ use zcv_editor::Editor;
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_git::{FileStatus, GitRevision};
 use zcv_language::LanguageRegistry;
-use zcv_multi_buffer::MultiBuffer;
+use zcv_multi_buffer::{DisplayHunk, MultiBuffer};
 use zcv_project::Project;
 
 use super::inject_editor_diff;
+
+/// 测试用：走生产路径（快照 `resolved_diff_hunks`）读取编辑器 diff 视图。
+fn editor_diff_hunks(editor: &Entity<Editor>, cx: &mut TestAppContext) -> Vec<DisplayHunk> {
+    editor.update(cx, |editor, cx| {
+        editor.multi_buffer().update(cx, |buffer, cx| {
+            buffer
+                .snapshot(cx)
+                .resolved_diff_hunks()
+                .into_iter()
+                .map(|(_, resolved)| resolved.hunk)
+                .collect::<Vec<_>>()
+        })
+    })
+}
 use zcv_settings::{SettingsStore, UserSettings};
 
 struct PassiveWatcher(FsWatcher);
@@ -99,7 +113,7 @@ fn untracked_file_uses_the_same_git_projection_before_and_after_staging(cx: &mut
     let editor = editor_for_file(&path, &project, cx);
     cx.update(|cx| inject_editor_diff(&editor, &path, &project, cx));
     cx.run_until_parked();
-    let hunks = editor.read_with(cx, |editor, cx| editor.diff_hunks(cx));
+    let hunks = editor_diff_hunks(&editor, cx);
     assert_eq!(hunks.len(), 1, "未跟踪文件应显示整文件新增 hunk");
     assert_eq!(hunks[0].kind, DiffHunkKind::Added);
     assert_eq!(hunks[0].staging, DiffHunkStaging::Unstaged);
@@ -109,7 +123,7 @@ fn untracked_file_uses_the_same_git_projection_before_and_after_staging(cx: &mut
         store.refresh_statuses_for_paths(slice::from_ref(&path), cx)
     });
     cx.run_until_parked();
-    let hunks = editor.read_with(cx, |editor, cx| editor.diff_hunks(cx));
+    let hunks = editor_diff_hunks(&editor, cx);
     assert_eq!(hunks.len(), 1, "暂存后应保留同一条编辑器差异投影");
     assert_eq!(hunks[0].kind, DiffHunkKind::Added);
     assert_eq!(hunks[0].staging, DiffHunkStaging::Staged);
@@ -136,13 +150,13 @@ fn clean_tracked_file_and_ignored_file_have_distinct_diff_eligibility(cx: &mut T
     let editor = editor_for_file(&clean_path, &project, cx);
     cx.update(|cx| inject_editor_diff(&editor, &clean_path, &project, cx));
     cx.run_until_parked();
-    assert!(editor.read_with(cx, |editor, cx| editor.diff_hunks(cx).is_empty()));
+    assert!(editor_diff_hunks(&editor, cx).is_empty());
     assert!(store.read_with(cx, |store, _| {
         store.revision_document_loaded(GitRevision::Head, &clean_path)
     }));
     editor.update(cx, |editor, cx| editor.set_text("未保存的修改\n", cx));
     cx.run_until_parked();
-    let hunks = editor.read_with(cx, |editor, cx| editor.diff_hunks(cx));
+    let hunks = editor_diff_hunks(&editor, cx);
     assert_eq!(hunks.len(), 1, "干净文件的未保存编辑应产生差异");
     assert_eq!(hunks[0].kind, DiffHunkKind::Modified);
 

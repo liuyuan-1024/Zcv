@@ -1123,7 +1123,9 @@ fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
 #[gpui::test]
 fn empty_project_has_no_root_and_empty_rows(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
-    let project = cx.update(|cx| cx.new(|cx| Project::empty(test_languages(), cx)));
+    let project = cx.update(|cx| {
+        cx.new(|cx| Project::empty_with_watcher(test_languages(), Arc::new(FsWatcher::new()), cx))
+    });
     let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
 
     cx.read_entity(&tree, |tree, _| {

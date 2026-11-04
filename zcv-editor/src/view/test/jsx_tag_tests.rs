@@ -276,7 +276,7 @@ fn tsx_tag_autoclose_is_rejected_in_read_only_excerpt(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (buffer, _editor, cx) = editor_with_state(cx, "test.tsx", "<divˇ");
     cx.run_until_parked();
-    let combined = cx.new(MultiBuffer::empty_read_only);
+    let combined = cx.new(MultiBuffer::empty_tree_ordered_read_only);
     cx.update_entity(&combined, |combined, cx| {
         combined.set_excerpts_for_path(
             vec![ExcerptRange::new(

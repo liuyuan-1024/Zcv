@@ -262,18 +262,6 @@ impl Dock {
         true
     }
 
-    /// 注入待恢复状态；panel 尚未注册时保留快照，后续 add_panel 会继续恢复。
-    #[cfg(test)]
-    pub fn set_serialized_state(
-        &mut self,
-        state: DockData,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.serialized_dock = Some(state);
-        self.restore_state(window, cx);
-    }
-
     /// 根据当前已注册 panel 尝试恢复状态。
     pub fn restore_state(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(state) = self.serialized_dock.clone() else {

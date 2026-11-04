@@ -1,5 +1,6 @@
 use std::{
     iter,
+    ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -16,6 +17,45 @@ use zcv_text::{
 
 use super::*;
 use zcv_settings::{SettingsStore, UserSettings};
+
+/// 测试用：走生产渲染路径（快照 `resolved_diff_hunks`）解析 diff 视图。
+fn resolved_hunks(
+    buffer: &mut MultiBuffer,
+    cx: &mut Context<MultiBuffer>,
+) -> Vec<(usize, ResolvedDiffHunk)> {
+    buffer.snapshot(cx).resolved_diff_hunks()
+}
+
+fn diff_hunks(buffer: &mut MultiBuffer, cx: &mut Context<MultiBuffer>) -> Vec<DisplayHunk> {
+    resolved_hunks(buffer, cx)
+        .into_iter()
+        .map(|(_, resolved)| resolved.hunk)
+        .collect()
+}
+
+fn diff_hunk_expanded(buffer: &mut MultiBuffer, cx: &mut Context<MultiBuffer>) -> Vec<bool> {
+    resolved_hunks(buffer, cx)
+        .into_iter()
+        .map(|(_, resolved)| resolved.expanded)
+        .collect()
+}
+
+fn diff_hunk_old_ranges(
+    buffer: &mut MultiBuffer,
+    cx: &mut Context<MultiBuffer>,
+) -> Vec<Option<Range<usize>>> {
+    resolved_hunks(buffer, cx)
+        .into_iter()
+        .map(|(_, resolved)| resolved.old_range)
+        .collect()
+}
+
+fn diff_hunk_word_diffs(buffer: &mut MultiBuffer, cx: &mut Context<MultiBuffer>) -> Vec<WordDiffs> {
+    resolved_hunks(buffer, cx)
+        .into_iter()
+        .map(|(_, resolved)| resolved.word_diffs)
+        .collect()
+}
 
 /// 测试辅助：按路径分组写入，替代已删除的整篇 set_excerpts 入口。
 trait SetExcerptsByPath {
@@ -399,24 +439,24 @@ fn inserting_middle_diff_file_matches_fresh_three_file_build(cx: &mut TestAppCon
     cx.update_entity(&incremental, |buffer, cx| {
         buffer.snapshot(cx);
     });
-    let incremental_state = cx.read_entity(&incremental, |buffer, _| {
+    let incremental_state = cx.update_entity(&incremental, |buffer, cx| {
         (
             buffer
                 .diff_paths()
                 .into_iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            buffer.diff_hunks().to_vec(),
+            diff_hunks(buffer, cx),
         )
     });
-    let fresh_state = cx.read_entity(&fresh, |buffer, _| {
+    let fresh_state = cx.update_entity(&fresh, |buffer, cx| {
         (
             buffer
                 .diff_paths()
                 .into_iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            buffer.diff_hunks().to_vec(),
+            diff_hunks(buffer, cx),
         )
     });
     assert_eq!(incremental_state, fresh_state);
@@ -470,24 +510,24 @@ fn removing_middle_diff_file_matches_fresh_two_file_build(cx: &mut TestAppContex
     });
     assert!(removed);
 
-    let incremental = cx.read_entity(&three, |buffer, _| {
+    let incremental = cx.update_entity(&three, |buffer, cx| {
         (
             buffer
                 .diff_paths()
                 .into_iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            buffer.diff_hunks().to_vec(),
+            diff_hunks(buffer, cx),
         )
     });
-    let fresh = cx.read_entity(&two, |buffer, _| {
+    let fresh = cx.update_entity(&two, |buffer, cx| {
         (
             buffer
                 .diff_paths()
                 .into_iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            buffer.diff_hunks().to_vec(),
+            diff_hunks(buffer, cx),
         )
     });
     assert_eq!(incremental, fresh);
@@ -605,24 +645,24 @@ fn single_file_version_change_matches_fresh_three_file_build(cx: &mut TestAppCon
     cx.update_entity(&incremental, |buffer, cx| {
         buffer.snapshot(cx);
     });
-    let incremental_state = cx.read_entity(&incremental, |buffer, _| {
+    let incremental_state = cx.update_entity(&incremental, |buffer, cx| {
         (
             buffer
                 .diff_paths()
                 .into_iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            buffer.diff_hunks().to_vec(),
+            diff_hunks(buffer, cx),
         )
     });
-    let fresh_state = cx.read_entity(&fresh, |buffer, _| {
+    let fresh_state = cx.update_entity(&fresh, |buffer, cx| {
         (
             buffer
                 .diff_paths()
                 .into_iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            buffer.diff_hunks().to_vec(),
+            diff_hunks(buffer, cx),
         )
     });
     assert_eq!(incremental_state, fresh_state);
@@ -695,14 +735,14 @@ fn read_diff_state(
     buffer: &Entity<MultiBuffer>,
     cx: &mut TestAppContext,
 ) -> (Vec<String>, Vec<DisplayHunk>) {
-    cx.read_entity(buffer, |buffer, _| {
+    cx.update_entity(buffer, |buffer, cx| {
         (
             buffer
                 .diff_paths()
                 .into_iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect(),
-            buffer.diff_hunks().to_vec(),
+            diff_hunks(buffer, cx),
         )
     })
 }
@@ -727,14 +767,14 @@ fn clearing_buffer_diffs_removes_previous_hunks(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&combined, |buffer, _| buffer.diff_hunks().len()),
+        cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx).len()),
         1
     );
 
     cx.update_entity(&combined, |buffer, cx| {
         buffer.clear_diffs(cx);
     });
-    assert!(cx.read_entity(&combined, |buffer, _| buffer.diff_hunks().is_empty()));
+    assert!(cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx).is_empty()));
 }
 
 /// 未提交 diff 以 HEAD 为 base、工作区为 working，由 index → working 参照逐 hunk 标注暂存语义。
@@ -826,9 +866,8 @@ fn standalone_staged_view_classifies_all_hunks_as_staged(cx: &mut TestAppContext
     });
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&combined, |buffer, _| {
-            buffer
-                .diff_hunks()
+        cx.update_entity(&combined, |buffer, cx| {
+            diff_hunks(buffer, cx)
                 .iter()
                 .map(|hunk| hunk.staging)
                 .collect::<Vec<_>>()
@@ -2801,9 +2840,10 @@ fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
 
     cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
-        let items = snapshot.outline_items();
-        let function = items
-            .iter()
+        let function = snapshot
+            .outline_entries()
+            .into_iter()
+            .map(|entry| entry.item)
             .find(|item| item.name == "数据")
             .expect("excerpt 内函数应保留在组合大纲中");
         assert_eq!(
@@ -2885,17 +2925,13 @@ fn syntax_nodes_project_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
     let source_name_start = "// 前置\nfn ".len();
     let function_range = cx.read_entity(&source, |source, _| {
         let snapshot = source.snapshot();
-        let node = snapshot
+        snapshot
             .syntax
-            .node_at(source_name_start, &snapshot.text)
-            .expect("Rust 函数名应有语法节点");
-        let function = snapshot
-            .syntax
-            .node_ancestors(node.range.clone(), &snapshot.text)
+            .node_ancestors(source_name_start..source_name_start, &snapshot.text)
             .into_iter()
             .find(|node| node.kind == "function_item")
-            .expect("Rust 函数应出现在语法祖先链");
-        function.range
+            .expect("Rust 函数应出现在语法祖先链")
+            .range
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -2913,15 +2949,16 @@ fn syntax_nodes_project_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
         );
     });
 
-    let node = cx
+    // 生产结构化选择路径：组合坐标中的选区扩展必须穿过 excerpt 映射命中 source 语法节点，再映射回组合范围。
+    let name_start = source_name_start - function_range.start;
+    let identifier = cx
         .update_entity(&combined, |buffer, cx| {
             buffer
                 .snapshot(cx)
-                .node_at(ByteOffset::new(source_name_start - function_range.start))
+                .expand_selection_range(name_start..name_start)
         })
         .expect("excerpt 内函数名应保留在组合语法节点中");
-    assert_eq!(node.kind, "identifier");
-    assert_eq!(node.range.start, source_name_start - function_range.start);
+    assert_eq!(identifier, name_start..name_start + "数据".len());
 }
 
 #[gpui::test]
@@ -2966,7 +3003,11 @@ fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
                             .into(),
                     )
                     .unwrap(),
-                buffer.location_for_offset(second_offset).unwrap(),
+                buffer
+                    .location_for_range(
+                        MultiBufferRange::new(second_offset, second_offset).unwrap(),
+                    )
+                    .unwrap(),
                 buffer.match_ranges().to_vec(),
             )
         });
@@ -3238,7 +3279,12 @@ fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppConte
         assert_eq!(snapshot.excerpts().next().unwrap().output_start_line(), 0);
         assert_eq!(snapshot.excerpts().nth(1).unwrap().output_start_line(), 1);
         assert_eq!(
-            buffer.location_for_offset(ByteOffset::new(1)).unwrap().path,
+            buffer
+                .location_for_range(
+                    MultiBufferRange::new(ByteOffset::new(1), ByteOffset::new(1)).unwrap(),
+                )
+                .unwrap()
+                .path,
             PathBuf::from("deleted/b.rs")
         );
     });
@@ -3475,8 +3521,10 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update_entity(&combined, |buffer, cx| buffer.toggle_diff_hunk_at(0, cx));
     assert!(
-        cx.read_entity(&combined, |buffer, _cx| {
-            buffer.diff_hunk_expanded().iter().all(|&expanded| expanded)
+        cx.update_entity(&combined, |buffer, cx| {
+            diff_hunk_expanded(buffer, cx)
+                .iter()
+                .all(|&expanded| expanded)
         }),
         "展开后应记录展开状态"
     );
@@ -3497,7 +3545,7 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
         buffer.snapshot(cx);
     });
     cx.run_until_parked();
-    let hunks_after_edit = cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().to_vec());
+    let hunks_after_edit = cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx));
     assert_eq!(
         hunks_after_edit.len(),
         2,
@@ -3531,8 +3579,8 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         buffer.snapshot(cx);
     });
-    let (hunks, expanded) = cx.read_entity(&combined, |buffer, _cx| {
-        (buffer.diff_hunks().to_vec(), buffer.diff_hunk_expanded())
+    let (hunks, expanded) = cx.update_entity(&combined, |buffer, cx| {
+        (diff_hunks(buffer, cx), diff_hunk_expanded(buffer, cx))
     });
     assert_eq!(hunks.len(), 1, "重新注入后应显示新坐标 hunk");
     // 新 hunk 采用默认折叠状态，并由新 Git 快照提供坐标。
@@ -3589,10 +3637,10 @@ fn diff_expansion_survives_hunk_kind_changes(cx: &mut TestAppContext) {
             cx.run_until_parked();
             cx.update_entity(&combined, |buffer, cx| {
                 let snapshot = buffer.snapshot(cx);
-                assert_eq!(buffer.diff_hunks().len(), 1);
-                assert_eq!(buffer.diff_hunks()[0].kind, kind);
+                assert_eq!(diff_hunks(buffer, cx).len(), 1);
+                assert_eq!(diff_hunks(buffer, cx)[0].kind, kind);
                 assert_eq!(
-                    buffer.diff_hunk_expanded(),
+                    diff_hunk_expanded(buffer, cx),
                     vec![expanded],
                     "区块类型或起点文本变化后应保留用户选择的展开状态"
                 );
@@ -3676,8 +3724,8 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         buffer.snapshot(cx);
     });
-    let (hunks, expanded) = cx.read_entity(&combined, |buffer, _cx| {
-        (buffer.diff_hunks().to_vec(), buffer.diff_hunk_expanded())
+    let (hunks, expanded) = cx.update_entity(&combined, |buffer, cx| {
+        (diff_hunks(buffer, cx), diff_hunk_expanded(buffer, cx))
     });
     assert_eq!(hunks.len(), 1, "刷新后相邻改动应合并为一个 hunk");
     assert_eq!(hunks[0].old_range, 1..2, "合并后的 hunk 旧侧应为实际替换行");
@@ -3709,8 +3757,10 @@ fn diff_expansion_survives_working_version_advance_with_stale_old_diff(cx: &mut 
     cx.run_until_parked();
     cx.update_entity(&combined, |buffer, cx| buffer.toggle_diff_hunk_at(0, cx));
     assert!(
-        cx.read_entity(&combined, |buffer, _cx| {
-            buffer.diff_hunk_expanded().iter().all(|&expanded| expanded)
+        cx.update_entity(&combined, |buffer, cx| {
+            diff_hunk_expanded(buffer, cx)
+                .iter()
+                .all(|&expanded| expanded)
         }),
         "展开后应记录展开状态"
     );
@@ -3742,8 +3792,8 @@ fn diff_expansion_survives_working_version_advance_with_stale_old_diff(cx: &mut 
     });
     cx.run_until_parked();
 
-    let (hunks, expanded) = cx.read_entity(&combined, |buffer, _cx| {
-        (buffer.diff_hunks().to_vec(), buffer.diff_hunk_expanded())
+    let (hunks, expanded) = cx.update_entity(&combined, |buffer, cx| {
+        (diff_hunks(buffer, cx), diff_hunk_expanded(buffer, cx))
     });
     assert_eq!(hunks.len(), 1, "重新注入后应显示推进坐标后的等价 hunk");
     assert!(
@@ -3891,12 +3941,12 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
             "created\n\nbefore\nold\nnew\nafter\n"
         );
         assert_eq!(
-            buffer.diff_hunk_old_ranges(),
+            diff_hunk_old_ranges(buffer, cx),
             &[None, Some(3..4)],
             "旧侧范围应落在实际物化的 old 行"
         );
         assert_eq!(
-            buffer.diff_hunks(),
+            diff_hunks(buffer, cx),
             &[
                 DisplayHunk {
                     range: 0..1,
@@ -3914,7 +3964,7 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
             "新侧范围应落在实际物化的 new 行，不能受前一文件末尾空逻辑行影响"
         );
         assert_eq!(
-            buffer.diff_hunk_expanded(),
+            diff_hunk_expanded(buffer, cx),
             &[true, true],
             "展开状态必须与物化后的显示 hunk 同序，不能遗漏整文件新增块"
         );
@@ -3964,7 +4014,7 @@ fn new_file_diff_excludes_the_empty_editor_row_after_terminal_newline(cx: &mut T
     combined.update(cx, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         assert_eq!(snapshot.line_count(), 3);
-        assert_eq!(buffer.diff_hunks()[0].range, 0..2);
+        assert_eq!(diff_hunks(buffer, cx)[0].range, 0..2);
         assert_eq!(snapshot.diff_hunks_in_lines(1..2).len(), 1);
         assert!(snapshot.diff_hunks_in_lines(2..3).is_empty());
     });
@@ -4003,7 +4053,7 @@ fn visible_diff_hunks_stop_at_their_materialized_file_boundary(cx: &mut TestAppC
             String::from_utf8(snapshot.text_bytes()).unwrap(),
             "a\n\nc\n\ntail\n"
         );
-        assert_eq!(buffer.diff_hunks()[0].range, 0..3);
+        assert_eq!(diff_hunks(buffer, cx)[0].range, 0..3);
         assert_eq!(snapshot.diff_hunks_in_lines(2..3).len(), 1);
         assert!(snapshot.diff_hunks_in_lines(4..5).is_empty());
     });
@@ -4124,9 +4174,8 @@ fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut T
         );
     });
     assert!(
-        cx.read_entity(&combined, |buffer, _cx| {
-            buffer
-                .diff_hunk_expanded()
+        cx.update_entity(&combined, |buffer, cx| {
+            diff_hunk_expanded(buffer, cx)
                 .iter()
                 .all(|&expanded| !expanded)
         }),
@@ -4201,7 +4250,7 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("投影应为 UTF-8"),
             "replacement\n"
         );
-        assert_eq!(buffer.diff_hunks().len(), 1, "新快照应生成新的显示 hunk");
+        assert_eq!(diff_hunks(buffer, cx).len(), 1, "新快照应生成新的显示 hunk");
         assert!(
             buffer.snapshot(cx).resolved_diff_hunks()[0]
                 .1
@@ -4380,7 +4429,7 @@ fn diff_expansion_is_discarded_when_a_hunk_disappears(cx: &mut TestAppContext) {
             let snapshot = buffer.snapshot(cx);
             assert_output_coordinates(&snapshot);
             assert_eq!(
-                buffer.diff_hunk_expanded(),
+                diff_hunk_expanded(buffer, cx),
                 if replacement == "old" {
                     Vec::new()
                 } else {
@@ -4408,14 +4457,14 @@ fn fully_deleted_file_keeps_boundary_hunk(cx: &mut TestAppContext) {
 
     cx.update_entity(&combined, |buffer, cx| {
         assert_eq!(
-            buffer.diff_hunks().len(),
+            diff_hunks(buffer, cx).len(),
             1,
             "整份删除必须保留一个显示 hunk"
         );
-        assert_eq!(buffer.diff_hunks()[0].kind, DiffHunkKind::Deleted);
-        assert_eq!(buffer.diff_hunks()[0].range, 0..0);
+        assert_eq!(diff_hunks(buffer, cx)[0].kind, DiffHunkKind::Deleted);
+        assert_eq!(diff_hunks(buffer, cx)[0].range, 0..0);
         assert!(
-            buffer.diff_hunk_old_ranges()[0].is_none(),
+            diff_hunk_old_ranges(buffer, cx)[0].is_none(),
             "整文件模式折叠态不物化旧侧"
         );
         assert!(
@@ -4450,7 +4499,7 @@ fn projection_consumes_source_diff_changes_without_save_or_reinjection(cx: &mut 
     });
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
+        cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx).len()),
         1,
         "初始应有一个新增 hunk"
     );
@@ -4473,7 +4522,7 @@ fn projection_consumes_source_diff_changes_without_save_or_reinjection(cx: &mut 
     cx.update_entity(&combined, |buffer, cx| {
         assert!(source.read(cx).is_dirty());
         assert!(
-            buffer.diff_hunks().is_empty(),
+            diff_hunks(buffer, cx).is_empty(),
             "源文本已无差异时，不应等待保存或再次注入"
         );
         assert_eq!(
@@ -4563,7 +4612,7 @@ fn diff_hunks_survive_geometry_preserving_edits(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
+        cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx).len()),
         1
     );
 
@@ -4583,12 +4632,12 @@ fn diff_hunks_survive_geometry_preserving_edits(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     assert_eq!(
-        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
+        cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx).len()),
         1,
         "hunk 几何不变的编辑后 diff 高亮必须保留"
     );
     assert_eq!(
-        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunk_expanded()),
+        cx.update_entity(&combined, |buffer, cx| diff_hunk_expanded(buffer, cx)),
         vec![false],
         "展开状态同样受该门控影响，必须保持可用"
     );
@@ -4683,7 +4732,7 @@ fn diff_metadata_refresh_does_not_republish_unchanged_excerpt_topology(cx: &mut 
         "hunk 可见 excerpt 拓扑未变时应保留原拓扑代际"
     );
     assert_eq!(
-        cx.read_entity(&combined, |buffer, _| buffer.diff_hunks().len()),
+        cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx).len()),
         1,
         "元数据刷新仍应保留最新 diff hunk"
     );
@@ -4777,7 +4826,7 @@ fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&combined, |buffer, _| buffer.diff_hunks().len()),
+        cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx).len()),
         1
     );
 
@@ -4807,7 +4856,7 @@ fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
         );
     });
     assert!(
-        !cx.read_entity(&combined, |buffer, _| buffer.diff_hunks().is_empty()),
+        !cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx).is_empty()),
         "新文件未就绪不能清空已有文件的 diff 高亮"
     );
 }
@@ -4876,7 +4925,7 @@ fn diff_hunks_survive_rapid_edits(cx: &mut TestAppContext) {
     }
     cx.run_until_parked();
     assert!(
-        !cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().is_empty()),
+        !cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx).is_empty()),
         "连续编辑后 diff 高亮不能消失"
     );
 }
@@ -4977,12 +5026,12 @@ fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) 
     });
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
+        cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx).len()),
         1
     );
     // 普通文档默认折叠：不整行着色。
     assert_eq!(
-        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunk_expanded()),
+        cx.update_entity(&combined, |buffer, cx| diff_hunk_expanded(buffer, cx)),
         vec![false]
     );
     // 差异审阅视图默认展开：显示整行背景。
@@ -4990,7 +5039,7 @@ fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) 
         buffer.set_diff_hunks_expanded_by_default(true, cx)
     });
     assert_eq!(
-        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunk_expanded()),
+        cx.update_entity(&combined, |buffer, cx| diff_hunk_expanded(buffer, cx)),
         vec![true]
     );
 }
@@ -5020,7 +5069,7 @@ fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut T
     let (text, word_diffs) = cx.update_entity(&combined, |buffer, cx| {
         let text =
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8");
-        (text, buffer.diff_hunk_word_diffs().to_vec())
+        (text, diff_hunk_word_diffs(buffer, cx))
     });
     assert_eq!(word_diffs.len(), 1, "应有一个显示 hunk");
     let diffs = &word_diffs[0];
@@ -5068,7 +5117,7 @@ fn word_diffs_track_the_working_source_before_the_diff_recompute(cx: &mut TestAp
     let (text, word_diffs) = cx.update_entity(&combined, |buffer, cx| {
         let text =
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8");
-        (text, buffer.diff_hunk_word_diffs().to_vec())
+        (text, diff_hunk_word_diffs(buffer, cx))
     });
     let added = word_diffs
         .iter()
@@ -5474,7 +5523,7 @@ fn multi_source_edit_does_not_partially_commit_when_a_source_is_read_only(cx: &m
 fn read_only_composite_rejects_edits(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = singleton("index.txt", "index 内容\n", cx);
-    let combined = cx.new(MultiBuffer::empty_read_only);
+    let combined = cx.new(MultiBuffer::empty_tree_ordered_read_only);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(vec![ExcerptRange::line_range(source, 0..1, cx)], cx);
         assert!(buffer.is_read_only());

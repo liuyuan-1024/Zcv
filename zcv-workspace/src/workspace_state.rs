@@ -21,7 +21,6 @@ use zcv_actions::{
     FocusOrHidePanel, MinimizeWindow, OpenSettings, QuitWindow, Save, ToggleBottomDock,
     ToggleLeftDock, ToggleMaximizeWindow,
 };
-use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
 use zcv_project::{FileSaveConflictPolicy, Project};
 use zcv_settings::SettingsStore;
@@ -96,18 +95,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::build(project, window, cx)
-    }
-
-    /// 创建不绑定项目目录的工作区。
-    ///
-    /// 语言注册表由应用装配层注入；空工作区与项目工作区共享同一份。
-    pub fn new_empty(
-        languages: Arc<LanguageRegistry>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let project = cx.new(|cx| Project::empty(languages, cx));
         Self::build(project, window, cx)
     }
 

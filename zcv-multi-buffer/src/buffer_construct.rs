@@ -47,11 +47,6 @@ impl MultiBuffer {
         multi_buffer
     }
 
-    /// 创建空的只读组合文档；用于 index 等不可直接编辑的数据投影。
-    pub fn empty_read_only(cx: &mut Context<Self>) -> Self {
-        Self::empty_with_capability(Capability::ReadOnly, PathOrder::Natural, cx)
-    }
-
     fn empty_with_capability(
         capability: Capability,
         path_order: PathOrder,

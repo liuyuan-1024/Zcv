@@ -169,7 +169,12 @@ fn replace_text_updates_through_the_normal_history_and_anchor_pipeline() {
     buffer.replace_text("new\n".to_string()).unwrap();
 
     assert_eq!(buffer_text(&buffer), "new\n");
-    assert_eq!(buffer.line_start_char(line(1)).unwrap(), c(4));
+    assert_eq!(
+        buffer
+            .byte_to_char(buffer.line_start_byte(line(1)).unwrap())
+            .unwrap(),
+        c(4)
+    );
     assert!(buffer.can_undo());
     assert!(!buffer.can_redo());
     assert!(!buffer.snapshot().has_edits_since(buffer.version()).unwrap());

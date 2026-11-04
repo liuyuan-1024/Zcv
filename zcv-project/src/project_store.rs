@@ -173,13 +173,6 @@ impl Project {
         }
     }
 
-    /// 创建没有 worktree 的本地项目，供空工作区使用。
-    ///
-    /// 语言注册表同样由应用装配层注入。
-    pub fn empty(languages: Arc<LanguageRegistry>, cx: &mut Context<Self>) -> Self {
-        Self::empty_with_watcher(languages, Arc::new(FsWatcher::new()), cx)
-    }
-
     pub fn empty_with_watcher(
         languages: Arc<LanguageRegistry>,
         fs_watcher: Arc<dyn Watcher>,

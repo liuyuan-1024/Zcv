@@ -6,11 +6,12 @@ use std::{
 };
 
 use gpui::{AppContext, Context, Modifiers, TestAppContext, div, px, size};
-use zcv_fs_watch::{FsEventStream, Watcher};
+use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::LanguageRegistry;
 use zcv_settings::{SettingsStore, UserSettings};
 
 use super::*;
+use crate::test_support::empty_workspace;
 
 struct QuietWatcher;
 
@@ -53,7 +54,13 @@ fn confirm_invokes_on_selected(cx: &mut TestAppContext) {
     };
     let mut delegate = cx.update(|cx| {
         RecentProjectsDelegate::new(
-            cx.new(|cx| Project::empty(Arc::new(LanguageRegistry::new()), cx)),
+            cx.new(|cx| {
+                Project::empty_with_watcher(
+                    Arc::new(LanguageRegistry::new()),
+                    Arc::new(FsWatcher::new()),
+                    cx,
+                )
+            }),
             vec![ProjectEntry {
                 path: "/tmp/test-project".into(),
             }],
@@ -101,7 +108,13 @@ fn recent_projects_footer_opens_file_before_directory(cx: &mut TestAppContext) {
 fn test_delegate(cx: &mut App) -> RecentProjectsDelegate {
     let on_selected: OnProjectSelected = Rc::new(|_, _, _| {});
     RecentProjectsDelegate::new(
-        cx.new(|cx| Project::empty(Arc::new(LanguageRegistry::new()), cx)),
+        cx.new(|cx| {
+            Project::empty_with_watcher(
+                Arc::new(LanguageRegistry::new()),
+                Arc::new(FsWatcher::new()),
+                cx,
+            )
+        }),
         vec![
             ProjectEntry {
                 path: "/tmp/a".into(),
@@ -133,7 +146,13 @@ fn remove_project_drops_entry_and_keeps_filter(cx: &mut TestAppContext) {
 fn project_query_matches_noncontiguous_name_characters(cx: &mut TestAppContext) {
     let mut delegate = cx.update(|cx| {
         RecentProjectsDelegate::new(
-            cx.new(|cx| Project::empty(Arc::new(LanguageRegistry::new()), cx)),
+            cx.new(|cx| {
+                Project::empty_with_watcher(
+                    Arc::new(LanguageRegistry::new()),
+                    Arc::new(FsWatcher::new()),
+                    cx,
+                )
+            }),
             vec![
                 ProjectEntry {
                     path: "/tmp/alpha-project".into(),
@@ -309,7 +328,7 @@ fn reopening_selects_current_project_and_clears_previous_search(cx: &mut TestApp
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
     let (selector, cx) = cx.add_window_view(|window, cx| {
-        let workspace = cx.new(|cx| Workspace::new_empty(languages.clone(), window, cx));
+        let workspace = cx.new(|cx| empty_workspace(languages.clone(), window, cx));
         let project = test_project(directory.path().to_path_buf(), languages, cx);
         RecentProjects::new(
             Rc::new(|_, _, _| {}),

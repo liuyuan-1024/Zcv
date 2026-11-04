@@ -55,11 +55,6 @@ impl SyntaxNode {
 }
 
 impl SyntaxSnapshot {
-    /// 返回光标所在语法层的最深节点。
-    pub fn node_at(&self, offset: usize, text: &Snapshot) -> Option<SyntaxNode> {
-        self.node_ancestors(offset..offset, text).into_iter().next()
-    }
-
     /// 返回选区所在语法层的节点链，顺序为最小节点到语法根节点。
     ///
     /// 只选择一个最深语法层，结构化选择不会从注入代码跨回宿主文档。

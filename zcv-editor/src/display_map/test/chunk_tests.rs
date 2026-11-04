@@ -161,7 +161,6 @@ fn style_coordinates_never_become_text_slice_offsets() {
             }],
             styles: &[style],
             marked: &[],
-            dimmed: &[],
         },
         0..text.len(),
     );
@@ -231,7 +230,6 @@ fn chunk_pipeline_splits_styles_before_tab_expansion() {
             }],
             styles: &[style],
             marked: &[],
-            dimmed: &[],
         },
         0..5,
     );
@@ -260,7 +258,6 @@ fn chunk_pipeline_marks_selected_ranges() {
                 MultiBufferRange::new(MultiBufferOffset::new(2), MultiBufferOffset::new(4))
                     .unwrap(),
             ],
-            dimmed: &[],
         },
         0..6,
     );
@@ -287,7 +284,6 @@ fn chunks_to_runs_preserves_unicode_lengths_and_marked_style() {
                 MultiBufferRange::new(MultiBufferOffset::new(1), MultiBufferOffset::new(7))
                     .unwrap(),
             ],
-            dimmed: &[],
         },
         0..text.len(),
     );
@@ -311,39 +307,6 @@ fn chunks_to_runs_preserves_unicode_lengths_and_marked_style() {
 }
 
 #[test]
-fn chunks_to_runs_fades_dimmed_ranges() {
-    let text = "abc";
-    let line = render_line_chunks(
-        text,
-        4,
-        0,
-        HighlightStyles {
-            spans: &[],
-            styles: &[],
-            backgrounds: &[],
-            marked: &[],
-            dimmed: std::slice::from_ref(&(1..2)),
-        },
-        0..text.len(),
-    );
-    let runs = chunks_to_runs(
-        &line.chunks,
-        TextRun {
-            len: 0,
-            font: font("Helvetica"),
-            color: gpui::white(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        },
-    );
-
-    assert_eq!(runs.len(), 3);
-    assert!(runs[1].color.a < runs[0].color.a);
-    assert_eq!(runs[2].color.a, runs[0].color.a);
-}
-
-#[test]
 fn chunk_pipeline_clips_span_boundaries_to_line() {
     // span 端点 clip 到行内：行外 span 不产生额外切分。
     let style = HighlightStyle {
@@ -362,7 +325,6 @@ fn chunk_pipeline_clips_span_boundaries_to_line() {
             }],
             styles: &[style],
             marked: &[],
-            dimmed: &[],
         },
         0..3,
     );

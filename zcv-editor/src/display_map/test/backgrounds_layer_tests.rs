@@ -15,7 +15,6 @@ fn backgrounds_layer_colors_all_matching_chunks() {
             styles: &[],
             backgrounds: &[(0..3, rgba(0x74ade83d)), (4..7, rgba(0x74ade8b3))],
             marked: &[],
-            dimmed: &[],
         },
         0..text.len(),
     );
@@ -41,7 +40,6 @@ fn backgrounds_do_not_spill_into_adjacent_quotes() {
             styles: &[],
             backgrounds: &[(1..4, rgba(0x74ade83d))],
             marked: &[],
-            dimmed: &[],
         },
         0..text.len(),
     );

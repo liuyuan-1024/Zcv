@@ -44,8 +44,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_language::{
     BracketPair, HighlightCache, HighlightSpan, IndentGuideSettings, InputScope, LanguageBuffer,
-    LanguageBufferEvent, LanguageBufferSnapshot, LanguageRegistry, LanguageSettings, LocalBinding,
-    NewlineIndent, OutlineItem, SyntaxNode, SyntaxSnapshot,
+    LanguageBufferEvent, LanguageBufferSnapshot, LanguageRegistry, LanguageSettings, NewlineIndent,
+    OutlineItem, SyntaxSnapshot,
 };
 use zcv_text::{
     Affinity, Anchor, Buffer, BufferConfig, BufferId, BufferVersion, ByteOffset, CharOffset,
@@ -2981,23 +2981,6 @@ fn map_source_offset(
         }
     }
     None
-}
-
-fn project_syntax_node(
-    node: &SyntaxNode,
-    source_range: TextRange,
-    output_range: MultiBufferRange,
-) -> Option<SyntaxNode> {
-    Some(SyntaxNode {
-        version: node.version,
-        range: project_range(node.range.clone(), source_range, output_range)?,
-        kind: node.kind.clone(),
-        language: node.language,
-        language_depth: node.language_depth,
-        is_named: node.is_named,
-        is_error: node.is_error,
-        is_missing: node.is_missing,
-    })
 }
 
 fn project_range(

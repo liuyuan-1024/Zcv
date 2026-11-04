@@ -22,9 +22,7 @@ use zcv_actions::OpenExcerpts;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_keymap::display_shortcut;
 use zcv_language::BracketPair;
-use zcv_multi_buffer::{
-    DiffRowStatus, IndentGuide, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
-};
+use zcv_multi_buffer::{DiffRowStatus, IndentGuide, MultiBufferOffset, MultiBufferRange};
 use zcv_settings::{CursorShape, IndentGuideSettings, SettingsStore};
 use zcv_text::Line;
 use zcv_theme::{color, fixed, scale};
@@ -110,9 +108,6 @@ impl EditorElement {
             .on_action(cx.listener(Editor::handle_select_all))
             .on_action(cx.listener(Editor::handle_select_larger_syntax_node))
             .on_action(cx.listener(Editor::handle_select_smaller_syntax_node))
-            .on_action(cx.listener(Editor::handle_rename_local))
-            .on_action(cx.listener(Editor::handle_confirm_local_rename))
-            .on_action(cx.listener(Editor::handle_cancel_local_rename))
             .on_action(cx.listener(Editor::handle_backspace))
             .on_action(cx.listener(Editor::handle_delete))
             .on_action(cx.listener(Editor::handle_delete_to_previous_word_start))
@@ -496,8 +491,6 @@ struct IndentGuideLayout {
 }
 
 struct EditorLayout {
-    /// 编辑器元素在窗口中的原点；布局行使用窗口坐标，绝对定位的子元素使用元素内坐标。
-    element_origin: Point<Pixels>,
     lines: Vec<LayoutLine>,
     blocks: Vec<LayoutBlock>,
     indent_guides: Vec<IndentGuideLayout>,
@@ -545,40 +538,6 @@ impl EditorLayout {
                         window,
                         cx,
                     );
-                }
-            }
-        }
-    }
-
-    /// 为行内重命名插入一行临时显示空间，并把后续内容整体下移。
-    /// 输入框本身仍由 Editor 状态拥有，这里只调整本帧显示坐标。
-    fn insert_local_rename_row(&mut self, range: &Range<usize>) {
-        let Some(line_end) = line_end_offset(
-            self.display_snapshot.buffer_snapshot(),
-            MultiBufferOffset::new(range.start),
-        ) else {
-            return;
-        };
-        let Ok(end_point) = self.display_snapshot.offset_to_display_point(line_end) else {
-            return;
-        };
-        let insertion_row = end_point.row().get();
-        for line in &mut self.lines {
-            if line.row.get() > insertion_row {
-                line.origin.y += self.line_height;
-            }
-        }
-        for block in &mut self.blocks {
-            if block.row.get() > insertion_row {
-                block.origin.y += self.line_height;
-            }
-        }
-        if let Some(gutter) = &mut self.gutter {
-            for row in &mut gutter.rows {
-                if self.lines.iter().any(|line| {
-                    line.logical_line == Some(row.logical_line) && line.row.get() > insertion_row
-                }) {
-                    row.origin.y += self.line_height;
                 }
             }
         }
@@ -673,46 +632,12 @@ impl EditorInputLayout {
         }
     }
 
-    pub(super) fn caret_position_for_offset(
-        &self,
-        offset: MultiBufferOffset,
-    ) -> Option<Point<Pixels>> {
-        let display_point = self
-            .layout
-            .display_snapshot
-            .offset_to_display_point(offset)
-            .ok()?;
-        let line = self
-            .layout
-            .lines
-            .iter()
-            .find(|line| line.row == display_point.row())?;
-        let local_byte =
-            local_byte_for_display_point(line, display_point, &self.layout.display_snapshot);
-        Some(point(
-            line.origin.x + line.line.x_for_index(local_byte) - self.layout.element_origin.x,
-            line.origin.y - self.layout.element_origin.y,
-        ))
-    }
-
-    pub(super) fn line_height(&self) -> Pixels {
-        self.layout.line_height
-    }
-
     /// 把一帧布局内的窗口坐标换算成显示坐标（命中测试/拖拽端点复用同一映射）。
     pub(super) fn display_point_for_position(
         &self,
         position: Point<Pixels>,
     ) -> Option<DisplayPoint> {
         self.layout.display_point_for_position(position)
-    }
-
-    pub(super) fn line_end_position_for_offset(
-        &self,
-        offset: MultiBufferOffset,
-    ) -> Option<Point<Pixels>> {
-        let line_end = line_end_offset(self.layout.display_snapshot.buffer_snapshot(), offset)?;
-        self.caret_position_for_offset(line_end)
     }
 
     pub(super) fn utf16_index_for_point(&self, point: Point<Pixels>) -> Option<usize> {
@@ -1533,9 +1458,6 @@ impl Element for EditorElement {
                 }
             }
         }
-        if let Some(range) = self.editor.read(cx).local_rename_range(cx) {
-            layout.insert_local_rename_row(&range);
-        }
         let cursor_shape = self.editor.read(cx).cursor_shape();
         let cursor_params = CursorLayoutParams {
             line_height,
@@ -2339,9 +2261,8 @@ impl Element for EditorElement {
             }
         }
         let input_layout = EditorInputLayout::from_layout(&prepaint.layout);
-        self.editor.update(cx, |editor, cx| {
+        self.editor.update(cx, |editor, _| {
             editor.set_input_layout(input_layout);
-            editor.update_local_rename_geometry(cx);
             editor.set_ime_caret_geometry(bounds, prepaint.ime_caret_bounds);
         });
     }
@@ -3098,7 +3019,6 @@ fn layout_visible_lines_from_viewport(
                 styles: &highlight_styles,
                 backgrounds: &search_backgrounds,
                 marked: presentation.marked_ranges(),
-                dimmed: presentation.dimmed_ranges(),
             },
             window_for_chunks,
         );
@@ -3197,12 +3117,6 @@ fn layout_visible_lines_from_viewport(
     }
 
     EditorLayout {
-        element_origin: point(
-            gutter_geometry
-                .as_ref()
-                .map_or(text_bounds.left(), |(bounds, _)| bounds.left()),
-            text_bounds.top(),
-        ),
         lines,
         blocks,
         indent_guides: Vec::new(),
@@ -3892,20 +3806,9 @@ fn local_byte_for_display_column(line: &LayoutLine, column: usize, tab_width: us
     byte_for_display_column(&line.line.text, line.window_start_column, column, tab_width)
 }
 
-fn line_end_offset(
-    snapshot: &MultiBufferSnapshot,
-    offset: MultiBufferOffset,
-) -> Option<MultiBufferOffset> {
-    let line = snapshot.byte_to_position(offset).ok()?.line();
-    if line.get() + 1 < snapshot.line_count() {
-        snapshot
-            .line_start_byte(Line::new(line.get() + 1))
-            .ok()
-            .map(|start| MultiBufferOffset::new(start.get().saturating_sub(1)))
-    } else {
-        Some(MultiBufferOffset::new(snapshot.len_bytes().get()))
-    }
-}
+/// 测试专用的布局访问器；正向坐标映射不进入生产构建。
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[cfg(test)]
 #[path = "test/element_tests.rs"]

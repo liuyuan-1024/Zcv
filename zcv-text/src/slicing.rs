@@ -4,9 +4,7 @@
 
 use std::{borrow::Cow, fmt};
 
-use crate::{
-    ByteOffset, CoordinateError, Line, LineRange, TextRange, TextResult, storage::TextRead,
-};
+use crate::{ByteOffset, CoordinateError, Line, TextRange, TextResult, storage::TextRead};
 
 /// 只读文本切片。
 ///
@@ -28,10 +26,6 @@ impl<'a> TextSlice<'a> {
 
     pub fn as_str(&self) -> &str {
         self.text.as_ref()
-    }
-
-    pub fn into_text(self) -> Cow<'a, str> {
-        self.text
     }
 
     pub fn len_chars(&self) -> usize {
@@ -240,15 +234,6 @@ pub(crate) fn text_range_for_line<T: TextRead>(text: &T, line: Line) -> TextResu
         .ok_or(CoordinateError::LineOutOfBounds(line))?;
     let end = byte_offset_for_line_boundary(text, next_line)?;
 
-    Ok(TextRange::new(start, end)?)
-}
-
-pub(crate) fn text_range_for_line_range<T: TextRead>(
-    text: &T,
-    line_range: LineRange,
-) -> TextResult<TextRange> {
-    let start = byte_offset_for_line_boundary(text, line_range.start())?;
-    let end = byte_offset_for_line_boundary(text, line_range.end())?;
     Ok(TextRange::new(start, end)?)
 }
 

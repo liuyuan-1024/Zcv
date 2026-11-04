@@ -5,10 +5,9 @@
 use super::Buffer;
 use crate::{
     errors::TextResult,
-    slicing::{LineSlice, TextSlice},
-    slicing::{text_range_for_byte_range, text_range_for_line, text_range_for_line_range},
+    slicing::{LineSlice, TextSlice, text_range_for_byte_range, text_range_for_line},
     storage::TextRead,
-    types::{ByteOffset, Line, LineRange, TextRange},
+    types::{ByteOffset, Line, TextRange},
 };
 
 impl Buffer {
@@ -31,11 +30,5 @@ impl Buffer {
     pub fn slice_line(&self, line: Line) -> TextResult<LineSlice<'_>> {
         let range = text_range_for_line(&self.storage, line)?;
         Ok(LineSlice::new(line, self.slice_text(range)?))
-    }
-
-    /// 按半开逻辑行区间读取文本。
-    pub fn slice_line_range(&self, line_range: LineRange) -> TextResult<TextSlice<'_>> {
-        let range = text_range_for_line_range(&self.storage, line_range)?;
-        self.slice_text(range)
     }
 }

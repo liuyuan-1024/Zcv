@@ -287,16 +287,6 @@ impl RopeySnapshot {
         Ok((chunk, ByteOffset::new(chunk_start)))
     }
 
-    /// 以当前快照文本创建一个可变异存储副本。
-    ///
-    /// 供后台派生与按旧版本重建文本使用；`Rope::clone()` 是低成本共享，不复制全文。
-    pub(crate) fn to_storage(&self) -> RopeyStorage {
-        RopeyStorage {
-            rope: self.rope.clone(),
-            line_index: self.line_index.clone(),
-        }
-    }
-
     /// 聚合快照 byte range 覆盖文本的多维摘要。
     ///
     /// 端点必须落在字符边界且不超过文本长度，否则显式失败；

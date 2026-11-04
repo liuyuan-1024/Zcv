@@ -10,8 +10,8 @@ impl FullText for Buffer {
     fn full_text(&self) -> String {
         self.slice_byte_range(ByteOffset::ZERO, self.len_bytes())
             .unwrap()
-            .into_text()
-            .into_owned()
+            .as_str()
+            .to_owned()
     }
 }
 
@@ -19,8 +19,8 @@ impl FullText for Snapshot {
     fn full_text(&self) -> String {
         self.slice_byte_range(ByteOffset::ZERO, self.len_bytes())
             .unwrap()
-            .into_text()
-            .into_owned()
+            .as_str()
+            .to_owned()
     }
 }
 

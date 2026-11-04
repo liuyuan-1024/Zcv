@@ -1,6 +1,7 @@
 use gpui::{Focusable, TestAppContext, px};
 
 use super::*;
+use zcv_fs_watch::FsWatcher;
 
 struct DiagramProvider;
 
@@ -232,7 +233,13 @@ impl Render for TestView {
 #[gpui::test]
 fn preview_toolbar_follows_preview_items(cx: &mut TestAppContext) {
     let pane = cx.new(Pane::new);
-    let project = cx.new(|cx| Project::empty(Arc::new(zcv_language::LanguageRegistry::new()), cx));
+    let project = cx.new(|cx| {
+        Project::empty_with_watcher(
+            Arc::new(zcv_language::LanguageRegistry::new()),
+            Arc::new(FsWatcher::new()),
+            cx,
+        )
+    });
     let toolbar = cx.new(|cx| PreviewToolbar::new(pane.downgrade(), project, cx));
     cx.add_window_view(|window, cx| {
         let preview = cx.new(|cx| ProbeItem {

@@ -52,8 +52,6 @@ pub(crate) struct Chunk<'a> {
     pub(crate) background: Option<Rgba>,
     /// 选区标记（下划线渲染）。
     pub(crate) marked: bool,
-    /// 局部重命名期间淡化原名称及其引用。
-    pub(crate) dimmed: bool,
 }
 
 impl<'a> Chunk<'a> {
@@ -222,8 +220,6 @@ pub(crate) struct HighlightStyles<'a> {
     /// 独立背景覆盖层；绘制时叠加在语法样式背景之上。
     pub(crate) backgrounds: &'a [(Range<usize>, Rgba)],
     pub(crate) marked: &'a [MultiBufferRange],
-    /// 局部重命名期间需要淡化的文本范围。
-    pub(crate) dimmed: &'a [Range<usize>],
 }
 
 impl<'a> HighlightStyles<'a> {
@@ -247,15 +243,11 @@ impl<'a> HighlightStyles<'a> {
         let marked_end = self.marked[marked_start..]
             .partition_point(|item| item.start().get() < range.end)
             + marked_start;
-        let dimmed_start = self.dimmed.partition_point(|item| item.end <= range.start);
-        let dimmed_end = self.dimmed[dimmed_start..].partition_point(|item| item.start < range.end)
-            + dimmed_start;
         Self {
             spans: &self.spans[span_start..span_end],
             styles: self.styles,
             backgrounds: &self.backgrounds[background_start..background_end],
             marked: &self.marked[marked_start..marked_end],
-            dimmed: &self.dimmed[dimmed_start..dimmed_end],
         }
     }
 }
@@ -292,7 +284,6 @@ struct ChunkStyle {
     /// 背景覆盖层命中色（搜索高亮等；优先于 style 的背景）。
     background: Option<Rgba>,
     marked: bool,
-    dimmed: bool,
 }
 
 /// 样式 chunk 游标：输入只能是 `SourceTextChunks` 产生的安全 chunk，输出也只能在输入 chunk 的字符位图边界处分段。
@@ -311,7 +302,6 @@ pub(super) struct StyledChunks<'a, 'b> {
     style_index: usize,
     background_index: usize,
     marked_index: usize,
-    dimmed_index: usize,
 }
 
 impl<'a, 'b> StyledChunks<'a, 'b> {
@@ -335,7 +325,6 @@ impl<'a, 'b> StyledChunks<'a, 'b> {
             style_index: 0,
             background_index: 0,
             marked_index: 0,
-            dimmed_index: 0,
         }
     }
 
@@ -388,14 +377,6 @@ impl<'a, 'b> StyledChunks<'a, 'b> {
         {
             self.marked_index += 1;
         }
-        while self
-            .styles
-            .dimmed
-            .get(self.dimmed_index)
-            .is_some_and(|range| range.end <= self.global_byte_start + original_range.start)
-        {
-            self.dimmed_index += 1;
-        }
         let marked = self
             .styles
             .marked
@@ -409,21 +390,6 @@ impl<'a, 'b> StyledChunks<'a, 'b> {
                 let range_end = range
                     .end()
                     .get()
-                    .saturating_sub(self.global_byte_start)
-                    .min(self.text_len);
-                range_start < original_range.end && range_end > original_range.start
-            });
-        let dimmed = self
-            .styles
-            .dimmed
-            .get(self.dimmed_index)
-            .is_some_and(|range| {
-                let range_start = range
-                    .start
-                    .saturating_sub(self.global_byte_start)
-                    .min(self.text_len);
-                let range_end = range
-                    .end
                     .saturating_sub(self.global_byte_start)
                     .min(self.text_len);
                 range_start < original_range.end && range_end > original_range.start
@@ -449,7 +415,6 @@ impl<'a, 'b> StyledChunks<'a, 'b> {
             style,
             background,
             marked,
-            dimmed,
         })
     }
 }
@@ -537,7 +502,6 @@ impl<'a> Iterator for StyledChunks<'a, '_> {
             head.style = chunk_style.style;
             head.background = chunk_style.background;
             head.marked = chunk_style.marked;
-            head.dimmed = chunk_style.dimmed;
             return Some(head);
         }
     }
@@ -943,9 +907,6 @@ pub(crate) fn chunk_to_run(chunk: &Chunk<'_>, base: TextRun) -> TextRun {
             thickness: px(1.),
             wavy: false,
         });
-    }
-    if chunk.dimmed {
-        run.color.a *= 0.4;
     }
     run
 }

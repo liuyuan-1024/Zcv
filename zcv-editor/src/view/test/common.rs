@@ -1,8 +1,12 @@
+use std::ops::Range;
+
 use zcv_language::LanguageRegistry;
-use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, DisplayHunk, MultiBufferOffset};
+use zcv_multi_buffer::{
+    DiffExcerptRanges, DiffFile, DisplayHunk, MultiBufferOffset, ResolvedDiffHunk, WordDiffs,
+};
 
 use super::*;
-use gpui::{Bounds, Pixels, TestAppContext, VisualTestContext, point, size};
+use gpui::{App, Bounds, Pixels, TestAppContext, VisualTestContext, point, size};
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
 use zcv_text::{Buffer, BufferConfig};
 
@@ -29,6 +33,42 @@ impl Editor {
         self.soft_wrap = soft_wrap;
         cx.notify();
     }
+}
+
+/// 测试用：走生产渲染路径（显示快照 → `resolved_diff_hunks`）解析 diff 视图。
+pub(super) fn resolved_hunks(editor: &Editor, cx: &App) -> Vec<(usize, ResolvedDiffHunk)> {
+    editor
+        .display_snapshot(cx)
+        .buffer_snapshot()
+        .resolved_diff_hunks()
+}
+
+pub(super) fn diff_hunks(editor: &Editor, cx: &App) -> Vec<DisplayHunk> {
+    resolved_hunks(editor, cx)
+        .into_iter()
+        .map(|(_, resolved)| resolved.hunk)
+        .collect()
+}
+
+pub(super) fn diff_hunk_expanded(editor: &Editor, cx: &App) -> Vec<bool> {
+    resolved_hunks(editor, cx)
+        .into_iter()
+        .map(|(_, resolved)| resolved.expanded)
+        .collect()
+}
+
+pub(super) fn diff_hunk_old_ranges(editor: &Editor, cx: &App) -> Vec<Option<Range<usize>>> {
+    resolved_hunks(editor, cx)
+        .into_iter()
+        .map(|(_, resolved)| resolved.old_range)
+        .collect()
+}
+
+pub(super) fn diff_hunk_word_diffs(editor: &Editor, cx: &App) -> Vec<WordDiffs> {
+    resolved_hunks(editor, cx)
+        .into_iter()
+        .map(|(_, resolved)| resolved.word_diffs)
+        .collect()
 }
 
 pub(super) fn test_buffer(

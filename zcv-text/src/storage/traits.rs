@@ -162,15 +162,6 @@ macro_rules! text_coordinate_gateway {
             self.storage.line_start(line)
         }
 
-        /// 指定行的起始 CharOffset（边界投影）。
-        pub fn line_start_char(
-            &self,
-            line: $crate::Line,
-        ) -> $crate::TextResult<$crate::CharOffset> {
-            let byte = self.storage.line_start(line)?;
-            self.storage.byte_to_char(byte)
-        }
-
         /// ByteOffset -> line / logical column。
         pub fn byte_to_position(
             &self,
@@ -243,19 +234,6 @@ macro_rules! text_coordinate_gateway {
         /// 判断 CharOffset 是否处在合法 grapheme cluster 边界。
         pub fn is_grapheme_boundary(&self, offset: $crate::CharOffset) -> $crate::TextResult<bool> {
             self.storage.is_grapheme_boundary_char(offset)
-        }
-
-        /// 校验 CharOffset 是否处在合法 grapheme cluster 边界，否则返回错误。
-        pub fn validate_grapheme_boundary(
-            &self,
-            offset: $crate::CharOffset,
-        ) -> $crate::TextResult<()> {
-            if self.storage.is_grapheme_boundary_char(offset)? {
-                Ok(())
-            } else {
-                let byte = self.storage.char_to_byte(offset)?;
-                Err($crate::CoordinateError::InvalidGraphemeBoundary(byte).into())
-            }
         }
 
         /// 返回小于当前 CharOffset 的最近 grapheme cluster 边界。

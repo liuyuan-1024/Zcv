@@ -34,6 +34,15 @@ fn resolve_folds(folds: Vec<crate::FoldRange>, snapshot: &zcv_text::Snapshot) ->
         .collect()
 }
 
+/// 测试专用：光标处的最深语法节点。
+/// 生产结构化选择只消费 `expand_selection_range`；
+/// 单点查询由测试在公开的 `node_ancestors` 上自行组合。
+impl crate::SyntaxSnapshot {
+    fn node_at(&self, offset: usize, text: &zcv_text::Snapshot) -> Option<crate::SyntaxNode> {
+        self.node_ancestors(offset..offset, text).into_iter().next()
+    }
+}
+
 #[test]
 fn rust_syntax_snapshot_exposes_zed_structure_queries() {
     let source = "struct Demo { value: i32 }\nfn main() { let x = (1 + 2); }\n";
@@ -225,207 +234,6 @@ fn outline_is_empty_without_declared_query() {
                 &snapshot,
                 &HighlightCache::new()
             )
-            .is_empty()
-    );
-}
-
-#[test]
-fn rust_locals_resolve_unicode_references_and_shadowing() {
-    let source = "fn 构建(值: i32) {\n    let 结果 = 值;\n    {\n        let 值 = 2;\n        let 内层 = 值;\n    }\n    let 最终 = 结果 + 值;\n}\n";
-    let (buffer, syntax) = parsed_syntax("locals.rs", source);
-    let snapshot = buffer.snapshot();
-    let items = syntax
-        .snapshot()
-        .local_bindings(0..snapshot.len_bytes().get(), &snapshot);
-
-    let value_definitions: Vec<_> = items.iter().filter(|item| item.name == "值").collect();
-    assert_eq!(value_definitions.len(), 2);
-    let parameter = value_definitions
-        .iter()
-        .find(|item| item.definition_range.start == source.find("值: i32").unwrap())
-        .expect("参数绑定应存在");
-    let shadowed = value_definitions
-        .iter()
-        .find(|item| item.definition_range.start > parameter.definition_range.start)
-        .expect("嵌套作用域绑定应存在");
-    assert!(parameter.references.iter().any(|range| {
-        &source[range.clone()] == "值" && range.start > source.find("最终").unwrap()
-    }));
-    assert!(shadowed.references.iter().all(|range| {
-        range.start > shadowed.definition_range.start && range.start < source.find("最终").unwrap()
-    }));
-    assert!(items.iter().all(|item| item.version == snapshot.version()));
-}
-
-#[test]
-fn python_locals_resolve_parameters_and_nested_same_named_bindings() {
-    let source = "def 构建(值):\n    结果 = 值\n    def 内层():\n        值 = 1\n        return 值\n    return 结果 + 值\n";
-    let (buffer, syntax) = parsed_syntax("locals.py", source);
-    let snapshot = buffer.snapshot();
-    let items = syntax
-        .snapshot()
-        .local_bindings(0..snapshot.len_bytes().get(), &snapshot);
-
-    let values: Vec<_> = items.iter().filter(|item| item.name == "值").collect();
-    assert_eq!(values.len(), 2);
-    let outer = values
-        .iter()
-        .find(|item| item.definition_range.start == source.find("值):").unwrap())
-        .expect("Python 参数绑定应存在");
-    let inner = values
-        .iter()
-        .find(|item| item.definition_range.start > outer.definition_range.start)
-        .expect("嵌套函数绑定应存在");
-    assert!(
-        outer
-            .references
-            .iter()
-            .any(|range| range.start > source.find("return 结果").unwrap())
-    );
-    assert!(inner.references.iter().any(|range| {
-        range.start > inner.definition_range.start
-            && range.start < source.find("return 结果").unwrap()
-    }));
-}
-
-#[test]
-fn javascript_locals_can_query_a_subrange_using_an_outer_parameter() {
-    let source = "function 构建(值) {\n  const 结果 = 值;\n  return 结果;\n}\n";
-    let (buffer, syntax) = parsed_syntax("locals.js", source);
-    let snapshot = buffer.snapshot();
-    let body_start = source.find("const").unwrap();
-    let items = syntax
-        .snapshot()
-        .local_bindings(body_start..snapshot.len_bytes().get(), &snapshot);
-
-    let parameter = items
-        .iter()
-        .find(|item| item.name == "值")
-        .expect("子范围查询仍应返回外层参数");
-    assert_eq!(&source[parameter.definition_range.clone()], "值");
-    assert_eq!(parameter.references.len(), 1);
-    assert_eq!(&source[parameter.references[0].clone()], "值");
-    assert!(items.iter().any(|item| item.name == "结果"));
-}
-
-#[test]
-fn ambiguous_same_scope_bindings_are_not_returned() {
-    let source = "fn main() { let value = 1; let value = 2; value; }\n";
-    let (buffer, syntax) = parsed_syntax("ambiguous.rs", source);
-    let snapshot = buffer.snapshot();
-    let items = syntax
-        .snapshot()
-        .local_bindings(0..snapshot.len_bytes().get(), &snapshot);
-
-    assert!(
-        items.iter().all(|item| item.name != "value"),
-        "同一作用域内无法确定归属的重复绑定不能进入可重命名结果"
-    );
-}
-
-#[test]
-fn unresolved_references_are_not_attached_to_a_local_binding() {
-    let source = "fn main() { let value = missing; value; }\n";
-    let (buffer, syntax) = parsed_syntax("unresolved.rs", source);
-    let snapshot = buffer.snapshot();
-    let items = syntax
-        .snapshot()
-        .local_bindings(0..snapshot.len_bytes().get(), &snapshot);
-
-    let value = items
-        .iter()
-        .find(|item| item.name == "value")
-        .expect("已定义的局部变量仍应返回");
-    assert!(
-        value
-            .references
-            .iter()
-            .all(|range| { &source[range.clone()] != "missing" })
-    );
-    assert!(items.iter().all(|item| item.name != "missing"));
-}
-
-#[test]
-fn javascript_locals_in_html_injection_keep_their_language_layer() {
-    let source = "<script>function build(value) { let result = value; return result; }</script>";
-    let (buffer, syntax) = parsed_syntax("index.html", source);
-    let snapshot = buffer.snapshot();
-    let items = syntax
-        .snapshot()
-        .local_bindings(0..snapshot.len_bytes().get(), &snapshot);
-
-    let result = items
-        .iter()
-        .find(|item| item.name == "result")
-        .expect("script 注入层中的局部变量应返回");
-    assert_eq!(result.language, "JavaScript");
-    assert!(result.language_depth > 0);
-    assert_eq!(&source[result.definition_range.clone()], "result");
-    assert!(
-        result
-            .references
-            .iter()
-            .any(|range| { &source[range.clone()] == "result" })
-    );
-    assert!(items.iter().all(|item| item.language == "JavaScript"));
-}
-
-#[test]
-fn go_and_c_family_locals_resolve_parameters_and_local_variables() {
-    for (path, source, parameter, local) in [
-        (
-            "locals.go",
-            "package demo\nfunc 构建(值 int) int { 结果 := 值; return 结果 }\n",
-            "值",
-            "结果",
-        ),
-        (
-            "locals.c",
-            "int 构建(int 值) { int 结果 = 值; return 结果; }\n",
-            "值",
-            "结果",
-        ),
-        (
-            "locals.cpp",
-            "int 构建(int 值) { int 结果 = 值; return 结果; }\n",
-            "值",
-            "结果",
-        ),
-    ] {
-        let (buffer, syntax) = parsed_syntax(path, source);
-        let snapshot = buffer.snapshot();
-        let items = syntax
-            .snapshot()
-            .local_bindings(0..snapshot.len_bytes().get(), &snapshot);
-        assert!(
-            items.iter().any(|item| item.name == parameter),
-            "{path} 参数绑定应存在"
-        );
-        assert!(
-            items.iter().any(|item| item.name == local),
-            "{path} 局部变量绑定应存在"
-        );
-        assert!(items.iter().all(|item| item.version == snapshot.version()));
-    }
-}
-
-#[test]
-fn local_bindings_reject_a_snapshot_from_another_buffer_version() {
-    let (mut buffer, syntax) = rust_buffer("fn main(value: i32) { let result = value; }\n");
-    let old_syntax = syntax.snapshot();
-    let old_snapshot = buffer.snapshot();
-    buffer
-        .edit(
-            [Edit::insert(ByteOffset::ZERO, "// 注释\n").unwrap()],
-            TransactionMetadata::default(),
-        )
-        .unwrap();
-    let new_snapshot = buffer.snapshot();
-
-    assert_ne!(old_snapshot.version(), new_snapshot.version());
-    assert!(
-        old_syntax
-            .local_bindings(0..new_snapshot.len_bytes().get(), &new_snapshot)
             .is_empty()
     );
 }

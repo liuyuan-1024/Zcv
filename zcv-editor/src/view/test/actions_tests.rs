@@ -2,7 +2,7 @@ use zcv_language::LanguageRegistry;
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferOffset, MultiBufferRange};
 
 use gpui::{Modifiers, TestAppContext, point, px, size};
-use zcv_actions::{Backspace, ConfirmLocalRename, Delete, RenameLocal};
+use zcv_actions::{Backspace, Delete};
 use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{Edit, TransactionId, TransactionMetadata};
 
@@ -387,7 +387,7 @@ fn navigate_to_line_column_clamps_empty_document(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppContext) {
+fn outline_entries_filter_and_navigate_using_current_snapshot(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let source = "struct 数据 {\n    value: i32,\n}\nfn build() {}\n";
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
@@ -409,10 +409,11 @@ fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppCont
     cx.run_until_parked();
 
     let build = cx.read_entity(&editor, |editor, cx| {
-        let items = editor.outline_items(cx);
-        assert!(items.iter().any(|item| item.name == "数据"));
-        items
+        let entries = editor.outline_source(cx).entries();
+        assert!(entries.iter().any(|entry| entry.item.name == "数据"));
+        entries
             .into_iter()
+            .map(|entry| entry.item)
             .find(|item| item.name == "build")
             .expect("函数应出现在当前文件大纲中")
     });
@@ -449,8 +450,10 @@ fn stale_outline_label_survives_utf8_shift_and_navigates_by_anchor(cx: &mut Test
 
     let (stale_item, old_name_start) = cx.read_entity(&editor, |editor, cx| {
         let item = editor
-            .outline_items(cx)
+            .outline_source(cx)
+            .entries()
             .into_iter()
+            .map(|entry| entry.item)
             .find(|item| item.name == "数据")
             .expect("函数应出现在大纲中");
         let old_start = editor
@@ -486,7 +489,7 @@ fn stale_outline_label_survives_utf8_shift_and_navigates_by_anchor(cx: &mut Test
 /// Markdown section 的范围从标题延伸到文件末尾；diff hunk 会把工作区源切成多段。
 /// 单文件大纲必须来自源的完整语法快照，不能按 diff 片段裁剪，否则跨段定义会丢失。
 #[gpui::test]
-fn diff_injection_keeps_outline_items_spanning_hunks(cx: &mut TestAppContext) {
+fn diff_injection_keeps_outline_entries_spanning_hunks(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let text = "# 一级\n\n正文\n\n## 二级\n\n正文\n\n### 三级\n\n正文\n\n## 二级乙\n\n正文\n";
     let raw_buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
@@ -510,17 +513,20 @@ fn diff_injection_keeps_outline_items_spanning_hunks(cx: &mut TestAppContext) {
     let names = |cx: &mut TestAppContext, editor: &Entity<Editor>| {
         cx.read_entity(editor, |editor, cx| {
             editor
-                .outline_items(cx)
+                .outline_source(cx)
+                .entries()
                 .into_iter()
-                .map(|item| item.name.clone())
+                .map(|entry| entry.item.name.clone())
                 .collect::<Vec<_>>()
         })
     };
     let before = names(cx, &editor);
     let stale = cx.read_entity(&editor, |editor, cx| {
         editor
-            .outline_items(cx)
+            .outline_source(cx)
+            .entries()
             .into_iter()
+            .map(|entry| entry.item)
             .find(|item| item.name == "二级乙")
             .expect("跨 hunk 的标题应存在")
     });
@@ -962,75 +968,6 @@ fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestApp
             editor.selections(cx).primary().head(),
             MultiBufferOffset::new(value)
         );
-    });
-}
-
-#[gpui::test]
-fn f2_opens_inline_local_rename_and_enter_commits_it(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
-    let source = "fn main() {\n    let value = 1; let padding = \"0123456789012345678901234567890123456789\";\n    return value;\n}\n";
-    let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
-        .expect("Rust 测试 Buffer 应能创建");
-    let language_buffer = cx.new({
-        move |cx| {
-            LanguageBuffer::new(
-                raw_buffer,
-                Some(PathBuf::from("main.rs")),
-                Arc::new(LanguageRegistry::new()),
-                cx,
-            )
-        }
-    });
-    let (editor, cx) = cx.add_window_view({
-        let language_buffer = language_buffer.clone();
-        move |_, cx| Editor::for_language_buffer(language_buffer, cx)
-    });
-    cx.run_until_parked();
-
-    let value = source.rfind("value").expect("测试文本应包含局部变量");
-    cx.update_entity(&editor, |editor, cx| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(value)), cx);
-    });
-    cx.update_entity(&editor, |editor, cx| {
-        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
-    });
-    cx.simulate_resize(size(px(320.), px(200.)));
-    focus_editor(&editor, cx);
-    cx.dispatch_action(RenameLocal);
-    cx.run_until_parked();
-
-    let (input, rename_y, cursor_y) = cx.read_entity(&editor, |editor, _| {
-        let state = editor
-            .local_rename
-            .as_ref()
-            .expect("F2 后应显示局部重命名输入框");
-        (
-            state.input.clone(),
-            state.position.y,
-            editor
-                .pixel_position_of_newest_cursor
-                .expect("重命名期间应保留原编辑器光标位置")
-                .y,
-        )
-    });
-    assert!(
-        rename_y < cursor_y,
-        "重命名输入框应位于定义逻辑行下方、后续引用上方：rename_y={rename_y:?}, cursor_y={cursor_y:?}"
-    );
-    cx.read_entity(&input, |input, _| {
-        assert!(input.content_typography, "重命名输入框应使用代码内容排版");
-    });
-    cx.update_entity(&input, |input, cx| input.set_text("answer", cx));
-    cx.run_until_parked();
-    cx.dispatch_action(ConfirmLocalRename);
-    cx.run_until_parked();
-
-    assert_eq!(
-        buffer_text(&language_buffer, cx),
-        "fn main() {\n    let answer = 1; let padding = \"0123456789012345678901234567890123456789\";\n    return answer;\n}\n"
-    );
-    cx.read_entity(&editor, |editor, _| {
-        assert!(editor.local_rename.is_none(), "提交后应关闭行内输入框");
     });
 }
 

@@ -5,7 +5,7 @@ use std::{
 };
 
 use gpui::{AppContext, TestAppContext};
-use zcv_fs_watch::FsEventStream;
+use zcv_fs_watch::{FsEventStream, FsWatcher};
 use zcv_language::LanguageBuffer;
 use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
@@ -23,7 +23,9 @@ fn git_status_for_path(project: &Project, path: &Path, cx: &App) -> Option<Statu
 #[gpui::test]
 fn empty_project_has_no_worktree_or_project_services(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
-    let project = cx.update(|cx| cx.new(|cx| Project::empty(test_languages(), cx)));
+    let project = cx.update(|cx| {
+        cx.new(|cx| Project::empty_with_watcher(test_languages(), Arc::new(FsWatcher::new()), cx))
+    });
     cx.read_entity(&project, |project, _| {
         assert!(!project.has_worktree());
         assert!(project.root().is_none());

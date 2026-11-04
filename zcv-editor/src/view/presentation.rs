@@ -1,6 +1,6 @@
 //! Editor 的统一文本展示快照。
 //!
-//! 展示快照把源文本快照与输入法标记、重命名淡化范围组合起来，供布局层消费；
+//! 展示快照把源文本快照与输入法标记组合起来，供布局层消费；
 //! 它不拥有文档内容或任何编辑会话状态。
 
 use zcv_multi_buffer::{MultiBufferRange, MultiBufferSnapshot};
@@ -17,7 +17,6 @@ pub(crate) struct EditorPresentation {
     composition: Option<EditorComposition>,
     /// 组合锚点在构造快照上解析出的标记范围；退出投影时整体丢弃。
     marked_ranges: Arc<[MultiBufferRange]>,
-    dimmed_ranges: Arc<[Range<usize>]>,
 }
 
 impl EditorPresentation {
@@ -32,17 +31,7 @@ impl EditorPresentation {
             snapshot: snapshot.clone(),
             composition: composition.cloned(),
             marked_ranges,
-            dimmed_ranges: Arc::from([]),
         }
-    }
-
-    pub(crate) fn with_dimmed_ranges(mut self, ranges: Arc<[Range<usize>]>) -> Self {
-        self.dimmed_ranges = ranges;
-        self
-    }
-
-    pub(crate) fn dimmed_ranges(&self) -> &[Range<usize>] {
-        &self.dimmed_ranges
     }
 
     pub(crate) fn marked_ranges(&self) -> &[MultiBufferRange] {

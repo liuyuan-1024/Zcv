@@ -242,31 +242,6 @@ fn outline_queries_are_optional_and_use_the_declared_capture_contract() {
                 )
             }));
         }
-        let locals_expected = matches!(
-            path,
-            "main.rs"
-                | "main.py"
-                | "main.js"
-                | "main.jsx"
-                | "main.ts"
-                | "main.tsx"
-                | "main.go"
-                | "main.c"
-                | "main.cpp"
-        );
-        assert_eq!(
-            language.locals().is_some(),
-            locals_expected,
-            "{path} 局部语义查询能力错误"
-        );
-        if let Some(query) = language.locals() {
-            assert!(query.capture_names().iter().all(|name| {
-                matches!(
-                    *name,
-                    "local.scope" | "local.definition" | "local.reference"
-                )
-            }));
-        }
     }
 }
 

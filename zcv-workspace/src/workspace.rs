@@ -32,6 +32,10 @@ mod top_bar;
 mod window_bounds;
 mod workspace_state;
 
+#[cfg(test)]
+#[path = "test/support.rs"]
+pub(crate) mod test_support;
+
 pub use activity_indicator::ActivityIndicator;
 pub use branch_picker::{GitBranchAction, OnBranchSelected};
 pub use breadcrumbs::Breadcrumbs;

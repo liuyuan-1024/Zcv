@@ -1,14 +1,35 @@
 use std::{fs, path::Path, process::Command, slice, sync::Arc};
 
-use gpui::{AvailableSpace, TestAppContext, px};
+use gpui::{AvailableSpace, Context, TestAppContext, px};
 
 use zcv_actions::DeployFind;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging, PendingHunk};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::{DiffExcerptRanges, ExcerptDiffKind, MultiBufferOffset};
+use zcv_multi_buffer::{
+    DiffExcerptRanges, DisplayHunk, ExcerptDiffKind, MultiBuffer, MultiBufferOffset,
+};
 use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
 use zcv_workspace::SearchableItem;
+
+/// 测试用：走生产路径（快照 `resolved_diff_hunks`）读取组合文档 diff 视图。
+fn display_hunks(buffer: &mut MultiBuffer, cx: &mut Context<MultiBuffer>) -> Vec<DisplayHunk> {
+    buffer
+        .snapshot(cx)
+        .resolved_diff_hunks()
+        .into_iter()
+        .map(|(_, resolved)| resolved.hunk)
+        .collect()
+}
+
+fn hunk_expanded_flags(buffer: &mut MultiBuffer, cx: &mut Context<MultiBuffer>) -> Vec<bool> {
+    buffer
+        .snapshot(cx)
+        .resolved_diff_hunks()
+        .into_iter()
+        .map(|(_, resolved)| resolved.expanded)
+        .collect()
+}
 
 #[test]
 fn includes_matches_section_membership_for_every_status() {
@@ -920,7 +941,7 @@ fn project_diff_keeps_hunk_interest_while_its_multibuffer_is_empty(cx: &mut Test
         .expect("投影文本应为 UTF-8");
         assert_eq!(text, "line1\nline2\n原内容\n新内容\nline4\nline5\n");
         assert_eq!(
-            multi_buffer.read(cx).diff_hunks().len(),
+            multi_buffer.update(cx, display_hunks).len(),
             1,
             "组合文档最初为空时，GitStore 的 hunk 请求仍应产出可见 hunk"
         );
@@ -1371,7 +1392,7 @@ fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppCont
             snapshot.version().get() > initial_version,
             "暂存后投影必须按新 index 推进"
         );
-        assert_eq!(view.multi_buffer.read(cx).diff_hunks().len(), 1);
+        assert_eq!(view.multi_buffer.update(cx, display_hunks).len(), 1);
         assert!(!text.contains("第一个变更块"));
         assert!(text.contains("第二个变更块"));
         for offset in 0..text.len() {
@@ -1710,8 +1731,7 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
     cx.update_entity(&view, |view, cx| {
         assert!(
             view.multi_buffer
-                .read(cx)
-                .diff_hunk_expanded()
+                .update(cx, hunk_expanded_flags)
                 .iter()
                 .all(|&expanded| expanded),
             "Git hunk 多文件编辑器应默认展开修改块"
@@ -1765,8 +1785,7 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
         assert!(
             !view
                 .multi_buffer
-                .read(cx)
-                .diff_hunk_expanded()
+                .update(cx, hunk_expanded_flags)
                 .iter()
                 .any(|&expanded| expanded)
         );
@@ -1788,16 +1807,15 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
     });
     cx.run_until_parked();
     cx.run_until_parked();
-    cx.read_entity(&view, |view, cx| {
+    cx.update_entity(&view, |view, cx| {
         assert!(
-            !view.multi_buffer.read(cx).diff_hunks().is_empty(),
+            !view.multi_buffer.update(cx, display_hunks).is_empty(),
             "刷新后仍应保留项目差异映射"
         );
         assert!(
             !view
                 .multi_buffer
-                .read(cx)
-                .diff_hunk_expanded()
+                .update(cx, hunk_expanded_flags)
                 .iter()
                 .any(|&expanded| expanded),
             "刷新不能覆盖用户的折叠状态"
@@ -1854,9 +1872,9 @@ fn plain_editor_expansion_then_git_refresh_keeps_diff_view_consistent(cx: &mut T
     });
     cx.run_until_parked();
     cx.run_until_parked();
-    cx.read_entity(&view, |view, cx| {
+    cx.update_entity(&view, |view, cx| {
         assert!(
-            !view.multi_buffer.read(cx).diff_hunks().is_empty(),
+            !view.multi_buffer.update(cx, display_hunks).is_empty(),
             "刷新后仍应保留项目差异映射"
         )
     });
@@ -1933,9 +1951,9 @@ fn expansion_edit_then_refresh_keeps_diff_view_consistent(cx: &mut TestAppContex
     });
     cx.run_until_parked();
     cx.run_until_parked();
-    cx.read_entity(&view, |view, cx| {
+    cx.update_entity(&view, |view, cx| {
         assert!(
-            !view.multi_buffer.read(cx).diff_hunks().is_empty(),
+            !view.multi_buffer.update(cx, display_hunks).is_empty(),
             "刷新后仍应保留项目差异映射"
         )
     });

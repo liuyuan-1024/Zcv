@@ -16,11 +16,9 @@
 
 文件级符号使用各语言自己的 `queries/<language>/outline.scm`。`SyntaxSnapshot::outline` 在同一份源快照中使用共享高亮缓存生成标签文本、标签相对高亮和源 `Anchor` 范围，并记录语法层与父子层级；没有该查询的语言明确返回空结果。`MultiBuffer` 把完整落在 excerpt 内的结果映射为组合 `Anchor`，`Editor` 在导航时按当前快照解析锚点。面板刷新期间可以继续绘制旧标签，无需用旧字节范围查询当前文本；捕获名称按当前主题解析样式。
 
-节点导航使用 `SyntaxSnapshot::node_at` 和 `SyntaxSnapshot::node_ancestors`，返回带版本、UTF-8 字节范围、节点种类和语法层的不可变节点摘要。注入层优先于宿主层，祖先链不跨层；空白没有独立 Tree-sitter 节点时归属于语法根，文件末尾光标按前一个字节查询。
+节点导航使用 `SyntaxSnapshot::node_ancestors`，返回带版本、UTF-8 字节范围、节点种类和语法层的不可变节点摘要。注入层优先于宿主层，祖先链不跨层；空白没有独立 Tree-sitter 节点时归属于语法根，文件末尾光标按前一个字节查询。
 
 结构化选择通过 `SyntaxSnapshot::expand_selection_range` 逐级取同一语法层的严格祖先，`Editor` 只持有最终选区。
-
-局部绑定使用 `queries/<language>/locals.scm` 的 `@local.scope`、`@local.definition` 和 `@local.reference` capture。`SyntaxSnapshot::local_bindings` 只返回按作用域确定归属的定义与引用，并携带当前 `BufferVersion`。当前已为 Rust、Python、JavaScript/JSX、TypeScript/TSX、Go、C 和 C++ 提供首批局部查询；未声明 `locals.scm` 的语言明确不产生局部绑定结果。
 
 ## 语言规格
 
@@ -44,7 +42,6 @@ brackets.scm            文件语言必需，括号感知
 indents.scm             文件语言必需，换行缩进
 folds.scm               文件语言必需，代码折叠
 outline.scm             可选，文件级符号与代码大纲
-locals.scm              可选，局部绑定与引用
 overrides.scm           按语法范围覆盖输入政策时提供
 ```
 

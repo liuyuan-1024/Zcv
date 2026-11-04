@@ -74,7 +74,14 @@ fn grapheme_boundaries_reject_the_middle_of_a_cluster() {
     assert!(buffer.is_grapheme_boundary(c(0)).unwrap());
     assert!(!buffer.is_grapheme_boundary(c(1)).unwrap());
     assert!(matches!(
-        buffer.validate_grapheme_boundary(c(1)).unwrap_err(),
+        buffer
+            .movement_boundary(
+                WordBoundaryPolicy::default(),
+                c(1),
+                MovementDirection::Next,
+                MovementUnit::Grapheme
+            )
+            .unwrap_err(),
         TextError::Coordinate(CoordinateError::InvalidGraphemeBoundary(_))
     ));
     assert_eq!(buffer.next_grapheme_boundary(c(0)).unwrap(), c(2));

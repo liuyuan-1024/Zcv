@@ -65,7 +65,7 @@ fn focused_read_only_editor_keeps_editor_selection_and_shows_a_steady_caret(
     cx.update_entity(&source, |buffer, cx| {
         buffer.set_file_path("staged.rs".into(), cx)
     });
-    let combined = cx.new(MultiBuffer::empty_read_only);
+    let combined = cx.new(MultiBuffer::empty_tree_ordered_read_only);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..1, cx)], cx)
     });

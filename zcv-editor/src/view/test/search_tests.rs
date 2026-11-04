@@ -456,7 +456,7 @@ fn replace_capability_follows_editor_read_only_state(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
 
     let source = test_buffer(cx, "只读内容\n");
-    let combined = cx.new(MultiBuffer::empty_read_only);
+    let combined = cx.new(MultiBuffer::empty_tree_ordered_read_only);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..1, cx)], cx)
     });
@@ -528,7 +528,6 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
                 styles: &[],
                 backgrounds: &search_backgrounds,
                 marked: &[],
-                dimmed: &[],
             },
             byte_range.clone(),
             usize::MAX,
@@ -593,7 +592,6 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                         styles: &[],
                         backgrounds: &search_backgrounds,
                         marked: &[],
-                        dimmed: &[],
                     },
                     byte_range.clone(),
                     usize::MAX,
@@ -702,7 +700,6 @@ zcv final
                         styles: &highlight_styles,
                         backgrounds: &search_backgrounds,
                         marked: &[],
-                        dimmed: &[],
                     },
                     byte_range.clone(),
                     usize::MAX,
@@ -754,7 +751,7 @@ fn query_suggestion_seeds_search_from_composite_selection(cx: &mut TestAppContex
     first.update(cx, |buffer, cx| buffer.set_file_path("a.rs".into(), cx));
     let second = test_buffer(cx, "beta\n");
     second.update(cx, |buffer, cx| buffer.set_file_path("b.rs".into(), cx));
-    let combined = cx.new(MultiBuffer::empty_read_only);
+    let combined = cx.new(MultiBuffer::empty_tree_ordered_read_only);
     combined.update(cx, |buffer, cx| {
         buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first, 0..1, cx)], cx);
         buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(second, 0..1, cx)], cx);

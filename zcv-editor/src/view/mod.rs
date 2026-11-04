@@ -24,9 +24,8 @@ use zcv_actions::{
 };
 use zcv_language::{AutoClosePair, BracketPair, LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{
-    DiffExcerptRanges, DiffFile, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
-    MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferOffset, MultiBufferRange,
-    MultiBufferSnapshot, WordDiffs,
+    DiffExcerptRanges, DiffFile, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer,
+    MultiBufferAnchor, MultiBufferEvent, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
 };
 use zcv_settings::{CursorShape, SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -56,14 +55,11 @@ use super::{
 mod indent_guides;
 mod jsx_tag_auto_close;
 mod presentation;
-mod rename;
 mod search;
 mod syntax;
 
 pub use syntax::{OutlineSource, OutlineVersion};
 pub use zcv_multi_buffer::OutlineEntry;
-
-use rename::LocalRenameState;
 
 pub(crate) use search::EditorSearch;
 
@@ -293,8 +289,6 @@ pub struct Editor {
     mode: EditorMode,
     show_indent_guides: Option<bool>,
     active_indent_guides: indent_guides::ActiveIndentGuidesState,
-    /// 单行嵌入编辑器是否跟随代码编辑器的内容排版。
-    content_typography: bool,
     /// 空 buffer 时显示的提示文本（如提交信息编辑器的"输入提交信息…"）。
     /// 独立 DisplayMap 承载（placeholder 走真实渲染管线，折行/行高一致）。
     placeholder_display_map: Option<Entity<DisplayMap>>,
@@ -341,8 +335,6 @@ pub struct Editor {
     mouse_select_mode: MouseSelectMode,
     /// 正在进行的鼠标选区手势；普通选区变更会终止它。
     pending_selection: Option<PendingSelection>,
-    /// 当前文件内局部绑定的行内重命名输入会话。
-    local_rename: Option<LocalRenameState>,
     /// 自动补全的闭合符标记（输入闭合符时跳过、退格删除整对的数据源）。
     /// 随每次编辑经 PositionMap 推进；区域版本与当前快照失配（未跟踪的外部编辑）时整体失效。
     autoclose_regions: Vec<AutocloseRegion>,
@@ -359,16 +351,6 @@ impl Editor {
             .expect("新建空白 Buffer 不应失败");
         let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, language_registry, cx));
         Self::from_language_buffer(language_buffer, EditorMode::SingleLine, cx)
-    }
-
-    /// 创建使用内容排版的单行编辑器；用于嵌入代码编辑器的单行编辑场景。
-    pub(crate) fn single_line_with_content_typography(
-        language_registry: Arc<LanguageRegistry>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let mut editor = Self::single_line(language_registry, cx);
-        editor.content_typography = true;
-        editor
     }
 
     /// 由装配层注入语言注册表；语义与 [`Editor::single_line`] 相同。
@@ -740,26 +722,6 @@ impl Editor {
         self.multi_buffer
             .update(cx, |buffer, cx| buffer.reset_diff_hunk_expansion_state(cx));
         self.after_diff_expansion(cx);
-    }
-
-    /// 与当前组合文档版本匹配的显示坐标 hunks。
-    pub fn diff_hunks(&self, cx: &App) -> Vec<DisplayHunk> {
-        self.multi_buffer.read(cx).diff_hunks()
-    }
-
-    /// 每个 hunk 在组合文档中的旧侧显示行范围（与 diff_hunks 同门控）。
-    pub fn diff_hunk_old_ranges(&self, cx: &App) -> Vec<Option<Range<usize>>> {
-        self.multi_buffer.read(cx).diff_hunk_old_ranges()
-    }
-
-    /// 与 diff_hunks 平行的展开标志（渲染层按显示 hunk 索引查询）。
-    pub fn diff_hunk_expanded(&self, cx: &App) -> Vec<bool> {
-        self.multi_buffer.read(cx).diff_hunk_expanded()
-    }
-
-    /// 与 diff_hunks 平行的词级变化片段（组合文档字节范围 + 新增/删除色）。
-    pub fn diff_hunk_word_diffs(&self, cx: &App) -> Vec<WordDiffs> {
-        self.multi_buffer.read(cx).diff_hunk_word_diffs()
     }
 
     /// 按显示 hunk 索引切换展开/折叠（渲染层点击入口）。
@@ -1259,7 +1221,6 @@ impl Editor {
         let display_snapshot = self.display_snapshot(cx);
         let snapshot = display_snapshot.buffer_snapshot();
         EditorPresentation::new(snapshot, self.composition.as_ref())
-            .with_dimmed_ranges(self.local_rename_ranges(snapshot))
     }
 
     pub(super) fn shows_gutter(&self) -> bool {
@@ -1888,7 +1849,6 @@ impl Editor {
             mode,
             show_indent_guides,
             active_indent_guides: indent_guides::ActiveIndentGuidesState::default(),
-            content_typography: false,
             placeholder_display_map: None,
             selections: initial_selections,
             selection_history: SelectionHistory::default(),
@@ -1918,7 +1878,6 @@ impl Editor {
             gutter_hovered: false,
             mouse_select_mode: MouseSelectMode::Character,
             pending_selection: None,
-            local_rename: None,
             autoclose_regions: Vec::new(),
             line_width_cache: None,
             scrollbar_marker_state: ScrollbarMarkerState::default(),
@@ -3063,23 +3022,21 @@ impl Render for Editor {
         // 弥补焦点或窗口激活先于首次 render 到达的时序缺口。
         self.sync_cursor_blinking(window, cx);
 
-        // 普通 SingleLine / AutoHeight 用于搜索框等 UI 场景，应使用 UI 排版；
-        // 嵌入代码编辑器的单行输入（如重命名）显式跟随内容排版。
+        // 普通 SingleLine / AutoHeight 用于搜索框等 UI 场景，应使用 UI 排版。
         let type_scale = typography_for_window(window, cx);
-        let (font, text_size, line_height) =
-            if self.mode == EditorMode::Full || self.content_typography {
-                (
-                    typography::content_font(),
-                    type_scale.content_size(),
-                    type_scale.content_line(),
-                )
-            } else {
-                (
-                    typography::ui_font(),
-                    type_scale.ui_size(),
-                    type_scale.ui_line(),
-                )
-            };
+        let (font, text_size, line_height) = if self.mode == EditorMode::Full {
+            (
+                typography::content_font(),
+                type_scale.content_size(),
+                type_scale.content_line(),
+            )
+        } else {
+            (
+                typography::ui_font(),
+                type_scale.ui_size(),
+                type_scale.ui_line(),
+            )
+        };
         let visible_lines = match self.mode {
             EditorMode::SingleLine => Some(1),
             EditorMode::AutoHeight {
@@ -3092,7 +3049,6 @@ impl Render for Editor {
             EditorMode::Full => None,
         };
 
-        let local_rename = self.local_rename_overlay(cx);
         let colors = *color::current(cx);
         EditorElement::register_actions(
             div()
@@ -3114,22 +3070,6 @@ impl Render for Editor {
             cx,
         )
         .child(EditorElement::new(cx.entity()))
-        .when_some(
-            local_rename,
-            |element, (input, position, width, line_height)| {
-                element.child(
-                    div()
-                        .absolute()
-                        .left(position.x)
-                        .top(position.y)
-                        .w(width)
-                        .h(line_height)
-                        .p(px(0.))
-                        .rounded_sm()
-                        .child(input),
-                )
-            },
-        )
         .into_any_element()
     }
 }

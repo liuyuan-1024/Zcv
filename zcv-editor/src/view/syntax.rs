@@ -7,7 +7,7 @@ use std::{ops::Range, sync::Arc};
 
 use super::{Editor, NAVIGATION_TOP_OFFSET};
 use gpui::{App, Context, HighlightStyle};
-use zcv_language::{LocalBinding, OutlineItem};
+use zcv_language::OutlineItem;
 use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferSnapshot, OutlineEntry};
 use zcv_text::BufferVersion;
 use zcv_theme::syntax;
@@ -53,18 +53,6 @@ impl OutlineSource {
 }
 
 impl Editor {
-    /// 返回当前组合文档的文件级语法大纲。
-    pub fn outline_items(&self, cx: &App) -> Vec<OutlineItem<MultiBufferAnchor>> {
-        self.display_snapshot(cx).buffer_snapshot().outline_items()
-    }
-
-    /// 返回当前组合文档的大纲条目，含每条符号的文件身份。
-    pub fn outline_entries(&self, cx: &App) -> Vec<OutlineEntry> {
-        self.display_snapshot(cx)
-            .buffer_snapshot()
-            .outline_entries()
-    }
-
     /// 当前大纲失效键；O(1)，不触发语法查询。
     pub fn outline_version(&self, cx: &App) -> OutlineVersion {
         OutlineVersion::of(self.display_snapshot(cx).buffer_snapshot())
@@ -91,11 +79,6 @@ impl Editor {
             .map(|(range, _)| range.clone())
             .zip(syntax::style_table(&names, cx))
             .collect()
-    }
-
-    /// 返回当前单文件文档中可确定归属的局部绑定。
-    pub fn local_bindings(&self, cx: &App) -> Vec<LocalBinding> {
-        self.display_snapshot(cx).buffer_snapshot().local_bindings()
     }
 
     /// 将大纲项的稳定名称锚点解析到当前组合快照后定位。

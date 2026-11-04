@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::empty_workspace;
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
@@ -77,7 +78,7 @@ fn escape_restores_the_focus_before_quick_access(cx: &mut TestAppContext) {
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
     let (host, cx) = cx.add_window_view(|window, cx| {
-        let workspace = cx.new(|cx| Workspace::new_empty(languages, window, cx));
+        let workspace = cx.new(|cx| empty_workspace(languages, window, cx));
         let project = workspace.read(cx).project().clone();
         let search = cx.new(|cx| {
             QuickAccess::new(
@@ -128,7 +129,7 @@ fn clicking_quick_access_records_the_focus_before_the_input_takes_it(cx: &mut Te
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
     let (host, cx) = cx.add_window_view(|window, cx| {
-        let workspace = cx.new(|cx| Workspace::new_empty(languages, window, cx));
+        let workspace = cx.new(|cx| empty_workspace(languages, window, cx));
         let project = workspace.read(cx).project().clone();
         FocusHost {
             search: cx.new(|cx| {
@@ -168,7 +169,7 @@ fn line_column_entry_reuses_input_and_normal_search_does_not_offer_navigation(
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
     let (host, cx) = cx.add_window_view(|window, cx| {
-        let workspace = cx.new(|cx| Workspace::new_empty(languages.clone(), window, cx));
+        let workspace = cx.new(|cx| empty_workspace(languages.clone(), window, cx));
         let editor = cx.new(|cx| NavigableItem {
             focus: cx.focus_handle(),
         });
@@ -444,7 +445,7 @@ fn command_candidates_come_from_described_actions(cx: &mut TestAppContext) {
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
     let (search, _) = cx.add_window_view(|window, cx| {
-        let workspace = cx.new(|cx| Workspace::new_empty(languages, window, cx));
+        let workspace = cx.new(|cx| empty_workspace(languages, window, cx));
         QuickAccess::new(
             workspace.read(cx).project().clone(),
             workspace.downgrade(),
@@ -470,12 +471,6 @@ fn command_candidates_come_from_described_actions(cx: &mut TestAppContext) {
                 .commands
                 .iter()
                 .any(|command| command.action_name == "picker::PickerConfirm")
-        );
-        assert!(
-            !search
-                .commands
-                .iter()
-                .any(|command| command.action_name == "editor::RenameLocal")
         );
     });
 }

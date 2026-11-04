@@ -286,15 +286,6 @@ impl MultiBuffer {
             })
     }
 
-    pub fn location_for_offset(
-        &self,
-        offset: impl Into<MultiBufferOffset>,
-    ) -> Option<ExcerptLocation> {
-        let offset: MultiBufferOffset = offset.into();
-        let range = MultiBufferRange::new(offset, offset).expect("同点组合范围必须有效");
-        self.location_for_range(range)
-    }
-
     /// 把当前组合偏移锚定到底层源坐标；affinity 决定同点插入的吸附方向。
     pub fn anchor_at(
         &self,

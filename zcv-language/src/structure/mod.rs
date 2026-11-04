@@ -7,14 +7,12 @@ mod brackets;
 mod folds;
 mod indent;
 mod jsx_tag;
-mod locals;
 mod nodes;
 mod outline;
 
 pub use brackets::BracketPair;
 pub use folds::FoldRange;
 pub use indent::NewlineIndent;
-pub use locals::LocalBinding;
 pub use nodes::SyntaxNode;
 pub use outline::OutlineItem;
 

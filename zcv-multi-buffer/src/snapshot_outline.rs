@@ -40,14 +40,6 @@ impl MultiBufferSnapshot {
         entries
     }
 
-    /// 只取符号本体的便捷入口；导航与既有消费方使用。
-    pub fn outline_items(&self) -> Vec<OutlineItem<MultiBufferAnchor>> {
-        self.outline_entries()
-            .into_iter()
-            .map(|entry| entry.item)
-            .collect()
-    }
-
     /// 单文件文档的大纲条目：直接取工作区源的完整语法大纲。
     ///
     /// 单文件不按 excerpt/diff 片段裁剪，源坐标只做单调映射到组合输出坐标，因此 diff 注入不会丢失跨 hunk 的定义。

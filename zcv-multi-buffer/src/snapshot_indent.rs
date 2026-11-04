@@ -5,7 +5,7 @@
 use super::*;
 
 impl MultiBufferSnapshot {
-    pub fn line_indent_for_row(&self, row: Line) -> LineIndent {
+    pub(crate) fn line_indent_for_row(&self, row: Line) -> LineIndent {
         self.line_cursor(row)
             .and_then(|cursor| cursor.line_indent())
             .unwrap_or(LineIndent {

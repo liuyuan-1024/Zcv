@@ -91,13 +91,6 @@ pub enum TransactionError {
 /// Anchor / Mark 版本推进相关错误。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AnchorError {
-    /// Anchor / Mark 只能通过连续 EditEvent 推进，不能跳过或重复应用版本。
-    #[error("Anchor 版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
-    VersionMismatch {
-        expected: BufferVersion,
-        actual: BufferVersion,
-    },
-
     /// 目标快照版本早于锚点版本，坐标只能向后推进，不能解析到更旧版本。
     #[error("Anchor 版本晚于目标快照：锚点版本 {anchor:?}，目标版本 {target:?}")]
     TargetBeforeSource {

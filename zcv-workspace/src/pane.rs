@@ -128,7 +128,7 @@ impl Pane {
     }
 
     /// 注入工作区的文件打开能力，供预览内容中的本地链接使用。
-    pub fn set_open_path(&mut self, open_path: OpenPathCallback) {
+    pub(crate) fn set_open_path(&mut self, open_path: OpenPathCallback) {
         self.open_path = Some(open_path);
     }
 
@@ -293,7 +293,7 @@ impl Pane {
 
     /// 在源码与渲染表现之间切换；
     /// 两个展示 Item 独立保留各自的滚动与焦点状态。
-    pub fn toggle_preview(
+    pub(crate) fn toggle_preview(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -540,7 +540,7 @@ impl Pane {
     }
 
     /// 关闭已删除条目对应的标签页；目录删除时连同其中打开的文件一起关闭。
-    pub fn remove_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn remove_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         let closed: Vec<EntityId> = self
             .tabs
             .iter()

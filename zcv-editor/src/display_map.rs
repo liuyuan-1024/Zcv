@@ -11,7 +11,7 @@
 
 mod block_map;
 mod chunk;
-mod decorations;
+pub(crate) mod decorations;
 mod display_width;
 mod edit;
 mod error;
@@ -39,14 +39,12 @@ pub(crate) use chunk::{
 };
 #[cfg(test)]
 pub(crate) use chunk::{ChunkSource, ChunkText, WrapChunks};
-pub(crate) use decorations::EditorHunkMarkerKind;
 #[cfg(test)]
 pub(crate) use decorations::hunk_rendering;
 pub(crate) use decorations::{
-    DiffDecorationSnapshot, DisplayDecorations, SearchDecorationInput, SearchDecorationSnapshot,
-    is_hollow_hunk,
+    DiffDecorationSnapshot, DisplayDecorations, EditorHunk, EditorHunkMarkerKind,
+    HunkControlTarget, SearchDecorationInput, SearchDecorationSnapshot, is_hollow_hunk,
 };
-pub use decorations::{EditorHunk, EditorHunkPart, HunkControlTarget};
 pub(crate) use display_width::DisplayColumn;
 use edit::ProjectionEdit;
 use error::DisplayMapResult;

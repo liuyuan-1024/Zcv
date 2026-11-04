@@ -101,25 +101,6 @@ impl TextPatch {
         Self { edits }
     }
 
-    /// 只保留旧坐标与 `range` 相交的编辑；新坐标保持组合后的绝对值。
-    pub(crate) fn filtered_to_old_range(&self, range: TextRange) -> Self {
-        Self {
-            edits: self
-                .edits
-                .iter()
-                .filter(|edit| {
-                    let old = edit.old;
-                    if old.is_empty() {
-                        range.start() <= old.start() && old.start() <= range.end()
-                    } else {
-                        old.start() < range.end() && range.start() < old.end()
-                    }
-                })
-                .cloned()
-                .collect(),
-        }
-    }
-
     pub(crate) fn from_edits(edits: Vec<PatchEdit>) -> Self {
         Self { edits }
     }
@@ -169,14 +150,6 @@ impl TextChangeBatch {
             old_version: Some(old_version),
             new_version: Some(new_version),
             transaction_id: None,
-        }
-    }
-
-    /// 只保留旧坐标与 `range` 相交的编辑；版本区间与事务身份保持。
-    pub(crate) fn filtered_to_old_range(&self, range: TextRange) -> Self {
-        Self {
-            patch: self.patch.filtered_to_old_range(range),
-            ..self.clone()
         }
     }
 

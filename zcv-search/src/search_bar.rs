@@ -268,7 +268,7 @@ impl SearchBar {
         }
     }
 
-    pub fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.visible {
             self.close(window, cx);
         } else {

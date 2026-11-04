@@ -13,11 +13,11 @@ zcv-text.workspace = true
 zcv-language.workspace = true
 zcv-path.workspace = true
 zcv-buffer-diff.workspace = true
+zcv-settings.workspace = true
 unicode-segmentation.workspace = true
 sum-tree.workspace = true
 
 [dev-dependencies]
-zcv-settings.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 
 [lints]

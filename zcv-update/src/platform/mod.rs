@@ -170,19 +170,19 @@ mod platform {
     use anyhow::{Result, bail};
     use semver::Version;
 
-    pub const APP_DIRECTORY_NAME: &str = "Zcv";
-    pub const APP_EXECUTABLE_RELATIVE_PATH: &str = "Zcv";
-    pub const HELPER_RELATIVE_PATH: &str = "zcv-update-helper";
+    pub(crate) const APP_DIRECTORY_NAME: &str = "Zcv";
+    pub(crate) const APP_EXECUTABLE_RELATIVE_PATH: &str = "Zcv";
+    pub(crate) const HELPER_RELATIVE_PATH: &str = "zcv-update-helper";
 
     pub fn from_process_path(_: &Path) -> Result<super::UpdateInstallation> {
         bail!("当前平台尚不支持应用自动更新")
     }
 
-    pub fn archive_entry_is_allowed(_: &str) -> bool {
+    pub(crate) fn archive_entry_is_allowed(_: &str) -> bool {
         false
     }
 
-    pub fn validate_extracted_app(_: &Path) -> Result<()> {
+    pub(crate) fn validate_extracted_app(_: &Path) -> Result<()> {
         bail!("当前平台尚不支持应用自动更新")
     }
 
@@ -199,7 +199,7 @@ mod platform {
         bail!("当前平台尚不支持应用自动更新")
     }
 
-    pub async fn extract_archive(_: &Path, _: &Path, _: Vec<u8>) -> Result<()> {
+    pub(crate) async fn extract_archive(_: &Path, _: &Path, _: Vec<u8>) -> Result<()> {
         bail!("当前平台尚不支持应用自动更新")
     }
 }

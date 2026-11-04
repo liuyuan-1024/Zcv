@@ -66,7 +66,7 @@ impl TransactionMetadata {
         self.merge_policy
     }
 
-    pub fn record_history(&self) -> bool {
+    pub(crate) fn record_history(&self) -> bool {
         self.record_history
     }
 

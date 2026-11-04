@@ -307,7 +307,7 @@ pub fn atomic_write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     platform::replace_file(&temporary, path)
 }
 
-pub fn read_transaction(path: &Path) -> Result<UpdateTransaction> {
+pub(crate) fn read_transaction(path: &Path) -> Result<UpdateTransaction> {
     let transaction: UpdateTransaction = serde_json::from_slice(
         &fs::read(path).with_context(|| format!("无法读取更新事务 {}", path.display()))?,
     )
@@ -317,7 +317,7 @@ pub fn read_transaction(path: &Path) -> Result<UpdateTransaction> {
 }
 
 /// 更新确认文件名：与结果文件同目录，按事务 ID 区分。
-pub fn acknowledgement_path(directory: &Path, transaction_id: &str) -> PathBuf {
+pub(crate) fn acknowledgement_path(directory: &Path, transaction_id: &str) -> PathBuf {
     directory.join(format!("ack-{transaction_id}.json"))
 }
 

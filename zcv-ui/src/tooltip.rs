@@ -48,7 +48,7 @@ impl TooltipSpec {
     }
 
     /// 设置调用方已解析的快捷键文本；`None` 表示该 action 无绑定。
-    pub fn with_shortcut(mut self, shortcut: Option<impl Into<String>>) -> Self {
+    pub(crate) fn with_shortcut(mut self, shortcut: Option<impl Into<String>>) -> Self {
         if let Some(shortcut) = shortcut {
             self.shortcut = Some(shortcut.into());
         }

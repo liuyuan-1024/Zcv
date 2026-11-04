@@ -16,9 +16,7 @@ mod store;
 pub use file::ensure_settings_files;
 pub use merge::UserSettings;
 pub use reload::init;
-pub use schema::{
-    AutoIndentMode, CursorShape, IndentGuideSettings, LanguageOverride, SoftWrapMode, TabConfig,
-};
+pub use schema::{AutoIndentMode, CursorShape, IndentGuideSettings, SoftWrapMode, TabConfig};
 pub use store::{GlobalSettingsErrorReporter, SettingsError, SettingsErrorReporter, SettingsStore};
 
 /// 配置目录（用户主目录下的 `.zcv`）解析入口。

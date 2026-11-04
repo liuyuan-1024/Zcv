@@ -93,16 +93,6 @@ impl Snapshot {
         Some(TextChangeBatch::from_patch(since, self.version, patch))
     }
 
-    /// 返回自 `since` 版本以来与 `range` 相交的编辑批次。
-    pub fn edits_since_in_range(
-        &self,
-        since: BufferVersion,
-        range: TextRange,
-    ) -> TextResult<TextChangeBatch> {
-        self.edit_log
-            .batch_since_in_range(since, self.version, range)
-    }
-
     /// 自 `since` 版本到本快照版本，可见片段集合是否发生变化。
     ///
     /// 对齐 `BufferSnapshot::has_edits_since` 的 fragment 可见性语义：
@@ -176,7 +166,7 @@ impl Snapshot {
     }
 
     /// 给锚点绑定 `offset` 处的稳定插入身份；空文档保持未绑定。
-    pub fn attach_insertion(&self, anchor: Anchor, offset: ByteOffset) -> Anchor {
+    pub(crate) fn attach_insertion(&self, anchor: Anchor, offset: ByteOffset) -> Anchor {
         match self.insertions.position_at(offset.get()) {
             Some(position) => anchor.with_insertion(position.id, position.offset),
             None => anchor,

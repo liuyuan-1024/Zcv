@@ -19,7 +19,7 @@ use crate::{ListItem, SvgIcon};
 type EntryHandler = Rc<dyn Fn(Option<&FocusHandle>, &mut Window, &mut App)>;
 
 /// 菜单项：分隔线或可选中的条目。
-pub enum ContextMenuItem {
+pub(crate) enum ContextMenuItem {
     Separator,
     Entry(ContextMenuEntry),
 }
@@ -225,7 +225,7 @@ impl ContextMenu {
         self.select_first(&SelectFirst, window, cx);
     }
 
-    pub fn select_previous(
+    pub(crate) fn select_previous(
         &mut self,
         _: &SelectPrevious,
         window: &mut Window,

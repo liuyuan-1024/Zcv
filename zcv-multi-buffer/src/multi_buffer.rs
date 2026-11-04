@@ -43,10 +43,11 @@ use sum_tree::{Bias, ContextLessSummary, Cursor, Dimension, Item, SeekTarget, Su
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_language::{
-    BracketPair, HighlightCache, HighlightSpan, IndentGuideSettings, InputScope, LanguageBuffer,
-    LanguageBufferEvent, LanguageBufferSnapshot, LanguageRegistry, LanguageSettings, NewlineIndent,
-    OutlineItem, SyntaxSnapshot,
+    BracketPair, HighlightCache, HighlightSpan, InputScope, LanguageBuffer, LanguageBufferEvent,
+    LanguageBufferSnapshot, LanguageRegistry, LanguageSettings, NewlineIndent, OutlineItem,
+    SyntaxSnapshot,
 };
+use zcv_settings::IndentGuideSettings;
 use zcv_text::{
     Affinity, Anchor, Buffer, BufferConfig, BufferId, BufferVersion, ByteOffset, CharOffset,
     CoordinateError, Edit, Line, LineEndingStyle, LineIndent, LogicalColumn, MovementDirection,

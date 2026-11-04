@@ -52,7 +52,7 @@ impl Default for LargeFilePolicy {
 
 impl LargeFilePolicy {
     /// `large_file_threshold_bytes == 0` 表示不限。
-    pub fn is_large_byte_size(&self, byte_size: usize) -> bool {
+    pub(crate) fn is_large_byte_size(&self, byte_size: usize) -> bool {
         self.large_file_threshold_bytes != 0 && byte_size > self.large_file_threshold_bytes
     }
 }

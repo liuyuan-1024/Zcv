@@ -18,7 +18,7 @@ use crate::{pane::Pane, panel::PanelHandle};
 
 /// Dock 对外发出的事件。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DockEvent {
+pub(crate) enum DockEvent {
     /// 开合状态实际变化（折叠/展开）。
     OpenChanged,
     /// 尺寸被重置/调整（双击手柄重置、程序化调整）。
@@ -59,7 +59,7 @@ const DEFAULT_BOTTOM_SIZE: Pixels = px(260.0);
 
 impl DockPosition {
     /// 未恢复持久化状态时采用的 Dock 单一默认尺寸。
-    pub fn default_size(self) -> Pixels {
+    pub(crate) fn default_size(self) -> Pixels {
         match self {
             Self::Left | Self::Right => DEFAULT_SIDE_SIZE,
             Self::Bottom => DEFAULT_BOTTOM_SIZE,
@@ -130,12 +130,12 @@ impl Dock {
     }
 
     /// 设置 sibling dock（左右耦合）。
-    pub fn set_sibling(&mut self, sibling: WeakEntity<Dock>) {
+    pub(crate) fn set_sibling(&mut self, sibling: WeakEntity<Dock>) {
         self.sibling = Some(sibling);
     }
 
     /// 追加面板；空 dock 自动激活第一个面板。
-    pub fn add_panel(
+    pub(crate) fn add_panel(
         &mut self,
         handle: Arc<dyn PanelHandle>,
         window: &mut Window,
@@ -163,21 +163,21 @@ impl Dock {
     }
 
     /// 按持久化名称查找面板 index。
-    pub fn panel_index_for_persistent_name(&self, name: &str) -> Option<usize> {
+    pub(crate) fn panel_index_for_persistent_name(&self, name: &str) -> Option<usize> {
         self.panels
             .iter()
             .position(|panel| panel.persistent_name() == name)
     }
 
     /// 指定 index 面板的焦点句柄。
-    pub fn panel_focus_handle(&self, panel_index: usize, cx: &App) -> Option<FocusHandle> {
+    pub(crate) fn panel_focus_handle(&self, panel_index: usize, cx: &App) -> Option<FocusHandle> {
         self.panels
             .get(panel_index)
             .map(|panel| panel.focus_handle(cx))
     }
 
     /// 指定面板激活时应接收焦点的目标。
-    pub fn panel_activation_focus_handle(
+    pub(crate) fn panel_activation_focus_handle(
         &self,
         panel_index: usize,
         cx: &App,
@@ -197,7 +197,7 @@ impl Dock {
     }
 
     /// 当前可见面板。
-    pub fn visible_panel(&self) -> Option<&Arc<dyn PanelHandle>> {
+    pub(crate) fn visible_panel(&self) -> Option<&Arc<dyn PanelHandle>> {
         if self.is_open() {
             self.active_panel_index.and_then(|i| self.panels.get(i))
         } else {
@@ -206,22 +206,22 @@ impl Dock {
     }
 
     /// 当前选中的 panel；Dock 关闭时仍返回，供恢复与 action 使用。
-    pub fn active_panel(&self) -> Option<&Arc<dyn PanelHandle>> {
+    pub(crate) fn active_panel(&self) -> Option<&Arc<dyn PanelHandle>> {
         self.active_panel_index.and_then(|i| self.panels.get(i))
     }
 
     /// 当前激活面板的 index。
-    pub fn active_panel_index(&self) -> Option<usize> {
+    pub(crate) fn active_panel_index(&self) -> Option<usize> {
         self.active_panel_index
     }
 
     /// 指定 index 的面板是否激活（展开且为当前面板）。
-    pub fn is_panel_active(&self, panel_index: usize) -> bool {
+    pub(crate) fn is_panel_active(&self, panel_index: usize) -> bool {
         self.is_open && Some(panel_index) == self.active_panel_index
     }
 
     /// 设置开关状态，并统一触发 panel 生命周期回调；状态实际变化时发出事件（宿主据此保存布局）。
-    pub fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_open == open {
             return;
         }
@@ -242,7 +242,7 @@ impl Dock {
     }
 
     /// 切换当前 panel，并统一停用旧 panel、激活新 panel。
-    pub fn activate_panel(
+    pub(crate) fn activate_panel(
         &mut self,
         panel_index: usize,
         window: &mut Window,
@@ -293,7 +293,7 @@ impl Dock {
     }
 
     /// 捕获当前 Dock 的可持久化快照。
-    pub fn capture_state(&self) -> DockData {
+    pub(crate) fn capture_state(&self) -> DockData {
         DockData {
             visible: self.is_open(),
             active_panel: self
@@ -310,7 +310,7 @@ impl Dock {
     /// 拖拽到指定光标位置，更新 dock 尺寸。
     ///
     /// 采用绝对坐标模型：直接按光标相对参考区域边缘的距离计算新尺寸，不依赖拖拽起点——避免 delta 模型在跨坐标系事件（handle 本地坐标 vs 窗口坐标）下的基准漂移。
-    pub fn resize_to(
+    pub(crate) fn resize_to(
         &mut self,
         cursor: Point<Pixels>,
         bounds: gpui::Bounds<Pixels>,
@@ -347,7 +347,7 @@ impl Dock {
     }
 
     /// 重置为默认尺寸。
-    pub fn reset_size(
+    pub(crate) fn reset_size(
         &mut self,
         window_size: gpui::Size<Pixels>,
         window: &Window,

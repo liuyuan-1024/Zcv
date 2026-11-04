@@ -11,7 +11,7 @@ use std::ops::Range;
 use sum_tree::{Bias, ContextLessSummary, Dimension, Item, SumTree};
 
 use crate::{
-    BufferVersion, TextError, TextRange, TextResult,
+    BufferVersion, TextError, TextResult,
     text_changes::{TextChangeBatch, TextPatch},
     transaction::EditList,
 };
@@ -166,17 +166,6 @@ impl EditLog {
             patch = patch.compose(&TextPatch::from_edit_list(entry.forward.as_slice()));
         }
         Ok(TextChangeBatch::from_patch(since, current, patch))
-    }
-
-    /// 组合 since 到 current 之间与 range 相交的编辑。
-    pub(crate) fn batch_since_in_range(
-        &self,
-        since: BufferVersion,
-        current: BufferVersion,
-        range: TextRange,
-    ) -> TextResult<TextChangeBatch> {
-        let batch = self.batch_since(since, current)?;
-        Ok(batch.filtered_to_old_range(range))
     }
 
     /// 取 `[start, end]` 版本区间的逆编辑与原始版本区间，按 undo 回放顺序（版本倒序）返回。

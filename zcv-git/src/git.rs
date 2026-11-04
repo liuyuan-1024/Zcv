@@ -11,4 +11,4 @@ pub use repository::{
     Branch, GitCancellation, GitHunkOperation, GitRepository, GitRevision, GraphCommit, HunkEdit,
     RealGitRepository, WorkingCopySnapshot, apply_hunk_edits_to_text, init,
 };
-pub use status::{BranchStatus, DiffStat, FileStatus, GitStatus, StatusCode};
+pub use status::{DiffStat, FileStatus, GitStatus, StatusCode};

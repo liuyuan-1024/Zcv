@@ -19,7 +19,7 @@ mod status_items;
 mod view;
 mod workspace_item;
 
-pub use display_map::{EditorHunk, EditorHunkPart, HunkControlTarget};
+pub use display_map::decorations::{EditorHunk, HunkControlTarget};
 pub use status_items::install_status_items;
 pub use view::{
     DiffHunkDelegate, Editor, EditorEvent, OutlineEntry, OutlineSource, OutlineVersion,

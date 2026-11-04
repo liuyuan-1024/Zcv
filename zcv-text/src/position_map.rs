@@ -94,7 +94,7 @@ impl PositionMap {
     }
 
     /// 从跨多个连续版本组合后的 Patch 构造坐标映射。
-    pub fn from_text_patch(patch: &TextPatch) -> Self {
+    pub(crate) fn from_text_patch(patch: &TextPatch) -> Self {
         Self {
             edits: patch
                 .edits()

@@ -180,28 +180,6 @@ fn replace_text_maps_anchor_inside_replaced_token_to_the_replacement_start() {
 }
 
 #[test]
-fn edits_since_in_range_keeps_only_overlapping_edits() {
-    let mut buffer = buffer("abcdef");
-    let base = buffer.version();
-    buffer
-        .edit(
-            [
-                Edit::replace(range(0, 1), "X".to_string()),
-                Edit::replace(range(4, 5), "Y".to_string()),
-            ],
-            TransactionMetadata::default(),
-        )
-        .unwrap();
-
-    let batch = buffer
-        .snapshot()
-        .edits_since_in_range(base, range(4, 6))
-        .unwrap();
-    assert_eq!(batch.patch().edits().len(), 1);
-    assert_eq!(batch.patch().edits()[0].old_range(), range(4, 5));
-}
-
-#[test]
 fn anchor_resolves_across_versions_with_affinity() {
     let mut buffer = buffer("abc");
     let (before, after) = {

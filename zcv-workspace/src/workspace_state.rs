@@ -257,7 +257,7 @@ impl Workspace {
     }
 
     /// 关闭指定提示，不影响同一工作区中的其他提示。
-    pub fn dismiss_toast(&self, id: ToastId, cx: &mut App) {
+    pub(crate) fn dismiss_toast(&self, id: ToastId, cx: &mut App) {
         self.toast_layer.update(cx, |toast, cx| toast.hide(id, cx));
     }
 

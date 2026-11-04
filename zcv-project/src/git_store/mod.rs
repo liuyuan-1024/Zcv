@@ -611,7 +611,11 @@ impl GitStore {
     }
 
     /// 清除已解决文件的冲突 stage，并以当前分支内容作为未暂存基线。
-    pub fn resolve_conflicts(&mut self, paths: Vec<AbsolutePathBuf>, cx: &mut Context<Self>) {
+    pub(crate) fn resolve_conflicts(
+        &mut self,
+        paths: Vec<AbsolutePathBuf>,
+        cx: &mut Context<Self>,
+    ) {
         self.schedule_job(GitJob::ResolveConflicts { paths }, cx);
     }
 

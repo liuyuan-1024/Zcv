@@ -30,7 +30,7 @@ use super::{DisplayRange, DisplaySnapshot};
 pub struct EditorHunk {
     pub id: SharedString,
     pub range: MultiBufferRange,
-    pub parts: Arc<[EditorHunkPart]>,
+    pub(crate) parts: Arc<[EditorHunkPart]>,
 }
 
 impl EditorHunk {
@@ -80,10 +80,10 @@ impl EditorHunk {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EditorHunkPart {
-    pub range: MultiBufferRange,
-    pub content_kind: DiffHunkKind,
-    pub marker_kind: EditorHunkMarkerKind,
+pub(crate) struct EditorHunkPart {
+    pub(crate) range: MultiBufferRange,
+    pub(crate) content_kind: DiffHunkKind,
+    pub(crate) marker_kind: EditorHunkMarkerKind,
 }
 
 /// Git hunk 的外围状态标记。
@@ -91,7 +91,7 @@ pub struct EditorHunkPart {
 /// 内容背景由 `content_kind` 决定；
 /// gutter 和滚动条则由这里的状态决定，因此冲突可以复用新增/删除的内容背景，同时保留冲突专有的标记颜色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EditorHunkMarkerKind {
+pub(crate) enum EditorHunkMarkerKind {
     /// 普通 Git diff hunk，颜色由具体差异类型决定。
     Diff(DiffHunkKind),
     /// 未解决的 Git 冲突，使用主题中的冲突颜色。

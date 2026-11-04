@@ -30,7 +30,7 @@ pub use button::{Button, ButtonSize, ButtonStyle};
 pub use button_like::ButtonLike;
 pub use checkbox::Checkbox;
 pub use confirm::{ConfirmAnswer, ConfirmOverlay};
-pub use context_menu::{ContextMenu, ContextMenuEntry, ContextMenuItem};
+pub use context_menu::{ContextMenu, ContextMenuEntry};
 pub use contrast::ensure_minimum_contrast;
 pub use icon::SvgIcon;
 pub use input::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};

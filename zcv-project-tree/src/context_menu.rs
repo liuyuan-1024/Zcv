@@ -8,7 +8,7 @@ use gpui::{
 };
 use zcv_actions::{
     TreeCollapse, TreeCopy, TreeCopyAbsolutePath, TreeCopyRelativePath, TreeCut, TreeExpand,
-    TreeNewEntry, TreePaste, TreeRename, TreeTrash,
+    TreeNewEntry, TreePaste, TreeRemoveFromProject, TreeRename, TreeTrash,
 };
 use zcv_path::AbsolutePathBuf;
 use zcv_ui::{ContextMenu, ContextMenuEntry};
@@ -86,7 +86,7 @@ impl ProjectTreePanel {
     /// 按选中行状态构建菜单项。
     ///
     /// 根行不可重命名、剪切、复制、删除（与键盘路径的净化规则一致，
-    /// 菜单上以禁用态显式表达而不是隐藏）；目录行额外提供展开/折叠。
+    /// 菜单上以禁用态显式表达而不是隐藏）；目录行额外提供展开/折叠，根行额外提供「从项目移除」。
     fn build_context_menu(
         &self,
         window: &mut Window,
@@ -98,7 +98,7 @@ impl ProjectTreePanel {
                 .selected_idx()
                 .map(|index| {
                     let row = &state.rows[index];
-                    (Some(&row.path) == self.root.as_ref(), row.is_dir)
+                    (self.roots.contains(&row.path), row.is_dir)
                 })
                 .unwrap_or((true, true))
         };
@@ -130,8 +130,16 @@ impl ProjectTreePanel {
             } else {
                 menu
             };
-            menu.separator()
-                .entry(shortcut_entry("删除", TreeTrash, cx).disabled(is_root))
+            let menu = menu
+                .separator()
+                .entry(shortcut_entry("删除", TreeTrash, cx).disabled(is_root));
+            // 移除只解除 worktree，文件保留在磁盘上；与删除（进回收站）语义不同，分隔呈现。
+            if is_root {
+                menu.separator()
+                    .entry(shortcut_entry("从项目移除", TreeRemoveFromProject, cx))
+            } else {
+                menu
+            }
         })
     }
 

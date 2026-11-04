@@ -31,7 +31,7 @@ impl Watcher for QuietWatcher {
 
 fn test_project(root: PathBuf, languages: Arc<LanguageRegistry>, cx: &mut App) -> Entity<Project> {
     cx.new(|cx| {
-        Project::new_with_watcher(root, Arc::new(QuietWatcher), languages, cx)
+        Project::new_with_watcher(vec![root], Arc::new(QuietWatcher), languages, cx)
             .expect("测试项目根目录应可规范化")
     })
 }
@@ -47,10 +47,10 @@ impl Render for TestView {
 
 #[gpui::test]
 fn confirm_invokes_on_selected(cx: &mut TestAppContext) {
-    let triggered = Rc::new(Cell::new(None::<String>));
+    let triggered = Rc::new(Cell::new(None::<Vec<PathBuf>>));
     let on_selected: OnProjectSelected = {
         let triggered = triggered.clone();
-        Rc::new(move |path, _window, _cx| triggered.set(Some(path)))
+        Rc::new(move |paths, _window, _cx| triggered.set(Some(paths)))
     };
     let mut delegate = cx.update(|cx| {
         RecentProjectsDelegate::new(
@@ -62,7 +62,7 @@ fn confirm_invokes_on_selected(cx: &mut TestAppContext) {
                 )
             }),
             vec![ProjectEntry {
-                path: "/tmp/test-project".into(),
+                paths: vec!["/tmp/test-project".into()],
             }],
             on_selected,
             Rc::new(|_, _| {}),
@@ -73,21 +73,27 @@ fn confirm_invokes_on_selected(cx: &mut TestAppContext) {
     let _ = window.update(cx, |_, window, cx| {
         delegate.confirm(window, cx);
     });
-    assert_eq!(triggered.take().as_deref(), Some("/tmp/test-project"));
+    assert_eq!(
+        triggered.take(),
+        Some(vec![PathBuf::from("/tmp/test-project")])
+    );
 }
 
 #[gpui::test]
-fn recent_projects_footer_opens_file_before_directory(cx: &mut TestAppContext) {
+fn recent_projects_footer_orders_entries_and_dispatches(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages));
     let file_triggered = Rc::new(Cell::new(false));
     let directory_triggered = Rc::new(Cell::new(false));
+    let add_triggered = Rc::new(Cell::new(false));
     cx.update(|cx| {
         let file_triggered = file_triggered.clone();
         let directory_triggered = directory_triggered.clone();
+        let add_triggered = add_triggered.clone();
         cx.on_action(move |_: &OpenLocalFile, _| file_triggered.set(true));
         cx.on_action(move |_: &OpenLocalDirectory, _| directory_triggered.set(true));
+        cx.on_action(move |_: &AddDirectoryToProject, _| add_triggered.set(true));
     });
     let (_picker, cx) =
         cx.add_window_view(|window, cx| Picker::new(test_delegate(cx), PICKER_WIDTH, window, cx));
@@ -97,11 +103,57 @@ fn recent_projects_footer_opens_file_before_directory(cx: &mut TestAppContext) {
     let directory = cx
         .debug_bounds("open-local-directory-footer")
         .expect("最近项目列表应显示打开本地目录");
+    let add = cx
+        .debug_bounds("add-directory-to-project-footer")
+        .expect("最近项目列表应显示添加目录到项目");
     assert!(directory.top() >= file.bottom(), "文件入口应排在目录入口前");
+    assert!(
+        add.top() >= directory.bottom(),
+        "目录入口应排在添加目录入口前"
+    );
     cx.simulate_click(file.center(), Modifiers::default());
     assert!(file_triggered.get());
     cx.simulate_click(directory.center(), Modifiers::default());
     assert!(directory_triggered.get());
+    cx.simulate_click(add.center(), Modifiers::default());
+    assert!(add_triggered.get());
+}
+
+#[gpui::test]
+fn multi_root_entry_renders_each_path_on_its_own_line(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages));
+    let on_selected: OnProjectSelected = Rc::new(|_, _, _| {});
+    let (_picker, cx) = cx.add_window_view(|window, cx| {
+        Picker::new(
+            RecentProjectsDelegate::new(
+                cx.new(|cx| {
+                    Project::empty_with_watcher(
+                        Arc::new(LanguageRegistry::new()),
+                        Arc::new(FsWatcher::new()),
+                        cx,
+                    )
+                }),
+                vec![ProjectEntry {
+                    paths: vec!["/tmp/workspace-a".into(), "/tmp/workspace-b".into()],
+                }],
+                on_selected,
+                Rc::new(|_, _| {}),
+                cx,
+            ),
+            PICKER_WIDTH,
+            window,
+            cx,
+        )
+    });
+    let first = cx
+        .debug_bounds("recent-project-path-0-0")
+        .expect("多根条目应逐行显示第一个路径");
+    let second = cx
+        .debug_bounds("recent-project-path-0-1")
+        .expect("多根条目应逐行显示第二个路径");
+    assert!(second.top() >= first.bottom(), "两个路径应各占一行");
 }
 
 /// 构造 3 个项目的数据源，默认选中第一项。
@@ -117,13 +169,13 @@ fn test_delegate(cx: &mut App) -> RecentProjectsDelegate {
         }),
         vec![
             ProjectEntry {
-                path: "/tmp/a".into(),
+                paths: vec!["/tmp/a".into()],
             },
             ProjectEntry {
-                path: "/tmp/b".into(),
+                paths: vec!["/tmp/b".into()],
             },
             ProjectEntry {
-                path: "/tmp/c".into(),
+                paths: vec!["/tmp/c".into()],
             },
         ],
         on_selected,
@@ -138,7 +190,12 @@ fn remove_project_drops_entry_and_keeps_filter(cx: &mut TestAppContext) {
     delegate.update_matches("tmp".into());
     delegate.remove_project_in_memory(2);
     assert_eq!(delegate.projects.len(), 2);
-    assert!(delegate.projects.iter().all(|p| p.path != "/tmp/c"));
+    assert!(
+        delegate
+            .projects
+            .iter()
+            .all(|p| !p.paths.iter().any(|path| path == "/tmp/c"))
+    );
     assert_eq!(delegate.filtered, vec![0, 1]);
 }
 
@@ -155,10 +212,10 @@ fn project_query_matches_noncontiguous_name_characters(cx: &mut TestAppContext) 
             }),
             vec![
                 ProjectEntry {
-                    path: "/tmp/alpha-project".into(),
+                    paths: vec!["/tmp/alpha-project".into()],
                 },
                 ProjectEntry {
-                    path: "/tmp/beta".into(),
+                    paths: vec!["/tmp/beta".into()],
                 },
             ],
             Rc::new(|_, _, _| {}),
@@ -199,7 +256,7 @@ fn current_project_cannot_be_removed_from_recent_projects(cx: &mut TestAppContex
         let project = test_project(current_dir.path().to_path_buf(), languages, cx);
         let current = project
             .read(cx)
-            .root()
+            .main_root()
             .expect("当前项目有根目录")
             .to_string_lossy()
             .into_owned();
@@ -207,10 +264,10 @@ fn current_project_cannot_be_removed_from_recent_projects(cx: &mut TestAppContex
             project,
             vec![
                 ProjectEntry {
-                    path: other_dir.path().to_string_lossy().into_owned(),
+                    paths: vec![other_dir.path().to_string_lossy().into_owned()],
                 },
                 ProjectEntry {
-                    path: current.clone(),
+                    paths: vec![current.clone()],
                 },
             ],
             Rc::new(|_, _, _| {}),
@@ -229,7 +286,7 @@ fn current_project_cannot_be_removed_from_recent_projects(cx: &mut TestAppContex
     );
     assert_eq!(delegate.projects.len(), 2);
     assert_eq!(delegate.selected_index, 1);
-    assert_eq!(delegate.projects[1].path, current);
+    assert_eq!(delegate.projects[1].paths, vec![current.clone()]);
     assert_eq!(reported.take().as_deref(), Some("不允许删除当前项目"));
 
     assert!(
@@ -237,7 +294,7 @@ fn current_project_cannot_be_removed_from_recent_projects(cx: &mut TestAppContex
             .expect("其他项目应可移除")
     );
     assert_eq!(delegate.projects.len(), 1);
-    assert_eq!(delegate.projects[0].path, current);
+    assert_eq!(delegate.projects[0].paths, vec![current]);
     assert!(
         reported.take().is_none(),
         "移除其他项目不应提示当前项目错误"
@@ -254,7 +311,7 @@ fn current_project_is_selected_by_path_and_check_stays_after_its_name(cx: &mut T
         let project = test_project(directory.path().to_path_buf(), languages, cx);
         let root = project
             .read(cx)
-            .root()
+            .main_root()
             .expect("当前项目有根目录")
             .to_owned();
         let current = root.to_string_lossy().into_owned();
@@ -265,11 +322,15 @@ fn current_project_is_selected_by_path_and_check_stays_after_its_name(cx: &mut T
         let delegate = RecentProjectsDelegate::new(
             project,
             vec![
-                ProjectEntry { path: same_name },
                 ProjectEntry {
-                    path: "/tmp/other".into(),
+                    paths: vec![same_name],
                 },
-                ProjectEntry { path: current },
+                ProjectEntry {
+                    paths: vec!["/tmp/other".into()],
+                },
+                ProjectEntry {
+                    paths: vec![current],
+                },
             ],
             Rc::new(|_, _, _| {}),
             Rc::new(|_, _| {}),
@@ -349,10 +410,18 @@ fn reopening_selects_current_project_and_clears_previous_search(cx: &mut TestApp
     cx.read_entity(&picker, |picker, cx| {
         let delegate = picker.delegate();
         let selected = &delegate.projects[delegate.filtered[delegate.selected_index()]];
-        assert_eq!(
-            Some(Path::new(&selected.path)),
-            delegate.project.read(cx).root()
-        );
+        let selected_paths: Vec<PathBuf> = selected
+            .paths
+            .iter()
+            .map(|path| PathBuf::from(path.as_str()))
+            .collect();
+        let project_roots: Vec<PathBuf> = delegate
+            .project
+            .read(cx)
+            .roots()
+            .map(Path::to_path_buf)
+            .collect();
+        assert_eq!(selected_paths, project_roots);
         assert_eq!(picker.search_input().text(cx), "");
     });
     assert!(
@@ -369,10 +438,18 @@ fn reopening_selects_current_project_and_clears_previous_search(cx: &mut TestApp
     cx.read_entity(&picker, |picker, cx| {
         let delegate = picker.delegate();
         let selected = &delegate.projects[delegate.filtered[delegate.selected_index()]];
-        assert_eq!(
-            Some(Path::new(&selected.path)),
-            delegate.project.read(cx).root()
-        );
+        let selected_paths: Vec<PathBuf> = selected
+            .paths
+            .iter()
+            .map(|path| PathBuf::from(path.as_str()))
+            .collect();
+        let project_roots: Vec<PathBuf> = delegate
+            .project
+            .read(cx)
+            .roots()
+            .map(Path::to_path_buf)
+            .collect();
+        assert_eq!(selected_paths, project_roots);
         assert_eq!(picker.search_input().text(cx), "");
     });
 }

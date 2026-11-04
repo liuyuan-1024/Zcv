@@ -61,7 +61,7 @@ fn scan_discovers_repository_and_reports_status(cx: &mut gpui::TestAppContext) {
     fs::write(root.join("tracked.txt"), "已修改\n").expect("应修改文件");
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -83,7 +83,7 @@ fn failed_git_status_scan_keeps_last_valid_snapshot(cx: &mut gpui::TestAppContex
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "已修改\n").expect("应修改文件");
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -129,7 +129,7 @@ fn scan_request_during_running_scan_is_never_dropped(cx: &mut gpui::TestAppConte
     let (root, _temp) = test_git_repo();
     fs::write(root.join("scratch.txt"), "临时\n").expect("应写入未跟踪文件");
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     let entry = cx.read_entity(&git_store, |store, _| {
@@ -177,7 +177,7 @@ fn scan_request_during_running_scan_is_never_dropped(cx: &mut gpui::TestAppConte
 fn refresh_request_during_running_refresh_is_never_dropped(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -226,7 +226,7 @@ fn total_diff_stat_merges_staged_and_unstaged(cx: &mut gpui::TestAppContext) {
     // 先做一次未暂存修改（1 增 1 删：改写第二行内容）。
     fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n").expect("应写入文件");
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     let total = cx.read_entity(&git_store, |store, _| store.total_diff_stat());
@@ -252,7 +252,7 @@ fn empty_repository_reports_no_branch(cx: &mut gpui::TestAppContext) {
     run_git(temp_dir.path(), &["init", "-q", "-b", "master"]);
 
     let git_store = cx.update(|cx| {
-        cx.new(|cx| GitStore::new(Some(temp_dir.path().to_path_buf()), test_registry(), cx))
+        cx.new(|cx| GitStore::new(vec![temp_dir.path().to_path_buf()], test_registry(), cx))
     });
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
@@ -267,7 +267,7 @@ fn empty_repository_reports_no_branch(cx: &mut gpui::TestAppContext) {
 fn incremental_refresh_updates_statuses(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -308,7 +308,7 @@ fn index_metadata_event_refreshes_the_repository(cx: &mut gpui::TestAppContext) 
     fs::write(&path, "暂存内容\n").expect("应修改文件");
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -334,7 +334,7 @@ fn external_checkout_updates_head(cx: &mut gpui::TestAppContext) {
     run_git(&root, &["commit", "-q", "-am", "feature"]);
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -357,7 +357,7 @@ fn load_revision_text_returns_head_content(cx: &mut gpui::TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -390,7 +390,7 @@ fn load_revision_text_returns_index_content(cx: &mut gpui::TestAppContext) {
     fs::write(root.join("tracked.txt"), "工作区内容\n").expect("应写入工作区版本");
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     let path = root.join("tracked.txt");
@@ -460,7 +460,7 @@ fn status_for_directory_aggregates_children(cx: &mut gpui::TestAppContext) {
     fs::create_dir_all(root.join("empty")).expect("应创建目录");
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -514,7 +514,7 @@ fn revision_refresh_covers_git_metadata_and_same_status_rescan(cx: &mut gpui::Te
     let path = root.join("tracked.txt");
     fs::write(&path, "第一行\n暂存甲\n").unwrap();
     run_git(&root, &["add", "tracked.txt"]);
-    let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    let store = cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx));
     store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     store
@@ -574,7 +574,7 @@ fn refreshing_one_revision_path_does_not_discard_another_initial_load(
     let other = root.join("other.txt");
     fs::write(&other, "另一文件\n").unwrap();
     run_git(&root, &["add", "other.txt"]);
-    let store = cx.new(|cx| GitStore::new(Some(root), test_registry(), cx));
+    let store = cx.new(|cx| GitStore::new(vec![root], test_registry(), cx));
     store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     store
@@ -611,7 +611,7 @@ fn superseded_initial_revision_load_waits_for_the_current_read(cx: &mut gpui::Te
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
-    let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    let store = cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx));
     store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     let load = store.update(cx, |store, cx| {
@@ -649,7 +649,7 @@ fn failed_revision_read_preserves_cached_text_and_does_not_cache_missing(
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
-    let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    let store = cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx));
     store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     store
@@ -706,7 +706,7 @@ fn revision_diff_source_survives_missing_and_present_transitions(cx: &mut gpui::
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
-    let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    let store = cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx));
     store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     store
@@ -764,7 +764,7 @@ fn binary_revision_is_not_installed_as_text_and_recovers_after_restage(
     let path = root.join("tracked.txt");
     fs::write(&path, b"binary\0content").unwrap();
     run_git(&root, &["add", "tracked.txt"]);
-    let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    let store = cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx));
     store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     store
@@ -809,7 +809,7 @@ fn status_for_directory_returns_ignored_for_ignored_directory(cx: &mut gpui::Tes
     fs::write(root.join(".gitignore"), "node_modules/\n").expect("应写入 .gitignore");
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -831,7 +831,7 @@ fn ignored_children_do_not_taint_directory_status(cx: &mut gpui::TestAppContext)
     run_git(&root, &["commit", "-q", "-m", "add assets"]);
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -869,7 +869,7 @@ fn ignored_directory_status_propagates_to_descendants(cx: &mut gpui::TestAppCont
     fs::create_dir_all(&empty_dir).expect("应创建被忽略目录");
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -932,7 +932,7 @@ fn run_operation_pushes_to_remote(cx: &mut gpui::TestAppContext) {
     );
     run_git(&root, &["push", "-q", "-u", "origin", "master"]);
 
-    let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    let git_store = cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx));
     git_store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked(); // 首次扫描完成，repositories 就绪。
     let ready = cx.read_entity(&git_store, |store, _| !store.repositories.is_empty());
@@ -963,7 +963,7 @@ fn cancelling_queued_remote_operation_keeps_gate_closed_until_finished(
     cx: &mut gpui::TestAppContext,
 ) {
     let (root, _temp) = test_git_repo();
-    let git_store = cx.new(|cx| GitStore::new(Some(root), test_registry(), cx));
+    let git_store = cx.new(|cx| GitStore::new(vec![root], test_registry(), cx));
     git_store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1007,7 +1007,7 @@ fn cancelling_queued_remote_operation_keeps_gate_closed_until_finished(
 
 #[gpui::test]
 fn stale_job_completion_does_not_remove_newer_same_key(cx: &mut gpui::TestAppContext) {
-    let git_store = cx.new(|cx| GitStore::new(None, test_registry(), cx));
+    let git_store = cx.new(|cx| GitStore::new(Vec::new(), test_registry(), cx));
     git_store.update(cx, |store, cx| {
         let key = GitJobKey::GitOperation(GitOperationKind::Push);
         let old_id = store
@@ -1077,7 +1077,7 @@ fn cancelling_running_push_allows_clean_retry_after_process_exit(cx: &mut gpui::
     permissions.set_mode(0o755);
     fs::set_permissions(&hook_path, permissions).expect("应设置钩子可执行权限");
 
-    let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    let git_store = cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx));
     git_store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1124,7 +1124,7 @@ fn git_init_then_scan_discovers_repository(cx: &mut gpui::TestAppContext) {
     let temp_dir = tempfile::tempdir().expect("应创建临时目录");
     let root = temp_dir.path().to_path_buf();
 
-    let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    let git_store = cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx));
     git_store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     let empty = cx.read_entity(&git_store, |store, _| !store.has_repositories());
@@ -1147,7 +1147,7 @@ fn stage_paths_moves_file_between_sections(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "修改后的内容\n").expect("应修改文件");
 
-    let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    let git_store = cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx));
     git_store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1238,7 +1238,7 @@ fn stage_paths_expands_directory_to_matching_files(cx: &mut gpui::TestAppContext
     fs::write(root.join("src/new.txt"), "新文件\n").expect("应写入文件");
     fs::write(root.join("src/sub/b.txt"), "改动的 b\n").expect("应写入文件");
 
-    let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    let git_store = cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx));
     git_store.update(cx, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1284,7 +1284,7 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
@@ -1374,7 +1374,7 @@ fn diff_operations_stage_hunk_suppresses_source_and_marks_uncommitted_diff_pendi
     run_git(&root, &["commit", "-q", "-m", "add other"]);
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1532,7 +1532,7 @@ fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut gpui::
     fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1629,7 +1629,7 @@ fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut gpui::TestApp
     fs::write(root.join("two.txt"), "A0\na1\na2\na3\nA4\na5\n").expect("应修改两处");
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1723,7 +1723,7 @@ fn active_repository_follows_focused_path(cx: &mut gpui::TestAppContext) {
     run_git(&nested, &["commit", "-q", "-m", "nested initial"]);
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1777,7 +1777,7 @@ fn git_operation_targets_active_repository(cx: &mut gpui::TestAppContext) {
     run_git(&nested, &["push", "-q", "-u", "origin", "master"]);
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1820,7 +1820,7 @@ fn initial_scan_sets_active_to_first_repository(cx: &mut gpui::TestAppContext) {
     run_git(&nested, &["commit", "-q", "-m", "nested initial"]);
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1858,7 +1858,7 @@ fn remote_operation_state_reflects_push(cx: &mut gpui::TestAppContext) {
     run_git(&root, &["push", "-q", "-u", "origin", "master"]);
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1906,7 +1906,7 @@ fn remote_operation_state_reflects_push(cx: &mut gpui::TestAppContext) {
 fn remote_operation_state_defaults_without_remote(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1920,7 +1920,7 @@ fn scan_reports_branch_list(cx: &mut gpui::TestAppContext) {
     run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1942,7 +1942,7 @@ fn checkout_branch_switches_and_refreshes(cx: &mut gpui::TestAppContext) {
     run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1971,7 +1971,7 @@ fn checkout_branch_switches_and_refreshes(cx: &mut gpui::TestAppContext) {
 fn create_branch_creates_and_refreshes(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -1999,7 +1999,7 @@ fn external_checkout_updates_branch_list(cx: &mut gpui::TestAppContext) {
     run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
     let git_store =
-        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
@@ -2026,7 +2026,7 @@ fn branch_ops_skip_when_no_repository(cx: &mut gpui::TestAppContext) {
     // 非 git 目录：checkout/create 入口不 panic，仅触发扫描后返回。
     let temp_dir = tempfile::tempdir().expect("应创建临时目录");
     let git_store = cx.update(|cx| {
-        cx.new(|cx| GitStore::new(Some(temp_dir.path().to_path_buf()), test_registry(), cx))
+        cx.new(|cx| GitStore::new(vec![temp_dir.path().to_path_buf()], test_registry(), cx))
     });
     cx.update_entity(&git_store, |store, cx| {
         let _task = store.checkout_branch_with_result("master".into(), cx);

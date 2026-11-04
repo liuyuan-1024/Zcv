@@ -640,9 +640,10 @@ impl Item for GitGraphView {
     type Event = SearchEvent;
 
     fn tab_content_text(&self, _cx: &App) -> SharedString {
+        // 多根工作区以主根（首个根）命名标签。
         self.project
             .read(_cx)
-            .root()
+            .main_root()
             .and_then(|root| root.file_name())
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "版本控制图".to_owned())

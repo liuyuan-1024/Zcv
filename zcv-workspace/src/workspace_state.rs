@@ -125,7 +125,9 @@ impl Workspace {
                 .ok();
         });
         pane.update(cx, |pane, _| pane.set_open_path(open_path));
-        let layout_path = layout_state::path_for_workspace(project.read(cx).root());
+        let workspace_roots: Vec<PathBuf> =
+            project.read(cx).roots().map(Path::to_path_buf).collect();
+        let layout_path = layout_state::path_for_workspace(&workspace_roots);
         let restored_layout = layout_state::load(&layout_path).unwrap_or_default();
         let restored_pane = restored_layout.pane.clone();
         let restored_panels = restored_layout.panels.clone();
@@ -377,8 +379,13 @@ impl Workspace {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 this._window_bounds_save_task.take();
-                let root = this.project.read(cx).root().map(Path::to_path_buf);
-                window_bounds::save_window_bounds(root.as_deref(), window, cx);
+                let roots: Vec<PathBuf> = this
+                    .project
+                    .read(cx)
+                    .roots()
+                    .map(Path::to_path_buf)
+                    .collect();
+                window_bounds::save_window_bounds(&roots, window, cx);
             })
             .ok();
         }));
@@ -1022,8 +1029,13 @@ impl Workspace {
     }
 
     pub(crate) fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let root = self.project.read(cx).root().map(Path::to_path_buf);
-        window_bounds::save_window_bounds(root.as_deref(), window, cx);
+        let roots: Vec<PathBuf> = self
+            .project
+            .read(cx)
+            .roots()
+            .map(Path::to_path_buf)
+            .collect();
+        window_bounds::save_window_bounds(&roots, window, cx);
         self.flush_layout(cx);
         cx.quit();
     }

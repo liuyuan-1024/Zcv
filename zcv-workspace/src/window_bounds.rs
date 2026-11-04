@@ -168,7 +168,7 @@ fn read_file(path: &Path) -> WindowBoundsFile {
 /// 首次打开的项目没有自己的记录，若不随每次保存刷新全局默认，打开新项目时仍会回落到初始尺寸。
 fn save_to(
     path: &Path,
-    root: Option<&Path>,
+    roots: &[PathBuf],
     bounds: WindowBounds,
     display_uuid: Option<String>,
 ) -> Result<()> {
@@ -179,40 +179,40 @@ fn save_to(
         bounds: bounds.into(),
     };
     file.default = Some(stored.clone());
-    if let Some(root) = root {
+    if !roots.is_empty() {
         file.projects
-            .insert(persistence::workspace_identity(Some(root)), stored);
+            .insert(persistence::workspace_identity(roots), stored);
     }
     persistence::atomic_write(path, &serde_json::to_vec_pretty(&file)?)
 }
 
-/// 读取窗口边界：项目记录优先，其次全局默认。
-fn load_from(path: &Path, root: Option<&Path>) -> Option<(WindowBounds, Option<String>)> {
+/// 读取窗口边界：工作区记录优先，其次全局默认。
+fn load_from(path: &Path, roots: &[PathBuf]) -> Option<(WindowBounds, Option<String>)> {
     let file = read_file(path);
     if file.version != WINDOW_BOUNDS_VERSION {
         return None;
     }
-    let stored = root
-        .and_then(|root| {
-            file.projects
-                .get(&persistence::workspace_identity(Some(root)))
-        })
-        .or(file.default.as_ref())?;
+    let stored = if roots.is_empty() {
+        None
+    } else {
+        file.projects.get(&persistence::workspace_identity(roots))
+    }
+    .or(file.default.as_ref())?;
     if stored.coordinate_space != WindowCoordinateSpace::GpuiLogicalPixels {
         return None;
     }
     Some((stored.bounds.into(), stored.display_uuid.clone()))
 }
 
-/// 保存当前窗口边界：同时刷新全局默认与当前项目记录。
-/// 项目根由持有当前窗口 Project 的调用方显式传入，失败仅记录日志、不阻塞主流程。
-pub fn save_window_bounds(root: Option<&Path>, window: &mut Window, cx: &mut App) {
+/// 保存当前窗口边界：同时刷新全局默认与当前工作区记录。
+/// 根集合由持有当前窗口 Project 的调用方显式传入，失败仅记录日志、不阻塞主流程。
+pub fn save_window_bounds(roots: &[PathBuf], window: &mut Window, cx: &mut App) {
     let display_uuid = window
         .display(cx)
         .and_then(|display| display.uuid().ok())
         .map(|uuid| uuid.to_string());
     let bounds = window.inner_window_bounds();
-    if let Err(error) = save_to(&window_bounds_path(), root, bounds, display_uuid) {
+    if let Err(error) = save_to(&window_bounds_path(), roots, bounds, display_uuid) {
         eprintln!("保存窗口边界失败：{error:#}");
     }
 }
@@ -220,10 +220,10 @@ pub fn save_window_bounds(root: Option<&Path>, window: &mut Window, cx: &mut App
 /// 解析窗口打开参数：项目记录 → 全局默认。
 /// 保存时的显示器已断开时使用当前主显示器，并将窗口矩形限制在其显示范围内。
 pub fn load_window_bounds(
-    root: Option<&Path>,
+    roots: &[PathBuf],
     cx: &App,
 ) -> Option<(WindowBounds, Option<DisplayId>)> {
-    let (bounds, display_uuid) = load_from(&window_bounds_path(), root)?;
+    let (bounds, display_uuid) = load_from(&window_bounds_path(), roots)?;
     let display = display_uuid
         .as_deref()
         .and_then(|saved| {

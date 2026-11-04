@@ -4,24 +4,57 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use zcv_path::AbsolutePathBuf;
 use zcv_settings::config_dir;
 
 // ═══ 数据 ════════════════════════════════════════════════════════
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 一条最近项目记录：一个工作区的有序根集合。
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct ProjectEntry {
-    pub path: String,
+    pub(crate) paths: Vec<String>,
 }
 
 impl ProjectEntry {
-    /// 显示名：从规范化的绝对路径取末段。
+    /// 显示名：各根末段以顿号连接。
     pub(crate) fn label(&self) -> String {
-        Path::new(&self.path)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default()
+        self.paths
+            .iter()
+            .map(|path| {
+                Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join("、")
+    }
+
+    /// 过滤匹配文本：全部根路径拼接（与显示名一起参与模糊匹配）。
+    pub(crate) fn search_text(&self) -> String {
+        self.paths.join(" ")
+    }
+}
+
+/// 读取格式：当前多根记录，以及旧版单根记录。
+/// 旧记录读取时迁移为单元素集合；下次写盘即以新格式落盘，全部淘汰后可移除该分支。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ProjectEntryRepr {
+    Current { paths: Vec<String> },
+    Legacy { path: String },
+}
+
+impl<'de> Deserialize<'de> for ProjectEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match ProjectEntryRepr::deserialize(deserializer)? {
+            ProjectEntryRepr::Current { paths } => Self { paths },
+            ProjectEntryRepr::Legacy { path } => Self { paths: vec![path] },
+        })
     }
 }
 
@@ -52,21 +85,24 @@ pub(crate) fn load_recent_projects() -> Vec<ProjectEntry> {
     }
 }
 
-/// 返回最近的有效项目。
+/// 返回最近的仍有效工作区（至少一个根仍存在）。
 ///
-/// 最近项目必须是带名称的绝对目录。这样不会把从 `.app` 启动时的 `/` 或旧版本曾写入的相对路径 `.` 当成项目重新打开。
+/// 每个根必须是带名称的绝对目录。这样不会把从 `.app` 启动时的 `/` 或旧版本曾写入的相对路径 `.` 当成项目重新打开。
 ///
 /// 失效记录只在此处读取时跳过，不清理写回；
 /// 重新打开项目写盘时会以新格式覆盖，旧记录自然淘汰。
-pub fn most_recent_valid_project() -> Option<PathBuf> {
-    first_valid_project(&load_recent_projects())
+pub fn most_recent_valid_project() -> Option<Vec<PathBuf>> {
+    load_recent_projects().iter().find_map(valid_project_paths)
 }
 
-/// 跳过失效记录，返回第一个仍有效的项目路径。
-fn first_valid_project(projects: &[ProjectEntry]) -> Option<PathBuf> {
-    projects
+/// 条目中仍有效的根集合；全部失效时条目视为失效。
+fn valid_project_paths(entry: &ProjectEntry) -> Option<Vec<PathBuf>> {
+    let paths = entry
+        .paths
         .iter()
-        .find_map(|project| canonical_project_path(Path::new(&project.path)))
+        .filter_map(|path| canonical_project_path(Path::new(path)))
+        .collect::<Vec<_>>();
+    (!paths.is_empty()).then_some(paths)
 }
 
 /// 项目根必须是带名称的绝对目录（canonicalize 失败即视为失效）。
@@ -88,11 +124,11 @@ pub(crate) fn save_recent_projects(projects: &[ProjectEntry]) -> anyhow::Result<
     crate::persistence::atomic_write(&recent_path(), &content)
 }
 
-/// 从最近项目列表移除一条路径（幂等，不存在时无副作用）。
-pub(crate) fn remove_from_recent(path: &str) -> anyhow::Result<()> {
+/// 从最近项目列表移除一条工作区记录（幂等，不存在时无副作用）。
+pub fn remove_from_recent(paths: &[String]) -> anyhow::Result<()> {
     let mut projects = load_recent_projects();
     let before = projects.len();
-    projects.retain(|p| p.path != path);
+    projects.retain(|p| p.paths != paths);
     // 列表未变化时不写盘，避免无谓 IO
     if projects.len() == before {
         return Ok(());
@@ -100,20 +136,27 @@ pub(crate) fn remove_from_recent(path: &str) -> anyhow::Result<()> {
     save_recent_projects(&projects)
 }
 
-/// 把一条路径添加到最近项目列表前端（去重，首位即最近打开的项目）。
-pub fn add_to_recent(path: &str) -> anyhow::Result<()> {
-    let Some(path) = canonical_project_path(Path::new(path)) else {
+/// 把一个工作区（有序根集合）添加到最近项目列表前端（去重，首位即最近打开的工作区）。
+///
+/// 全部根失效时不记录；部分失效时只记录仍有效的根。
+/// 不同根集合是不同的工作区，各自成条目；同一工作区变根后的旧条目由调用方移除。
+pub fn add_to_recent(paths: &[PathBuf]) -> anyhow::Result<()> {
+    let paths = paths
+        .iter()
+        .filter_map(|path| canonical_project_path(path))
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
         return Ok(());
-    };
-    let path = path.to_string_lossy().to_string();
+    }
 
     let mut projects = load_recent_projects();
     // 已在首位时不动，避免无谓写盘
-    if projects.first().is_some_and(|p| p.path == path) {
+    if projects.first().is_some_and(|p| p.paths == paths) {
         return Ok(());
     }
-    projects.retain(|p| p.path != path);
-    projects.insert(0, ProjectEntry { path });
+    projects.retain(|p| p.paths != paths);
+    projects.insert(0, ProjectEntry { paths });
     projects.truncate(20);
     save_recent_projects(&projects)
 }

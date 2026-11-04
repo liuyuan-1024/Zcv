@@ -297,7 +297,7 @@ impl Render for ResultsLayoutView {
 }
 
 fn files() -> Vec<Arc<FileCandidate>> {
-    let root = Path::new("/project");
+    let roots = [PathBuf::from("/project")];
     [
         "/project/src/quick_access.rs",
         "/project/test/search.rs",
@@ -305,7 +305,7 @@ fn files() -> Vec<Arc<FileCandidate>> {
         "/project/src/main.rs",
     ]
     .into_iter()
-    .map(|path| Arc::new(FileCandidate::new(PathBuf::from(path), root)))
+    .map(|path| Arc::new(FileCandidate::new(PathBuf::from(path), &roots)))
     .collect()
 }
 
@@ -351,7 +351,7 @@ fn prefixes_only_filter_the_default_mixed_results() {
     assert_eq!(input_mode(":42:8"), InputMode::Mixed(":42:8"));
     let files = [Arc::new(FileCandidate::new(
         PathBuf::from("/project/save.rs"),
-        Path::new("/project"),
+        &[PathBuf::from("/project")],
     ))];
     let commands = [CommandCandidate {
         action_name: "workspace::Save",
@@ -426,7 +426,7 @@ fn numeric_query_only_offers_matching_files_and_commands() {
     ];
     let files = [Arc::new(FileCandidate::new(
         PathBuf::from("/project/42.rs"),
-        Path::new("/project"),
+        &[PathBuf::from("/project")],
     ))];
     assert!(ranked_results(&files, &names, "").is_empty());
     assert_eq!(
@@ -507,7 +507,7 @@ fn confirming_a_match_requests_open_for_its_absolute_path(cx: &mut TestAppContex
     let mut search = FileSearchState::new(on_open);
     search.set_files(
         vec![PathBuf::from("/project/src/main.rs")],
-        Path::new("/project"),
+        &[PathBuf::from("/project")],
     );
     assert_eq!(
         ranked_results(&search.files, &[], "main"),
@@ -525,7 +525,7 @@ fn confirming_a_match_requests_open_for_its_absolute_path(cx: &mut TestAppContex
         Some(Path::new("/project/src/main.rs"))
     );
 
-    search.set_files(Vec::new(), Path::new("/project"));
+    search.set_files(Vec::new(), &[PathBuf::from("/project")]);
     assert!(
         ranked_results(&search.files, &[], "main").is_empty(),
         "文件移除后不能保留旧候选"
@@ -537,7 +537,7 @@ fn ranked_file_result_survives_file_cache_replacement() {
     let mut state = FileSearchState::new(Box::new(|_, _, _| {}));
     state.set_files(
         vec![PathBuf::from("/project/src/main.rs")],
-        Path::new("/project"),
+        &[PathBuf::from("/project")],
     );
     let results = ranked_results(&state.files, &[], "main");
     state.begin_scan();

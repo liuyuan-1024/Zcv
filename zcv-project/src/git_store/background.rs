@@ -14,7 +14,7 @@ use zcv_git::{
 use zcv_path::{AbsolutePathBuf, RelativePathBuf};
 
 use super::{GitJob, GitOperationKind, GitOperationOutcome, RepositorySnapshot, StatusEntry};
-use crate::worktree::discover_repositories;
+use crate::worktree::discover_repositories_for_roots;
 
 /// 后台 job 的执行结果。
 pub(super) enum JobResult {
@@ -55,7 +55,7 @@ pub(super) struct RefreshData {
 
 /// 后台线程：执行一个 job（所有 git 命令在这里同步阻塞运行）。
 pub(super) async fn execute_job(
-    root: AbsolutePathBuf,
+    roots: Vec<AbsolutePathBuf>,
     job: GitJob,
     repositories: Vec<Arc<dyn GitRepository>>,
     grouped_paths: Vec<Vec<RelativePathBuf>>,
@@ -64,8 +64,8 @@ pub(super) async fn execute_job(
 ) -> JobResult {
     match job {
         GitJob::ReloadGitState => {
-            // 仓库发现（同步文件系统遍历，放后台）：总是递归发现嵌套仓库，再合并 root 所在的外层仓库。
-            let discovered = match discover_repositories(&root) {
+            // 仓库发现（同步文件系统遍历，放后台）：逐根递归发现嵌套仓库并合并外层仓库，按工作目录去重。
+            let discovered = match discover_repositories_for_roots(&roots) {
                 Ok(discovered) => discovered,
                 Err(error) => return JobResult::DiscoveryFailed(format!("{error:#}")),
             };
@@ -179,7 +179,14 @@ pub(super) async fn execute_job(
             JobResult::GitOperation(result)
         }
         // 项目根无仓库时初始化；fallback 分支名 "main"。
-        GitJob::GitInit => JobResult::GitOperation(zcv_git::init(&root, "main")),
+        // init 作用于主根（首个工作区根）；prepare_job 保证集合非空。
+        GitJob::GitInit => JobResult::GitOperation(zcv_git::init(
+            roots
+                .first()
+                .expect("prepare_job 保证 roots 非空")
+                .as_path(),
+            "main",
+        )),
         // 暂存/取消暂存：按仓库分组执行；任一仓库失败即中断并上报。
         GitJob::StageFiles { stage, .. } => {
             let mut result = Ok(());

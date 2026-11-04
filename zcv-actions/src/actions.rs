@@ -117,6 +117,7 @@ described_actions!(
         OpenSettings => ("打开设置", "打开设置文件"),
         OpenLocalFile => ("打开本地文件", "选择文件并在当前工作区打开"),
         OpenLocalDirectory => ("打开本地目录", "从本地目录选择并切换项目"),
+        AddDirectoryToProject => ("添加目录到项目", "选择目录并加入当前项目"),
         FocusQuickAccess,
         FocusLineColumn => ("跳转到行列", "跳转到当前文档的指定行和列"),
         GitFetch => ("获取远程更新", "从远程仓库获取最新提交"),
@@ -285,6 +286,8 @@ actions!(
         TreeRename,
         TreeNewEntry,
         TreeTrash,
+        // 把根行对应的目录从项目移除（文件保留在磁盘上）。
+        TreeRemoveFromProject,
         TreeConfirmEdit,
         TreeCancelEdit,
         TreeCopy,

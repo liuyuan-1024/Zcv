@@ -71,7 +71,7 @@ impl Worktree {
     }
 }
 
-/// 项目树的过滤规则：扫描排除（glob 名单）。
+/// 目录扫描的排除规则（glob 名单）。
 ///
 /// file_scan_exclusions 命中的条目根本不在行模型中加载；
 /// 忽略（gitignore/info/exclude）仍由 Git 状态判定（`FileStatus::Ignored`），在收集可见行时投影为行模型的 `is_ignored`，不参与本过滤层。
@@ -141,6 +141,21 @@ fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<Worktree
             })
         })
         .collect()
+}
+
+/// 工作区根集合中路径的所属根；嵌套根命中多个时取最长前缀（最内层根）。
+///
+/// 所有归属判断与展示相对化共用的唯一规则；
+/// 持有 Project 实体的调用方应使用 `Project::root_for_path`。
+pub fn owning_workspace_root<'a, R: AsRef<Path> + 'a + ?Sized>(
+    path: &Path,
+    roots: impl IntoIterator<Item = &'a R>,
+) -> Option<&'a Path> {
+    roots
+        .into_iter()
+        .map(AsRef::<Path>::as_ref)
+        .filter(|root| path.starts_with(*root))
+        .max_by_key(|root| root.as_os_str().len())
 }
 
 /// 收集可见行（纯函数，可在后台线程执行）：根行 + 按 `expanded` 递归展开。
@@ -249,6 +264,25 @@ pub(crate) fn discover_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRe
         && !known.contains(ancestor.working_directory())
     {
         repositories.insert(0, ancestor);
+    }
+    Ok(repositories)
+}
+
+/// 合并多个工作区根的仓库发现结果：逐根发现后按 working_directory 去重，保持首次出现顺序。
+///
+/// 多根工作区中同一仓库可能被多个根的发现路径覆盖（嵌套根、外层仓库）；
+/// 去重依据与 `discover_repositories` 一致：working_directory 来自 canonicalize，比较天然一致。
+pub(crate) fn discover_repositories_for_roots(
+    roots: &[AbsolutePathBuf],
+) -> anyhow::Result<Vec<RealGitRepository>> {
+    let mut repositories = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    for root in roots {
+        for repository in discover_repositories(root.as_path())? {
+            if seen.insert(repository.working_directory().to_path_buf()) {
+                repositories.push(repository);
+            }
+        }
     }
     Ok(repositories)
 }

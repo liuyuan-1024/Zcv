@@ -26,4 +26,6 @@ pub use search::{
     RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult, regex_replacement_for_match,
     regex_replacements_in_text,
 };
-pub use worktree::{WorktreeEntry, new_entry_destination, rename_destination, translate_path};
+pub use worktree::{
+    WorktreeEntry, new_entry_destination, owning_workspace_root, rename_destination, translate_path,
+};

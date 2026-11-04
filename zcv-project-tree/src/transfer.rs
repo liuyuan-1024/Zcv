@@ -6,19 +6,19 @@
 use std::collections::HashSet;
 use zcv_path::AbsolutePathBuf;
 
-/// 净化选中集：排除根行与项目外路径、按路径排序、剔除互为祖先的后代项（目录与其子项同选时只留目录）。
+/// 净化选中集：排除根行与所有根之外的路径、按路径排序、剔除互为祖先的后代项（目录与其子项同选时只留目录）。
 ///
 /// 路径排序后祖先必先于后代出现，逐项对照已保留前缀即可完成剪枝；
 /// `Path::starts_with` 按组件比较，同名前缀（如 `a` 与 `ab`）不会被误判为祖先。
 pub(crate) fn sanitize_selection(
     paths: impl IntoIterator<Item = AbsolutePathBuf>,
-    root: &AbsolutePathBuf,
+    roots: &[AbsolutePathBuf],
 ) -> Vec<AbsolutePathBuf> {
     let mut sorted: Vec<AbsolutePathBuf> = paths
         .into_iter()
         .collect::<HashSet<_>>()
         .into_iter()
-        .filter(|path| path != root && path.starts_with(root))
+        .filter(|path| !roots.contains(path) && roots.iter().any(|root| path.starts_with(root)))
         .collect();
     sorted.sort();
     let mut kept: Vec<AbsolutePathBuf> = Vec::new();

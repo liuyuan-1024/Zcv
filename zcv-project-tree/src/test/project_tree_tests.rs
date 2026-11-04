@@ -69,8 +69,13 @@ fn test_languages() -> Arc<LanguageRegistry> {
 
 fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
     cx.new(|cx| {
-        Project::new_with_watcher(root, Arc::new(TestWatcher::new()), test_languages(), cx)
-            .expect("测试项目根目录应可规范化")
+        Project::new_with_watcher(
+            vec![root],
+            Arc::new(TestWatcher::new()),
+            test_languages(),
+            cx,
+        )
+        .expect("测试项目根目录应可规范化")
     })
 }
 
@@ -405,7 +410,7 @@ fn first_click_on_unfocused_tree_focuses_and_opens(cx: &mut TestAppContext) {
             callback_focus.set(focus_opened_item);
         }));
         // 展开根目录使文件行可见；不聚焦项目树（模拟焦点在别处）。
-        let root = tree.root.clone().expect("测试项目应包含根目录");
+        let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
         tree.state.borrow_mut().expanded.insert(root);
         tree.rebuild_rows(cx);
         tree
@@ -1129,7 +1134,7 @@ fn empty_project_has_no_root_and_empty_rows(cx: &mut TestAppContext) {
     let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
 
     cx.read_entity(&tree, |tree, _| {
-        assert!(tree.root.is_none());
+        assert!(tree.roots.is_empty());
         assert!(tree.state.borrow().rows.is_empty());
     });
 }
@@ -1211,7 +1216,7 @@ fn shift_click_extends_selection_range(cx: &mut TestAppContext) {
         let project = project.clone();
         move |_, cx| {
             let mut tree = ProjectTreePanel::new(project, cx);
-            let root = tree.root.clone().expect("测试项目应包含根目录");
+            let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
             tree.state.borrow_mut().expanded.insert(root);
             tree.rebuild_rows(cx);
             tree
@@ -1263,7 +1268,7 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
         let project = project.clone();
         move |_, cx| {
             let mut tree = ProjectTreePanel::new(project, cx);
-            let root = tree.root.clone().expect("测试项目应包含根目录");
+            let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
             tree.state.borrow_mut().expanded.insert(root);
             tree.rebuild_rows(cx);
             tree
@@ -1339,7 +1344,7 @@ fn shift_down_keystroke_extends_selection_to_next_row(cx: &mut TestAppContext) {
                 Some("ProjectTree && not_editing"),
             )]);
             let mut tree = ProjectTreePanel::new(project, cx);
-            let root = tree.root.clone().expect("测试项目应包含根目录");
+            let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
             tree.state.borrow_mut().expanded.insert(root);
             tree.rebuild_rows(cx);
             tree.state.borrow_mut().select(abs(selected));
@@ -3087,7 +3092,7 @@ fn clicking_blank_area_clears_selection_and_focuses_panel(cx: &mut TestAppContex
         move |_, cx| {
             let mut tree = ProjectTreePanel::new(project, cx);
             // 展开根目录使文件行可见：仅 [根, a.txt] 两行，填不满面板。
-            let root = tree.root.clone().expect("测试项目应包含根目录");
+            let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
             tree.state.borrow_mut().expanded.insert(root);
             tree.rebuild_rows(cx);
             tree
@@ -3199,7 +3204,7 @@ fn panel_starts_unselected_and_blank_click_keeps_selection_empty(cx: &mut TestAp
         let project = project.clone();
         move |_, cx| {
             let mut tree = ProjectTreePanel::new(project, cx);
-            let root = tree.root.clone().expect("测试项目应包含根目录");
+            let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
             tree.state.borrow_mut().expanded.insert(root);
             tree.rebuild_rows(cx);
             tree
@@ -3394,7 +3399,7 @@ fn new_entry_after_blank_click_creates_in_root(cx: &mut TestAppContext) {
         let project = project.clone();
         move |_, cx| {
             let mut tree = ProjectTreePanel::new(project, cx);
-            let root = tree.root.clone().expect("测试项目应包含根目录");
+            let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
             tree.state.borrow_mut().expanded.insert(root);
             tree.rebuild_rows(cx);
             tree
@@ -3597,7 +3602,7 @@ fn context_menu_confirm_runs_action_on_panel(cx: &mut TestAppContext) {
     });
 }
 
-/// 根行菜单：重命名/剪切/复制/粘贴/删除禁用，键盘导航只在可用项间移动。
+/// 根行菜单：重命名/剪切/复制/粘贴/删除禁用，「从项目移除」可用，导航只在可用项间移动。
 #[gpui::test]
 fn context_menu_root_row_disables_entry_actions(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
@@ -3622,7 +3627,7 @@ fn context_menu_root_row_disables_entry_actions(cx: &mut TestAppContext) {
             .clone()
     });
 
-    // 根行是目录，项序：新建(0) | 重命名(2) 剪切(3) 复制(4) 粘贴(5) | 复制绝对(7) 复制相对(8) | 展开(10) 折叠(11) | 删除(13)。
+    // 根行是目录，项序：新建(0) | 重命名(2) 剪切(3) 复制(4) 粘贴(5) | 复制绝对(7) 复制相对(8) | 展开(10) 折叠(11) | 删除(13) | 从项目移除(15)。
     menu.update_in(&mut *cx, |menu, window, cx| {
         menu.select_first(&menu::SelectFirst, window, cx);
         assert_eq!(menu.selected_index(), Some(0), "首个可用项应为新建");
@@ -3635,13 +3640,16 @@ fn context_menu_root_row_disables_entry_actions(cx: &mut TestAppContext) {
         );
         menu.select_next(&menu::SelectNext, window, cx);
         assert_eq!(menu.selected_index(), Some(11), "折叠应可选");
-        // 删除对根行禁用：导航环绕回首项。
+        // 删除对根行禁用；「从项目移除」可用：导航先到移除项。
         menu.select_next(&menu::SelectNext, window, cx);
         assert_eq!(
             menu.selected_index(),
-            Some(0),
-            "根行删除禁用，导航应环绕回首项"
+            Some(15),
+            "根行可从项目移除，删除仍禁用"
         );
+        // 越过移除项后环绕回首项。
+        menu.select_next(&menu::SelectNext, window, cx);
+        assert_eq!(menu.selected_index(), Some(0), "导航应环绕回首项");
     });
 }
 

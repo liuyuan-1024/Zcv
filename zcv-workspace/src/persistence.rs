@@ -2,19 +2,29 @@
 //!
 //! 布局状态与窗口边界共用同一套键控与提交机制，保证两个文件域中的项目身份一致。
 
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context as _, Result};
 use zcv_path::stable_identity;
 
 mod platform;
 
-/// 项目根的工作区身份：固定 FNV-1a 64 位哈希的十六进制形式。
-/// 空工作区使用固定标识；同一项目在所有持久化文件中共用同一身份。
-pub(crate) fn workspace_identity(root: Option<&Path>) -> String {
-    let identity = root
-        .map(stable_identity)
-        .unwrap_or_else(|| "__empty__".to_owned());
+/// 工作区（有序根集合）的身份：固定 FNV-1a 64 位哈希的十六进制形式。
+/// 空工作区使用固定标识；同一工作区在所有持久化文件中共用同一身份。
+/// 单根工作区的身份与历史单根格式一致（单元素拼接即自身），升级后已有布局记录不失效。
+pub(crate) fn workspace_identity(roots: &[PathBuf]) -> String {
+    let identity = if roots.is_empty() {
+        "__empty__".to_owned()
+    } else {
+        roots
+            .iter()
+            .map(|root| stable_identity(root))
+            .collect::<Vec<_>>()
+            .join("\u{1f}")
+    };
     // 固定 FNV-1a，避免依赖 DefaultHasher 的跨版本实现细节。
     let hash = identity.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)

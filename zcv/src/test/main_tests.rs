@@ -15,9 +15,28 @@ fn startup_uses_explicit_command_line_project() {
     assert_eq!(
         initial_open(
             [OsString::from("zcv"), OsString::from("/project")].into_iter(),
-            Some(PathBuf::from("/recent")),
+            Some(vec![PathBuf::from("/recent")]),
         ),
-        InitialOpen::Project(PathBuf::from("/project"))
+        InitialOpen::Project(vec![PathBuf::from("/project")])
+    );
+}
+
+#[test]
+fn startup_collects_all_command_line_roots_in_order() {
+    assert_eq!(
+        initial_open(
+            [
+                OsString::from("zcv"),
+                OsString::from("/project-a"),
+                OsString::from("/project-b"),
+            ]
+            .into_iter(),
+            Some(vec![PathBuf::from("/recent")]),
+        ),
+        InitialOpen::Project(vec![
+            PathBuf::from("/project-a"),
+            PathBuf::from("/project-b"),
+        ])
     );
 }
 
@@ -26,9 +45,9 @@ fn startup_without_path_uses_recent_project_or_none() {
     assert_eq!(
         initial_open(
             [OsString::from("zcv")].into_iter(),
-            Some(PathBuf::from("/recent")),
+            Some(vec![PathBuf::from("/recent")]),
         ),
-        InitialOpen::Project(PathBuf::from("/recent"))
+        InitialOpen::Project(vec![PathBuf::from("/recent")])
     );
     assert_eq!(
         initial_open([OsString::from("zcv")].into_iter(), None),
@@ -44,9 +63,9 @@ fn startup_file_argument_opens_as_document() {
     assert_eq!(
         initial_open(
             [OsString::from("zcv"), file.as_os_str().to_owned()].into_iter(),
-            Some(PathBuf::from("/recent")),
+            Some(vec![PathBuf::from("/recent")]),
         ),
-        InitialOpen::File(file)
+        InitialOpen::File(vec![file])
     );
 }
 
@@ -67,7 +86,7 @@ fn startup_file_opens_in_empty_workspace(cx: &mut TestAppContext) {
         zcv_editor::init(cx, languages.clone());
         crate::app_menus::install(cx);
         open_initial(
-            InitialOpen::File(file),
+            InitialOpen::File(vec![file]),
             languages,
             quiet_watcher_factory(),
             cx,
@@ -82,7 +101,7 @@ fn startup_file_opens_in_empty_workspace(cx: &mut TestAppContext) {
             .update(cx, |_, window, cx| {
                 let workspace = window.root::<Workspace>().flatten().unwrap();
                 let workspace = workspace.read(cx);
-                assert!(workspace.project().read(cx).root().is_none());
+                assert!(workspace.project().read(cx).main_root().is_none());
                 assert_eq!(
                     workspace
                         .pane()
@@ -115,7 +134,7 @@ fn incoming_file_reuses_existing_window(cx: &mut TestAppContext) {
             cx,
         );
         open_initial(
-            InitialOpen::File(file.clone()),
+            InitialOpen::File(vec![file.clone()]),
             languages,
             quiet_watcher_factory(),
             cx,

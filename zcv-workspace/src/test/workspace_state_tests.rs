@@ -235,7 +235,7 @@ fn empty_workspace_has_a_project_without_a_worktree(cx: &mut TestAppContext) {
     let (workspace, cx) =
         cx.add_window_view(|window, cx| empty_workspace(test_languages(), window, cx));
     let project = cx.read_entity(&workspace, |workspace, _| workspace.project().clone());
-    assert!(!cx.read_entity(&project, |project, _| project.has_worktree()));
+    assert!(!cx.read_entity(&project, |project, _| project.has_worktrees()));
 }
 
 #[gpui::test]

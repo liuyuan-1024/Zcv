@@ -369,8 +369,9 @@ struct RevisionState {
 }
 
 pub struct GitStore {
-    /// 项目根目录；无 worktree 的空项目为 None，此时所有 job 与仓库查询为空操作。
-    root: Option<AbsolutePathBuf>,
+    /// 扫描基准根集合；空集合表示空工作区，此时所有 job 与仓库查询为空操作。
+    /// 根集合的权威所有者是 Project，本字段只经 `set_roots` 更新。
+    roots: Vec<AbsolutePathBuf>,
     repositories: Vec<Repository>,
     /// 是否已完成至少一次仓库发现；空集合也表示扫描已完成。
     repository_scan_ready: bool,
@@ -410,14 +411,15 @@ pub struct GitStore {
 
 impl GitStore {
     pub fn new(
-        root: Option<PathBuf>,
+        roots: Vec<PathBuf>,
         language_registry: Arc<LanguageRegistry>,
         cx: &mut Context<Self>,
     ) -> Self {
-        // 仓库的 working_directory 来自 canonicalize，root 同样归一化，保证路径前缀匹配一致。
-        let root = root
+        // 仓库的 working_directory 来自 canonicalize，roots 同样归一化，保证路径前缀匹配一致。
+        let roots = roots
+            .into_iter()
             .map(|root| canonicalize_path(&root))
-            .transpose()
+            .collect::<Result<Vec<_>, _>>()
             .expect("项目根路径必须可归一化");
         let background = cx.background_executor().clone();
         let (job_sender, job_receiver) = async_channel::unbounded::<ScheduledGitJob>();
@@ -465,7 +467,7 @@ impl GitStore {
                     let result = cx
                         .background_executor()
                         .spawn(execute_job(
-                            prepared.root,
+                            prepared.roots,
                             job.clone(),
                             prepared.repositories,
                             prepared.grouped_paths,
@@ -524,7 +526,7 @@ impl GitStore {
 
         let self_handle = cx.weak_entity();
         Self {
-            root,
+            roots,
             repositories: Vec::new(),
             repository_scan_ready: false,
             last_scan_error: None,
@@ -552,6 +554,14 @@ impl GitStore {
     /// 已累积的增量路径不在调度时清除：清除发生在扫描开始时，扫描执行期间到达的路径必须留给排在扫描之后的刷新任务消费。
     pub(super) fn schedule_scan(&mut self, cx: &mut Context<Self>) {
         self.schedule_job(GitJob::ReloadGitState, cx);
+    }
+
+    /// 更新扫描基准根集合（worktree 增删/重命名时由 Project 调用）并重新发现仓库。
+    ///
+    /// 根集合的权威所有者是 Project；本字段是扫描任务的基准快照，只经此入口更新。
+    pub fn set_roots(&mut self, roots: Vec<AbsolutePathBuf>, cx: &mut Context<Self>) {
+        self.roots = roots;
+        self.schedule_scan(cx);
     }
 
     /// 后台执行用户触发的 git 操作（fetch/pull/push），完成后重新扫描。
@@ -1060,17 +1070,20 @@ impl GitStore {
         });
     }
 
+    /// 路径是否位于任一扫描基准根下（含根自身）。
+    fn is_workspace_path(&self, path: &Path) -> bool {
+        self.roots
+            .iter()
+            .any(|root| path.starts_with(root.as_path()))
+    }
+
     /// 增量刷新：对变更路径重查状态（fs 事件、保存操作后调用）。
     pub fn refresh_statuses_for_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         // 调用方传入的路径可能未 canonicalize，与归一化后的 root 比较前先归一化。
         let paths: BTreeSet<AbsolutePathBuf> = paths
             .iter()
             .filter_map(|path| canonicalize_path(path).ok())
-            .filter(|path| {
-                self.root
-                    .as_ref()
-                    .is_some_and(|root| path.starts_with(root.as_path()))
-            })
+            .filter(|path| self.is_workspace_path(path.as_path()))
             .map(|path| {
                 // `.git` 元数据的变化会影响整个仓库的状态；
                 // 将其归一化为仓库根，让后台以空 pathspec 查询完整工作树，而不是查询 `.git/index` 本身。
@@ -1683,16 +1696,19 @@ impl GitStore {
 
     /// UI 线程：取出 job 需要的共享数据（后台线程不能访问 Entity 状态）。
     ///
-    /// 无项目根（空工作区）时任何 git job 都无操作对象，直接丢弃。
+    /// 无工作区根（空工作区）时任何 git job 都无操作对象，直接丢弃。
     fn prepare_job(&mut self, job: &GitJob) -> Option<JobPreparation> {
-        let root = self.root.clone()?;
+        if self.roots.is_empty() {
+            return None;
+        }
+        let roots = self.roots.clone();
         match job {
             GitJob::ReloadGitState => {
                 // 全量扫描覆盖此刻已累积的增量路径；
                 // 扫描开始后到达的路径在清除之后累积，由排在扫描之后的刷新任务消费。
                 self.paths_needing_status_update.clear();
                 Some(JobPreparation {
-                    root,
+                    roots,
                     repositories: Vec::new(),
                     grouped_paths: Vec::new(),
                     grouped_diff_requests: Vec::new(),
@@ -1708,7 +1724,7 @@ impl GitStore {
                     .map(coalesce_refresh_paths)
                     .collect();
                 Some(JobPreparation {
-                    root,
+                    roots,
                     repositories,
                     grouped_paths,
                     grouped_diff_requests: Vec::new(),
@@ -1722,15 +1738,15 @@ impl GitStore {
                 // 分支操作与 top_bar 显示的分支同仓库）。
                 let repository = self.active_repository()?.repository.clone();
                 Some(JobPreparation {
-                    root,
+                    roots,
                     repositories: vec![repository],
                     grouped_paths: Vec::new(),
                     grouped_diff_requests: Vec::new(),
                 })
             }
-            // init 作用于项目根，不依赖既有仓库集合。
+            // init 作用于主根（首个工作区根），不依赖既有仓库集合。
             GitJob::GitInit => Some(JobPreparation {
-                root,
+                roots,
                 repositories: Vec::new(),
                 grouped_paths: Vec::new(),
                 grouped_diff_requests: Vec::new(),
@@ -1772,7 +1788,7 @@ impl GitStore {
                     })
                     .collect();
                 Some(JobPreparation {
-                    root,
+                    roots,
                     repositories,
                     grouped_paths,
                     grouped_diff_requests: Vec::new(),
@@ -1781,7 +1797,7 @@ impl GitStore {
             GitJob::ResolveConflicts { paths } => {
                 let (repositories, grouped_paths) = self.group_paths_by_repo(paths);
                 Some(JobPreparation {
-                    root,
+                    roots,
                     repositories,
                     grouped_paths,
                     grouped_diff_requests: Vec::new(),
@@ -1791,7 +1807,7 @@ impl GitStore {
                 let (repositories, grouped_paths) =
                     self.group_paths_by_repo(std::slice::from_ref(path));
                 Some(JobPreparation {
-                    root,
+                    roots,
                     repositories,
                     grouped_paths,
                     grouped_diff_requests: Vec::new(),
@@ -1801,7 +1817,7 @@ impl GitStore {
             GitJob::Commit { .. } | GitJob::Uncommit => {
                 let repository = self.active_repository()?;
                 Some(JobPreparation {
-                    root,
+                    roots,
                     repositories: vec![repository.repository.clone()],
                     grouped_paths: Vec::new(),
                     grouped_diff_requests: Vec::new(),
@@ -1910,7 +1926,7 @@ fn snapshot_text(snapshot: &Snapshot) -> String {
 impl EventEmitter<GitStoreEvent> for GitStore {}
 
 struct JobPreparation {
-    root: AbsolutePathBuf,
+    roots: Vec<AbsolutePathBuf>,
     repositories: Vec<Arc<dyn GitRepository>>,
     grouped_paths: Vec<Vec<RelativePathBuf>>,
     grouped_diff_requests: Vec<Vec<()>>,

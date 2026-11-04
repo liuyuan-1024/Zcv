@@ -62,10 +62,10 @@ pub(crate) struct WorkspaceLayout {
     pub(crate) panels: Vec<PanelState>,
 }
 
-pub(crate) fn path_for_workspace(root: Option<&Path>) -> PathBuf {
+pub(crate) fn path_for_workspace(roots: &[PathBuf]) -> PathBuf {
     config_dir()
         .join("workspaces")
-        .join(format!("{}.json", persistence::workspace_identity(root)))
+        .join(format!("{}.json", persistence::workspace_identity(roots)))
 }
 
 pub(crate) fn load(path: &Path) -> Option<WorkspaceLayout> {

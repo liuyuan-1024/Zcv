@@ -69,7 +69,7 @@ fn relative(path: &str) -> RelativePathBuf {
 }
 
 fn build_rows(root: &Path, repos: &[(&Path, &RepositorySnapshot)]) -> Vec<GitRow> {
-    let trees = build_section_trees(root, repos.iter().copied());
+    let trees = build_section_trees(&[root.to_path_buf()], repos.iter().copied());
     flatten_rows(&trees, &HashSet::new(), &HashSet::new())
 }
 
@@ -194,7 +194,7 @@ fn directories_aggregate_status_and_diff_and_respect_expansion() {
         ("src/a.rs", FileStatus::Untracked),
         ("src/sub/b.rs", modified),
     ]);
-    let trees = build_section_trees(&root, [(root.as_path(), &snapshot)].into_iter());
+    let trees = build_section_trees(&[root.clone()], [(root.as_path(), &snapshot)].into_iter());
 
     // 折叠：只显示顶层目录 src。
     let rows = flatten_rows(&trees, &HashSet::new(), &HashSet::new());
@@ -256,7 +256,7 @@ fn change_tree_uses_same_directory_and_name_order_as_file_tree() {
         ("File2.rs", FileStatus::Untracked),
         ("file2.rs", FileStatus::Untracked),
     ]);
-    let trees = build_section_trees(&root, [(root.as_path(), &snapshot)].into_iter());
+    let trees = build_section_trees(&[root.clone()], [(root.as_path(), &snapshot)].into_iter());
     let rows = flatten_rows(&trees, &HashSet::new(), &HashSet::new());
     assert_eq!(
         entry_keys(&rows),
@@ -270,10 +270,27 @@ fn change_tree_uses_same_directory_and_name_order_as_file_tree() {
 }
 
 #[test]
+fn change_tree_keys_strip_against_the_innermost_workspace_root() {
+    let root = absolute(PathBuf::from("/project")).into_path_buf();
+    let vendor = root.join("vendor");
+    let snapshot = snapshot(&[("vendor/lib.rs", FileStatus::Untracked)]);
+    // vendor 同时是独立工作区根：条目相对最内层根显示，不再带 vendor/ 前缀。
+    let trees = build_section_trees(
+        &[root.clone(), vendor],
+        [(root.as_path(), &snapshot)].into_iter(),
+    );
+    let rows = flatten_rows(&trees, &HashSet::new(), &HashSet::new());
+    assert_eq!(
+        entry_keys(&rows),
+        vec![(GitSection::Unstaged, "lib.rs".into())]
+    );
+}
+
+#[test]
 fn consecutive_single_change_directories_are_display_compressed() {
     let root = absolute(PathBuf::from("/project")).into_path_buf();
     let snapshot = snapshot(&[("src/components/editor/mod.rs", FileStatus::Untracked)]);
-    let trees = build_section_trees(&root, [(root.as_path(), &snapshot)].into_iter());
+    let trees = build_section_trees(&[root.clone()], [(root.as_path(), &snapshot)].into_iter());
     let expanded = HashSet::from([
         (GitSection::Unstaged, absolute(root.join("src"))),
         (GitSection::Unstaged, absolute(root.join("src/components"))),
@@ -305,7 +322,7 @@ fn nested_repositories_merge_into_one_tree() {
     let outer = snapshot(&[("README.md", FileStatus::Untracked)]);
     let inner = snapshot(&[("lib.rs", FileStatus::Untracked)]);
     let repos = [(root.as_path(), &outer), (vendor.as_path(), &inner)];
-    let trees = build_section_trees(&root, repos.into_iter());
+    let trees = build_section_trees(&[root.clone()], repos.into_iter());
 
     // vendor 为目录行，优先于根文件 README.md；展开后 lib.rs 归入其下。
     let mut expanded = HashSet::new();
@@ -386,7 +403,7 @@ impl Watcher for PassiveWatcher {
 fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
     let watcher: Arc<dyn Watcher> = Arc::new(PassiveWatcher::new());
     cx.new(|cx| {
-        Project::new_with_watcher(root, watcher, Arc::new(LanguageRegistry::new()), cx)
+        Project::new_with_watcher(vec![root], watcher, Arc::new(LanguageRegistry::new()), cx)
             .expect("测试项目根目录应可规范化")
     })
 }

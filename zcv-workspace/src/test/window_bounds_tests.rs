@@ -13,26 +13,29 @@ fn windowed(x: f32, y: f32, width: f32, height: f32) -> WindowBounds {
 fn round_trip_keeps_all_variants() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("bounds.json");
-    for (bounds, root) in [
-        (windowed(100.0, 200.0, 800.0, 600.0), Some("项目A")),
+    for (bounds, roots) in [
+        (
+            windowed(100.0, 200.0, 800.0, 600.0),
+            vec![PathBuf::from("项目A")],
+        ),
         (
             WindowBounds::Maximized(Bounds {
                 origin: point(px(30.0), px(40.0)),
                 size: size(px(1200.0), px(900.0)),
             }),
-            Some("项目B"),
+            vec![PathBuf::from("项目B")],
         ),
         (
             WindowBounds::Fullscreen(Bounds {
                 origin: point(px(0.0), px(0.0)),
                 size: size(px(2560.0), px(1440.0)),
             }),
-            None,
+            Vec::new(),
         ),
     ] {
-        save_to(&path, root.map(Path::new), bounds, Some("显示器-1".into())).unwrap();
+        save_to(&path, &roots, bounds, Some("显示器-1".into())).unwrap();
         assert_eq!(
-            load_from(&path, root.map(Path::new)),
+            load_from(&path, &roots),
             Some((bounds, Some("显示器-1".into())))
         );
     }
@@ -42,32 +45,26 @@ fn round_trip_keeps_all_variants() {
 fn project_record_takes_priority_over_default() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("bounds.json");
-    let project_a = Path::new("/项目/A");
-    let project_b = Path::new("/项目/B");
+    let project_a = PathBuf::from("/项目/A");
+    let project_b = PathBuf::from("/项目/B");
 
     save_to(
         &path,
-        Some(project_a),
+        std::slice::from_ref(&project_a),
         windowed(1.0, 2.0, 300.0, 400.0),
         None,
     )
     .unwrap();
-    save_to(
-        &path,
-        Some(project_b),
-        windowed(5.0, 6.0, 700.0, 800.0),
-        None,
-    )
-    .unwrap();
+    save_to(&path, &[project_b], windowed(5.0, 6.0, 700.0, 800.0), None).unwrap();
 
     // 项目 A 读回自己的记录，而不是最近一次写入的全局默认。
     assert_eq!(
-        load_from(&path, Some(project_a)),
+        load_from(&path, &[project_a]),
         Some((windowed(1.0, 2.0, 300.0, 400.0), None))
     );
     // 没有记录的项目回退到全局默认（最近一次保存）。
     assert_eq!(
-        load_from(&path, None),
+        load_from(&path, &[]),
         Some((windowed(5.0, 6.0, 700.0, 800.0), None))
     );
 }
@@ -76,25 +73,25 @@ fn project_record_takes_priority_over_default() {
 fn missing_corrupted_or_foreign_version_returns_none() {
     let directory = tempfile::tempdir().unwrap();
     let missing = directory.path().join("missing.json");
-    assert_eq!(load_from(&missing, None), None);
+    assert_eq!(load_from(&missing, &[]), None);
 
     let corrupted = directory.path().join("corrupted.json");
     fs::write(&corrupted, "{不是 JSON").unwrap();
-    assert_eq!(load_from(&corrupted, None), None);
+    assert_eq!(load_from(&corrupted, &[]), None);
 
     let foreign = directory.path().join("foreign.json");
-    save_to(&foreign, None, windowed(1.0, 2.0, 300.0, 400.0), None).unwrap();
+    save_to(&foreign, &[], windowed(1.0, 2.0, 300.0, 400.0), None).unwrap();
     fs::write(&foreign, r#"{"version":999,"default":null,"projects":{}}"#).unwrap();
-    assert_eq!(load_from(&foreign, None), None);
+    assert_eq!(load_from(&foreign, &[]), None);
 }
 
 #[test]
 fn saving_writes_default_and_project_record_with_shared_identity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("bounds.json");
-    let root = Path::new("/项目/身份");
+    let roots = [PathBuf::from("/项目/身份")];
 
-    save_to(&path, Some(root), windowed(1.0, 2.0, 300.0, 400.0), None).unwrap();
+    save_to(&path, &roots, windowed(1.0, 2.0, 300.0, 400.0), None).unwrap();
 
     let file: WindowBoundsFile = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(file.version, WINDOW_BOUNDS_VERSION);
@@ -106,14 +103,29 @@ fn saving_writes_default_and_project_record_with_shared_identity() {
     // 项目键与布局文件的文件名哈希一致，保证两个文件域身份统一。
     assert_eq!(
         file.projects.keys().next().map(String::as_str),
-        Some(persistence::workspace_identity(Some(root)).as_str())
+        Some(persistence::workspace_identity(&roots).as_str())
     );
     assert_eq!(
         file.projects.keys().next().map(String::as_str),
-        layout_state::path_for_workspace(Some(root))
+        layout_state::path_for_workspace(&roots)
             .file_stem()
             .and_then(|name| name.to_str())
     );
+}
+
+#[test]
+fn workspace_identity_is_order_sensitive_and_fixed_for_empty() {
+    let a = PathBuf::from("/项目/A");
+    let b = PathBuf::from("/项目/B");
+    // 身份由有序根列表决定：顺序不同即不同工作区。
+    assert_ne!(
+        persistence::workspace_identity(&[a.clone(), b.clone()]),
+        persistence::workspace_identity(&[b.clone(), a.clone()])
+    );
+    // 空工作区有固定身份；单根身份与空身份不同。
+    let empty = persistence::workspace_identity(&[]);
+    assert_eq!(empty, persistence::workspace_identity(&[]));
+    assert_ne!(persistence::workspace_identity(&[a]), empty);
 }
 
 #[test]
@@ -122,13 +134,13 @@ fn display_uuid_survives_round_trip() {
     let path = directory.path().join("bounds.json");
     save_to(
         &path,
-        None,
+        &[],
         windowed(1.0, 2.0, 300.0, 400.0),
         Some("uuid-123".into()),
     )
     .unwrap();
     assert_eq!(
-        load_from(&path, None),
+        load_from(&path, &[]),
         Some((windowed(1.0, 2.0, 300.0, 400.0), Some("uuid-123".into())))
     );
 }

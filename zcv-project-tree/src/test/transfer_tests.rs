@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, slice::from_ref};
 
 use super::*;
 
@@ -28,7 +28,7 @@ fn sanitize_selection_drops_descendants_sorts_and_excludes_root() {
     assert_eq!(
         sanitize_selection(
             [file.clone(), sibling.clone(), dir.clone(), root.clone()],
-            &root
+            from_ref(&root)
         ),
         vec![sibling, dir]
     );
@@ -40,7 +40,7 @@ fn sanitize_selection_excludes_paths_outside_project() {
     let outside = abs("/other/file.txt");
     let inside = abs(root.join("b.txt"));
     assert_eq!(
-        sanitize_selection([root.clone(), outside, inside.clone()], &root),
+        sanitize_selection([root.clone(), outside, inside.clone()], from_ref(&root)),
         vec![inside]
     );
 }
@@ -52,8 +52,24 @@ fn sanitize_selection_treats_sibling_prefix_as_non_ancestor() {
     let ab = abs(root.join("ab"));
     // 组件级比较：a 与 ab 互不为祖先，两条都保留。
     assert_eq!(
-        sanitize_selection([ab.clone(), a.clone()], &root),
+        sanitize_selection([ab.clone(), a.clone()], from_ref(&root)),
         vec![a, ab]
+    );
+}
+
+#[test]
+fn sanitize_selection_keeps_paths_under_any_root() {
+    let root_a = abs("/proj-a");
+    let root_b = abs("/proj-b");
+    let inside_a = abs(root_a.join("a.txt"));
+    let inside_b = abs(root_b.join("b.txt"));
+    // 多根工作区：任一根下的路径都保留，根行自身仍被剔除。
+    assert_eq!(
+        sanitize_selection(
+            [inside_a.clone(), inside_b.clone(), root_b.clone()],
+            &[root_a, root_b]
+        ),
+        vec![inside_a, inside_b]
     );
 }
 

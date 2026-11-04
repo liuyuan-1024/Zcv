@@ -4,6 +4,7 @@
 //! 本模块只做 binary 侧的具体装配：面板（项目树/版本控制）、状态栏按钮、git/settings 订阅与 diff hunks 推送。
 
 use std::{
+    cell::RefCell,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -17,10 +18,10 @@ use gpui::{
     Window, WindowBounds, WindowOptions, prelude::*, px, size,
 };
 use zcv_actions::{
-    About, CheckForUpdates, DecreaseContentFontSize, DecreaseUiFontSize, FocusLineColumn,
-    FocusQuickAccess, GitFetch, GitPull, GitPush, IncreaseContentFontSize, IncreaseUiFontSize,
-    NewTerminal, OpenLocalDirectory, OpenLocalFile, ResetContentFontSize, ResetUiFontSize,
-    RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleRecentProjects,
+    About, AddDirectoryToProject, CheckForUpdates, DecreaseContentFontSize, DecreaseUiFontSize,
+    FocusLineColumn, FocusQuickAccess, GitFetch, GitPull, GitPush, IncreaseContentFontSize,
+    IncreaseUiFontSize, NewTerminal, OpenLocalDirectory, OpenLocalFile, ResetContentFontSize,
+    ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleRecentProjects,
 };
 use zcv_editor::{Editor, EditorEvent};
 use zcv_fs_watch::{FsWatcher, Watcher};
@@ -34,7 +35,7 @@ use zcv_theme::{ThemeChoice, typography};
 use zcv_workspace::{
     ActivityIndicator, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
     PaneEvent, PanelButtons, PreviewToolbar, ToastAction, ToastKind, TopBar, TopBarCallbacks,
-    Workspace, add_to_recent, load_window_bounds, save_window_bounds,
+    Workspace, add_to_recent, load_window_bounds, remove_from_recent, save_window_bounds,
 };
 
 use crate::{
@@ -101,38 +102,55 @@ fn on_open_git_graph_callback(weak: &WeakEntity<Workspace>) -> OnOpenGitGraph {
     })
 }
 
-/// 「切换项目」回调：在同一窗口内替换工作区根，窗口本体（尺寸/位置）保持不变。
+/// 「切换项目」回调：在同一窗口内替换工作区根集合，窗口本体（尺寸/位置）保持不变。
 ///
 /// 替换后的工作区必须继续使用应用级语言注册表，因此回调捕获同一份 Arc。
 fn switch_project_callback(languages: Arc<LanguageRegistry>) -> OnProjectSelected {
-    Rc::new(move |path, window, app| {
-        let Ok(root) = canonical_project_root(PathBuf::from(&path)) else {
-            if let Some(workspace) = window.root::<Workspace>().flatten() {
-                workspace.update(app, |workspace, cx| {
-                    workspace.show_toast(
-                        ToastKind::Error,
-                        format!("打开项目失败（{path}）：路径无效"),
-                        vec![],
-                        Some(Duration::from_secs(5)),
-                        cx,
-                    );
-                });
+    Rc::new(move |paths, window, app| {
+        // 逐根规范化；任一根无效则整体拒绝，窗口保持原样。
+        let roots = match paths
+            .into_iter()
+            .map(canonical_project_root)
+            .collect::<anyhow::Result<Vec<_>>>()
+        {
+            Ok(roots) => roots,
+            Err(error) => {
+                if let Some(workspace) = window.root::<Workspace>().flatten() {
+                    workspace.update(app, |workspace, cx| {
+                        workspace.show_toast(
+                            ToastKind::Error,
+                            format!("打开项目失败：{error:#}"),
+                            vec![],
+                            Some(Duration::from_secs(5)),
+                            cx,
+                        );
+                    });
+                }
+                return; // 窗口保持原样。
             }
-            return; // 窗口保持原样。
         };
-        let recent_error = add_to_recent(&root.to_string_lossy())
+        let recent_paths: Vec<PathBuf> = roots
+            .iter()
+            .map(|root| root.as_path().to_path_buf())
+            .collect();
+        let recent_error = add_to_recent(&recent_paths)
             .err()
             .map(|error| format!("更新最近项目列表失败：{error:#}"));
-        // 先保存当前窗口边界（全局默认 + 旧项目记录）；随后窗口不重建，尺寸自然保持。
-        let current_root = window.root::<Workspace>().flatten().and_then(|workspace| {
-            workspace
-                .read(app)
-                .project()
-                .read(app)
-                .root()
-                .map(Path::to_path_buf)
-        });
-        save_window_bounds(current_root.as_deref(), window, app);
+        // 先保存当前窗口边界（全局默认 + 旧工作区记录）；随后窗口不重建，尺寸自然保持。
+        let current_roots: Vec<PathBuf> = window
+            .root::<Workspace>()
+            .flatten()
+            .map(|workspace| {
+                workspace
+                    .read(app)
+                    .project()
+                    .read(app)
+                    .roots()
+                    .map(Path::to_path_buf)
+                    .collect()
+            })
+            .unwrap_or_default();
+        save_window_bounds(&current_roots, window, app);
         // 旧工作区根即将被替换销毁，节流中的布局保存会随实体释放而丢失，先冲刷落盘。
         if let Some(Some(workspace)) = window.root::<Workspace>() {
             workspace.update(app, |workspace, cx| workspace.flush_layout(cx));
@@ -140,7 +158,7 @@ fn switch_project_callback(languages: Arc<LanguageRegistry>) -> OnProjectSelecte
         let languages = Arc::clone(&languages);
         window.replace_root(app, move |window, cx| {
             let workspace = build_workspace(
-                &Some(root),
+                &roots,
                 languages,
                 default_file_watcher_factory()(),
                 window,
@@ -176,12 +194,11 @@ pub(crate) fn install_open_local_directory_action(languages: Arc<LanguageRegistr
         let switch_project = switch_project.clone();
         cx.spawn(async move |cx| match paths.await {
             Ok(Ok(Some(paths))) => {
-                let Some(path) = paths.into_iter().next() else {
+                if paths.is_empty() {
                     return;
-                };
-                let path = path.to_string_lossy().into_owned();
+                }
                 let _ = window.update(cx, |_, window, cx| {
-                    switch_project(path, window, cx);
+                    switch_project(paths, window, cx);
                 });
             }
             Ok(Ok(None)) | Err(_) => {}
@@ -192,6 +209,71 @@ pub(crate) fn install_open_local_directory_action(languages: Arc<LanguageRegistr
                             workspace.show_toast(
                                 ToastKind::Error,
                                 format!("选择本地目录失败：{error:#}"),
+                                vec![],
+                                Some(Duration::from_secs(5)),
+                                cx,
+                            );
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
+    });
+}
+
+/// 把用户选择的目录作为新的工作区根加入当前项目（可多选，不替换现有工作区）。
+/// 最近项目条目由工作区的项目事件订阅随根集合同步更新。
+pub(crate) fn install_add_directory_to_project_action(cx: &mut App) {
+    cx.on_action(|_: &AddDirectoryToProject, cx| {
+        let Some(window) = cx.active_window() else {
+            return;
+        };
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: true,
+            prompt: Some("选择要添加的目录".into()),
+        });
+        cx.spawn(async move |cx| match paths.await {
+            Ok(Ok(Some(paths))) => {
+                if paths.is_empty() {
+                    return;
+                }
+                let _ = window.update(cx, |_, window, cx| {
+                    let Some(workspace) = window.root::<Workspace>().flatten() else {
+                        return;
+                    };
+                    let project = workspace.read(cx).project().clone();
+                    let mut failures = Vec::new();
+                    project.update(cx, |project, cx| {
+                        for path in &paths {
+                            if let Err(error) = project.add_worktree(path.clone(), cx) {
+                                failures.push(format!("{}：{error:#}", path.display()));
+                            }
+                        }
+                    });
+                    if !failures.is_empty() {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                ToastKind::Error,
+                                format!("添加目录到项目失败：{}", failures.join("；")),
+                                vec![],
+                                Some(Duration::from_secs(5)),
+                                cx,
+                            );
+                        });
+                    }
+                });
+            }
+            Ok(Ok(None)) | Err(_) => {}
+            Ok(Err(error)) => {
+                let _ = window.update(cx, |_, window, cx| {
+                    if let Some(workspace) = window.root::<Workspace>().flatten() {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                ToastKind::Error,
+                                format!("选择目录失败：{error:#}"),
                                 vec![],
                                 Some(Duration::from_secs(5)),
                                 cx,
@@ -337,18 +419,26 @@ fn canonical_project_root(root: PathBuf) -> anyhow::Result<AbsolutePathBuf> {
     }
 }
 
-/// 打开一个项目窗口（CLI 启动入口）。
+/// 打开一个项目窗口（CLI 启动入口）；多个目录参数组成多根工作区。
 pub(crate) fn open_project_window(
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     languages: Arc<LanguageRegistry>,
     watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    let root = canonical_project_root(root)?;
-    let startup_error = add_to_recent(&root.to_string_lossy())
+    // 逐根规范化；任一根无效则启动失败，不打开半成品工作区。
+    let roots = roots
+        .into_iter()
+        .map(canonical_project_root)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let recent_paths: Vec<PathBuf> = roots
+        .iter()
+        .map(|root| root.as_path().to_path_buf())
+        .collect();
+    let startup_error = add_to_recent(&recent_paths)
         .err()
         .map(|error| format!("更新最近项目列表失败：{error:#}"));
-    open_workspace_window(Some(root), languages, startup_error, watcher_factory, cx)
+    open_workspace_window(roots, languages, startup_error, watcher_factory, cx)
 }
 
 /// 打开不绑定任何目录的空工作区。
@@ -357,7 +447,7 @@ pub(crate) fn open_empty_workspace(
     watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    open_workspace_window(None, languages, None, watcher_factory, cx)
+    open_workspace_window(Vec::new(), languages, None, watcher_factory, cx)
 }
 
 pub(crate) fn open_empty_workspace_with_error(
@@ -366,20 +456,24 @@ pub(crate) fn open_empty_workspace_with_error(
     watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    open_workspace_window(None, languages, Some(message), watcher_factory, cx)
+    open_workspace_window(Vec::new(), languages, Some(message), watcher_factory, cx)
 }
 
 /// 项目与空工作区共用同一条窗口创建路径；差异只在 Project 是否含 worktree。
 fn open_workspace_window(
-    root: Option<AbsolutePathBuf>,
+    roots: Vec<AbsolutePathBuf>,
     languages: Arc<LanguageRegistry>,
     startup_error: Option<String>,
     watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    // 窗口边界恢复：项目记录 → 全局默认 → 初始居中。
+    // 窗口边界恢复：工作区记录 → 全局默认 → 初始居中。
+    let identity_paths: Vec<PathBuf> = roots
+        .iter()
+        .map(|root| root.as_path().to_path_buf())
+        .collect();
     let (window_bounds, display_id) =
-        load_window_bounds(root.as_deref(), cx).unwrap_or_else(|| {
+        load_window_bounds(&identity_paths, cx).unwrap_or_else(|| {
             (
                 WindowBounds::centered(size(px(1200.0), px(900.0)), cx),
                 None,
@@ -400,7 +494,7 @@ fn open_workspace_window(
         |window, cx| {
             let watcher = watcher_factory();
             let workspace = cx.new(|cx| {
-                let workspace = build_workspace(&root, languages, watcher, window, cx);
+                let workspace = build_workspace(&roots, languages, watcher, window, cx);
                 if let Some(message) = startup_error {
                     workspace.show_toast(
                         ToastKind::Error,
@@ -415,8 +509,13 @@ fn open_workspace_window(
             let workspace_for_close = workspace.clone();
             window.on_window_should_close(cx, move |window, cx| {
                 workspace_for_close.update(cx, |workspace, cx| {
-                    let root = workspace.project().read(cx).root().map(Path::to_path_buf);
-                    save_window_bounds(root.as_deref(), window, cx);
+                    let roots: Vec<PathBuf> = workspace
+                        .project()
+                        .read(cx)
+                        .roots()
+                        .map(Path::to_path_buf)
+                        .collect();
+                    save_window_bounds(&roots, window, cx);
                     workspace.flush_layout(cx);
                 });
                 true
@@ -429,26 +528,26 @@ fn open_workspace_window(
 
 /// 在给定窗口内创建并装配工作区；窗口创建与「切换项目」的根替换共用（须在 cx.new 闭包内调用）。
 fn build_workspace(
-    root: &Option<AbsolutePathBuf>,
+    roots: &[AbsolutePathBuf],
     languages: Arc<LanguageRegistry>,
     watcher: Arc<dyn Watcher>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Workspace {
-    let project = match root {
-        Some(root) => {
-            let watcher = Arc::clone(&watcher);
-            let languages = Arc::clone(&languages);
-            cx.new(move |cx| {
-                Project::new_with_watcher(root.as_path().to_path_buf(), watcher, languages, cx)
-                    .expect("项目根目录应可规范化")
-            })
-        }
-        None => {
-            let watcher = Arc::clone(&watcher);
-            let languages = Arc::clone(&languages);
-            cx.new(move |cx| Project::empty_with_watcher(languages, watcher, cx))
-        }
+    let project = if roots.is_empty() {
+        let watcher = Arc::clone(&watcher);
+        let languages = Arc::clone(&languages);
+        cx.new(move |cx| Project::empty_with_watcher(languages, watcher, cx))
+    } else {
+        let roots: Vec<PathBuf> = roots
+            .iter()
+            .map(|root| root.as_path().to_path_buf())
+            .collect();
+        let watcher = Arc::clone(&watcher);
+        let languages = Arc::clone(&languages);
+        cx.new(move |cx| {
+            Project::new_with_watcher(roots, watcher, languages, cx).expect("项目根目录应可规范化")
+        })
     };
     let workspace = Workspace::new_with_project(project, window, cx);
     finish_build_workspace(workspace, languages, window, cx)
@@ -563,8 +662,13 @@ fn initialize_common_workspace(
             );
             return;
         }
-        let root = workspace.project().read(cx).root().map(Path::to_path_buf);
-        save_window_bounds(root.as_deref(), window, cx);
+        let roots: Vec<PathBuf> = workspace
+            .project()
+            .read(cx)
+            .roots()
+            .map(Path::to_path_buf)
+            .collect();
+        save_window_bounds(&roots, window, cx);
         workspace.flush_layout(cx);
         cx.quit();
     });
@@ -697,6 +801,46 @@ fn run_git_operation(
         }
     })
     .detach();
+}
+
+/// 根集合变化后，把最近项目条目从旧根集合换成新根集合。
+/// 工作区身份即有序根集合：旧集合条目移除、新集合条目写入；空集合不产生条目。
+fn swap_recent_project_entry(
+    workspace: &mut Workspace,
+    old_roots: &[PathBuf],
+    new_roots: &[PathBuf],
+    cx: &mut Context<Workspace>,
+) {
+    if old_roots == new_roots {
+        return;
+    }
+    if !old_roots.is_empty() {
+        let old_paths: Vec<String> = old_roots
+            .iter()
+            .map(|root| root.to_string_lossy().into_owned())
+            .collect();
+        if let Err(error) = remove_from_recent(&old_paths) {
+            workspace.show_toast(
+                ToastKind::Error,
+                format!("更新最近项目失败：{error:#}"),
+                vec![],
+                Some(Duration::from_secs(5)),
+                cx,
+            );
+            return;
+        }
+    }
+    if !new_roots.is_empty()
+        && let Err(error) = add_to_recent(new_roots)
+    {
+        workspace.show_toast(
+            ToastKind::Error,
+            format!("更新最近项目失败：{error:#}"),
+            vec![],
+            Some(Duration::from_secs(5)),
+            cx,
+        );
+    }
 }
 
 fn show_file_watcher_error(
@@ -1014,25 +1158,39 @@ fn initialize_workspace(
         refresh_pane_git_projection(workspace.pane(), workspace.project(), cx);
     });
 
-    // 项目事件订阅：根重命名与文件树变化驱动项目树刷新。
+    // 项目事件订阅：工作区根集合变化与文件树变化驱动项目树刷新；
+    // 根集合变化时，最近项目条目同步从旧集合换成新集合。
     let project_tree_for_project = project_tree.clone();
+    let recent_roots = Rc::new(RefCell::new(
+        project
+            .read(cx)
+            .roots()
+            .map(|root| root.to_path_buf())
+            .collect::<Vec<_>>(),
+    ));
     let project_subscription =
-        cx.subscribe(
-            &project,
-            move |_workspace, _project, event, cx| match event {
-                ProjectEvent::RootChanged(root) => {
-                    project_tree_for_project.update(cx, |tree, cx| {
-                        tree.set_root(root.clone(), cx);
-                    });
-                }
-                ProjectEvent::EntriesChanged => {
-                    project_tree_for_project.update(cx, |tree, cx| tree.schedule_refresh(cx));
-                }
-                ProjectEvent::FileWatcherError(error) => {
-                    show_file_watcher_error(_workspace, error, cx);
-                }
-            },
-        );
+        cx.subscribe(&project, move |workspace, project, event, cx| match event {
+            ProjectEvent::WorktreeAdded(_)
+            | ProjectEvent::WorktreeRemoved(_)
+            | ProjectEvent::WorktreeRootChanged { .. } => {
+                let new_roots: Vec<PathBuf> = project
+                    .read(cx)
+                    .roots()
+                    .map(|root| root.to_path_buf())
+                    .collect();
+                let old_roots = recent_roots.replace(new_roots.clone());
+                swap_recent_project_entry(workspace, &old_roots, &new_roots, cx);
+                project_tree_for_project.update(cx, |tree, cx| {
+                    tree.worktree_set_changed(cx);
+                });
+            }
+            ProjectEvent::EntriesChanged => {
+                project_tree_for_project.update(cx, |tree, cx| tree.schedule_refresh(cx));
+            }
+            ProjectEvent::FileWatcherError(error) => {
+                show_file_watcher_error(workspace, error, cx);
+            }
+        });
 
     let pending_file_watcher_errors =
         project.update(cx, |project, _| project.take_pending_file_watcher_errors());

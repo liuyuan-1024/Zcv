@@ -25,7 +25,7 @@ use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus};
 use zcv_keymap::display_shortcut;
 use zcv_path::{AbsolutePathBuf, RelativePathBuf, compare_tree_entries};
-use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
+use zcv_project::{GitStoreEvent, Project, RepositorySnapshot, owning_workspace_root};
 use zcv_theme::{color, scale};
 use zcv_ui::{
     AutoFoldDir, Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, RowClickAction, Scrollbar,
@@ -88,7 +88,7 @@ impl<T> GitSections<T> {
 ///
 /// 所有仓库合并进同一棵分组树：嵌套仓库在父仓库的 status 中不展开（目录级 untracked 条目被解析器跳过），路径前缀互斥，合并无冲突。
 fn build_section_trees<'a>(
-    root: &Path,
+    workspace_roots: &[PathBuf],
     repositories: impl Iterator<Item = (&'a Path, &'a RepositorySnapshot)>,
 ) -> GitSections<Vec<GitTreeNode>> {
     let mut roots = GitSections::default();
@@ -102,7 +102,7 @@ fn build_section_trees<'a>(
             if in_staged {
                 insert_entry(
                     &mut roots.staged,
-                    root,
+                    workspace_roots,
                     workdir,
                     relative,
                     entry.status,
@@ -112,7 +112,7 @@ fn build_section_trees<'a>(
             if in_unstaged {
                 insert_entry(
                     &mut roots.unstaged,
-                    root,
+                    workspace_roots,
                     workdir,
                     relative,
                     entry.status,
@@ -122,7 +122,7 @@ fn build_section_trees<'a>(
             if ProjectDiffKind::Conflict.includes(entry.status) {
                 insert_entry(
                     &mut roots.conflict,
-                    root,
+                    workspace_roots,
                     workdir,
                     relative,
                     entry.status,
@@ -145,11 +145,11 @@ fn build_section_trees<'a>(
 
 /// 把一条状态条目插入分组树，合成缺失的中间目录节点。
 ///
-/// 树内路径键优先取项目根相对路径（深度紧凑）；
-/// 仓库在项目根外时退化为绝对路径（路径前缀关系不变，分组与折叠语义保持正确）。
+/// 树内路径键优先取所属工作区根的相对路径（深度紧凑，嵌套根取最内层）；
+/// 仓库在所有根之外时退化为绝对路径（路径前缀关系不变，分组与折叠语义保持正确）。
 fn insert_entry(
     nodes: &mut Vec<GitTreeNode>,
-    root: &Path,
+    roots: &[PathBuf],
     workdir: &Path,
     relative: &RelativePathBuf,
     status: FileStatus,
@@ -157,11 +157,11 @@ fn insert_entry(
 ) {
     let absolute = AbsolutePathBuf::new(workdir.join(relative.as_path()))
         .expect("Git 状态路径必须解析为绝对路径");
-    // 树内路径键优先取项目根相对路径；仓库在项目根外时 strip_prefix 失败，退化为绝对路径。
-    let key_is_relative = absolute.as_path().strip_prefix(root).is_ok();
-    let key = absolute
-        .as_path()
-        .strip_prefix(root)
+    // 树内路径键优先取所属工作区根的相对路径（嵌套根取最内层）；
+    // 仓库在所有根之外时退化为绝对路径（路径前缀关系不变，分组与折叠语义保持正确）。
+    let base = owning_workspace_root(absolute.as_path(), roots);
+    let key = base
+        .and_then(|root| absolute.as_path().strip_prefix(root).ok())
         .unwrap_or(absolute.as_path());
     let mut current = nodes;
     let mut components = key.components().peekable();
@@ -172,8 +172,8 @@ fn insert_entry(
         let is_last = components.peek().is_none();
         let node_absolute = if is_last {
             absolute.clone()
-        } else if key_is_relative {
-            AbsolutePathBuf::new(root.join(&prefix)).expect("Git 目录路径必须解析为绝对路径")
+        } else if let Some(base) = base {
+            AbsolutePathBuf::new(base.join(&prefix)).expect("Git 目录路径必须解析为绝对路径")
         } else {
             AbsolutePathBuf::new(prefix.clone()).expect("Git 目录路径必须解析为绝对路径")
         };
@@ -451,20 +451,26 @@ impl VersionControlPanel {
 
     /// 从 GitStore 快照重建行模型（订阅事件 / 折叠展开后调用）。
     ///
-    /// 项目根实时读取（不缓存）：RootChanged 后树键基准跟随项目，避免与事件流不同步。
+    /// 工作区根集合实时读取（不缓存）：worktree 增删/重命名后树键基准跟随工作区，避免与事件流不同步。
     /// Project 已在创建阶段保存绝对路径，这里只读取路径身份，不重新访问文件系统。
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self.project.read(cx).root().map(|root| {
-            AbsolutePathBuf::new(root.to_path_buf())
-                .expect("项目根目录必须是绝对路径")
-                .into_path_buf()
-        }) else {
+        let roots: Vec<PathBuf> = self
+            .project
+            .read(cx)
+            .roots()
+            .map(|root| {
+                AbsolutePathBuf::new(root.to_path_buf())
+                    .expect("项目根目录必须是绝对路径")
+                    .into_path_buf()
+            })
+            .collect();
+        if roots.is_empty() {
             return;
-        };
+        }
         let git_store = self.project.read(cx).git_store();
         let trees = {
             let store = git_store.read(cx);
-            build_section_trees(&root, store.repositories())
+            build_section_trees(&roots, store.repositories())
         };
         // 各分组顶层路径：暂存/取消暂存按目录前缀覆盖其下全部变更文件，与展开折叠无关。
         let section_paths = GitSections {

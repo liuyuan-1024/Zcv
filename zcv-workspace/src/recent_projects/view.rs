@@ -5,13 +5,20 @@
 //!
 //! 最近项目从 `~/.zcv/recent_projects.json` 读取。
 
-use std::{path::Path, rc::Rc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+    time::Duration,
+};
 
 use gpui::{
     Action, AnyElement, App, ClickEvent, Context, Entity, Render, WeakEntity, Window, div,
     prelude::*,
 };
-use zcv_actions::{DeleteRecentProject, OpenLocalDirectory, OpenLocalFile, ToggleRecentProjects};
+use zcv_actions::{
+    AddDirectoryToProject, DeleteRecentProject, OpenLocalDirectory, OpenLocalFile,
+    ToggleRecentProjects,
+};
 use zcv_fuzzy::Matcher;
 use zcv_keymap::{KeyBindings, display_shortcut};
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, picker_divider, toggle_picker};
@@ -27,8 +34,8 @@ use crate::{
 
 // ═══ 回调 ════════════════════════════════════════════════════════
 
-/// 项目选中回调 —— 参数为项目路径。
-pub type OnProjectSelected = Rc<dyn Fn(String, &mut Window, &mut App)>;
+/// 项目选中回调 —— 参数为工作区的有序根集合。
+pub type OnProjectSelected = Rc<dyn Fn(Vec<PathBuf>, &mut Window, &mut App)>;
 
 /// 最近项目向宿主上报用户可见错误的回调（由装配层决定 toast 呈现）。
 type ErrorReporter = Rc<dyn Fn(String, &mut App)>;
@@ -74,29 +81,53 @@ impl RecentProjectsDelegate {
         project: &Entity<Project>,
         cx: &App,
     ) {
-        if let Some(root) = project.read(cx).root()
-            && !projects.iter().any(|entry| Path::new(&entry.path) == root)
+        let roots = Self::current_roots(project, cx);
+        if roots.is_empty() {
+            return;
+        }
+        if !projects
+            .iter()
+            .any(|entry| Self::entry_matches_roots(entry, &roots))
         {
             projects.insert(
                 0,
                 ProjectEntry {
-                    path: root.to_string_lossy().into_owned(),
+                    paths: roots
+                        .iter()
+                        .map(|root| root.to_string_lossy().into_owned())
+                        .collect(),
                 },
             );
         }
     }
 
     fn select_current_project(&mut self, cx: &App) {
-        let root = self.project.read(cx).root();
+        let roots = Self::current_roots(&self.project, cx);
         self.selected_index = self
             .filtered
             .iter()
-            .position(|&index| root == Some(Path::new(&self.projects[index].path)))
+            .position(|&index| Self::entry_matches_roots(&self.projects[index], &roots))
             .unwrap_or(0);
     }
 
     fn is_current_project(&self, entry: &ProjectEntry, cx: &App) -> bool {
-        self.project.read(cx).root() == Some(Path::new(&entry.path))
+        let roots = Self::current_roots(&self.project, cx);
+        Self::entry_matches_roots(entry, &roots)
+    }
+
+    /// 当前工作区的根集合（有序）。
+    fn current_roots(project: &Entity<Project>, cx: &App) -> Vec<PathBuf> {
+        project.read(cx).roots().map(Path::to_path_buf).collect()
+    }
+
+    /// 记录是否与给定根集合一致（长度与逐根路径都相同）。
+    fn entry_matches_roots(entry: &ProjectEntry, roots: &[PathBuf]) -> bool {
+        entry.paths.len() == roots.len()
+            && entry
+                .paths
+                .iter()
+                .zip(roots.iter())
+                .all(|(stored, root)| Path::new(stored) == root.as_path())
     }
 
     fn do_filter(&mut self) {
@@ -107,7 +138,7 @@ impl RecentProjectsDelegate {
                 .enumerate()
                 .filter_map(|(index, project)| {
                     matcher
-                        .score_fields(&project.label(), &project.path)
+                        .score_fields(&project.label(), &project.search_text())
                         .map(|score| (score, index))
                 })
                 .collect();
@@ -128,8 +159,8 @@ impl RecentProjectsDelegate {
             (self.on_error)("不允许删除当前项目".into(), cx);
             return Ok(false);
         }
-        let path = self.projects[project_ix].path.clone();
-        recent_projects::remove_from_recent(&path)?;
+        let paths = self.projects[project_ix].paths.clone();
+        recent_projects::remove_from_recent(&paths)?;
         self.remove_project_in_memory(project_ix);
         Ok(true)
     }
@@ -175,7 +206,7 @@ impl PickerDelegate for RecentProjectsDelegate {
         let entry = &self.projects[self.filtered[self.selected_index]];
         // 由回调（Workspace::switch_project）负责持久化最近项目
         let cb = self.on_selected.clone();
-        cb(entry.path.clone(), window, cx);
+        cb(entry.paths.iter().map(PathBuf::from).collect(), window, cx);
     }
 
     fn dismissed(&mut self) {}
@@ -224,7 +255,18 @@ impl PickerDelegate for RecentProjectsDelegate {
                         )
                     }),
             )
-            .subtitle(entry.path.clone())
+            .subtitle(
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(entry.paths.iter().enumerate().map(|(path_index, path)| {
+                        div()
+                            .debug_selector(move || {
+                                format!("recent-project-path-{index}-{path_index}")
+                            })
+                            .child(path.clone())
+                    })),
+            )
             .when(!is_current, |row| {
                 row.end_slot(
                     Button::icon(("delete-project", index), "icons/trash.svg")
@@ -275,6 +317,15 @@ impl PickerDelegate for RecentProjectsDelegate {
                         .child(directory_item)
                         .on_click(|_, window, cx| {
                             window.dispatch_action(OpenLocalDirectory.boxed_clone(), cx);
+                        }),
+                )
+                .child(
+                    div()
+                        .id("add-directory-to-project-footer")
+                        .debug_selector(|| "add-directory-to-project-footer".into())
+                        .child(ListItem::new("add-directory-to-project").child("添加目录到项目"))
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(AddDirectoryToProject.boxed_clone(), cx);
                         }),
                 )
                 .into_any_element(),
@@ -375,14 +426,14 @@ impl Render for RecentProjects {
             color::current(cx).text
         };
 
-        // 按钮上显示当前项目名称，没有时显示「选择项目」
+        // 按钮上显示主根名称（多根工作区显示首个根），没有时显示「选择项目」
         let button_text = self
             .picker
             .read(cx)
             .delegate()
             .project
             .read(cx)
-            .root()
+            .main_root()
             .and_then(Path::file_name)
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "选择项目".to_owned());

@@ -4,8 +4,8 @@ use gpui::{Context, Window};
 use std::collections::HashSet;
 
 use zcv_actions::{
-    TreeCollapse, TreeExpand, TreeSelectNext, TreeSelectNextExtend, TreeSelectPrev,
-    TreeSelectPrevExtend, TreeTrash,
+    TreeCollapse, TreeExpand, TreeRemoveFromProject, TreeSelectNext, TreeSelectNextExtend,
+    TreeSelectPrev, TreeSelectPrevExtend, TreeTrash,
 };
 
 use super::{ProjectTreePanel, ProjectTreeRow, transfer::sanitize_selection};
@@ -85,19 +85,42 @@ impl ProjectTreePanel {
         window.refresh();
     }
 
+    /// 把选中根行对应的目录从项目移除（文件保留在磁盘上）。
+    ///
+    /// 入口只在根行菜单开放；移除后由 Project 事件驱动面板同步根集合。
+    pub(super) fn handle_tree_remove_from_project(
+        &mut self,
+        _: &TreeRemoveFromProject,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.state.borrow().selected.clone() else {
+            return;
+        };
+        if !self.roots.contains(&root) {
+            return;
+        }
+        let result = self.project.update(cx, |project, cx| {
+            project.remove_worktree(root.as_path(), cx)
+        });
+        if let Err(error) = result {
+            self.report_error(format!("从项目移除失败：{error:#}"), cx);
+        }
+    }
+
     pub(super) fn handle_tree_trash(
         &mut self,
         _: &TreeTrash,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(root) = self.root.clone() else {
+        if self.roots.is_empty() {
             return;
-        };
+        }
         let (targets, neighbor_path) = {
             let state = self.state.borrow();
-            let targets = sanitize_selection(state.effective_selection(), &root);
-            // 集合为空且游标在根：sanitize 剔除根后为空，保持“根行不可删除”。
+            let targets = sanitize_selection(state.effective_selection(), &self.roots);
+            // 集合为空且游标在根：sanitize 剔除根行后为空，保持“根行不可删除”。
             if targets.is_empty() {
                 return;
             }

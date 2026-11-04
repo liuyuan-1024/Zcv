@@ -51,7 +51,7 @@ impl ProjectTreePanel {
         self.copy_paths_as_text(
             |path, root| {
                 path.strip_prefix(root)
-                    .expect("净化后的选中路径必在项目根下")
+                    .expect("净化后的选中路径必在其所属根下")
                     .to_string_lossy()
                     .into_owned()
             },
@@ -70,16 +70,22 @@ impl ProjectTreePanel {
         if self.edit_state.is_some() || self.conflict.is_some() {
             return;
         }
-        let Some(root) = self.root.clone() else {
+        if self.roots.is_empty() {
             return;
-        };
+        }
         let paths = self.sanitized_selection();
         if paths.is_empty() {
             return;
         }
         let text = paths
             .iter()
-            .map(|path| render(path.as_path(), root.as_path()))
+            .map(|path| {
+                // 相对化基准 = 路径所属的根（嵌套根取最内层）。
+                let root = self
+                    .owning_root(path)
+                    .expect("净化后的选中路径必在某个工作区根下");
+                render(path.as_path(), root.as_path())
+            })
             .collect::<Vec<_>>()
             .join(
                 "
@@ -160,8 +166,9 @@ impl ProjectTreePanel {
                 .unwrap_or(false);
             (state.selected.clone(), is_dir)
         };
-        let Some(target_dir) =
-            paste_target_dir(selected.as_ref(), selected_is_dir).or_else(|| self.root.clone())
+        // 无选中时回退到主根（首个根）。
+        let Some(target_dir) = paste_target_dir(selected.as_ref(), selected_is_dir)
+            .or_else(|| self.roots.first().cloned())
         else {
             return;
         };
@@ -257,10 +264,7 @@ impl ProjectTreePanel {
         };
         // 放下信任渲染期冻结的载荷：拖拽内容恒等于发起时所见选区，拖拽期间选区如何变化都不影响移动清单；
         // 净化（排除根与项目外路径、祖先后代重叠）在此处与剪切粘贴共用同一套规则（sanitize_selection），过期路径由 execute_move 的存在性检查兜底。
-        let mut items = dragged.items();
-        if let Some(root) = self.root.as_ref() {
-            items = sanitize_selection(items, root);
-        }
+        let items = sanitize_selection(dragged.items(), &self.roots);
         let sources = filter_movable_sources(&items, &target_dir);
         if sources.is_empty() {
             return;
@@ -315,11 +319,11 @@ impl ProjectTreePanel {
     }
 
     pub(super) fn sanitized_selection(&self) -> Vec<AbsolutePathBuf> {
-        let Some(root) = self.root.clone() else {
+        if self.roots.is_empty() {
             return Vec::new();
-        };
+        }
         let state = self.state.borrow();
-        sanitize_selection(state.effective_selection(), &root)
+        sanitize_selection(state.effective_selection(), &self.roots)
     }
 
     pub(super) fn resolve_conflict(&mut self, answer: ConfirmAnswer, cx: &mut Context<Self>) {

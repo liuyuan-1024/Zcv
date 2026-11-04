@@ -310,3 +310,42 @@ fn discover_repositories_none_outside_any_repo() {
     let repos = discover_repositories(directory.path()).expect("discover 应成功");
     assert!(repos.is_empty());
 }
+
+#[test]
+fn discover_repositories_for_roots_dedups_overlapping_roots() {
+    let (root, _temp) = test_git_repo();
+    let nested = root.join("nested");
+    fs::create_dir_all(&nested).expect("应创建嵌套目录");
+    // 两个根命中同一仓库：跨根发现结果按仓库去重。
+    let repos = discover_repositories_for_roots(&[
+        AbsolutePathBuf::new(root.clone()).expect("根应为绝对路径"),
+        AbsolutePathBuf::new(nested).expect("嵌套根应为绝对路径"),
+    ])
+    .expect("discover 应成功");
+    assert_eq!(repos.len(), 1);
+    assert_eq!(
+        repos[0].working_directory(),
+        canonical_path(&root).as_path()
+    );
+}
+
+#[test]
+fn owning_workspace_root_picks_the_innermost_root() {
+    let outer = PathBuf::from("/proj");
+    let inner = PathBuf::from("/proj/sub");
+    let roots = [outer.clone(), inner.clone()];
+    // 嵌套根命中多个时取最长前缀（最内层根）。
+    assert_eq!(
+        owning_workspace_root(Path::new("/proj/sub/a.rs"), &roots),
+        Some(inner.as_path())
+    );
+    assert_eq!(
+        owning_workspace_root(Path::new("/proj/top.rs"), &roots),
+        Some(outer.as_path())
+    );
+    // 所有根之外返回 None。
+    assert_eq!(
+        owning_workspace_root(Path::new("/other/a.rs"), &roots),
+        None
+    );
+}

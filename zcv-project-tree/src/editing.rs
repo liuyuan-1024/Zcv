@@ -106,8 +106,9 @@ impl ProjectTreePanel {
                         .expect("新建条目父目录必须是绝对路径");
                     (parent, false)
                 }
-                None => match self.root.clone() {
-                    Some(root) => (root, false),
+                // 无选中时回退到主根（首个根）。
+                None => match self.roots.first() {
+                    Some(root) => (root.clone(), false),
                     None => return,
                 },
             }

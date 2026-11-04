@@ -702,17 +702,18 @@ impl DiffView {
 
     /// 状态刷新时移除消失的文件；未挂接文件由有界加载任务按路径加入。
     fn sync_projection_paths(&mut self, cx: &mut Context<Self>) {
-        let root = self.project.read(cx).root().map(Path::to_path_buf);
-        let visible = self
-            .files
-            .iter()
-            .map(|file| {
-                root.as_deref()
-                    .and_then(|root| file.path.strip_prefix(root).ok())
-                    .unwrap_or(&file.path)
-                    .to_path_buf()
-            })
-            .collect::<HashSet<_>>();
+        let visible = {
+            let project = self.project.read(cx);
+            self.files
+                .iter()
+                .map(|file| {
+                    project
+                        .relative_display_path(&file.path)
+                        .unwrap_or(&file.path)
+                        .to_path_buf()
+                })
+                .collect::<HashSet<_>>()
+        };
         let attached = self.editor.read(cx).diff_paths(cx);
         for path in attached {
             if !visible.contains(&path) {
@@ -873,13 +874,14 @@ impl DiffView {
         file: &GitChangeFile,
         working: Entity<LanguageBuffer>,
         revisions: (Option<Arc<str>>, Option<Arc<str>>),
-        root: Option<&Path>,
         cx: &mut Context<Self>,
     ) -> Option<DiffFile> {
         let git_store = self.project.read(cx).git_store();
         let (base_text, index_text) = revisions;
-        let display_path = root
-            .and_then(|root| file.path.strip_prefix(root).ok())
+        let display_path = self
+            .project
+            .read(cx)
+            .relative_display_path(&file.path)
             .unwrap_or(&file.path)
             .to_path_buf();
         let input = BufferDiffInput {
@@ -924,10 +926,10 @@ impl DiffView {
             if !view.files.iter().any(|file| file.path == event_path) {
                 return;
             }
-            let root = view.project.read(cx).root().map(Path::to_path_buf);
-            let display_path = root
-                .as_deref()
-                .and_then(|root| event_path.strip_prefix(root).ok())
+            let display_path = view
+                .project
+                .read(cx)
+                .relative_display_path(&event_path)
                 .unwrap_or(&event_path)
                 .to_path_buf();
             let excerpt_ranges = project_diff_excerpt_ranges(&diff, DIFF_CONTEXT_LINES, cx);
@@ -1049,7 +1051,6 @@ impl DiffView {
         if self.kind == ProjectDiffKind::Staged {
             revisions.push(GitRevision::Index);
         }
-        let root = self.project.read(cx).root().map(Path::to_path_buf);
         let background = cx.background_executor().clone();
         let files = self.files.clone();
         if files.is_empty() {
@@ -1167,9 +1168,10 @@ impl DiffView {
                     continue;
                 }
                 this.update(cx, |view, cx| {
-                    let display_path = root
-                        .as_deref()
-                        .and_then(|root| file.path.strip_prefix(root).ok())
+                    let display_path = view
+                        .project
+                        .read(cx)
+                        .relative_display_path(&file.path)
                         .unwrap_or(&file.path);
                     if !view
                         .editor
@@ -1190,7 +1192,7 @@ impl DiffView {
                         };
                         if let Some(source) = source
                             && let Some(diff_file) =
-                                view.build_file_input(&file, source, revisions, root.as_deref(), cx)
+                                view.build_file_input(&file, source, revisions, cx)
                         {
                             view.editor.update(cx, |editor, cx| {
                                 editor.add_diff(diff_file, cx);

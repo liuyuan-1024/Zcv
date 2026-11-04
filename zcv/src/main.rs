@@ -24,20 +24,25 @@ use zcv_workspace::most_recent_valid_project;
 
 #[derive(Debug, PartialEq, Eq)]
 enum InitialOpen {
-    Project(PathBuf),
-    File(PathBuf),
+    Project(Vec<PathBuf>),
+    File(Vec<PathBuf>),
     Empty,
 }
 
+/// 解析启动参数：全部参数按首项分类 —— 首项为文件时按文件打开，否则按工作区根集合打开；
+/// 混入的另一类参数由对应打开路径报出可见错误。无参数时回落到最近的有效工作区。
 fn initial_open(
-    mut args: impl Iterator<Item = OsString>,
-    recent_project: Option<PathBuf>,
+    args: impl Iterator<Item = OsString>,
+    recent_project: Option<Vec<PathBuf>>,
 ) -> InitialOpen {
-    let path = args.nth(1).map(PathBuf::from).or(recent_project);
-    match path {
-        Some(path) if path.is_file() => InitialOpen::File(path),
-        Some(path) => InitialOpen::Project(path),
-        None => InitialOpen::Empty,
+    let paths: Vec<PathBuf> = args.skip(1).map(PathBuf::from).collect();
+    match paths.first() {
+        Some(first) if first.is_file() => InitialOpen::File(paths),
+        Some(_) => InitialOpen::Project(paths),
+        None => match recent_project {
+            Some(roots) => InitialOpen::Project(roots),
+            None => InitialOpen::Empty,
+        },
     }
 }
 
@@ -48,9 +53,9 @@ fn open_initial(
     cx: &mut App,
 ) {
     match initial {
-        InitialOpen::Project(root) => {
+        InitialOpen::Project(roots) => {
             if let Err(error) = open_project_window(
-                root,
+                roots,
                 Arc::clone(&languages),
                 Arc::clone(&watcher_factory),
                 cx,
@@ -64,8 +69,8 @@ fn open_initial(
                 .expect("空工作区窗口应能创建");
             }
         }
-        InitialOpen::File(path) => {
-            handle_open_paths(vec![path], vec![], languages, watcher_factory, cx);
+        InitialOpen::File(paths) => {
+            handle_open_paths(paths, vec![], languages, watcher_factory, cx);
         }
         InitialOpen::Empty => {
             open_empty_workspace(languages, watcher_factory, cx).expect("空工作区窗口应能创建");
@@ -156,6 +161,7 @@ fn main() {
         zcv_keymap::init(cx).expect("内置快捷键应能注册");
         workspace::install_open_local_file_action(cx);
         workspace::install_open_local_directory_action(Arc::clone(&languages), cx);
+        workspace::install_add_directory_to_project_action(cx);
         app_menus::install(cx);
         auto_update::init(cx, update_error);
 

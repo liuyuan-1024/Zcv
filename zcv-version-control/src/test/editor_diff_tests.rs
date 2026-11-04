@@ -73,8 +73,13 @@ fn project_with_repo(cx: &mut TestAppContext) -> (tempfile::TempDir, PathBuf, En
     run_git(&root, &["commit", "-q", "-m", "initial"]);
     let watcher: Arc<dyn Watcher> = Arc::new(PassiveWatcher(FsWatcher::new()));
     let project = cx.new(|cx| {
-        Project::new_with_watcher(root.clone(), watcher, Arc::new(LanguageRegistry::new()), cx)
-            .expect("测试项目应创建成功")
+        Project::new_with_watcher(
+            vec![root.clone()],
+            watcher,
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+        .expect("测试项目应创建成功")
     });
     cx.run_until_parked();
     (directory, root, project)

@@ -54,7 +54,7 @@ pub use preview::{
     register,
 };
 pub use recent_projects::{
-    OnProjectSelected, RecentProjects, add_to_recent, most_recent_valid_project,
+    OnProjectSelected, RecentProjects, add_to_recent, most_recent_valid_project, remove_from_recent,
 };
 pub use searchable::{
     Direction, SearchEvent, SearchableItem, SearchableItemHandle, WeakSearchableItemHandle,

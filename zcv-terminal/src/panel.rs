@@ -129,7 +129,8 @@ impl TerminalPanel {
 }
 
 fn project_terminal_cwd(project: &Project) -> Option<PathBuf> {
-    project.root().map(std::path::Path::to_path_buf)
+    // 多根工作区以主根（首个根）作为终端默认工作目录。
+    project.main_root().map(std::path::Path::to_path_buf)
 }
 
 #[cfg(all(test, unix))]

@@ -104,7 +104,7 @@ enum RevealTarget {
 pub struct ProjectTreePanel {
     pub focus: FocusHandle,
     /// 当前项目根目录路径；无 worktree 的空工作区为 None（面板显示空态）。
-    root: Option<AbsolutePathBuf>,
+    roots: Vec<AbsolutePathBuf>,
     /// 行模型与 git 状态查询（worktree 快照层由 Project 持有）。
     project: Entity<Project>,
     state: Rc<RefCell<TreeState<AbsolutePathBuf, ProjectTreeRow>>>,
@@ -179,11 +179,15 @@ impl ProjectTreePanel {
             .detach();
         let exclusions = SettingsStore::file_scan_exclusions(cx);
         project.update(cx, |project, _| project.set_exclusions(&exclusions));
-        // 项目根从 Project 派生：无 worktree 时为空态，面板同样注册。
+        // 项目根集合从 Project 派生：无 worktree 时为空态，面板同样注册。
         let mut state = TreeState::new(|row: &ProjectTreeRow| Some(row.path.clone()));
-        if let Some(root) = project.read(cx).root() {
-            let root = AbsolutePathBuf::new(root.to_path_buf()).expect("项目根必须是绝对路径");
-            state.expanded.insert(root);
+        let roots: Vec<AbsolutePathBuf> = project
+            .read(cx)
+            .roots()
+            .map(|root| AbsolutePathBuf::new(root.to_path_buf()).expect("项目根必须是绝对路径"))
+            .collect();
+        for root in &roots {
+            state.expanded.insert(root.clone());
         }
         // 仅状态/仓库集合变化才影响行颜色；
         // Head、JobsUpdated、ActiveRepositoryChanged 等事件与树颜色无关，订阅它们会在 job 频繁启停时制造无意义重绘。
@@ -198,9 +202,7 @@ impl ProjectTreePanel {
         let scrollbar = Scrollbar::vertical(scroll_handle.clone());
         let mut this = Self {
             focus,
-            root: project.read(cx).root().map(|root| {
-                AbsolutePathBuf::new(root.to_path_buf()).expect("项目根必须是绝对路径")
-            }),
+            roots,
             project,
             state: Rc::new(RefCell::new(state)),
             active_path: None,
@@ -245,7 +247,7 @@ impl ProjectTreePanel {
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
         self.rebuild_generation += 1;
         let generation = self.rebuild_generation;
-        if self.root.is_none() {
+        if self.roots.is_empty() {
             // 无 worktree 的空态：行模型为空，无需后台收集。
             self.state.borrow_mut().replace_rows(Vec::new());
             self.row_snapshot = Vec::new().into();
@@ -275,17 +277,18 @@ impl ProjectTreePanel {
             // 快速连续展开/折叠期间已有新重建派发，过期结果不落地。
             return;
         }
-        let Some(root) = self.root.clone() else {
+        if self.roots.is_empty() {
             return;
-        };
+        }
         let expanded = self.state.borrow().expanded.clone();
         let rows: Vec<ProjectTreeRow> = rows
             .into_iter()
             .map(|(entry, status)| {
-                // 深度 = 相对根的路径组件数（与递归收集的逐层 +1 等价）。
                 let path = entry.path;
-                let depth = path
-                    .strip_prefix(root.as_path())
+                // 深度 = 相对所属根的路径组件数（根行自身为 0；与递归收集的逐层 +1 等价）。
+                let depth = self
+                    .owning_root(&path)
+                    .and_then(|root| path.strip_prefix(root.as_path()).ok())
                     .map_or(0, |relative| relative.components().count());
                 let is_ignored = entry.is_ignored;
                 ProjectTreeRow {
@@ -376,13 +379,14 @@ impl ProjectTreePanel {
     /// 重命名后迁移树状态（根/展开/选中/活动路径）。行模型重建由调用方负责：
     /// 单个重命名立即重建；批量移动（execute_move）先逐对迁移、完成后统一重建一次，避免 N 项移动派发 N 次后台收集。
     fn migrate_rename(&mut self, from: &Path, to: &Path) {
-        let Some(root) = self.root.take() else {
-            return;
-        };
-        self.root = Some(
-            absolute_for_comparison(&translate_path(&root, from, to))
-                .expect("重命名后的项目根必须是绝对路径"),
-        );
+        self.roots = self
+            .roots
+            .drain(..)
+            .map(|root| {
+                absolute_for_comparison(&translate_path(&root, from, to))
+                    .expect("重命名后的项目根必须是绝对路径")
+            })
+            .collect();
         let mut state = self.state.borrow_mut();
         state.expanded = state
             .expanded
@@ -474,21 +478,37 @@ impl ProjectTreePanel {
         }
     }
 
-    /// 更换项目根目录（项目根被外部重命名时由 Workspace 调用）。
-    pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
-        let root = absolute_for_comparison(&root).expect("项目树根必须是绝对路径");
-        if self.root.as_ref() == Some(&root) {
+    /// 工作区根集合变化（增删/重命名）后由事件订阅方调用：从 Project 同步根集合并重建行模型。
+    ///
+    /// 新增根默认展开；选中项随所属根离开工作区时清空选中。
+    /// 面板自身的重命名流程已先行迁移视图状态（migrate_rename），同步结果一致时此处为无操作。
+    pub fn worktree_set_changed(&mut self, cx: &mut Context<Self>) {
+        let roots: Vec<AbsolutePathBuf> = self
+            .project
+            .read(cx)
+            .roots()
+            .map(|root| AbsolutePathBuf::new(root.to_path_buf()).expect("项目根必须是绝对路径"))
+            .collect();
+        if roots == self.roots {
             return;
         }
-        self.root = Some(root.clone());
-        let mut state = self.state.borrow_mut();
-        state.expanded.clear();
-        state.expanded.insert(root);
-        state.selected = None;
-        state.clear_selected_set();
-        state.anchor = None;
-        self.active_path = None;
-        drop(state);
+        let selected_left = {
+            let mut state = self.state.borrow_mut();
+            // 新增根默认展开。
+            for root in &roots {
+                if !self.roots.contains(root) {
+                    state.expanded.insert(root.clone());
+                }
+            }
+            state
+                .selected
+                .as_ref()
+                .is_some_and(|selected| !roots.iter().any(|root| selected.starts_with(root)))
+        };
+        if selected_left {
+            self.clear_selection(cx);
+        }
+        self.roots = roots;
         // 行集合全变：重建时现查 git 状态，无需单独补齐。
         self.rebuild_rows(cx);
         cx.notify();
@@ -525,17 +545,25 @@ impl ProjectTreePanel {
         ));
     }
 
+    /// 面板根集合中路径的所属根；嵌套根命中多个时取最长前缀（最内层根）。
+    pub(crate) fn owning_root(&self, path: &Path) -> Option<&AbsolutePathBuf> {
+        self.roots
+            .iter()
+            .filter(|root| path.starts_with(root.as_path()))
+            .max_by_key(|root| root.as_os_str().len())
+    }
+
     /// 将活动文件标记，并在它不在视口内时滚动到可见区域。
     ///
     /// 展开祖先与选中同步完成；行重建异步进行，目标行进入行模型后完成滚动（快速连续 reveal 以最后一次为准，行已可见时立即滚动不等重建）。
     pub fn reveal_active_path(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
         let path = path.and_then(|path| absolute_for_comparison(&path));
-        let Some(root) = self.root.clone() else {
-            self.active_path = None;
-            self.pending_reveal = None;
-            return;
-        };
-        let Some(path) = path.filter(|path| path.starts_with(&root)) else {
+        // 活动文件必须位于某个工作区根下，展开祖先时以所属根为边界。
+        let root = path
+            .as_deref()
+            .and_then(|path| self.owning_root(path))
+            .cloned();
+        let Some((path, root)) = path.zip(root) else {
             self.active_path = None;
             self.pending_reveal = None;
             return;
@@ -642,7 +670,7 @@ impl ProjectTreePanel {
 
     /// 清空选中（游标、多选集合与锚点）；空白区域点击时调用。
     ///
-    /// 清空后选中可停留为空：键盘导航从空选中恢复（首/末行），新建与粘贴回退到项目根。
+    /// 清空后选中可停留为空：键盘导航从空选中恢复（首/末行），新建与粘贴回退到主根。
     fn clear_selection(&mut self, cx: &mut Context<Self>) {
         self.pending_click_intent = None;
         let mut state = self.state.borrow_mut();
@@ -718,9 +746,10 @@ impl gpui::Render for ProjectTreePanel {
                 }));
         }
 
-        let content = match self.root.clone() {
+        let content = match self.roots.first() {
             None => render_empty_state(cx).into_any_element(),
             Some(root) => {
+                let root = root.clone();
                 let drag_marked = self.drag_marked_snapshot();
                 let display_rows = self.display_rows(cx);
                 let len = display_rows.len();
@@ -743,7 +772,7 @@ impl gpui::Render for ProjectTreePanel {
                     drag_blocked: self.edit_state.is_some() || self.conflict.is_some(),
                 };
                 // 列表按内容自适应高度，行数不足时由空白区域占据剩余空间；
-                // 空白区域的交互语义统一为「视为项目根目录」。
+                // 空白区域的交互语义统一为「视为主根（首个根）目录」。
                 div()
                     .size_full()
                     .flex()
@@ -843,6 +872,7 @@ impl gpui::Render for ProjectTreePanel {
             .on_action(cx.listener(Self::handle_tree_rename))
             .on_action(cx.listener(Self::handle_tree_new_entry))
             .on_action(cx.listener(Self::handle_tree_trash))
+            .on_action(cx.listener(Self::handle_tree_remove_from_project))
             .on_action(cx.listener(Self::handle_tree_copy))
             .on_action(cx.listener(Self::handle_tree_copy_absolute_path))
             .on_action(cx.listener(Self::handle_tree_copy_relative_path))

@@ -5,7 +5,7 @@ use gpui::{AppContext, TestAppContext};
 use url::Url;
 
 use crate::app_menus;
-use zcv_actions::{About, OpenLocalFile};
+use zcv_actions::{About, AddDirectoryToProject, OpenLocalFile};
 use zcv_language::LanguageRegistry;
 use zcv_settings::{
     GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore, UserSettings,
@@ -35,7 +35,7 @@ fn about_action_displays_current_version(cx: &mut TestAppContext) {
         crate::app_menus::install(cx);
     });
     let (workspace, visual) = cx.add_window_view(|window, cx| {
-        build_workspace(&None, test_languages(), quiet_watcher(), window, cx)
+        build_workspace(&[], test_languages(), quiet_watcher(), window, cx)
     });
     let focus = visual.read_entity(&workspace, |workspace, _| workspace.focus_handle().clone());
     visual.update(|window, cx| window.focus(&focus, cx));
@@ -57,6 +57,94 @@ fn test_languages() -> Arc<LanguageRegistry> {
 }
 
 #[gpui::test]
+fn add_directory_action_prompts_for_directories_and_ignores_empty_selection(
+    cx: &mut TestAppContext,
+) {
+    let project_dir = tempfile::tempdir().expect("应创建项目目录");
+    let languages = test_languages();
+    cx.update(|cx| {
+        let reporter = cx.new(|_| SettingsErrorReporter::default());
+        cx.set_global(GlobalSettingsErrorReporter(reporter));
+        cx.set_global(SettingsStore::new(UserSettings::default()));
+        zcv_editor::init(cx, languages.clone());
+        app_menus::install(cx);
+        super::install_add_directory_to_project_action(cx);
+    });
+    let (workspace, visual) = cx.add_window_view(|window, cx| {
+        build_workspace(
+            &[zcv_path::AbsolutePathBuf::canonicalize(project_dir.path())
+                .expect("项目根应可规范化")],
+            languages,
+            quiet_watcher(),
+            window,
+            cx,
+        )
+    });
+    let focus = visual.read_entity(&workspace, |workspace, _| workspace.focus_handle().clone());
+    visual.update(|window, cx| {
+        window.activate_window();
+        window.focus(&focus, cx);
+    });
+
+    visual.dispatch_action(AddDirectoryToProject);
+    assert!(visual.did_prompt_for_paths());
+    // 目录选择允许多选：一次可加入多个工作区根。
+    visual.simulate_path_prompt_response(|options| {
+        assert!(!options.files);
+        assert!(options.directories);
+        assert!(options.multiple);
+        Some(Vec::new())
+    });
+    visual.run_until_parked();
+
+    // 空选择不改变根集合。
+    visual.read_entity(&workspace, |workspace, cx| {
+        assert_eq!(workspace.project().read(cx).roots().count(), 1);
+    });
+}
+
+#[gpui::test]
+fn add_directory_action_skips_unaddable_paths_without_changing_roots(cx: &mut TestAppContext) {
+    let project_dir = tempfile::tempdir().expect("应创建项目目录");
+    let languages = test_languages();
+    cx.update(|cx| {
+        let reporter = cx.new(|_| SettingsErrorReporter::default());
+        cx.set_global(GlobalSettingsErrorReporter(reporter));
+        cx.set_global(SettingsStore::new(UserSettings::default()));
+        zcv_editor::init(cx, languages.clone());
+        app_menus::install(cx);
+        super::install_add_directory_to_project_action(cx);
+    });
+    let (workspace, visual) = cx.add_window_view(|window, cx| {
+        build_workspace(
+            &[zcv_path::AbsolutePathBuf::canonicalize(project_dir.path())
+                .expect("项目根应可规范化")],
+            languages,
+            quiet_watcher(),
+            window,
+            cx,
+        )
+    });
+    let focus = visual.read_entity(&workspace, |workspace, _| workspace.focus_handle().clone());
+    visual.update(|window, cx| {
+        window.activate_window();
+        window.focus(&focus, cx);
+    });
+
+    // 不存在的目录无法规范化：整条拒绝，不产生部分添加。
+    visual.dispatch_action(AddDirectoryToProject);
+    assert!(visual.did_prompt_for_paths());
+    visual.simulate_path_prompt_response(|_options| {
+        Some(vec!["/definitely/missing/zcv-add-dir".into()])
+    });
+    visual.run_until_parked();
+
+    visual.read_entity(&workspace, |workspace, cx| {
+        assert_eq!(workspace.project().read(cx).roots().count(), 1);
+    });
+}
+
+#[gpui::test]
 fn open_local_file_action_opens_file_outside_current_project(cx: &mut TestAppContext) {
     let external_dir = tempfile::tempdir().expect("应创建项目外目录");
     let file = external_dir.path().join("outside.txt");
@@ -74,9 +162,8 @@ fn open_local_file_action_opens_file_outside_current_project(cx: &mut TestAppCon
         app_menus::install(cx);
         super::install_open_local_file_action(cx);
     });
-    let (workspace, visual) = cx.add_window_view(|window, cx| {
-        build_workspace(&None, languages, quiet_watcher(), window, cx)
-    });
+    let (workspace, visual) = cx
+        .add_window_view(|window, cx| build_workspace(&[], languages, quiet_watcher(), window, cx));
     let focus = visual.read_entity(&workspace, |workspace, _| workspace.focus_handle().clone());
     visual.update(|window, cx| {
         window.activate_window();
@@ -94,7 +181,7 @@ fn open_local_file_action_opens_file_outside_current_project(cx: &mut TestAppCon
     visual.run_until_parked();
 
     visual.read_entity(&workspace, |workspace, cx| {
-        assert_eq!(workspace.project().read(cx).root(), None);
+        assert_eq!(workspace.project().read(cx).main_root(), None);
         assert_eq!(
             workspace
                 .pane()
@@ -134,7 +221,7 @@ fn finder_open_event_opens_html_in_active_workspace(cx: &mut TestAppContext) {
     });
     let workspace = {
         let (workspace, visual) = cx.add_window_view(|window, cx| {
-            build_workspace(&None, languages.clone(), quiet_watcher(), window, cx)
+            build_workspace(&[], languages.clone(), quiet_watcher(), window, cx)
         });
         visual.update(|window, _| window.activate_window());
         workspace
@@ -226,7 +313,7 @@ fn empty_workspace_installs_all_panels(cx: &mut TestAppContext) {
         app_menus::install(cx);
     });
     let (workspace, cx) = cx.add_window_view(|window, cx| {
-        build_workspace(&None, test_languages(), quiet_watcher(), window, cx)
+        build_workspace(&[], test_languages(), quiet_watcher(), window, cx)
     });
 
     cx.read_entity(&workspace, |workspace, cx| {
@@ -254,13 +341,13 @@ fn switching_replaces_root_in_same_window(cx: &mut TestAppContext) {
         app_menus::install(cx);
     });
     let (old_workspace, cx) = cx.add_window_view(|window, cx| {
-        build_workspace(&None, test_languages(), quiet_watcher(), window, cx)
+        build_workspace(&[], test_languages(), quiet_watcher(), window, cx)
     });
     let old_id = old_workspace.entity_id();
 
     cx.update(|window, app| {
         window.replace_root(app, |window, cx| {
-            build_workspace(&None, test_languages(), quiet_watcher(), window, cx)
+            build_workspace(&[], test_languages(), quiet_watcher(), window, cx)
         });
     });
 

@@ -13,7 +13,7 @@ use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev, commands,
 };
 use zcv_fuzzy::{MatchScore, Matcher};
-use zcv_project::{Project, ProjectEvent};
+use zcv_project::{Project, ProjectEvent, owning_workspace_root};
 use zcv_theme::{FileIcons, color, scale};
 use zcv_ui::{
     EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, ListItem, PopoverHost, PopoverLayer, SvgIcon,
@@ -51,12 +51,12 @@ struct FileCandidate {
 }
 
 impl FileCandidate {
-    fn new(path: PathBuf, root: &Path) -> Self {
-        let relative = path
-            .strip_prefix(root)
-            .expect("项目候选文件必须位于项目根目录")
-            .to_string_lossy()
-            .replace('\\', "/");
+    fn new(path: PathBuf, roots: &[PathBuf]) -> Self {
+        // 嵌套根命中多个时取最长前缀，相对路径最短。
+        let relative = owning_workspace_root(&path, roots)
+            .and_then(|root| path.strip_prefix(root).ok())
+            .expect("项目候选文件必须位于某个工作区根下");
+        let relative = relative.to_string_lossy().replace('\\', "/");
         let name = path
             .file_name()
             .expect("项目候选文件必须有文件名")
@@ -225,10 +225,10 @@ impl FileSearchState {
         self.load_state = FileLoadState::Stale;
     }
 
-    fn set_files(&mut self, paths: Vec<PathBuf>, root: &Path) {
+    fn set_files(&mut self, paths: Vec<PathBuf>, roots: &[PathBuf]) {
         self.files = paths
             .into_iter()
-            .map(|path| Arc::new(FileCandidate::new(path, root)))
+            .map(|path| Arc::new(FileCandidate::new(path, roots)))
             .collect();
         self.load_state = FileLoadState::Ready;
     }
@@ -316,7 +316,10 @@ impl QuickAccess {
         let project_subscription = cx.subscribe(&project, |search, _, event, cx| {
             if matches!(
                 event,
-                ProjectEvent::EntriesChanged | ProjectEvent::RootChanged(_)
+                ProjectEvent::EntriesChanged
+                    | ProjectEvent::WorktreeAdded(_)
+                    | ProjectEvent::WorktreeRemoved(_)
+                    | ProjectEvent::WorktreeRootChanged { .. }
             ) {
                 search.scan_task.take();
                 search.state.invalidate();
@@ -377,12 +380,18 @@ impl QuickAccess {
     }
 
     fn refresh_files(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self.project.read(cx).root().map(Path::to_path_buf) else {
+        let roots: Vec<PathBuf> = self
+            .project
+            .read(cx)
+            .roots()
+            .map(Path::to_path_buf)
+            .collect();
+        if roots.is_empty() {
             self.scan_task.take();
-            self.state.set_files(Vec::new(), Path::new(""));
+            self.state.set_files(Vec::new(), &[]);
             self.refresh_results(cx);
             return;
-        };
+        }
         let scan = self.project.read(cx).searchable_file_paths(cx);
         self.state.begin_scan();
         self.refresh_results(cx);
@@ -390,7 +399,7 @@ impl QuickAccess {
             let files = scan.await;
             search
                 .update(cx, |search, cx| {
-                    search.state.set_files(files, &root);
+                    search.state.set_files(files, &roots);
                     search.refresh_results(cx);
                 })
                 .ok();

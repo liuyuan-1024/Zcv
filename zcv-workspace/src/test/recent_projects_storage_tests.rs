@@ -2,7 +2,7 @@ use std::{env, path::Path};
 
 use zcv_path::AbsolutePathBuf;
 
-use super::{ProjectEntry, canonical_project_path, first_valid_project};
+use super::{ProjectEntry, canonical_project_path, valid_project_paths};
 
 #[test]
 fn recent_project_rejects_root_relative_and_missing_paths() {
@@ -23,28 +23,49 @@ fn recent_project_canonicalizes_parent_components() {
 }
 
 #[test]
-fn first_valid_project_skips_stale_entries() {
+fn valid_project_paths_keeps_valid_subset_in_order() {
     let current = env::current_dir().expect("应有当前目录");
-    let entries = vec![
-        ProjectEntry {
-            path: "/definitely/missing/zcv-project".into(),
-        },
-        ProjectEntry {
-            path: current.to_string_lossy().to_string(),
-        },
-    ];
-    assert_eq!(first_valid_project(&entries), Some(current));
+    let entry = ProjectEntry {
+        paths: vec![
+            "/definitely/missing/zcv-project".into(),
+            current.to_string_lossy().to_string(),
+        ],
+    };
+    assert_eq!(valid_project_paths(&entry), Some(vec![current]));
 }
 
 #[test]
-fn first_valid_project_returns_none_when_all_stale() {
-    let entries = vec![
-        ProjectEntry {
-            path: "/definitely/missing/a".into(),
-        },
-        ProjectEntry {
-            path: "/definitely/missing/b".into(),
-        },
-    ];
-    assert_eq!(first_valid_project(&entries), None);
+fn valid_project_paths_returns_none_when_all_stale() {
+    let entry = ProjectEntry {
+        paths: vec![
+            "/definitely/missing/a".into(),
+            "/definitely/missing/b".into(),
+        ],
+    };
+    assert_eq!(valid_project_paths(&entry), None);
+}
+
+#[test]
+fn legacy_single_path_entries_migrate_to_paths() {
+    // 旧版最近项目文件是 {"path": "..."}；读取时迁移为单元素集合，下次写盘即为新格式。
+    let legacy: ProjectEntry = serde_json::from_str(r#"{"path": "/tmp/legacy-project"}"#).unwrap();
+    assert_eq!(legacy.paths, ["/tmp/legacy-project"]);
+
+    let current: ProjectEntry = serde_json::from_str(
+        &serde_json::to_string(&ProjectEntry {
+            paths: vec!["/tmp/a".into(), "/tmp/b".into()],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(current.paths, ["/tmp/a", "/tmp/b"]);
+}
+
+#[test]
+fn multi_root_entries_join_root_names_in_label() {
+    let entry = ProjectEntry {
+        paths: vec!["/tmp/workspace-a".into(), "/tmp/workspace-b".into()],
+    };
+    assert_eq!(entry.label(), "workspace-a、workspace-b");
+    assert_eq!(entry.search_text(), "/tmp/workspace-a /tmp/workspace-b");
 }

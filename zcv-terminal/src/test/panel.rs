@@ -45,7 +45,7 @@ fn new_terminal_uses_the_project_root_as_working_directory(cx: &mut TestAppConte
         .expect("临时项目根目录应可规范化");
     let project = cx.new(|cx| {
         Project::new_with_watcher(
-            temporary_directory.path().to_path_buf(),
+            vec![temporary_directory.path().to_path_buf()],
             Arc::new(PassiveWatcher::new()),
             Arc::new(LanguageRegistry::new()),
             cx,
@@ -66,7 +66,7 @@ fn terminal_creation_failure_keeps_panel_empty(cx: &mut TestAppContext) {
     let temporary_directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = cx.new(|cx| {
         Project::new_with_watcher(
-            temporary_directory.path().to_path_buf(),
+            vec![temporary_directory.path().to_path_buf()],
             Arc::new(PassiveWatcher::new()),
             Arc::new(LanguageRegistry::new()),
             cx,
@@ -93,7 +93,7 @@ fn opening_hidden_terminal_panel_focuses_the_active_terminal(cx: &mut TestAppCon
     let temporary_directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = cx.new(|cx| {
         Project::new_with_watcher(
-            temporary_directory.path().to_path_buf(),
+            vec![temporary_directory.path().to_path_buf()],
             Arc::new(PassiveWatcher::new()),
             Arc::new(LanguageRegistry::new()),
             cx,

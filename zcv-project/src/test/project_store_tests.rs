@@ -27,8 +27,8 @@ fn empty_project_has_no_worktree_or_project_services(cx: &mut TestAppContext) {
         cx.new(|cx| Project::empty_with_watcher(test_languages(), Arc::new(FsWatcher::new()), cx))
     });
     cx.read_entity(&project, |project, _| {
-        assert!(!project.has_worktree());
-        assert!(project.root().is_none());
+        assert!(!project.has_worktrees());
+        assert!(project.main_root().is_none());
         assert!(project.try_git_store().is_none());
     });
 }
@@ -40,9 +40,114 @@ fn project_construction_survives_root_removed_after_validation(cx: &mut TestAppC
     let root = AbsolutePathBuf::canonicalize(directory.path()).expect("项目根目录应可规范化");
     fs::remove_dir(directory.path()).expect("应移除已校验的项目根目录");
 
-    let project = cx.new(|cx| Project::new(root.clone(), test_languages(), cx));
+    let project = cx.new(|cx| Project::new(vec![root.clone()], test_languages(), cx));
     cx.read_entity(&project, |project, _| {
-        assert_eq!(project.root(), Some(root.as_path()));
+        assert_eq!(project.main_root(), Some(root.as_path()));
+    });
+}
+
+#[gpui::test]
+fn multi_root_project_preserves_order_and_answers_root_queries(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let first = tempfile::tempdir().expect("应创建第一个临时目录");
+    let second = tempfile::tempdir().expect("应创建第二个临时目录");
+    let first_root = AbsolutePathBuf::canonicalize(first.path()).expect("应可规范化");
+    let second_root = AbsolutePathBuf::canonicalize(second.path()).expect("应可规范化");
+    let project = cx.new(|cx| {
+        Project::new(
+            vec![first_root.clone(), second_root.clone()],
+            test_languages(),
+            cx,
+        )
+    });
+    cx.read_entity(&project, |project, _| {
+        assert!(project.has_worktrees());
+        assert_eq!(project.main_root(), Some(first_root.as_path()));
+        assert_eq!(
+            project.roots().collect::<Vec<_>>(),
+            vec![first_root.as_path(), second_root.as_path()]
+        );
+        // 归属与展示相对化取最内层根；所有根之外返回 None。
+        let nested = first_root.join("nested").join("a.rs");
+        assert_eq!(
+            project.root_for_path(nested.as_path()),
+            Some(first_root.as_path())
+        );
+        assert_eq!(
+            project.relative_display_path(nested.as_path()),
+            Some(Path::new("nested/a.rs"))
+        );
+        assert_eq!(
+            project.root_for_path(Path::new("/definitely/outside")),
+            None
+        );
+    });
+}
+
+#[gpui::test]
+fn add_and_remove_worktree_update_roots_and_emit_events(cx: &mut TestAppContext) {
+    use std::{cell::RefCell, rc::Rc};
+
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let first = tempfile::tempdir().expect("应创建第一个临时目录");
+    let second = tempfile::tempdir().expect("应创建第二个临时目录");
+    let project = test_project(first.path().to_path_buf(), cx);
+    let events = Rc::new(RefCell::new(Vec::<String>::new()));
+    let sink = events.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&project, move |_, event: &ProjectEvent, _| {
+            let label = match event {
+                ProjectEvent::WorktreeAdded(root) => format!("added:{}", root.display()),
+                ProjectEvent::WorktreeRemoved(root) => format!("removed:{}", root.display()),
+                _ => return,
+            };
+            sink.borrow_mut().push(label);
+        })
+    });
+
+    project
+        .update(cx, |project, cx| {
+            project.add_worktree(second.path().to_path_buf(), cx)
+        })
+        .expect("添加工作区根应成功");
+    project
+        .update(cx, |project, cx| {
+            project.add_worktree(second.path().to_path_buf(), cx)
+        })
+        .expect_err("重复添加同一根应被拒绝");
+    cx.read_entity(&project, |project, _| {
+        assert_eq!(project.roots().count(), 2);
+    });
+
+    project
+        .update(cx, |project, cx| project.remove_worktree(second.path(), cx))
+        .expect("移除工作区根应成功");
+    cx.run_until_parked();
+    cx.read_entity(&project, |project, _| {
+        assert_eq!(project.roots().count(), 1);
+    });
+    let events = events.borrow();
+    assert_eq!(events.len(), 2, "添加与移除各发出一次工作区事件");
+    assert!(events[0].starts_with("added:"));
+    assert!(events[1].starts_with("removed:"));
+}
+
+#[gpui::test]
+fn duplicate_roots_are_deduplicated_on_construction(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = directory.path().to_path_buf();
+    let project = cx.new(|cx| {
+        Project::new_with_watcher(
+            vec![root.clone(), root.clone(), root],
+            Arc::new(TestWatcher::new()),
+            test_languages(),
+            cx,
+        )
+        .expect("测试项目根目录应可规范化")
+    });
+    cx.read_entity(&project, |project, _| {
+        assert_eq!(project.roots().count(), 1);
     });
 }
 
@@ -142,7 +247,7 @@ fn initial_file_watcher_error_is_buffered_until_workspace_subscribes(cx: &mut Te
     let root = directory.path().to_path_buf();
     let project = cx.new(|cx| {
         Project::new_with_watcher(
-            root.clone(),
+            vec![root.clone()],
             Arc::new(FailingWatcher::new()),
             test_languages(),
             cx,

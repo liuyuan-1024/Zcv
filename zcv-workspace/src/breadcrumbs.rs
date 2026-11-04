@@ -34,16 +34,17 @@ impl Breadcrumbs {
 impl Render for Breadcrumbs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let typography = typography_for_window(window, cx);
-        let project_root = self.project.read(cx).root().map(Path::to_path_buf);
+        // 多根工作区：按活动文件所属的根做相对化；活动文件在所有根之外时无根可用。
+        let active_path = self.item.as_ref().and_then(|item| item.active_path(cx));
+        let project_root = active_path
+            .as_deref()
+            .and_then(|path| self.project.read(cx).root_for_path(path))
+            .map(Path::to_path_buf);
         let segments = self
             .item
             .as_ref()
             .and_then(|item| item.breadcrumbs(project_root.as_deref(), cx));
-        let copy_path = self
-            .item
-            .as_ref()
-            .and_then(|item| item.active_path(cx))
-            .and_then(|path| absolute_path(path, project_root.as_deref()));
+        let copy_path = active_path.and_then(|path| absolute_path(path, project_root.as_deref()));
         let mut children: Vec<AnyElement> = Vec::new();
 
         if let Some((segments, _font)) = segments {

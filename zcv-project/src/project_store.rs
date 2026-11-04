@@ -1,6 +1,6 @@
 //! 项目级状态与服务协调。
 //!
-//! `Project` 管理项目根、目录快照（Worktree）、文件 Buffer 生命周期和文件系统监听。
+//! `Project` 管理工作区根集合、目录快照（Worktree）、文件 Buffer 生命周期和文件系统监听。
 //! 窗口布局、Pane、Dock 与其他界面状态仍由 `Workspace` 管理。
 
 use std::{
@@ -32,7 +32,7 @@ use super::{
     git_store::{GitStatusSnapshot, GitStore},
     search::{self, SearchResults},
     text_file::{BufferLoadError, BufferSaveError, decode_to_string, write_buffer_to},
-    worktree::{Worktree, WorktreeEntry, collect_visible_entries},
+    worktree::{Worktree, WorktreeEntry, collect_visible_entries, owning_workspace_root},
 };
 
 /// 项目文件监听的合并窗口；对齐 worktree 的 FS_WATCH_LATENCY。
@@ -69,14 +69,25 @@ pub struct FileWatcherError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectEvent {
-    RootChanged(PathBuf),
+    /// 工作区新增一个项目根。
+    WorktreeAdded(PathBuf),
+    /// 工作区移除一个项目根；移除最后一个根后进入空工作区。
+    WorktreeRemoved(PathBuf),
+    /// 项目根被重命名：持有路径状态的一方按 from → to 迁移。
+    WorktreeRootChanged {
+        from: PathBuf,
+        to: PathBuf,
+    },
     EntriesChanged,
     FileWatcherError(FileWatcherError),
 }
 
 pub struct Project {
-    /// Project 始终存在，worktree 可以为空。
-    worktree: Option<ProjectWorktree>,
+    /// 工作区根集合（有序；首个为主根，承担展示与 git init 等单根语义）。
+    /// Project 始终存在，集合可以为空（空工作区）。
+    worktrees: Vec<ProjectWorktree>,
+    /// 当前应用的目录扫描排除名单；新添加的 worktree 沿用同一份。
+    scan_exclusions: Vec<String>,
     /// git store 属于 Project 而非 worktree，无 worktree 时以无根状态存在（仓库查询与 git job 为空操作）。
     git_store: Entity<GitStore>,
     buffer_store: BufferStore,
@@ -103,11 +114,11 @@ impl Project {
     ///
     /// 语言注册表由应用装配层创建并显式注入，项目只持有同一份 Arc，不在内部新建。
     pub fn new(
-        root: AbsolutePathBuf,
+        roots: Vec<AbsolutePathBuf>,
         languages: Arc<LanguageRegistry>,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with_normalized_root(root, Arc::new(FsWatcher::new()), languages, cx)
+        Self::new_with_normalized_roots(roots, Arc::new(FsWatcher::new()), languages, cx)
     }
 
     /// 使用指定的文件监听后端创建项目。
@@ -115,20 +126,28 @@ impl Project {
     /// 项目负责监听器的生命周期和事件消费；调用方负责选择符合当前运行环境的后端。
     /// 语言注册表由应用装配层创建并显式注入，项目内的语言 Buffer 与 diff 源共享同一份。
     pub fn new_with_watcher(
-        root: PathBuf,
+        roots: Vec<PathBuf>,
         fs_watcher: Arc<dyn Watcher>,
         languages: Arc<LanguageRegistry>,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Self> {
-        let root = AbsolutePathBuf::canonicalize(&root)
-            .with_context(|| format!("无法规范化项目根目录：{}", root.display()))?;
-        Ok(Self::new_with_normalized_root(
-            root, fs_watcher, languages, cx,
+        let mut normalized = Vec::with_capacity(roots.len());
+        let mut seen = HashSet::new();
+        for root in roots {
+            let root = AbsolutePathBuf::canonicalize(&root)
+                .with_context(|| format!("无法规范化项目根目录：{}", root.display()))?;
+            // CLI 等装配入口可能重复传入同一目录，规范化后按路径去重。
+            if seen.insert(root.as_path().to_path_buf()) {
+                normalized.push(root);
+            }
+        }
+        Ok(Self::new_with_normalized_roots(
+            normalized, fs_watcher, languages, cx,
         ))
     }
 
-    fn new_with_normalized_root(
-        root: AbsolutePathBuf,
+    fn new_with_normalized_roots(
+        roots: Vec<AbsolutePathBuf>,
         fs_watcher: Arc<dyn Watcher>,
         languages: Arc<LanguageRegistry>,
         cx: &mut Context<Self>,
@@ -136,18 +155,23 @@ impl Project {
         // ProjectWorktree、文件监听器和 GitStore 共用装配入口提供的绝对根路径。
         let fs_task = Self::spawn_fs_task(&fs_watcher, cx);
 
-        let pending_file_watcher_errors = match fs_watcher.add(root.as_path()) {
-            Ok(()) => Vec::new(),
-            Err(error) => vec![FileWatcherError {
-                operation: FileWatcherOperation::Add,
-                path: root.as_path().to_path_buf(),
-                error: format!("{error:#}"),
-            }],
-        };
+        let mut pending_file_watcher_errors = Vec::new();
+        for root in &roots {
+            if let Err(error) = fs_watcher.add(root.as_path()) {
+                pending_file_watcher_errors.push(FileWatcherError {
+                    operation: FileWatcherOperation::Add,
+                    path: root.as_path().to_path_buf(),
+                    error: format!("{error:#}"),
+                });
+            }
+        }
 
         let git_store = cx.new(|cx| {
             GitStore::new(
-                Some(root.as_path().to_path_buf()),
+                roots
+                    .iter()
+                    .map(|root| root.as_path().to_path_buf())
+                    .collect(),
                 Arc::clone(&languages),
                 cx,
             )
@@ -155,10 +179,14 @@ impl Project {
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
 
         Self {
-            worktree: Some(ProjectWorktree {
-                root: root.clone(),
-                snapshot: Worktree::new(root.clone()),
-            }),
+            worktrees: roots
+                .into_iter()
+                .map(|root| ProjectWorktree {
+                    root: root.clone(),
+                    snapshot: Worktree::new(root),
+                })
+                .collect(),
+            scan_exclusions: Vec::new(),
             git_store,
             buffer_store: BufferStore::new(Arc::clone(&languages)),
             fs_watcher,
@@ -178,10 +206,11 @@ impl Project {
         fs_watcher: Arc<dyn Watcher>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let git_store = cx.new(|cx| GitStore::new(None, Arc::clone(&languages), cx));
+        let git_store = cx.new(|cx| GitStore::new(Vec::new(), Arc::clone(&languages), cx));
         let fs_task = Self::spawn_fs_task(&fs_watcher, cx);
         Self {
-            worktree: None,
+            worktrees: Vec::new(),
+            scan_exclusions: Vec::new(),
             git_store,
             buffer_store: BufferStore::new(Arc::clone(&languages)),
             fs_watcher,
@@ -220,19 +249,132 @@ impl Project {
         std::mem::take(&mut self.pending_file_watcher_errors)
     }
 
-    pub fn root(&self) -> Option<&Path> {
-        self.worktree
-            .as_ref()
+    /// 主根：首个工作区根，供窗口标题、面包屑等单根展示语义使用。
+    pub fn main_root(&self) -> Option<&Path> {
+        self.worktrees
+            .first()
             .map(|worktree| worktree.root.as_path())
     }
 
-    pub fn has_worktree(&self) -> bool {
-        self.worktree.is_some()
+    /// 全部工作区根（有序）。
+    pub fn roots(&self) -> impl Iterator<Item = &Path> + '_ {
+        self.worktrees
+            .iter()
+            .map(|worktree| worktree.root.as_path())
     }
 
-    /// 更新项目树的扫描排除规则（设置变化时由项目树调用）。
+    pub fn has_worktrees(&self) -> bool {
+        !self.worktrees.is_empty()
+    }
+
+    /// 路径所属的 worktree 下标；嵌套根命中多个时取最长前缀（最内层根）。
+    fn worktree_index_for_path(&self, path: &Path) -> Option<usize> {
+        self.worktrees
+            .iter()
+            .enumerate()
+            .filter(|(_, worktree)| path.starts_with(worktree.root.as_path()))
+            .max_by_key(|(_, worktree)| worktree.root.as_path().as_os_str().len())
+            .map(|(index, _)| index)
+    }
+
+    /// 路径所属的工作区根；供展示层做相对化，嵌套根命中多个时取最内层根。
+    pub fn root_for_path(&self, path: &Path) -> Option<&Path> {
+        owning_workspace_root(
+            path,
+            self.worktrees
+                .iter()
+                .map(|worktree| worktree.root.as_path()),
+        )
+    }
+
+    /// 路径相对其所属工作区根的展示形式；路径在所有根之外时返回 None。
+    pub fn relative_display_path<'p>(&self, path: &'p Path) -> Option<&'p Path> {
+        self.root_for_path(path)
+            .and_then(|root| path.strip_prefix(root).ok())
+    }
+
+    /// 路径是否位于任一工作区根下（含根自身）。
+    fn is_worktree_path(&self, path: &Path) -> bool {
+        self.worktrees
+            .iter()
+            .any(|worktree| path.starts_with(worktree.root.as_path()))
+    }
+
+    /// 添加一个项目根：注册文件监听、建立目录快照并重新发现仓库。
+    ///
+    /// 与现有根重复时返回错误；嵌套根允许存在，归属查询取首个命中。
+    pub fn add_worktree(&mut self, root: PathBuf, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        let root = AbsolutePathBuf::canonicalize(&root)
+            .with_context(|| format!("无法规范化项目根目录：{}", root.display()))?;
+        anyhow::ensure!(
+            self.worktrees
+                .iter()
+                .all(|worktree| worktree.root.as_path() != root.as_path()),
+            "项目已在工作区中：{}",
+            root.display()
+        );
+        if let Err(error) = self.fs_watcher.add(root.as_path()) {
+            cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
+                operation: FileWatcherOperation::Add,
+                path: root.as_path().to_path_buf(),
+                error: format!("{error:#}"),
+            }));
+        }
+        let mut snapshot = Worktree::new(root.clone());
+        snapshot.set_exclusions(&self.scan_exclusions);
+        self.worktrees.push(ProjectWorktree {
+            root: root.clone(),
+            snapshot,
+        });
+        self.sync_git_roots(cx);
+        cx.emit(ProjectEvent::WorktreeAdded(root.into_path_buf()));
+        Ok(())
+    }
+
+    /// 移除一个项目根：注销文件监听并重新发现仓库。
+    ///
+    /// 根下已打开的文档保持存活，不再被根监听覆盖，提升为外部文档监听（父目录级）。
+    /// 移除最后一个根后进入空工作区。
+    pub fn remove_worktree(&mut self, root: &Path, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        let root = normalize_for_comparison(root)?;
+        let index = self
+            .worktrees
+            .iter()
+            .position(|worktree| worktree.root.as_path() == root.as_path())
+            .ok_or_else(|| anyhow::anyhow!("项目不在工作区中：{}", root.display()))?;
+        self.worktrees.remove(index);
+        if let Err(error) = self.fs_watcher.remove(root.as_path()) {
+            cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
+                operation: FileWatcherOperation::Remove,
+                path: root.as_path().to_path_buf(),
+                error: format!("{error:#}"),
+            }));
+        }
+        // 根移除后其下已打开的文档不再被根监听覆盖：提升为外部文档监听。
+        let open_buffers = self.buffer_store.buffers_under_path(&root);
+        for buffer in &open_buffers {
+            self.watch_external_buffer(buffer.entity_id(), buffer, cx);
+        }
+        self.sync_git_roots(cx);
+        cx.emit(ProjectEvent::WorktreeRemoved(root.into_path_buf()));
+        Ok(())
+    }
+
+    /// 把当前根集合同步为 GitStore 的扫描基准（worktree 增删/重命名后调用）。
+    fn sync_git_roots(&self, cx: &mut Context<Self>) {
+        let roots = self
+            .worktrees
+            .iter()
+            .map(|worktree| worktree.root.clone())
+            .collect::<Vec<_>>();
+        self.git_store
+            .update(cx, |store, cx| store.set_roots(roots, cx));
+    }
+
+    /// 更新目录扫描的排除规则（设置变化时由设置订阅方调用）；新添加的 worktree 沿用同一份名单。
     pub fn set_exclusions(&mut self, exclusions: &[String]) {
-        if let Some(worktree) = &mut self.worktree {
+        self.scan_exclusions = exclusions.to_vec();
+        for worktree in &mut self.worktrees {
             worktree.snapshot.set_exclusions(exclusions);
         }
     }
@@ -246,18 +388,24 @@ impl Project {
         expanded: HashSet<AbsolutePathBuf>,
         cx: &App,
     ) -> Task<Vec<(WorktreeEntry, Option<FileStatus>)>> {
-        let Some(worktree) = &self.worktree else {
-            // 无 worktree 的空态：直接返回空结果。
+        if self.worktrees.is_empty() {
+            // 空工作区：直接返回空结果。
             return cx
                 .background_executor()
                 .spawn(async { Vec::<(WorktreeEntry, Option<FileStatus>)>::new() });
-        };
-        let root = worktree.root.clone();
-        let filter = worktree.snapshot.filter();
+        }
+        let plans = self
+            .worktrees
+            .iter()
+            .map(|worktree| (worktree.root.clone(), worktree.snapshot.filter()))
+            .collect::<Vec<_>>();
         // 在 UI 线程捕获不可变状态快照，后台任务只读；GitStore 仍是状态的唯一所有者。
         let snapshot: Arc<GitStatusSnapshot> = self.git_store.read(cx).status_snapshot();
         cx.background_executor().spawn(async move {
-            let mut entries = collect_visible_entries(&root, &expanded, &filter);
+            let mut entries = Vec::new();
+            for (root, filter) in &plans {
+                entries.extend(collect_visible_entries(root, &expanded, filter));
+            }
             let rows = entries
                 .iter()
                 .map(|entry| (entry.path.clone(), entry.is_dir))
@@ -296,9 +444,9 @@ impl Project {
         self.git_store.clone()
     }
 
-    /// 仅在有 worktree 时返回 git store（无 worktree 的项目不做 git 操作）。
+    /// 仅在有工作区根时返回 git store（空工作区不做 git 操作）。
     pub fn try_git_store(&self) -> Option<Entity<GitStore>> {
-        self.has_worktree().then_some(self.git_store.clone())
+        self.has_worktrees().then_some(self.git_store.clone())
     }
 
     pub fn open_buffer(
@@ -420,7 +568,7 @@ impl Project {
         let Some(path) = self.buffer_store.path_for_buffer(buffer) else {
             return;
         };
-        if self.root().is_some_and(|root| path.starts_with(root)) {
+        if self.is_worktree_path(path.as_path()) {
             return;
         }
         let parent = AbsolutePathBuf::new(
@@ -558,39 +706,55 @@ impl Project {
     /// 权威文档由调用方按命中路径 `open_buffer` 打开并复用。
     /// 结果经流式通道产出，由 UI 线程按批装配进 MultiBuffer。
     pub fn search(&mut self, query: SearchQuery, cx: &mut Context<Self>) -> SearchResults {
-        let Some(worktree) = &self.worktree else {
+        if self.worktrees.is_empty() {
             return SearchResults::empty();
-        };
-        let plan = worktree.snapshot.search_plan();
+        }
+        let plans = self
+            .worktrees
+            .iter()
+            .map(|worktree| worktree.snapshot.search_plan())
+            .collect::<Vec<_>>();
         let opened_snapshots = self.buffer_store.opened_snapshots(cx);
         let background_executor = cx.background_executor().clone();
         let language_registry = Arc::clone(&self.language_registry);
         let (tx, rx) = async_channel::bounded(8);
         let task = cx.background_executor().spawn(async move {
-            let _ = search::search_worktree(
-                plan,
-                opened_snapshots,
-                query,
-                language_registry,
-                tx,
-                background_executor,
-            )
-            .await;
+            // 逐根顺序搜索：结果按根的顺序流式产出，与多根行模型的顺序一致。
+            for plan in plans {
+                let _ = search::search_worktree(
+                    plan,
+                    opened_snapshots.clone(),
+                    query.clone(),
+                    Arc::clone(&language_registry),
+                    tx.clone(),
+                    background_executor.clone(),
+                )
+                .await;
+            }
         });
         SearchResults { task, rx }
     }
 
     /// 后台列出可供项目文件快速打开的路径，与项目内容搜索使用同一候选集。
     pub fn searchable_file_paths(&self, cx: &App) -> Task<Vec<PathBuf>> {
-        let Some(worktree) = &self.worktree else {
+        if self.worktrees.is_empty() {
             return Task::ready(Vec::new());
-        };
-        let plan = worktree.snapshot.search_plan();
+        }
+        let plans = self
+            .worktrees
+            .iter()
+            .map(|worktree| worktree.snapshot.search_plan())
+            .collect::<Vec<_>>();
         cx.background_executor().spawn(async move {
-            search::searchable_file_paths(&plan)
-                .into_iter()
-                .map(AbsolutePathBuf::into_path_buf)
-                .collect()
+            let mut paths = Vec::new();
+            for plan in &plans {
+                paths.extend(
+                    search::searchable_file_paths(plan)
+                        .into_iter()
+                        .map(AbsolutePathBuf::into_path_buf),
+                );
+            }
+            paths
         })
     }
 
@@ -716,14 +880,9 @@ impl Project {
         let to = normalize_for_comparison(to)?;
         anyhow::ensure!(from != to, "新旧路径不能相同");
         anyhow::ensure!(from.parent() == to.parent(), "重命名不能移动条目");
-        let worktree = self
-            .worktree
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?;
-        anyhow::ensure!(
-            from.as_path() == worktree.root.as_path() || from.starts_with(worktree.root.as_path()),
-            "条目不在当前项目中"
-        );
+        let index = self
+            .worktree_index_for_path(&from)
+            .ok_or_else(|| anyhow::anyhow!("条目不在当前工作区中"))?;
         let indexed_from = AbsolutePathBuf::canonicalize(&from)?;
         if to.exists() {
             anyhow::ensure!(
@@ -740,7 +899,7 @@ impl Project {
         self.buffer_store
             .rename_path(indexed_from.as_path(), &indexed_to);
 
-        if from.as_path() == worktree.root.as_path() {
+        if from.as_path() == self.worktrees[index].root.as_path() {
             let new_root = AbsolutePathBuf::canonicalize(&to)?;
             if let Err(error) = self.fs_watcher.add(&to) {
                 cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
@@ -756,9 +915,15 @@ impl Project {
                     error: format!("{error:#}"),
                 }));
             }
+            let worktree = &mut self.worktrees[index];
             worktree.root = new_root.clone();
             worktree.snapshot.set_root(new_root.clone());
-            cx.emit(ProjectEvent::RootChanged(new_root.as_path().to_path_buf()));
+            // 根路径变化后 GitStore 的扫描基准与路径归属同步更新。
+            self.sync_git_roots(cx);
+            cx.emit(ProjectEvent::WorktreeRootChanged {
+                from: from.as_path().to_path_buf(),
+                to: new_root.as_path().to_path_buf(),
+            });
         } else {
             cx.emit(ProjectEvent::EntriesChanged);
         }
@@ -774,11 +939,11 @@ impl Project {
     ) -> anyhow::Result<()> {
         let path = normalize_for_comparison(path)?;
         let root = self
-            .root()
-            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?;
+            .root_for_path(&path)
+            .ok_or_else(|| anyhow::anyhow!("条目不在当前工作区中"))?;
         let relative = path
             .strip_prefix(root)
-            .map_err(|_| anyhow::anyhow!("条目不在当前项目中"))?;
+            .map_err(|_| anyhow::anyhow!("条目不在当前工作区中"))?;
         anyhow::ensure!(
             relative
                 .components()
@@ -812,12 +977,17 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Task<anyhow::Result<()>>> {
         let path = normalize_for_comparison(path)?;
-        let root = self
-            .root()
-            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?
-            .to_path_buf();
-        anyhow::ensure!(path.as_path() != root, "不能删除项目根目录");
-        anyhow::ensure!(path.starts_with(&root), "条目不在当前项目中");
+        anyhow::ensure!(
+            self.is_worktree_path(path.as_path()),
+            "条目不在当前工作区中：{}",
+            path.display()
+        );
+        anyhow::ensure!(
+            self.worktrees
+                .iter()
+                .all(|worktree| worktree.root.as_path() != path.as_path()),
+            "不能删除项目根目录"
+        );
         let path = path.as_path().to_path_buf();
         Ok(
             cx.spawn(move |project: WeakEntity<Self>, asynccx: &mut AsyncApp| {
@@ -842,7 +1012,7 @@ impl Project {
         )
     }
 
-    /// 在项目内移动文件或目录到新位置（可跨目录），并迁移项目持有的路径状态。
+    /// 在工作区内移动文件或目录到新位置（可跨目录、跨项目根），并迁移项目持有的路径状态。
     ///
     /// 与 `rename_path` 的区别：不要求同父目录；`overwrite` 为真时允许替换已存在的目标。
     pub fn move_path(
@@ -855,13 +1025,17 @@ impl Project {
         let from = normalize_for_comparison(from)?;
         let to = normalize_for_comparison(to)?;
         anyhow::ensure!(from != to, "新旧路径不能相同");
-        let root = self
-            .root()
-            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?
-            .to_path_buf();
-        anyhow::ensure!(from.as_path() != root, "不能移动项目根目录");
-        anyhow::ensure!(from.starts_with(&root), "条目不在当前项目中");
-        anyhow::ensure!(to.starts_with(&root), "目标不在当前项目中");
+        anyhow::ensure!(
+            self.is_worktree_path(from.as_path()),
+            "条目不在当前工作区中"
+        );
+        anyhow::ensure!(
+            self.worktrees
+                .iter()
+                .all(|worktree| worktree.root.as_path() != from.as_path()),
+            "不能移动项目根目录"
+        );
+        anyhow::ensure!(self.is_worktree_path(to.as_path()), "目标不在当前工作区中");
         anyhow::ensure!(!to.starts_with(&from), "不能把条目移动到自身内部");
         // 对称守卫：目标是源的祖先目录时，覆盖路径的「先删目标」会把源一起递归删掉。
         anyhow::ensure!(
@@ -895,12 +1069,12 @@ impl Project {
                 .with_context(|| format!("移动失败：{} → {}", from.display(), to.display()))?;
         }
         self.buffer_store.rename_path(&indexed_from, &indexed_to);
-        // from 不可能是根（校验已排除），条目变化无需区分 RootChanged。
+        // from 不可能是根（校验已排除），条目变化无需区分 WorktreeRootChanged。
         cx.emit(ProjectEvent::EntriesChanged);
         Ok(())
     }
 
-    /// 在项目内递归复制文件或目录到新位置（后台执行，不阻塞 UI 线程）。
+    /// 在工作区内递归复制文件或目录到新位置（可跨项目根；后台执行，不阻塞 UI 线程）。
     ///
     /// 同步完成参数校验后返回驱动任务：复制本体在后台线程执行，完成后由任务内部发出 `EntriesChanged`；
     /// 任务返回值携带执行结果（调用方驱动进度用）。
@@ -937,15 +1111,22 @@ impl Project {
     ) -> anyhow::Result<Task<anyhow::Result<()>>> {
         let source = normalize_for_comparison(source)?;
         let destination = normalize_for_comparison(destination)?;
-        let root = self
-            .root()
-            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?
-            .to_path_buf();
-        anyhow::ensure!(source.as_path() != root, "不能复制项目根目录");
+        anyhow::ensure!(
+            self.worktrees
+                .iter()
+                .all(|worktree| worktree.root.as_path() != source.as_path()),
+            "不能复制项目根目录"
+        );
         if !external {
-            anyhow::ensure!(source.starts_with(&root), "条目不在当前项目中");
+            anyhow::ensure!(
+                self.is_worktree_path(source.as_path()),
+                "条目不在当前工作区中"
+            );
         }
-        anyhow::ensure!(destination.starts_with(&root), "目标不在当前项目中");
+        anyhow::ensure!(
+            self.is_worktree_path(destination.as_path()),
+            "目标不在当前工作区中"
+        );
         anyhow::ensure!(
             !destination.starts_with(&source),
             "不能把条目复制到自身内部"
@@ -999,7 +1180,7 @@ impl Project {
                 event
             })
             .filter(|event| {
-                self.root().is_some_and(|root| event.path.starts_with(root))
+                self.is_worktree_path(event.path.as_path())
                     || !self.buffer_store.buffers_under_path(&event.path).is_empty()
             })
             .collect();
@@ -1021,7 +1202,7 @@ impl Project {
         // 保住外部 checkout 兜底（HEAD/refs 变化触发 head 重读），砍掉 git 操作期间的对象/日志噪声风暴。
         let worktree_events: Vec<_> = events
             .iter()
-            .filter(|event| self.root().is_some_and(|root| event.path.starts_with(root)))
+            .filter(|event| self.is_worktree_path(event.path.as_path()))
             .collect();
         let structural = worktree_events.iter().any(|event| {
             matches!(

@@ -49,8 +49,13 @@ pub(crate) fn test_languages() -> Arc<LanguageRegistry> {
 
 pub(crate) fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
     cx.new(|cx| {
-        Project::new_with_watcher(root, Arc::new(TestWatcher::new()), test_languages(), cx)
-            .expect("测试项目根目录应可规范化")
+        Project::new_with_watcher(
+            vec![root],
+            Arc::new(TestWatcher::new()),
+            test_languages(),
+            cx,
+        )
+        .expect("测试项目根目录应可规范化")
     })
 }
 

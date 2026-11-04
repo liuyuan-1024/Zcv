@@ -64,7 +64,7 @@ use context_menu::DeployedContextMenu;
 use drag::TreeDrag;
 use editing::EditState;
 use item::ProjectTreeRow;
-use render::{ProjectTreeRenderContext, render_empty_state, render_list};
+use render::{ProjectTreeRenderContext, render_blank_area, render_empty_state, render_list};
 use transfer::{ConflictSession, TreeClipboard};
 
 #[cfg(test)]
@@ -640,6 +640,18 @@ impl ProjectTreePanel {
         self.drag_scroll_step = Pixels::ZERO;
     }
 
+    /// 清空选中（游标、多选集合与锚点）；空白区域点击时调用。
+    ///
+    /// 清空后选中可停留为空：键盘导航从空选中恢复（首/末行），新建与粘贴回退到项目根。
+    fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        self.pending_click_intent = None;
+        let mut state = self.state.borrow_mut();
+        state.selected = None;
+        state.clear_selected_set();
+        state.anchor = None;
+        cx.notify();
+    }
+
     fn handle_drag_scroll<T: 'static>(
         &mut self,
         event: &DragMoveEvent<T>,
@@ -706,39 +718,50 @@ impl gpui::Render for ProjectTreePanel {
                 }));
         }
 
-        self.state.borrow_mut().ensure_selected();
-        let content = if self.root.is_none() {
-            render_empty_state(cx).into_any_element()
-        } else {
-            let drag_marked = self.drag_marked_snapshot();
-            let display_rows = self.display_rows(cx);
-            let len = display_rows.len();
-            let is_focused = self.focus.contains_focused(window, cx);
-            // 剪切剪贴板路径快照：命中行淡显（Copy 无淡显）。
-            let clipboard_cut: Rc<[AbsolutePathBuf]> = match &self.clipboard {
-                Some(TreeClipboard::Cut(paths)) => paths.clone().into(),
-                _ => Vec::new().into(),
-            };
-            let render_context = ProjectTreeRenderContext {
-                state: Rc::clone(&self.state),
-                rows: display_rows,
-                focus: self.focus.clone(),
-                weak: cx.weak_entity(),
-                edit_state: self.edit_state.clone(),
-                entry_name_editor: self.entry_name_editor.clone(),
-                active_path: self.active_path.clone(),
-                clipboard_cut,
-                drag_marked,
-                drag_blocked: self.edit_state.is_some() || self.conflict.is_some(),
-            };
-            render_list(
-                &self.scroll_handle,
-                &self.scrollbar,
-                len,
-                is_focused,
-                render_context,
-            )
-            .into_any_element()
+        let content = match self.root.clone() {
+            None => render_empty_state(cx).into_any_element(),
+            Some(root) => {
+                let drag_marked = self.drag_marked_snapshot();
+                let display_rows = self.display_rows(cx);
+                let len = display_rows.len();
+                let is_focused = self.focus.contains_focused(window, cx);
+                // 剪切剪贴板路径快照：命中行淡显（Copy 无淡显）。
+                let clipboard_cut: Rc<[AbsolutePathBuf]> = match &self.clipboard {
+                    Some(TreeClipboard::Cut(paths)) => paths.clone().into(),
+                    _ => Vec::new().into(),
+                };
+                let render_context = ProjectTreeRenderContext {
+                    state: Rc::clone(&self.state),
+                    rows: display_rows,
+                    focus: self.focus.clone(),
+                    weak: cx.weak_entity(),
+                    edit_state: self.edit_state.clone(),
+                    entry_name_editor: self.entry_name_editor.clone(),
+                    active_path: self.active_path.clone(),
+                    clipboard_cut,
+                    drag_marked,
+                    drag_blocked: self.edit_state.is_some() || self.conflict.is_some(),
+                };
+                // 列表按内容自适应高度，行数不足时由空白区域占据剩余空间；
+                // 空白区域的交互语义统一为「视为项目根目录」。
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(render_list(
+                        &self.scroll_handle,
+                        &self.scrollbar,
+                        len,
+                        is_focused,
+                        render_context,
+                    ))
+                    .child(render_blank_area(
+                        root,
+                        cx.weak_entity(),
+                        self.focus.clone(),
+                    ))
+                    .into_any_element()
+            }
         };
 
         // 复制进度：面板底部 2px 细条（宽度为完成百分比）+ 「复制中 n/N」状态文本。

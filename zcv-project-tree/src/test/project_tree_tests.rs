@@ -3068,15 +3068,14 @@ fn drag_hovering_folded_directory_expands_it_after_delay(cx: &mut TestAppContext
     });
 }
 
-// ═══ 回归：空白点击仅聚焦、不改选中 ═════════════════════════
+// ═══ 空白区域交互 ═══════════════════════════════════
 //
-// 锁定既定语义：行数较少、列表填不满面板时，点击行下方空白区域——
-// 面板根 div（track_focus + size_full）获得焦点，这是空白点击唯一的反应；
-// 行级 on_mouse_down 依赖每行 hitbox 命中，空白坐标不在任何行内，
-// 容器上也没有鼠标按下处理器，故不会写入任何选中状态。
+// 列表按内容自适应高度（Infer），行数不足时行下方存在空白区域；
+// 空白区域的交互语义统一为「视为项目根目录」：
+// 左键点击清空选中并聚焦面板，右键以根为目标部署菜单，拖放以根为落点。
 
 #[gpui::test]
-fn clicking_blank_area_below_rows_keeps_selection_and_focuses_panel(cx: &mut TestAppContext) {
+fn clicking_blank_area_clears_selection_and_focuses_panel(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = abs(directory.path()).into_path_buf();
@@ -3115,42 +3114,27 @@ fn clicking_blank_area_below_rows_keeps_selection_and_focuses_panel(cx: &mut Tes
     cx.update(|window, cx| window.blur(cx));
     let focused_before = cx.update(|window, cx| tree.read(cx).focus.contains_focused(window, cx));
     assert!(!focused_before, "预置：失焦后面板不应处于聚焦态");
-    // 记录点击空白前的选中快照（含多选集合）。
-    let (selected_before, set_before) = cx.read_entity(&tree, |tree, _| {
-        let state = tree.state.borrow();
-        (state.selected.clone(), state.selected_set().clone())
-    });
 
     // 点击行区域以下的空白：y 明显大于 行数(2) × 行高，x 在面板内。
     let blank = point(px(10.), px(f32::from(row_height) * 2. + 10.));
     cx.simulate_click(blank, Modifiers::default());
     cx.run_until_parked();
 
-    // 空白点击唯一的反应：根容器（track_focus）获得焦点。
+    // 空白点击：根容器（track_focus）获得焦点，选中（游标、集合、锚点）清空。
     let focused_after = cx.update(|window, cx| tree.read(cx).focus.is_focused(window));
     assert!(focused_after, "空白点击应聚焦面板根容器");
-    // 选中路径与多选集合保持不变：空白坐标不命中任何行的 hitbox。
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert_eq!(state.selected, selected_before, "空白点击不应改写选中路径");
-        assert_eq!(
-            state.selected.as_deref(),
-            Some(file.as_path()),
-            "选中应仍停留在显式点击过的那行"
-        );
-        assert_eq!(
-            state.selected_set(),
-            &set_before,
-            "空白点击不应改写多选集合"
-        );
+        assert!(state.selected.is_none(), "空白点击应清空选中游标");
+        assert!(state.selected_set().is_empty(), "空白点击应清空多选集合");
+        assert!(state.anchor.is_none(), "空白点击应清空区间锚点");
     });
 }
 
-/// 回归（用户线索）：多选建立后点击行下方空白区域，多选集合不得被清空，
-/// 随后的多选拖拽仍应移动全部选中项。空白点击唯一反应是聚焦根容器，
-/// 未命中任何行的坐标不得写入任何选中状态。
+/// 多选建立后点击行下方空白区域：多选集合被清空，
+/// 随后从原选中行拖起的拖拽退化为单项移动（载荷从清空后的选中集派生）。
 #[gpui::test]
-fn blank_click_between_multi_selection_and_drag_keeps_set(cx: &mut TestAppContext) {
+fn blank_click_clears_multi_selection_before_drag(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
@@ -3182,37 +3166,31 @@ fn blank_click_between_multi_selection_and_drag_keeps_set(cx: &mut TestAppContex
         Modifiers::default(),
     );
     cx.run_until_parked();
-
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
         assert!(
-            state.is_in_selection_set(&abs(file_a.clone())),
-            "空白点击不得清空多选集合（a 项）"
+            !state.is_in_selection_set(&abs(file_a.clone())),
+            "空白点击应清空多选集合（a 项）"
         );
         assert!(
-            state.is_in_selection_set(&abs(file_b.clone())),
-            "空白点击不得清空多选集合（b 项）"
+            !state.is_in_selection_set(&abs(file_b.clone())),
+            "空白点击应清空多选集合（b 项）"
         );
+        assert!(state.selected.is_none(), "空白点击应清空选中游标");
     });
 
-    // 空白点击后从 a（行 2）拖起放到 dst（行 1）：仍应移动全部选中项。
+    // 空白点击后从 a（行 2）拖起放到 dst（行 1）：集合已清空，退化为单项移动。
     simulate_drag(cx, 2, 1);
-    assert!(
-        !file_a.exists() && !file_b.exists(),
-        "空白点击后的多选拖拽仍应移动全部选中项"
-    );
-    assert!(
-        target.join("a.txt").is_file() && target.join("b.txt").is_file(),
-        "多选各项都应落入目标目录"
-    );
+    assert!(!file_a.exists(), "拖拽应移动被拖的 a.txt");
+    assert!(file_b.exists(), "b.txt 已不在集合内，不应被移动");
+    assert!(target.join("a.txt").is_file(), "a.txt 应落入目标目录");
+    assert!(!target.join("b.txt").exists(), "b.txt 不应落入目标目录");
 }
 
+/// 从未点击任何行时面板无选中（渲染期不再兜底填首行）；空白点击保持空选中。
 #[gpui::test]
-fn clicking_blank_area_without_prior_row_click_keeps_fallback_selection(cx: &mut TestAppContext) {
+fn panel_starts_unselected_and_blank_click_keeps_selection_empty(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
-    // 子场景：从未显式点击过任何行。行模型建好后，渲染期的 ensure_selected 兜底
-    // 已把选中填为首行（根行），「选中为空」在有行面板中不可停留；
-    // 本用例锁定：该兜底之外，空白点击自身不产生任何额外的选中写入。
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let file = directory.path().join("a.txt");
     fs::write(&file, "hello").expect("应创建测试文件");
@@ -3229,20 +3207,14 @@ fn clicking_blank_area_without_prior_row_click_keeps_fallback_selection(cx: &mut
     });
     cx.run_until_parked();
 
-    // 点击空白前记录选中快照：应为渲染兜底的首行（根行），多选集合为空。
-    let root = cx.read_entity(&tree, |tree, _| tree.root.clone());
-    let root = root.expect("测试项目应包含根目录");
-    let (selected_before, set_before) = cx.read_entity(&tree, |tree, _| {
+    // 无点击历史：选中为空，不再有渲染期兜底。
+    cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert_eq!(
-            state.selected.as_deref(),
-            Some(root.as_path()),
-            "预置：无点击历史时选中应为渲染兜底的首行（根行）"
-        );
-        (state.selected.clone(), state.selected_set().clone())
+        assert!(state.selected.is_none(), "无点击历史时不应有选中");
+        assert!(state.selected_set().is_empty(), "多选集合应为空");
     });
 
-    // 点击行区域以下的空白。
+    // 点击行区域以下的空白：保持空选中。
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let blank = point(px(10.), px(f32::from(row_height) * 2. + 10.));
     cx.simulate_click(blank, Modifiers::default());
@@ -3250,13 +3222,220 @@ fn clicking_blank_area_without_prior_row_click_keeps_fallback_selection(cx: &mut
 
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert_eq!(state.selected, selected_before, "空白点击不应写入新的选中");
+        assert!(state.selected.is_none(), "空白点击后选中应保持为空");
+        assert!(state.selected_set().is_empty(), "空白点击后多选集合应为空");
+    });
+}
+
+/// 右键空白区域：以根为目标部署菜单，选中收拢为根。
+#[gpui::test]
+fn context_menu_opens_at_blank_area_as_root(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (_temp, project, root, _file_a, _file_b, _file_c, _target) = drag_project(cx);
+    let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project.clone(), cx));
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+
+    // 先选中 a.txt（行 2），右键行下方空白（共 5 行，y 明显越过 5×行高）。
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+    cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_mouse_down(
+        point(px(10.), px(f32::from(row_height) * 5. + 10.)),
+        MouseButton::Right,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+
+    let menu = cx.read_entity(&tree, |tree, _| {
+        let deployed = tree.context_menu.as_ref().expect("右键空白应部署菜单");
         assert_eq!(
-            state.selected_set(),
-            &set_before,
-            "空白点击不应写入多选集合"
+            tree.state.borrow().selected.as_deref(),
+            Some(abs(root.clone()).as_path()),
+            "右键空白应把选中收拢为项目根"
         );
-        assert!(state.selected_set().is_empty(), "全程不应出现多选标记");
+        deployed.menu.clone()
+    });
+    cx.update(|window, cx| {
+        assert!(
+            menu.read(cx).focus_handle(cx).is_focused(window),
+            "部署后焦点应在菜单面板"
+        );
+    });
+}
+
+/// 拖拽行放到空白区域：目标为项目根，条目移入根目录。
+#[gpui::test]
+fn dropping_on_blank_area_moves_entry_to_root(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = abs(directory.path()).into_path_buf();
+    let target = root.join("dst");
+    fs::create_dir(&target).expect("应创建目标目录");
+    let file = target.join("a.txt");
+    fs::write(&file, "a").expect("应创建测试文件");
+    let project = test_project(root.clone(), cx);
+    let project_for_move = project.clone();
+    let (tree, cx) = cx.add_window_view({
+        let project = project.clone();
+        move |_, cx| {
+            let mut tree = ProjectTreePanel::new(project, cx);
+            tree.set_on_move(Rc::new(
+                move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut App| {
+                    project_for_move.update(cx, |project, cx| {
+                        project.move_path(&from, &to, overwrite, cx)
+                    })
+                },
+            ));
+            // 展开 dst 使 a.txt 可见：行序 [根, dst, a.txt]。
+            tree.state.borrow_mut().expanded.insert(abs(target.clone()));
+            tree.rebuild_rows(cx);
+            tree
+        }
+    });
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+
+    // 从 a.txt（行 2）拖起，越过拖拽阈值后移到行下方空白并释放。
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+    let blank = point(px(10.), px(f32::from(row_height) * 3. + 10.));
+    cx.simulate_mouse_down(
+        point(px(10.), row_y(2)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        point(px(14.), row_y(2)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(blank, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_mouse_up(blank, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+
+    assert!(!file.exists(), "拖到空白应把 a.txt 移出原目录");
+    assert!(
+        root.join("a.txt").is_file(),
+        "拖到空白应把 a.txt 移入项目根"
+    );
+}
+
+/// 拖拽悬停折叠目录后移到空白区域：悬停展开计时被清掉，到期不展开旧行。
+#[gpui::test]
+fn drag_moving_to_blank_area_cancels_hover_expand(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (_temp, project, _root, _file_a, _file_b, target) = paste_project(cx);
+    let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project.clone(), cx));
+    cx.run_until_parked();
+
+    // 拖起 a.txt（行 2）后悬停在折叠的 dst 行（行 1）上：调度展开计时器。
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+    cx.simulate_mouse_down(
+        point(px(10.), row_y(2)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        point(px(14.), row_y(2)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        point(px(10.), row_y(1)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    assert!(
+        cx.read_entity(&tree, |tree, _| tree.hover_expand_task.is_some()),
+        "悬停折叠目录行应调度展开计时器"
+    );
+
+    // 移到行下方空白（共 4 行，y 明显越过 4×行高）：悬停计时清掉。
+    cx.simulate_mouse_move(
+        point(px(10.), px(f32::from(row_height) * 4. + 10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.read_entity(&tree, |tree, _| {
+        assert!(
+            tree.hover_expand_task.is_none(),
+            "移到空白应清掉悬停展开计时"
+        );
+        assert!(tree.drag_hover_path.is_none(), "移到空白应清掉悬停记录");
+    });
+
+    // 越过延迟后：折叠目录不被展开。
+    cx.executor().advance_clock(HOVER_EXPAND_DELAY * 2);
+    cx.run_until_parked();
+    cx.read_entity(&tree, |tree, _| {
+        assert!(
+            !tree.state.borrow().expanded.contains(&abs(target.clone())),
+            "移到空白后到期不应展开旧行"
+        );
+    });
+}
+
+/// 空白点击清空选中后新建条目：回退到项目根，占位行出现在根行之后。
+#[gpui::test]
+fn new_entry_after_blank_click_creates_in_root(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = abs(directory.path()).into_path_buf();
+    let file = root.join("a.txt");
+    fs::write(&file, "hello").expect("应创建测试文件");
+    let project = test_project(root.clone(), cx);
+    let (tree, cx) = cx.add_window_view({
+        let project = project.clone();
+        move |_, cx| {
+            let mut tree = ProjectTreePanel::new(project, cx);
+            let root = tree.root.clone().expect("测试项目应包含根目录");
+            tree.state.borrow_mut().expanded.insert(root);
+            tree.rebuild_rows(cx);
+            tree
+        }
+    });
+    cx.run_until_parked();
+
+    // 点击行区域以下的空白，清空选中。
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let blank = point(px(10.), px(f32::from(row_height) * 2. + 10.));
+    cx.simulate_click(blank, Modifiers::default());
+    cx.run_until_parked();
+    cx.read_entity(&tree, |tree, _| {
+        assert!(
+            tree.state.borrow().selected.is_none(),
+            "预置：空白点击后选中应为空"
+        );
+    });
+
+    // 新建条目：无选中时回退项目根。
+    cx.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.handle_tree_new_entry(&TreeNewEntry, window, cx)
+        });
+    });
+    cx.run_until_parked();
+    cx.read_entity(&tree, |tree, cx| {
+        let parent = match &tree
+            .edit_state
+            .as_ref()
+            .expect("新建应进入编辑态")
+            .operation
+        {
+            EditOperation::Create { parent } => parent.clone(),
+            other => panic!("应为新建编辑态，实际为 {other:?}"),
+        };
+        assert_eq!(parent, abs(root.clone()), "无选中时新建应回退项目根");
+        assert!(
+            tree.display_rows(cx).iter().any(|row| row.is_new),
+            "占位行应出现在显示行中"
+        );
     });
 }
 

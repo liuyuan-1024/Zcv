@@ -3,8 +3,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    App, Div, ElementId, Entity, ExternalPaths, Fill, MouseButton, StyleRefinement,
-    UniformListScrollHandle, WeakEntity, Window, div, prelude::*, uniform_list,
+    App, Div, ElementId, Entity, ExternalPaths, Fill, ListSizingBehavior, MouseButton,
+    StyleRefinement, UniformListScrollHandle, WeakEntity, Window, div, prelude::*, uniform_list,
 };
 use zcv_editor::Editor;
 use zcv_path::AbsolutePathBuf;
@@ -118,9 +118,115 @@ pub(super) fn render_list(
             })
             .collect()
     })
-    .size_full()
+    // Infer：列表高度随内容自适应（不超过可用空间），行数不足时由空白区域占据剩余空间。
+    .w_full()
+    .with_sizing_behavior(ListSizingBehavior::Infer)
     .track_scroll(&handle)
     .with_decoration(scrollbar.clone())
+}
+
+/// 渲染列表下方的空白区域：交互语义统一为「视为项目根目录」。
+///
+/// 点击清空选中、右键以根为目标部署菜单、拖放以根为落点。
+/// 清空后选中可停留为空：键盘导航从空选中恢复（首/末行），新建与粘贴回退到根。
+///
+/// 滚轮不做转发：内容超出视口时列表占满容器、本区域高度为零，滚轮永远命不中此处；
+/// 内容不足时此区域可见但列表无可滚动偏移，转发无效果。
+pub(super) fn render_blank_area(
+    root: AbsolutePathBuf,
+    weak: WeakEntity<ProjectTreePanel>,
+    focus: gpui::FocusHandle,
+) -> gpui::Stateful<Div> {
+    div()
+        .id("project-tree-blank-area")
+        .flex_1()
+        // 左键清空选中（游标、多选集合与锚点）并聚焦面板。
+        .on_mouse_down(MouseButton::Left, {
+            let weak = weak.clone();
+            let focus = focus.clone();
+            move |_event, window, cx| {
+                window.focus(&focus, cx);
+                if let Some(tree) = weak.upgrade() {
+                    tree.update(cx, |tree, cx| tree.clear_selection(cx));
+                }
+                cx.stop_propagation();
+            }
+        })
+        // 右键以根为目标部署菜单：与右键根行共用同一入口与选中收拢语义。
+        .on_mouse_down(MouseButton::Right, {
+            let weak = weak.clone();
+            let focus = focus.clone();
+            let root = root.clone();
+            move |event, window, cx| {
+                window.focus(&focus, cx);
+                if let Some(tree) = weak.upgrade() {
+                    tree.update(cx, |tree, cx| {
+                        tree.deploy_context_menu(&root, event.position, window, cx);
+                    });
+                }
+                cx.stop_propagation();
+            }
+        })
+        // 落点高亮（主题悬停色）：仅对存在可移动项时提示，与行落点一致。
+        .drag_over::<TreeDrag>({
+            let root = root.clone();
+            move |mut style: StyleRefinement, dragged: &TreeDrag, _, cx| {
+                let droppable = !filter_movable_sources(&dragged.items(), &root).is_empty();
+                if droppable {
+                    style.background = Some(Fill::from(color::current(cx).element_hover));
+                }
+                style
+            }
+        })
+        .drag_over::<ExternalPaths>(
+            move |mut style: StyleRefinement, dragged: &ExternalPaths, _, cx| {
+                if !dragged.paths().is_empty() {
+                    style.background = Some(Fill::from(color::current(cx).element_hover));
+                }
+                style
+            },
+        )
+        // 拖拽悬停经过空白：空白视为已展开的根，清掉行上遗留的悬停展开计时。
+        // 捕获阶段全派发：仅光标位于本区域内才处理，命中后阻断（与行级处理器同一模式）。
+        .on_drag_move::<TreeDrag>({
+            let weak = weak.clone();
+            move |drag_event, _window, cx| {
+                if !drag_event.bounds.contains(&drag_event.event.position) {
+                    return;
+                }
+                if let Some(tree) = weak.upgrade() {
+                    tree.update(cx, |tree, _| tree.reset_drag_hover());
+                }
+                cx.stop_propagation();
+            }
+        })
+        // 内部拖放：目标为根目录，复用行落点管线（净化、冲突确认、非法项过滤）。
+        .on_drop({
+            let weak = weak.clone();
+            let root = root.clone();
+            move |dragged: &TreeDrag, _window, cx| {
+                if let Some(tree) = weak.upgrade() {
+                    tree.update(cx, |tree, cx| {
+                        tree.handle_row_drop(dragged, &root, true, cx)
+                    });
+                }
+            }
+        })
+        // 外部文件拖放：导入到根目录。
+        .on_drop({
+            let weak = weak.clone();
+            let root = root.clone();
+            move |paths: &ExternalPaths, _window, cx| {
+                if let Some(tree) = weak.upgrade() {
+                    tree.update(cx, |tree, cx| {
+                        tree.stop_drag_scroll();
+                        tree.reset_drag_hover();
+                        tree.import_external_paths(paths, root.clone(), cx);
+                    });
+                }
+                cx.stop_propagation();
+            }
+        })
 }
 /// 单行的交互视觉状态。
 #[derive(Clone, Copy, Default)]

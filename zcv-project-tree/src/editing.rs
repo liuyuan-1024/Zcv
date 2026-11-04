@@ -89,28 +89,34 @@ impl ProjectTreePanel {
         if self.edit_state.is_some() {
             return;
         }
-        let row = {
+        // 父目录：选中目录→自身（折叠时需展开）、文件→其父目录；
+        // 无选中回退项目根（空白点击清空后新建仍可用，根行始终可见且已展开）。
+        let (parent, needs_expand) = {
             let state = self.state.borrow();
-            state.selected_idx().map(|index| state.rows[index].clone())
-        };
-        let Some(row) = row else {
-            return;
-        };
-        let rebuild = row.is_dir;
-        let parent = if row.is_dir {
-            {
-                let mut state = self.state.borrow_mut();
-                state.expanded.insert(row.path.clone());
+            match state.selected_idx().map(|index| state.rows[index].clone()) {
+                Some(row) if row.is_dir => {
+                    let needs_expand = !state.expanded.contains(&row.path);
+                    (row.path, needs_expand)
+                }
+                Some(row) => {
+                    let Some(parent) = row.path.parent() else {
+                        return;
+                    };
+                    let parent = AbsolutePathBuf::new(parent.to_path_buf())
+                        .expect("新建条目父目录必须是绝对路径");
+                    (parent, false)
+                }
+                None => match self.root.clone() {
+                    Some(root) => (root, false),
+                    None => return,
+                },
             }
-            row.path
-        } else {
-            let Some(parent) = row.path.parent() else {
-                return;
-            };
-            AbsolutePathBuf::new(parent.to_path_buf()).expect("新建条目父目录必须是绝对路径")
         };
+        if needs_expand {
+            self.state.borrow_mut().expanded.insert(parent.clone());
+        }
         self.begin_edit(EditOperation::Create { parent }, "", 0..0, window, cx);
-        if rebuild {
+        if needs_expand {
             // 展开父目录后重建行模型；完成时再次按显示行定位输入框。
             self.pending_reveal = Some(RevealTarget::NewEntry);
             self.rebuild_rows(cx);

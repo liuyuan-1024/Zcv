@@ -1,6 +1,6 @@
-//! 任务队列：job 类型族与排队/去重/阶段状态机。
+//! 任务队列：job 类型族与排队/合并/阶段状态机。
 //!
-//! GitJob 按 key 去重（同 key 排队中/执行中时丢弃新 job），经 channel 交后台执行；
+//! GitJob 一律入队，按 key 合并：worker 弹出任务时若同 key 更新任务仍在队列中，则跳过这个过时任务、改运行最新任务；任务执行期间到达的请求因此总能得到补跑。
 //! 阶段状态（Queued/Running/Cancelling/Reconciling）与在途标记在此维护。
 
 use std::{ops::Range, sync::Arc};
@@ -230,12 +230,12 @@ impl GitJob {
 }
 
 impl GitStore {
+    /// 调度一个 job：永远入队，不因同 key 任务在队列或执行中而丢弃请求。
+    ///
+    /// 同 key 合并发生在 worker 弹出任务时：
+    /// 被更新请求取代的过时任务跳过执行，最新请求总是补跑，任务执行期间到达的扫描/刷新请求不会丢失。
     pub(super) fn schedule_job(&mut self, job: GitJob, cx: &mut Context<Self>) -> Option<GitJobId> {
-        // 同 key 的 job 已在队列/执行中时，丢弃新 job（路径已累积在paths_needing_status_update，由正在执行的 job 统一消费）。
         let key = job.key();
-        if self.pending_jobs.contains_key(&key) {
-            return None;
-        }
         let id = self.next_job_id;
         self.next_job_id = self.next_job_id.wrapping_add(1).max(1);
         let operation = match &job {
@@ -244,6 +244,7 @@ impl GitStore {
         };
         let cancellation = operation.map(|_| GitCancellation::new());
         let name = job.task_name();
+        // key 登记同 key 的最新编号：既供弹出时的取代判定，也让旧任务完成时不会误删新任务的登记（finish_job 按编号比对）。
         self.pending_jobs.insert(key.clone(), id);
         self.jobs.insert(
             id,
@@ -270,6 +271,14 @@ impl GitStore {
         }
         cx.emit(GitStoreEvent::JobsUpdated);
         Some(id)
+    }
+
+    /// worker 弹出任务时的合并判定：
+    /// 同 key 存在更新编号的任务（仍在队列中）时，当前任务已被取代，应跳过执行、直接完成。
+    pub(super) fn is_superseded_job(&self, id: GitJobId, job: &GitJob) -> bool {
+        self.pending_jobs
+            .get(&job.key())
+            .is_some_and(|latest| *latest > id)
     }
 
     /// 当前可见任务。远程操作（含排队、取消、确认阶段）优先，确保用户点击后立即获得反馈；

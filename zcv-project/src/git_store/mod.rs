@@ -10,7 +10,7 @@
 //! 变更块操作：界面线程在当前 working 快照上解析 Anchor，把编辑合并进该路径的乐观 index 批次，由批次基准派生完整 index 文本交后台写入；
 //! 权威 index 文本安装新值时清除批次，不需要在途互斥，也不存在让用户刷新的"基准过期"错误。
 //!
-//! 同 key 的排队 job 直接丢弃。
+//! 同 key 的 job 保留最新请求：入队不丢弃，worker 弹出时跳过被更新取代的过时任务。
 
 mod background;
 mod conflict_set;
@@ -430,6 +430,18 @@ impl GitStore {
                         break;
                     };
                     let job = scheduled.job.clone();
+                    // 同 key 合并：更新的同 key 任务仍在队列时，跳过这个过时任务。
+                    // 结果通道回发 Cancelled：等待方（如分支切换）静默收场，不误报错误。
+                    let superseded = this.update(&mut cx, |store, _| {
+                        store.is_superseded_job(scheduled.id, &job)
+                    });
+                    if superseded {
+                        if let Some(tx) = operation_result_sender(&job) {
+                            let _ = tx.send(GitOperationOutcome::Cancelled).await;
+                        }
+                        this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
+                        continue;
+                    }
                     // 排队期间取消：不启动进程，直接完成这个具体任务编号。
                     if scheduled
                         .cancellation
@@ -505,7 +517,6 @@ impl GitStore {
                             store.commit_job(&job, result, cx);
                         }
                         store.finish_job(scheduled.id, cx);
-                        store.schedule_pending_status_refresh(cx);
                     });
                 }
             }
@@ -537,23 +548,10 @@ impl GitStore {
     }
 
     /// 全量扫描：重新发现仓库并重扫所有状态（初始扫描与结构性变化时调用）。
-    pub(super) fn schedule_scan(&mut self, cx: &mut Context<Self>) {
-        self.paths_needing_status_update.clear();
-        self.schedule_job(GitJob::ReloadGitState, cx);
-    }
-
-    /// 当前任务结束后补发执行期间累积的增量路径。
     ///
-    /// 文件监听事件可能在刷新任务执行期间到达；
-    /// 任务去重会跳过重复排队，因此必须在原任务完成后显式消费这批路径。
-    fn schedule_pending_status_refresh(&mut self, cx: &mut Context<Self>) {
-        if self.paths_needing_status_update.is_empty()
-            || self.pending_jobs.contains_key(&GitJobKey::ReloadGitState)
-            || self.pending_jobs.contains_key(&GitJobKey::RefreshStatuses)
-        {
-            return;
-        }
-        self.schedule_job(GitJob::RefreshStatuses, cx);
+    /// 已累积的增量路径不在调度时清除：清除发生在扫描开始时，扫描执行期间到达的路径必须留给排在扫描之后的刷新任务消费。
+    pub(super) fn schedule_scan(&mut self, cx: &mut Context<Self>) {
+        self.schedule_job(GitJob::ReloadGitState, cx);
     }
 
     /// 后台执行用户触发的 git 操作（fetch/pull/push），完成后重新扫描。
@@ -1689,12 +1687,17 @@ impl GitStore {
     fn prepare_job(&mut self, job: &GitJob) -> Option<JobPreparation> {
         let root = self.root.clone()?;
         match job {
-            GitJob::ReloadGitState => Some(JobPreparation {
-                root,
-                repositories: Vec::new(),
-                grouped_paths: Vec::new(),
-                grouped_diff_requests: Vec::new(),
-            }),
+            GitJob::ReloadGitState => {
+                // 全量扫描覆盖此刻已累积的增量路径；
+                // 扫描开始后到达的路径在清除之后累积，由排在扫描之后的刷新任务消费。
+                self.paths_needing_status_update.clear();
+                Some(JobPreparation {
+                    root,
+                    repositories: Vec::new(),
+                    grouped_paths: Vec::new(),
+                    grouped_diff_requests: Vec::new(),
+                })
+            }
             GitJob::RefreshStatuses => {
                 let paths: Vec<AbsolutePathBuf> = mem::take(&mut self.paths_needing_status_update)
                     .into_iter()

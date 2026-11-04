@@ -121,6 +121,105 @@ fn failed_git_status_scan_keeps_last_valid_snapshot(cx: &mut gpui::TestAppContex
     assert_eq!(after_refresh, before);
 }
 
+/// 回归：全量扫描执行期间到达的新扫描请求不得被丢弃。
+/// 丢弃会让在途扫描装回事件之前的旧快照（已删除文件永久留在变更树），
+/// 因此同 key 合并必须是「跳过旧任务、补跑最新请求」。
+#[gpui::test]
+fn scan_request_during_running_scan_is_never_dropped(cx: &mut gpui::TestAppContext) {
+    let (root, _temp) = test_git_repo();
+    fs::write(root.join("scratch.txt"), "临时\n").expect("应写入未跟踪文件");
+    let git_store =
+        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    let entry = cx.read_entity(&git_store, |store, _| {
+        store.status_for_path(&root.join("scratch.txt")).cloned()
+    });
+    assert!(entry.is_some(), "初始扫描应收进未跟踪文件");
+
+    // 模拟一个正在执行的全量扫描（已越过弹出时的合并判定）。
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    let running = cx.read_entity(&git_store, |store, _| {
+        *store
+            .pending_jobs
+            .get(&GitJobKey::ReloadGitState)
+            .expect("应已登记扫描任务")
+    });
+    cx.update_entity(&git_store, |store, cx| store.set_in_flight(running, cx));
+
+    // 执行期间文件被删除：结构性事件再次请求扫描，必须入队等待补跑。
+    fs::remove_file(root.join("scratch.txt")).expect("应删除文件");
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    let trailing = cx.read_entity(&git_store, |store, _| {
+        *store
+            .pending_jobs
+            .get(&GitJobKey::ReloadGitState)
+            .expect("执行中的扫描不得吞掉新的扫描请求")
+    });
+    assert_ne!(running, trailing);
+
+    cx.run_until_parked();
+
+    // 旧任务被最新请求取代后跳过，最新任务补跑并观察到删除后的磁盘。
+    let entry = cx.read_entity(&git_store, |store, _| {
+        store.status_for_path(&root.join("scratch.txt")).cloned()
+    });
+    assert!(entry.is_none(), "补跑的扫描应观察到文件已删除");
+    let drained = cx.read_entity(&git_store, |store, _| {
+        store.jobs.is_empty() && store.pending_jobs.is_empty()
+    });
+    assert!(drained, "合并后队列应排空：旧任务跳过、最新任务执行");
+}
+
+/// 回归：增量刷新执行期间到达的新请求不得被丢弃，执行期间累积的路径
+/// 由补跑的刷新任务在 prepare 阶段统一消费（取代原「任务结束后补发」机制）。
+#[gpui::test]
+fn refresh_request_during_running_refresh_is_never_dropped(cx: &mut gpui::TestAppContext) {
+    let (root, _temp) = test_git_repo();
+    let git_store =
+        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+
+    // 第一个刷新请求入队后模拟执行中。
+    cx.update_entity(&git_store, |store, cx| {
+        store.refresh_statuses_for_paths(&[root.join("tracked.txt")], cx)
+    });
+    let running = cx.read_entity(&git_store, |store, _| {
+        *store
+            .pending_jobs
+            .get(&GitJobKey::RefreshStatuses)
+            .expect("应已登记刷新任务")
+    });
+    cx.update_entity(&git_store, |store, cx| store.set_in_flight(running, cx));
+
+    // 执行期间文件被修改、事件到达：新刷新请求必须入队（不丢弃）。
+    fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n").expect("应修改文件");
+    cx.update_entity(&git_store, |store, cx| {
+        store.refresh_statuses_for_paths(&[root.join("tracked.txt")], cx)
+    });
+    let trailing = cx.read_entity(&git_store, |store, _| {
+        *store
+            .pending_jobs
+            .get(&GitJobKey::RefreshStatuses)
+            .expect("执行中的刷新不得吞掉新的刷新请求")
+    });
+    assert_ne!(running, trailing);
+
+    cx.run_until_parked();
+
+    // 旧任务被取代后跳过；补跑的任务消费执行期间累积的路径并更新状态。
+    let entry = cx.read_entity(&git_store, |store, _| {
+        store.status_for_path(&root.join("tracked.txt")).cloned()
+    });
+    let entry = entry.expect("补跑的刷新任务应消费累积路径");
+    assert!(entry.status.is_modified());
+    let drained = cx.read_entity(&git_store, |store, _| {
+        store.jobs.is_empty() && store.pending_jobs.is_empty()
+    });
+    assert!(drained, "合并后队列应排空");
+}
+
 #[gpui::test]
 fn total_diff_stat_merges_staged_and_unstaged(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();

@@ -1146,8 +1146,8 @@ fn initialize_workspace(
     ));
     let project_subscription =
         cx.subscribe(&project, move |workspace, project, event, cx| match event {
-            ProjectEvent::WorktreeAdded(_)
-            | ProjectEvent::WorktreeRemoved(_)
+            ProjectEvent::WorktreeAdded { .. }
+            | ProjectEvent::WorktreeRemoved { .. }
             | ProjectEvent::WorktreeRootChanged { .. } => {
                 let new_roots: Vec<PathBuf> = project
                     .read(cx)

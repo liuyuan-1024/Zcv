@@ -424,7 +424,7 @@ impl Editor {
         let start = excerpt.source_range().start();
         cx.emit(EditorEvent::OpenExcerptsRequested {
             locations: vec![ExcerptLocation {
-                path: excerpt.path().to_path_buf(),
+                path: excerpt.file_path().to_path_buf(),
                 // Header 的 Open File 是“跳到 excerpt 起点”，不是选中整段 excerpt。
                 source_range: MultiBufferRange::new(start, start)
                     .expect("同点源范围必须有效")

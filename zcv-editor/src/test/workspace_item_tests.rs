@@ -32,7 +32,7 @@ fn item_events_preserve_distinct_semantics() {
 }
 
 #[gpui::test]
-fn breadcrumbs_use_the_supplied_project_root(cx: &mut TestAppContext) {
+fn breadcrumbs_use_the_supplied_relative_path(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     cx.update_entity(&editor, |editor, cx| {
@@ -40,7 +40,7 @@ fn breadcrumbs_use_the_supplied_project_root(cx: &mut TestAppContext) {
     });
 
     let breadcrumbs = cx.read_entity(&editor, |editor, cx| {
-        Item::breadcrumbs(editor, Some(Path::new("/project")), cx)
+        Item::breadcrumbs(editor, Some(Path::new("src/main.rs")), cx)
     });
     let segments = breadcrumbs.expect("编辑器应提供面包屑").0;
     assert_eq!(segments.as_slice(), &[SharedString::from("src/main.rs")]);

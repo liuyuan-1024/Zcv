@@ -187,7 +187,7 @@ impl PickerDelegate for BranchPickerDelegate {
     }
 
     fn placeholder_text(&self) -> &str {
-        "搜索分支..."
+        "搜索或创建分支..."
     }
 }
 

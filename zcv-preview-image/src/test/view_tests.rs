@@ -42,7 +42,7 @@ fn image_preview_provides_breadcrumbs_without_a_source_item(cx: &mut TestAppCont
         assert!(preview.source_item(cx).is_none());
         let (segments, _) = view
             .read(cx)
-            .breadcrumbs(Some(Path::new("/project")), cx)
+            .breadcrumbs(Some(Path::new("assets/icon.png")), cx)
             .expect("图片应提供文件面包屑");
         let segments: Vec<_> = segments
             .into_iter()

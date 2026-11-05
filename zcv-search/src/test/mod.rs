@@ -149,7 +149,7 @@ fn document_toolbar(cx: &mut TestAppContext) -> Entity<DocumentToolbar> {
     let root = AbsolutePathBuf::canonicalize(Path::new(".")).expect("测试项目目录应可规范化");
     let project = cx.new(|cx| Project::new(vec![root], Arc::new(LanguageRegistry::new()), cx));
     let language_registry = cx.read_entity(&project, |project, _| project.language_registry());
-    let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
+    let breadcrumbs = cx.new(|cx| Breadcrumbs::new(project, cx));
     cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, language_registry, cx))
 }
 

@@ -302,10 +302,10 @@ impl Item for FakePreviewItem {
 
     fn breadcrumbs(
         &self,
-        project_root: Option<&Path>,
+        relative_path: Option<&Path>,
         cx: &App,
     ) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
-        self.source_item.breadcrumbs(project_root, cx)
+        self.source_item.breadcrumbs(relative_path, cx)
     }
 
     fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {

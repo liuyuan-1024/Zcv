@@ -12,7 +12,10 @@ use futures::{StreamExt, stream};
 use gpui::{BackgroundExecutor, Task};
 use zcv_git::GitRepository;
 use zcv_language::LanguageRegistry;
-use zcv_path::{AbsolutePathBuf, compare_natural_paths};
+use zcv_path::{
+    AbsolutePathBuf, DisplayPath, ProjectPath, ProjectRootDisplay, ProjectRootId,
+    compare_natural_paths,
+};
 use zcv_text::{ByteOffset, Line, Snapshot, TextRange, WordBoundaryPolicy};
 
 use crate::{
@@ -35,8 +38,12 @@ const MAX_MATCHES: usize = 10_000;
 
 /// 后台搜索逐文件产出的命中；由 UI 线程逐批装配。
 pub struct FileSearchResult {
+    /// 绝对物理路径；打开 Buffer、保存和文件操作使用。
     pub path: PathBuf,
-    pub display_path: PathBuf,
+    /// 根作用域身份；MultiBuffer 排序与去重使用。
+    pub project_path: ProjectPath,
+    /// 根标签 + 根内相对路径；搜索结果 header 与大纲显示使用。
+    pub display_path: DisplayPath,
     pub excerpts: Vec<ExcerptMatches>,
 }
 
@@ -93,6 +100,8 @@ pub(crate) async fn search_worktree(
     let prepared_query = Arc::new(prepared_query);
     let language_registry = Arc::new(language_registry);
     let root = Arc::new(plan.root);
+    let root_id = plan.root_id;
+    let root_display = Arc::new(plan.root_display);
 
     // `buffered` 同时限制在途读取数与乱序完成结果的保留量。
     // 不能先让 worker 把所有完成项塞进按序重排表：当前序号较慢时，后续命中的整文件 Buffer 会持续累积。
@@ -102,13 +111,16 @@ pub(crate) async fn search_worktree(
             let prepared_query = Arc::clone(&prepared_query);
             let language_registry = Arc::clone(&language_registry);
             let root = Arc::clone(&root);
+            let root_display = Arc::clone(&root_display);
             let background_executor = background_executor.clone();
             async move {
                 background_executor
                     .spawn(async move {
                         search_file(
                             path,
+                            root_id,
                             &root,
+                            &root_display,
                             &opened_snapshots,
                             &prepared_query,
                             &language_registry,
@@ -165,7 +177,9 @@ pub(crate) fn searchable_file_paths(plan: &WorktreeSearchPlan) -> Vec<AbsolutePa
 
 fn search_file(
     path: AbsolutePathBuf,
+    root_id: ProjectRootId,
     root: &AbsolutePathBuf,
+    root_display: &ProjectRootDisplay,
     opened_snapshots: &HashMap<AbsolutePathBuf, Snapshot>,
     query: &PreparedSearchQuery,
     language_registry: &Arc<LanguageRegistry>,
@@ -186,12 +200,10 @@ fn search_file(
     if matches.is_empty() {
         return None;
     }
+    let relative = root.relative_path(path.as_path())?;
     Some(FileSearchResult {
-        display_path: path
-            .as_path()
-            .strip_prefix(root.as_path())
-            .unwrap_or_else(|_| path.as_path())
-            .to_path_buf(),
+        project_path: ProjectPath::new(root_id, relative.clone()),
+        display_path: DisplayPath::new(root_display.clone(), relative),
         path: path.into_path_buf(),
         excerpts: excerpt_matches(&snapshot, &matches),
     })

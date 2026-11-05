@@ -272,7 +272,7 @@ impl Render for RepositoryPicker {
             "icons/folder.svg",
             display_name,
         )
-        .label("选择仓库")
+        .label("选择活动仓库")
         .color(color_value)
         .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 

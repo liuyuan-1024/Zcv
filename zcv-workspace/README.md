@@ -32,7 +32,7 @@
 
 保存冲突由 `Item` 报告所涉及的源文件；工作区对每个标签只展示一条常驻选择提示。“覆盖”以显式策略重试保存，“还原”由 `Item` 请求文件边界重载冲突源。标签关闭时同时移除其提示，工作区不保存冲突事实或文件内容。
 
-`Item` 不持有也不返回工具区视图：它只通过 `show_toolbar` 与面包屑数据参与 Pane 的工具区。工具项实现 `ToolbarItemView`，由装配层注册到 Pane 的 `Toolbar`；每个工具项依据当前活动 `Item` 返回自己的 `ToolbarItemLocation`，显隐与换位由工具区统一完成。
+`Item` 不持有也不返回工具区视图：它只通过 `show_toolbar` 与面包屑数据参与 Pane 的工具区。工具项实现 `ToolbarItemView`，由装配层注册到 Pane 的 `Toolbar`；每个工具项依据当前活动 `Item` 返回自己的 `ToolbarItemLocation`，显隐与换位由工具区统一完成。`Item::breadcrumbs` 只提供根内相对路径片段；`Breadcrumbs` 拥有根段的消歧、显示与订阅，单根项目省略根段，多根项目统一显示 Project 派生的根标签。
 
 ### Panel
 

@@ -369,7 +369,7 @@ impl MultiBuffer {
             .min(mapping.source_range.end().get()),
         );
         Some(ExcerptLocation {
-            path: mapping.path.as_path().to_path_buf(),
+            path: mapping.file_path.clone(),
             source_range: TextRange::new(source_start, source_end).expect("源范围必须有效"),
         })
     }

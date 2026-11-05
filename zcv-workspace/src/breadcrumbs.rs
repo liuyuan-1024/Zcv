@@ -1,32 +1,68 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use gpui::{
-    AnyElement, ClipboardItem, Context, Entity, Render, SharedString, Window, div, prelude::*,
+    AnyElement, ClipboardItem, Context, Entity, Render, SharedString, Subscription, Window, div,
+    prelude::*,
 };
-use zcv_project::Project;
+use zcv_path::DisplayPath;
+use zcv_project::{Project, ProjectEvent};
 use zcv_theme::color;
 use zcv_ui::{ButtonLike, TooltipSpec};
 
-use crate::{ItemHandle, typography_for_window};
+use crate::{ItemEvent, ItemHandle, typography_for_window};
 
 const MAX_SEGMENTS: usize = 12;
 
-/// 文档视图顶部的路径导航。活动 Item 由所属视图显式更新。
+/// 文档视图顶部的路径导航。
+///
+/// Breadcrumbs 是根段的唯一所有者：
+/// 活动 Item 只提供根内相对路径，根标签的消歧、更新与多根显示均由本组件根据 Project 状态统一处理。
 pub struct Breadcrumbs {
     project: Entity<Project>,
     item: Option<Box<dyn ItemHandle>>,
+    _project_subscription: Subscription,
+    _item_subscription: Option<Subscription>,
 }
 
 impl Breadcrumbs {
-    pub fn new(project: Entity<Project>) -> Self {
+    pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
+        let _project_subscription = cx.subscribe(&project, |_, _, event, cx| {
+            if matches!(
+                event,
+                ProjectEvent::WorktreeAdded { .. }
+                    | ProjectEvent::WorktreeRemoved { .. }
+                    | ProjectEvent::WorktreeRootChanged { .. }
+            ) {
+                cx.notify();
+            }
+        });
         Self {
             project,
             item: None,
+            _project_subscription,
+            _item_subscription: None,
         }
     }
 
     pub fn set_item(&mut self, item: Option<&dyn ItemHandle>, cx: &mut Context<Self>) {
+        self._item_subscription = None;
         self.item = item.map(ItemHandle::boxed_clone);
+        if let Some(item) = self.item.as_deref() {
+            let this = cx.entity().downgrade();
+            self._item_subscription = Some(item.subscribe_to_item_events(
+                cx,
+                Box::new(move |event, cx| {
+                    if matches!(
+                        event,
+                        ItemEvent::PathChanged
+                            | ItemEvent::UpdateTab
+                            | ItemEvent::UpdateBreadcrumbs
+                    ) {
+                        this.update(cx, |_, cx| cx.notify()).ok();
+                    }
+                }),
+            ));
+        }
         cx.notify();
     }
 }
@@ -34,21 +70,29 @@ impl Breadcrumbs {
 impl Render for Breadcrumbs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let typography = typography_for_window(window, cx);
-        // 多根工作区：按活动文件所属的根做相对化；活动文件在所有根之外时无根可用。
         let active_path = self.item.as_ref().and_then(|item| item.active_path(cx));
-        let project_root = active_path
-            .as_deref()
-            .and_then(|path| self.project.read(cx).root_for_path(path))
-            .map(Path::to_path_buf);
+        let (display_path, show_root) = {
+            let project = self.project.read(cx);
+            let display_path = active_path
+                .as_deref()
+                .and_then(|path| project.display_path_for_path(path));
+            (display_path, project.has_multiple_roots())
+        };
+        // Item 只负责根内相对路径；根段由 Breadcrumbs 统一添加。
+        let item_path = display_path
+            .as_ref()
+            .map(|path| path.relative().as_path())
+            .or(active_path.as_deref());
         let segments = self
             .item
             .as_ref()
-            .and_then(|item| item.breadcrumbs(project_root.as_deref(), cx));
-        let copy_path = active_path.and_then(|path| absolute_path(path, project_root.as_deref()));
+            .and_then(|item| item.breadcrumbs(item_path, cx));
+        let copy_path = active_path.and_then(|path| absolute_path(path, display_path.as_ref()));
         let mut children: Vec<AnyElement> = Vec::new();
 
         if let Some((segments, _font)) = segments {
-            for (index, segment) in collapse_middle_segments(segments).iter().enumerate() {
+            let segments = breadcrumb_segments(segments, display_path.as_ref(), show_root);
+            for (index, segment) in segments.iter().enumerate() {
                 if index > 0 {
                     children.push(
                         div()
@@ -102,10 +146,18 @@ impl Render for Breadcrumbs {
     }
 }
 
-fn absolute_path(path: PathBuf, project_root: Option<&Path>) -> Option<PathBuf> {
-    path.is_absolute()
-        .then_some(path.clone())
-        .or_else(|| project_root.map(|root| root.join(path)))
+fn absolute_path(path: PathBuf, display_path: Option<&DisplayPath>) -> Option<PathBuf> {
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        display_path.map(|display_path| {
+            display_path
+                .root()
+                .full_path
+                .as_path()
+                .join(display_path.relative().as_path())
+        })
+    }
 }
 
 fn collapse_middle_segments(mut segments: Vec<SharedString>) -> Vec<SharedString> {
@@ -116,3 +168,22 @@ fn collapse_middle_segments(mut segments: Vec<SharedString>) -> Vec<SharedString
     }
     segments
 }
+
+fn breadcrumb_segments(
+    segments: Vec<SharedString>,
+    display_path: Option<&DisplayPath>,
+    show_root: bool,
+) -> Vec<SharedString> {
+    let mut segments = collapse_middle_segments(segments);
+    if show_root && let Some(display_path) = display_path {
+        segments.insert(
+            0,
+            SharedString::from(display_path.root().label().to_string()),
+        );
+    }
+    segments
+}
+
+#[cfg(test)]
+#[path = "test/breadcrumbs_tests.rs"]
+mod tests;

@@ -74,9 +74,10 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         self.item_path(cx)
     }
 
+    /// 当前文档的根内路径片段；根段由 Breadcrumbs 统一添加。
     fn breadcrumbs(
         &self,
-        _project_root: Option<&Path>,
+        _relative_path: Option<&Path>,
         _cx: &App,
     ) -> Option<(Vec<SharedString>, Option<Font>)> {
         None
@@ -227,7 +228,7 @@ pub trait ItemHandle: Send + 'static {
     fn subscribe_to_item_events(&self, cx: &mut App, handler: ItemEventHandler) -> Subscription;
     fn breadcrumbs(
         &self,
-        project_root: Option<&Path>,
+        relative_path: Option<&Path>,
         cx: &App,
     ) -> Option<(Vec<SharedString>, Option<Font>)>;
 }
@@ -377,9 +378,9 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn breadcrumbs(
         &self,
-        project_root: Option<&Path>,
+        relative_path: Option<&Path>,
         cx: &App,
     ) -> Option<(Vec<SharedString>, Option<Font>)> {
-        self.read(cx).breadcrumbs(project_root, cx)
+        self.read(cx).breadcrumbs(relative_path, cx)
     }
 }

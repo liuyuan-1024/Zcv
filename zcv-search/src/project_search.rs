@@ -265,11 +265,12 @@ impl ProjectSearchView {
         cx.emit(SearchEvent::MatchesInvalidated);
         cx.notify();
 
+        let show_root = self.project.read(cx).has_multiple_roots();
         let project = self.project.clone();
         let results_editor = self.results_editor.clone();
         self.pending_search = Some(cx.spawn_in(window, async move |this, cx| {
             let _search_task = search_task;
-            // 项目按自然路径序发送文件；组合文档以同序批量追加。
+            // 项目按根 id 顺序、根内自然路径顺序发送文件；组合文档以同序批量追加。
             let mut batched = Vec::<Vec<ExcerptRange>>::new();
             let mut batched_excerpt_count = 0usize;
             loop {
@@ -290,6 +291,13 @@ impl ProjectSearchView {
                 let loading = project.update(cx, |project, cx| {
                     project.open_buffer_async(item.path.clone(), cx)
                 });
+                let project_path = item.project_path.clone();
+                // 根标签只用于消歧多根项目；单根项目的搜索 header 与大纲显示相对路径。
+                let display_path = if show_root {
+                    item.display_path.to_path_buf()
+                } else {
+                    item.display_path.relative().as_path().to_path_buf()
+                };
                 let Ok(source) = loading.await else {
                     continue;
                 };
@@ -304,6 +312,8 @@ impl ProjectSearchView {
                     .into_iter()
                     .map(|excerpt| {
                         ExcerptRange::new(source.clone(), excerpt.range, excerpt.matches)
+                            .with_project_path(project_path.clone())
+                            .with_display_path(display_path.clone())
                     })
                     .collect::<Vec<_>>();
                 batched_excerpt_count += excerpts.len();

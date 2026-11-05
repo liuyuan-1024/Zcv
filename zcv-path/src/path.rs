@@ -8,6 +8,7 @@ use std::{
     fmt, io,
     ops::Deref,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 mod platform;
@@ -329,6 +330,89 @@ impl AsRef<Path> for RelativePathBuf {
 impl fmt::Display for RelativePathBuf {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
+    }
+}
+
+/// 项目根在一次 Project 生命周期内的稳定身份。
+///
+/// 根重命名保留 id；移除后 id 不复用。路径展示标签与 id 解耦。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ProjectRootId(u64);
+
+impl ProjectRootId {
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// 项目根的稳定路径身份：根 id + 根内相对路径。
+///
+/// 这是多根项目中的文件身份与排序输入；不同根的相同相对路径必须保持不同身份。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ProjectPath {
+    root: ProjectRootId,
+    relative: RelativePathBuf,
+}
+
+impl ProjectPath {
+    pub fn new(root: ProjectRootId, relative: RelativePathBuf) -> Self {
+        Self { root, relative }
+    }
+
+    pub const fn root(&self) -> ProjectRootId {
+        self.root
+    }
+
+    pub fn relative(&self) -> &RelativePathBuf {
+        &self.relative
+    }
+}
+
+/// 项目根在面包屑、搜索结果标题等显示面中的展示信息。
+///
+/// `label` 只用于显示，允许随根集合变化重新消歧；身份始终由 `id` 承担。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectRootDisplay {
+    pub id: ProjectRootId,
+    pub label: Arc<str>,
+    pub full_path: AbsolutePathBuf,
+}
+
+impl ProjectRootDisplay {
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+}
+
+/// 项目文件的可显示路径：根标签 + 根内相对路径。
+///
+/// 派生显示值，不是路径身份；不得用于 `PathKey` 比较、去重或锚点解析。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayPath {
+    root: ProjectRootDisplay,
+    relative: RelativePathBuf,
+}
+
+impl DisplayPath {
+    pub fn new(root: ProjectRootDisplay, relative: RelativePathBuf) -> Self {
+        Self { root, relative }
+    }
+
+    pub fn root(&self) -> &ProjectRootDisplay {
+        &self.root
+    }
+
+    pub fn relative(&self) -> &RelativePathBuf {
+        &self.relative
+    }
+
+    /// 根标签 + 相对路径。用于搜索 header、大纲等需要单行路径的显示面。
+    pub fn to_path_buf(&self) -> PathBuf {
+        PathBuf::from(self.root.label()).join(self.relative.as_path())
     }
 }
 

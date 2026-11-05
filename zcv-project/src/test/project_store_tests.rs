@@ -85,6 +85,83 @@ fn multi_root_project_preserves_order_and_answers_root_queries(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn project_paths_are_root_scoped_and_display_labels_disambiguate(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let first = directory.path().join("apps/frontend");
+    let second = directory.path().join("packages/frontend");
+    fs::create_dir_all(first.join("src")).expect("应创建第一个根");
+    fs::create_dir_all(second.join("src")).expect("应创建第二个根");
+    let first_file = first.join("src/main.rs");
+    let second_file = second.join("src/main.rs");
+    fs::write(&first_file, "first\n").expect("应创建第一个文件");
+    fs::write(&second_file, "second\n").expect("应创建第二个文件");
+    let first_root = AbsolutePathBuf::canonicalize(&first).expect("根应可规范化");
+    let second_root = AbsolutePathBuf::canonicalize(&second).expect("根应可规范化");
+    let first_file = AbsolutePathBuf::canonicalize(&first_file)
+        .expect("文件应可规范化")
+        .into_path_buf();
+    let second_file = AbsolutePathBuf::canonicalize(&second_file)
+        .expect("文件应可规范化")
+        .into_path_buf();
+
+    let project = cx.new(|cx| {
+        Project::new(
+            vec![first_root.clone(), second_root.clone()],
+            test_languages(),
+            cx,
+        )
+    });
+    cx.read_entity(&project, |project, _| {
+        assert!(project.has_multiple_roots());
+        let first_path = project
+            .project_path_for_path(&first_file)
+            .expect("文件应属于第一个根");
+        let second_path = project
+            .project_path_for_path(&second_file)
+            .expect("文件应属于第二个根");
+        assert_ne!(first_path.root(), second_path.root());
+        assert_eq!(first_path.relative(), second_path.relative());
+        assert_eq!(first_path.root(), ProjectRootId::new(1));
+        assert_eq!(second_path.root(), ProjectRootId::new(2));
+
+        let first_display = project
+            .display_path_for_project_path(&first_path)
+            .expect("第一个根仍应存在");
+        let second_display = project
+            .display_path_for_project_path(&second_path)
+            .expect("第二个根仍应存在");
+        assert_eq!(first_display.root().label(), "apps/frontend");
+        assert_eq!(second_display.root().label(), "packages/frontend");
+        assert_eq!(
+            first_display.to_path_buf(),
+            PathBuf::from("apps/frontend/src/main.rs")
+        );
+        assert_eq!(
+            project.absolute_path_for_project_path(&first_path),
+            Some(first_root.join_relative(first_path.relative()))
+        );
+    });
+
+    // 根标签是派生值：移除重名根后，剩余根应收回最短唯一后缀。
+    project
+        .update(cx, |project, cx| {
+            project.remove_worktree(second_root.as_path(), cx)
+        })
+        .expect("移除第二个根应成功");
+    cx.read_entity(&project, |project, _| {
+        assert_eq!(
+            project
+                .display_path_for_path(&first_file)
+                .expect("第一个文件仍应属于根")
+                .root()
+                .label(),
+            "frontend"
+        );
+    });
+}
+
+#[gpui::test]
 fn add_and_remove_worktree_update_roots_and_emit_events(cx: &mut TestAppContext) {
     use std::{cell::RefCell, rc::Rc};
 
@@ -97,8 +174,8 @@ fn add_and_remove_worktree_update_roots_and_emit_events(cx: &mut TestAppContext)
     let _subscription = cx.update(|cx| {
         cx.subscribe(&project, move |_, event: &ProjectEvent, _| {
             let label = match event {
-                ProjectEvent::WorktreeAdded(root) => format!("added:{}", root.display()),
-                ProjectEvent::WorktreeRemoved(root) => format!("removed:{}", root.display()),
+                ProjectEvent::WorktreeAdded { root, .. } => format!("added:{}", root.display()),
+                ProjectEvent::WorktreeRemoved { root, .. } => format!("removed:{}", root.display()),
                 _ => return,
             };
             sink.borrow_mut().push(label);
@@ -130,6 +207,104 @@ fn add_and_remove_worktree_update_roots_and_emit_events(cx: &mut TestAppContext)
     assert_eq!(events.len(), 2, "添加与移除各发出一次工作区事件");
     assert!(events[0].starts_with("added:"));
     assert!(events[1].starts_with("removed:"));
+}
+
+#[gpui::test]
+fn root_ids_are_not_reused_after_removal(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let first = tempfile::tempdir().expect("应创建第一个临时目录");
+    let second = tempfile::tempdir().expect("应创建第二个临时目录");
+    let second_root = AbsolutePathBuf::canonicalize(second.path())
+        .expect("第二个根应可规范化")
+        .into_path_buf();
+    let project = test_project(first.path().to_path_buf(), cx);
+
+    project
+        .update(cx, |project, cx| {
+            project.add_worktree(second_root.clone(), cx)
+        })
+        .expect("添加工作区根应成功");
+    cx.read_entity(&project, |project, _| {
+        assert_eq!(
+            project.root_id_for_path(&second_root.join("file.rs")),
+            Some(ProjectRootId::new(2))
+        );
+    });
+
+    project
+        .update(cx, |project, cx| {
+            project.remove_worktree(second_root.as_path(), cx)
+        })
+        .expect("移除工作区根应成功");
+    project
+        .update(cx, |project, cx| {
+            project.add_worktree(second_root.clone(), cx)
+        })
+        .expect("重新添加工作区根应成功");
+    cx.read_entity(&project, |project, _| {
+        assert_eq!(
+            project.root_id_for_path(&second_root.join("file.rs")),
+            Some(ProjectRootId::new(3)),
+            "移除后的根 id 不得复用"
+        );
+    });
+}
+
+#[gpui::test]
+fn renaming_root_preserves_id_and_updates_display_label(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let old_root = directory.path().join("old-root");
+    fs::create_dir_all(&old_root).expect("应创建根目录");
+    let old_file = old_root.join("same.txt");
+    fs::write(&old_file, "needle\n").expect("应创建文件");
+    let old_root = AbsolutePathBuf::canonicalize(&old_root)
+        .expect("旧根应可规范化")
+        .into_path_buf();
+    let old_file = old_root.join("same.txt");
+    let project = test_project(old_root.clone(), cx);
+    let root_id = cx.read_entity(&project, |project, _| {
+        project
+            .project_path_for_path(&old_file)
+            .expect("文件应属于根")
+            .root()
+    });
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = events.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&project, move |_, event: &ProjectEvent, _| {
+            if let ProjectEvent::WorktreeRootChanged { id, .. } = event {
+                sink.borrow_mut().push(*id);
+            }
+        })
+    });
+
+    let new_root = old_root.with_file_name("new-root");
+    project
+        .update(cx, |project, cx| {
+            project.rename_path(&old_root, &new_root, cx)
+        })
+        .expect("根重命名应成功");
+    assert!(!old_root.exists());
+    let new_file = new_root.join("same.txt");
+    assert!(new_file.exists());
+    cx.read_entity(&project, |project, _| {
+        assert_eq!(project.root_id_for_path(&new_file), Some(root_id));
+        let project_path = project
+            .project_path_for_path(&new_file)
+            .expect("重命名后文件仍应属于根");
+        assert_eq!(project_path.root(), root_id);
+        assert_eq!(project_path.relative().as_str(), "same.txt");
+        assert_eq!(
+            project
+                .display_path_for_path(&new_file)
+                .expect("应生成显示路径")
+                .root()
+                .label(),
+            "new-root"
+        );
+    });
+    assert_eq!(events.borrow().as_slice(), &[root_id]);
 }
 
 #[gpui::test]

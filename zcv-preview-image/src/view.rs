@@ -181,12 +181,10 @@ impl Item for ImagePreviewView {
 
     fn breadcrumbs(
         &self,
-        project_root: Option<&Path>,
+        relative_path: Option<&Path>,
         _cx: &App,
     ) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
-        let path = project_root
-            .and_then(|root| self.path.strip_prefix(root).ok())
-            .unwrap_or(&self.path);
+        let path = relative_path.unwrap_or(&self.path);
         let segments = path
             .components()
             .map(|component| component.as_os_str().to_string_lossy().into_owned().into())

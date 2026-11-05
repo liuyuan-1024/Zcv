@@ -309,8 +309,8 @@ impl QuickAccess {
             if matches!(
                 event,
                 ProjectEvent::EntriesChanged
-                    | ProjectEvent::WorktreeAdded(_)
-                    | ProjectEvent::WorktreeRemoved(_)
+                    | ProjectEvent::WorktreeAdded { .. }
+                    | ProjectEvent::WorktreeRemoved { .. }
                     | ProjectEvent::WorktreeRootChanged { .. }
             ) {
                 search.scan_task.take();

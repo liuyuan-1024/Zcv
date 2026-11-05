@@ -71,8 +71,8 @@ impl TopBar {
         let project_subscription = cx.subscribe(&project, |_, _, event, cx| {
             if matches!(
                 event,
-                ProjectEvent::WorktreeAdded(_)
-                    | ProjectEvent::WorktreeRemoved(_)
+                ProjectEvent::WorktreeAdded { .. }
+                    | ProjectEvent::WorktreeRemoved { .. }
                     | ProjectEvent::WorktreeRootChanged { .. }
             ) {
                 cx.notify();

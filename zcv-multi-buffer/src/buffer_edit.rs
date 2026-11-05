@@ -199,10 +199,20 @@ impl MultiBuffer {
         let mut entries = self.state.excerpts.iter().cloned().collect::<Vec<_>>();
         for excerpt in &mut entries {
             let source = &mut self.state.sources[excerpt.source_index];
-            let path = path_key_for_source(source.entity.read(cx), self.path_order);
+            let path = match &source.project_path {
+                Some(project_path) => {
+                    PathKey::for_project_path(project_path.clone(), self.path_order)
+                }
+                None => path_key_for_source(source.entity.read(cx), self.path_order),
+            };
             source.path = path.clone();
+            source.file_path = source.entity.read(cx).file_path().unwrap_or_default();
+            let old_path = excerpt.path.clone();
             excerpt.path = path.clone();
-            excerpt.display_path = path.clone();
+            if excerpt.display_path == old_path {
+                excerpt.display_path = path.clone();
+            }
+            excerpt.file_path = source.file_path.clone();
             excerpt.path_index = intern_path(&mut path_keys, &mut path_key_indices, &path);
         }
         entries.sort_by(|a, b| Ord::cmp(&a.path, &b.path));

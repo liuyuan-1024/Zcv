@@ -47,6 +47,7 @@ use zcv_language::{
     LanguageBufferSnapshot, LanguageRegistry, LanguageSettings, NewlineIndent, OutlineItem,
     SyntaxSnapshot,
 };
+use zcv_path::ProjectPath;
 use zcv_settings::IndentGuideSettings;
 use zcv_text::{
     Affinity, Anchor, Buffer, BufferConfig, BufferId, BufferVersion, ByteOffset, CharOffset,
@@ -87,6 +88,8 @@ pub struct ExcerptRange {
     source: Entity<LanguageBuffer>,
     source_range: TextRange,
     match_ranges: Vec<TextRange>,
+    /// 项目根作用域身份；跨根组合文档必须由调用方显式提供。
+    project_path: Option<ProjectPath>,
     display_path: Option<PathKey>,
     editable: bool,
 }
@@ -123,9 +126,26 @@ impl ExcerptRange {
             source,
             source_range,
             match_ranges,
+            project_path: None,
             display_path: None,
             editable: true,
         }
+    }
+
+    pub fn with_project_path(mut self, path: ProjectPath) -> Self {
+        self.project_path = Some(path);
+        self
+    }
+
+    fn path_key(&self, order: PathOrder, cx: &App) -> PathKey {
+        match &self.project_path {
+            Some(path) => PathKey::for_project_path(path.clone(), order),
+            None => path_key_for_source(self.source.read(cx), order),
+        }
+    }
+
+    fn file_path(&self, cx: &App) -> PathBuf {
+        self.source.read(cx).file_path().unwrap_or_default()
     }
 
     pub fn with_display_path(mut self, path: impl Into<PathBuf>) -> Self {
@@ -180,6 +200,7 @@ impl ExcerptRange {
 /// 组合坐标对应的源文件位置。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExcerptLocation {
+    /// 源文件绝对物理路径；项目搜索等根作用域片段不能返回显示路径。
     pub path: PathBuf,
     pub source_range: TextRange,
 }
@@ -270,6 +291,10 @@ struct ExcerptSource {
     entity: Entity<LanguageBuffer>,
     /// 源文件路径身份；注册或路径变化时算一次，快照构造不再逐源读实体。
     path: PathKey,
+    /// 源文件绝对物理路径；打开片段、保存与文件操作使用。
+    file_path: PathBuf,
+    /// 项目根作用域身份；项目搜索/大纲等跨根来源才有值。
+    project_path: Option<ProjectPath>,
     /// 源 Buffer 的稳定身份；无文件路径时参与 PathKey 与显示块分类。
     buffer_id: BufferId,
     text: Snapshot,
@@ -282,8 +307,17 @@ struct ExcerptSource {
     is_dirty: bool,
 }
 
-fn path_key_for_source(source: &LanguageBuffer, order: PathOrder) -> PathKey {
+pub(crate) fn path_key_for_source(source: &LanguageBuffer, order: PathOrder) -> PathKey {
     PathKey::for_buffer(source.file_path(), source.buffer_id(), order)
+}
+
+/// 注册新源时的显式身份输入。
+///
+/// path 由调用方按片段的项目身份或源文件路径构造；project_path 只用于后续显示重建与导航。
+pub(crate) struct SourceRegistration {
+    pub entity: Entity<LanguageBuffer>,
+    pub path: PathKey,
+    pub project_path: Option<ProjectPath>,
 }
 
 /// 不可变快照帧中的源状态（不携带实体引用）。
@@ -345,6 +379,8 @@ struct Excerpt {
     /// 路径身份索引；锚点解析通过它取得当前路径排序键。
     path_index: PathKeyIndex,
     display_path: PathKey,
+    /// 源文件绝对物理路径；组合坐标导航、保存与文件操作使用。
+    file_path: PathBuf,
     /// 实体 header / excerpt divider 归属的逻辑 Buffer。
     buffer_id: BufferId,
     /// 片段在源文档中的锚点范围；权威是源 Anchor，裸 TextRange 只是当前解析缓存。
@@ -371,6 +407,8 @@ struct OutputRegion {
     /// 路径身份索引；锚点解析用它做整数比较。
     path_index: PathKeyIndex,
     display_path: PathKey,
+    /// 源文件绝对物理路径；导航与文件操作使用。
+    file_path: PathBuf,
     /// 实体 header / excerpt divider 归属的逻辑 Buffer。
     buffer_id: BufferId,
     /// 片段在源文档中的锚点范围；权威是源 Anchor，裸 TextRange 只是当前解析缓存。
@@ -623,6 +661,7 @@ impl OutputRegion {
         ExcerptSnapshot {
             path: self.path.clone(),
             display_path: self.display_path.clone(),
+            file_path: self.file_path.clone(),
             buffer_id: self.buffer_id,
             output_range: MultiBufferRange::new(
                 MultiBufferOffset::new(at.bytes),
@@ -664,6 +703,7 @@ impl Excerpt {
             path: self.path.clone(),
             path_index: self.path_index,
             display_path: self.display_path.clone(),
+            file_path: self.file_path.clone(),
             buffer_id: self.buffer_id,
             source_range: self.source_range.clone(),
             source_start_line: self.source_start_line,
@@ -2313,6 +2353,8 @@ struct ProjectionSync {
 pub struct ExcerptSnapshot {
     path: PathKey,
     display_path: PathKey,
+    /// 源文件绝对物理路径；打开片段与文件级操作使用。
+    file_path: PathBuf,
     buffer_id: BufferId,
     output_range: MultiBufferRange,
     source_range: TextRange,
@@ -2326,12 +2368,19 @@ pub struct ExcerptSnapshot {
 }
 
 impl ExcerptSnapshot {
+    /// 路径身份的根内相对路径分量；项目内片段不含根标签，根 id 由内部路径键携带。
     pub fn path(&self) -> &Path {
         self.path.as_path()
     }
 
+    /// 展示路径：项目内片段带消歧后的根标签；不得作为身份或导航路径。
     pub fn display_path(&self) -> &Path {
         self.display_path.as_path()
+    }
+
+    /// 源文件绝对物理路径；项目作用域路径的展示投影不能用于导航。
+    pub fn file_path(&self) -> &Path {
+        &self.file_path
     }
 
     /// 当前逻辑 excerpt 的稳定 Buffer 身份。
@@ -3013,6 +3062,7 @@ impl From<Snapshot> for MultiBufferSnapshot {
             path: path.clone(),
             path_index: PathKeyIndex::new(0),
             display_path: path,
+            file_path: PathBuf::new(),
             buffer_id: BufferId::new(0),
             source_range: ExcerptContext::new(&text, range, false),
             source_start_line: 0,

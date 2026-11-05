@@ -318,7 +318,7 @@ impl PickerDelegate for RecentProjectsDelegate {
     }
 
     fn placeholder_text(&self) -> &str {
-        "搜索项目..."
+        "搜索..."
     }
     fn render_footer(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         let typography = typography_for_window(window, cx);
@@ -420,8 +420,8 @@ impl RecentProjects {
         let project_subscription = cx.subscribe(&project, |_, _, event, cx| {
             if matches!(
                 event,
-                ProjectEvent::WorktreeAdded(_)
-                    | ProjectEvent::WorktreeRemoved(_)
+                ProjectEvent::WorktreeAdded { .. }
+                    | ProjectEvent::WorktreeRemoved { .. }
                     | ProjectEvent::WorktreeRootChanged { .. }
             ) {
                 cx.notify();

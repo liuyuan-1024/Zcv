@@ -44,9 +44,17 @@ fn test_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Workspace {
+    test_workspace_with_roots(vec![root], window, cx)
+}
+
+fn test_workspace_with_roots(
+    roots: Vec<std::path::PathBuf>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Workspace {
     let project = cx.new(|cx| {
         Project::new_with_watcher(
-            vec![root],
+            roots,
             Arc::new(PassiveWatcher::new()),
             Arc::new(LanguageRegistry::new()),
             cx,
@@ -153,6 +161,111 @@ fn project_search_folds_all_files_in_one_display_update(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+async fn project_search_orders_roots_by_root_id_not_absolute_path(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let later = directory.path().join("z-root");
+    let earlier = directory.path().join("a-root");
+    fs::create_dir_all(&later).expect("应创建后加入的根");
+    fs::create_dir_all(&earlier).expect("应创建先加入的根");
+    fs::write(later.join("same.txt"), "needle\n").expect("应创建文件");
+    fs::write(earlier.join("same.txt"), "needle\n").expect("应创建文件");
+    let later = AbsolutePathBuf::canonicalize(&later)
+        .expect("根应可规范化")
+        .into_path_buf();
+    let earlier = AbsolutePathBuf::canonicalize(&earlier)
+        .expect("根应可规范化")
+        .into_path_buf();
+    cx.update(|cx| init(cx, Arc::new(LanguageRegistry::new())));
+
+    // 根加入顺序与绝对路径字典序相反：先 z-root，后 a-root。
+    let (workspace, cx) = cx.add_window_view(move |window, cx| {
+        test_workspace_with_roots(vec![later, earlier], window, cx)
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        deploy(workspace, None, window, cx)
+    });
+    let view = workspace.read_with(cx, project_search_view);
+    view.update_in(cx, |view, window, cx| {
+        view.run_search(
+            SearchQuery {
+                query: "needle".into(),
+                ..Default::default()
+            },
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+
+    let display_paths = view.update(cx, |view, cx| {
+        let snapshot = view.excerpts.update(cx, |buffer, cx| buffer.snapshot(cx));
+        snapshot
+            .excerpts()
+            .map(|excerpt| excerpt.display_path().to_path_buf())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(display_paths.len(), 2);
+    assert_eq!(
+        display_paths,
+        vec![
+            std::path::PathBuf::from("z-root/same.txt"),
+            std::path::PathBuf::from("a-root/same.txt"),
+        ],
+        "跨根结果必须按根 id 顺序装配，不能按绝对路径重排"
+    );
+}
+
+#[gpui::test]
+async fn nested_root_file_is_searched_exactly_once_by_inner_root(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let outer = directory.path().join("outer");
+    let inner = outer.join("packages/app");
+    fs::create_dir_all(&inner).expect("应创建嵌套根");
+    fs::write(inner.join("same.txt"), "needle\n").expect("应创建文件");
+    let outer = AbsolutePathBuf::canonicalize(&outer)
+        .expect("根应可规范化")
+        .into_path_buf();
+    let inner = AbsolutePathBuf::canonicalize(&inner)
+        .expect("根应可规范化")
+        .into_path_buf();
+    cx.update(|cx| init(cx, Arc::new(LanguageRegistry::new())));
+
+    let (workspace, cx) = cx.add_window_view(move |window, cx| {
+        test_workspace_with_roots(vec![outer, inner], window, cx)
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        deploy(workspace, None, window, cx)
+    });
+    let view = workspace.read_with(cx, project_search_view);
+    view.update_in(cx, |view, window, cx| {
+        view.run_search(
+            SearchQuery {
+                query: "needle".into(),
+                ..Default::default()
+            },
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+
+    let display_paths = view.update(cx, |view, cx| {
+        let snapshot = view.excerpts.update(cx, |buffer, cx| buffer.snapshot(cx));
+        snapshot
+            .excerpts()
+            .map(|excerpt| excerpt.display_path().to_path_buf())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        display_paths,
+        vec![std::path::PathBuf::from("app/same.txt")],
+        "嵌套根内的文件只能由最内层根产出一次"
+    );
+}
+
+#[gpui::test]
 async fn project_search_installs_background_loaded_results(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
@@ -181,6 +294,18 @@ async fn project_search_installs_background_loaded_results(cx: &mut TestAppConte
         view.read_with(cx, |view, cx| SearchableItem::search_count(view, cx).0),
         1,
         "后台加载的命中文档应经唯一 Editor 管线展示"
+    );
+    let display_paths = view.update(cx, |view, cx| {
+        let snapshot = view.excerpts.update(cx, |buffer, cx| buffer.snapshot(cx));
+        snapshot
+            .excerpts()
+            .map(|excerpt| excerpt.display_path().to_path_buf())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        display_paths,
+        vec![std::path::PathBuf::from("result.txt")],
+        "单根项目搜索结果应省略根标签"
     );
 }
 

@@ -408,17 +408,15 @@ pub struct PreviewToolbar {
     pane: WeakEntity<Pane>,
     breadcrumbs: Entity<Breadcrumbs>,
     has_source: bool,
-    _breadcrumb_subscription: Option<Subscription>,
 }
 
 impl PreviewToolbar {
     pub fn new(pane: WeakEntity<Pane>, project: Entity<Project>, cx: &mut Context<Self>) -> Self {
-        let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
+        let breadcrumbs = cx.new(|cx| Breadcrumbs::new(project, cx));
         Self {
             pane,
             breadcrumbs,
             has_source: false,
-            _breadcrumb_subscription: None,
         }
     }
 }
@@ -432,7 +430,6 @@ impl ToolbarItemView for PreviewToolbar {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
-        self._breadcrumb_subscription = None;
         let preview = item.and_then(|item| item.as_preview_item(cx));
         let source = preview.as_ref().and_then(|preview| preview.source_item(cx));
         let has_source = source.is_some();
@@ -446,26 +443,6 @@ impl ToolbarItemView for PreviewToolbar {
         self.breadcrumbs.update(cx, |breadcrumbs, cx| {
             breadcrumbs.set_item(breadcrumb_item, cx)
         });
-        if let Some(breadcrumb_item) = breadcrumb_item {
-            let this = cx.entity().downgrade();
-            self._breadcrumb_subscription = Some(breadcrumb_item.subscribe_to_item_events(
-                cx,
-                Box::new(move |event, cx| {
-                    if matches!(
-                        event,
-                        ItemEvent::PathChanged
-                            | ItemEvent::UpdateTab
-                            | ItemEvent::UpdateBreadcrumbs
-                    ) {
-                        this.update(cx, |toolbar, cx| {
-                            toolbar.breadcrumbs.update(cx, |_, cx| cx.notify());
-                            cx.notify();
-                        })
-                        .ok();
-                    }
-                }),
-            ));
-        }
         if preview.is_some() {
             ToolbarItemLocation::Secondary
         } else {

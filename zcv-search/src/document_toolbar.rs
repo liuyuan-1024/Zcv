@@ -189,6 +189,6 @@ pub(super) fn install(
     let pane = workspace.pane().clone();
     let language_registry = workspace.project().read(cx).language_registry();
     let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
-    let breadcrumbs = cx.new(|_| Breadcrumbs::new(workspace.project().clone()));
+    let breadcrumbs = cx.new(|cx| Breadcrumbs::new(workspace.project().clone(), cx));
     cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, language_registry, cx))
 }

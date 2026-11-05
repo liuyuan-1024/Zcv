@@ -54,14 +54,13 @@ impl Item for Editor {
 
     fn breadcrumbs(
         &self,
-        project_root: Option<&Path>,
+        relative_path: Option<&Path>,
         cx: &App,
     ) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
-        let path = self.file_path(cx)?;
-        let relative = project_root
-            .and_then(|root| path.strip_prefix(root).ok())
-            .unwrap_or(&path);
-        Some((vec![relative.to_string_lossy().into_owned().into()], None))
+        let path = relative_path
+            .map(Path::to_path_buf)
+            .or_else(|| self.file_path(cx))?;
+        Some((vec![path.to_string_lossy().into_owned().into()], None))
     }
 
     fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {

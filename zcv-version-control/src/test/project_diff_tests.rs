@@ -310,6 +310,12 @@ fn conflict_projection_shows_only_conflicts_with_context(cx: &mut TestAppContext
             expected,
             "冲突视图应只组合冲突及前后两行"
         );
+        assert!(
+            excerpts
+                .iter()
+                .all(|excerpt| excerpt.display_path() == Path::new("conflicted.rs")),
+            "单根冲突视图应显示根内相对路径，不应显示根名称"
+        );
         assert_eq!(view.conflict_editor_hunks(cx).len(), 2);
     });
 
@@ -1247,21 +1253,13 @@ fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestApp
     assert!(!staged_text.contains("未暂存内容"));
     assert!(unstaged_text.contains("未暂存内容"));
     assert!(!unstaged_text.contains("line2"));
-    let repository_name = root
-        .file_name()
-        .expect("测试仓库应有名称")
-        .to_string_lossy()
-        .into_owned();
     cx.read_entity(&staged_view, |view, cx| {
         assert!(view.multi_buffer.read(cx).is_read_only());
         assert!(
             !view.editor.read(cx).supports_replace(cx),
             "只读的已暂存差异不应支持替换"
         );
-        assert_eq!(
-            view.tab_content_text(cx),
-            format!("已暂存更改 · {repository_name}")
-        );
+        assert_eq!(view.tab_content_text(cx), "已暂存更改");
         assert_eq!(
             view.tab_icon(cx).map(|icon| icon.to_string()),
             Some("icons/lock.svg".into())
@@ -1273,10 +1271,7 @@ fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestApp
             view.editor.read(cx).supports_replace(cx),
             "可编辑的未暂存差异应支持替换"
         );
-        assert_eq!(
-            view.tab_content_text(cx),
-            format!("未暂存更改 · {repository_name}")
-        );
+        assert_eq!(view.tab_content_text(cx), "未暂存更改");
         assert_eq!(
             view.tab_icon(cx).map(|icon| icon.to_string()),
             Some("icons/diff.svg".into())

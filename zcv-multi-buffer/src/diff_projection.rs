@@ -23,7 +23,8 @@ use crate::{
     DeletedHunkRegion, DiffTransform, DiffTransformHunkInfo, DiffTransformHunkSide, Excerpt,
     ExcerptContext, ExcerptDiffKind, ExcerptRange, ExcerptSummary, MBTextSummary, MappingPosition,
     MultiBuffer, MultiBufferCursor, MultiBufferEvent, MultiBufferSnapshot, OutputRegion, PathKey,
-    SourceIncremental, Sources, projection_text_equal_in_ranges, snapshot_range_summary,
+    SourceIncremental, SourceRegistration, Sources, path_key_for_source,
+    projection_text_equal_in_ranges, snapshot_range_summary,
 };
 use zcv_buffer_diff::{
     BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkKind, DiffHunkStaging, diff_line_boundary,
@@ -1351,7 +1352,11 @@ impl MultiBuffer {
         let new = bases
             .iter()
             .filter(|source| !self.state.source_indices.contains_key(&source.entity_id()))
-            .cloned()
+            .map(|source| SourceRegistration {
+                entity: source.clone(),
+                path: path_key_for_source(source.read(cx), self.path_order),
+                project_path: None,
+            })
             .collect();
         self.register_sources(new, &HashSet::new(), cx);
         for source in bases {
@@ -1367,7 +1372,15 @@ impl MultiBuffer {
             return;
         };
         if !self.state.source_indices.contains_key(&source.entity_id()) {
-            self.register_sources(vec![source.clone()], &HashSet::new(), cx);
+            self.register_sources(
+                vec![SourceRegistration {
+                    entity: source.clone(),
+                    path: path_key_for_source(source.read(cx), self.path_order),
+                    project_path: None,
+                }],
+                &HashSet::new(),
+                cx,
+            );
         }
         let index = self.state.source_indices[&source.entity_id()];
         if self.state.sources[index].text.version() != source.read(cx).version() {

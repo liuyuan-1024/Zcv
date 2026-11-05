@@ -84,7 +84,9 @@ impl MultiBuffer {
         let mut prepared = Vec::with_capacity(excerpts.len());
         for excerpt in excerpts {
             let source = excerpt.source.read(cx);
-            let path = path_key_for_source(source, self.path_order);
+            let path = excerpt.path_key(self.path_order, cx);
+            let file_path = excerpt.file_path(cx);
+            let project_path = excerpt.project_path.clone();
             let buffer_id = source.buffer_id();
             let source_id = excerpt.source.entity_id();
             let source_index = match next_source_indices.get(&source_id).copied() {
@@ -94,6 +96,8 @@ impl MultiBuffer {
                     next_sources.push(ExcerptSource {
                         entity: excerpt.source.clone(),
                         path: path.clone(),
+                        file_path: file_path.clone(),
+                        project_path: project_path.clone(),
                         buffer_id,
                         settings: snapshot_settings(&snapshot),
                         text: snapshot.text,
@@ -134,6 +138,8 @@ impl MultiBuffer {
                 next_sources.push(ExcerptSource {
                     entity: entity.clone(),
                     path: path_key_for_source(source, self.path_order),
+                    file_path: source.file_path().unwrap_or_default(),
+                    project_path: None,
                     buffer_id: source.buffer_id(),
                     settings: snapshot_settings(&snapshot),
                     text: snapshot.text,
@@ -169,6 +175,7 @@ impl MultiBuffer {
                 path: item.path,
                 path_index,
                 display_path,
+                file_path: next_sources[item.source_index].file_path.clone(),
                 buffer_id: next_sources[item.source_index].buffer_id,
                 source_range: ExcerptContext::new(
                     &next_sources[item.source_index].text,
@@ -233,6 +240,7 @@ impl MultiBuffer {
                 path,
                 path_index,
                 display_path,
+                file_path: source.file_path.clone(),
                 buffer_id: source.buffer_id,
                 source_range: ExcerptContext::new(&source.text, excerpt.source_range, false),
                 source_start_line: start_line,
@@ -484,7 +492,7 @@ impl MultiBuffer {
     /// 注册尚未跟踪的源：文本/语法快照、变更订阅与捕获表；返回新增源的起始索引。
     pub(crate) fn register_sources(
         &mut self,
-        new_sources: Vec<Entity<LanguageBuffer>>,
+        new_sources: Vec<SourceRegistration>,
         subscribe_ids: &HashSet<EntityId>,
         cx: &mut Context<Self>,
     ) -> usize {
@@ -499,31 +507,34 @@ impl MultiBuffer {
         // 每个可见源都接收语法元数据事件；只有组合文本的权威输入订阅文本增量。
         let new_source_subscriptions = new_sources
             .iter()
-            .map(|source| {
+            .map(|registration| {
                 Self::subscribe_source(
-                    source.clone(),
-                    subscribe_ids.contains(&source.entity_id()),
+                    registration.entity.clone(),
+                    subscribe_ids.contains(&registration.entity.entity_id()),
                     cx,
                 )
             })
             .collect::<Vec<_>>();
-        self.state.sources.extend(new_sources.iter().map(|source| {
-            let language_buffer = source.read(cx);
-            let snapshot = language_buffer.snapshot();
-            let path = path_key_for_source(language_buffer, self.path_order);
-            let buffer_id = language_buffer.buffer_id();
-            ExcerptSource {
-                entity: source.clone(),
-                path,
-                buffer_id,
-                settings: snapshot_settings(&snapshot),
-                text: snapshot.text,
-                syntax: snapshot.syntax,
-                highlight_cache: snapshot.highlight_cache,
-                capture_map: Arc::from([]),
-                is_dirty: snapshot.is_dirty,
-            }
-        }));
+        self.state
+            .sources
+            .extend(new_sources.iter().map(|registration| {
+                let language_buffer = registration.entity.read(cx);
+                let snapshot = language_buffer.snapshot();
+                let buffer_id = language_buffer.buffer_id();
+                ExcerptSource {
+                    entity: registration.entity.clone(),
+                    path: registration.path.clone(),
+                    file_path: language_buffer.file_path().unwrap_or_default(),
+                    project_path: registration.project_path.clone(),
+                    buffer_id,
+                    settings: snapshot_settings(&snapshot),
+                    text: snapshot.text,
+                    syntax: snapshot.syntax,
+                    highlight_cache: snapshot.highlight_cache,
+                    capture_map: Arc::from([]),
+                    is_dirty: snapshot.is_dirty,
+                }
+            }));
         self.state
             .source_subscriptions
             .extend(new_source_subscriptions);
@@ -543,14 +554,13 @@ impl MultiBuffer {
     }
 
     /// 片段源文件路径；源必须已注册。
-    fn excerpt_path(&self, excerpt: &ExcerptRange, _cx: &App) -> PathKey {
-        let source_index = self.state.source_indices[&excerpt.source.entity_id()];
-        self.state.sources[source_index].path.clone()
+    fn excerpt_path(&self, excerpt: &ExcerptRange, cx: &App) -> PathKey {
+        excerpt.path_key(self.path_order, cx)
     }
 
     /// 用给定 excerpts 替换其源路径现有的全部 excerpts（按路径有序插入）。
     ///
-    /// 路径由片段源的 file_path 确定；同一调用内的片段必须属于同一路径。
+    /// 路径由片段的 ProjectPath 身份或源 file_path 确定；同一调用内的片段必须属于同一路径。
     /// 新增源自动注册，其余路径的片段与其组合坐标保持不变。
     /// 替换某路径的 excerpts，保持其余路径不变并维持路径升序。
     ///
@@ -572,7 +582,11 @@ impl MultiBuffer {
             if !self.state.source_indices.contains_key(&source_id)
                 && seen_source_ids.insert(source_id)
             {
-                new_sources.push(excerpt.source.clone());
+                new_sources.push(SourceRegistration {
+                    entity: excerpt.source.clone(),
+                    path: self.excerpt_path(excerpt, cx),
+                    project_path: excerpt.project_path.clone(),
+                });
             }
         }
         let subscribe_ids = excerpts
@@ -608,7 +622,7 @@ impl MultiBuffer {
         let mut paths_to_project = Vec::with_capacity(paths.len());
         for group in paths {
             let first = group.first().expect("追加的文件必须包含片段");
-            let path = path_key_for_source(first.source.read(cx), self.path_order);
+            let path = first.path_key(self.path_order, cx);
             assert!(
                 previous_path
                     .as_ref()
@@ -616,10 +630,9 @@ impl MultiBuffer {
                 "追加路径必须按组合文档路径顺序严格递增"
             );
             assert!(
-                group.iter().all(|excerpt| path_key_for_source(
-                    excerpt.source.read(cx),
-                    self.path_order
-                ) == path),
+                group
+                    .iter()
+                    .all(|excerpt| excerpt.path_key(self.path_order, cx) == path),
                 "同一组片段必须属于同一路径"
             );
             previous_path = Some(path.clone());
@@ -629,7 +642,11 @@ impl MultiBuffer {
                 if subscribe_ids.insert(source_id)
                     && !self.state.source_indices.contains_key(&source_id)
                 {
-                    new_sources.push(excerpt.source.clone());
+                    new_sources.push(SourceRegistration {
+                        entity: excerpt.source.clone(),
+                        path: excerpt.path_key(self.path_order, cx),
+                        project_path: excerpt.project_path.clone(),
+                    });
                 }
                 flattened.push(excerpt);
             }

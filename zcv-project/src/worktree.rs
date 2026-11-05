@@ -12,7 +12,7 @@ use std::{
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use zcv_git::{GitRepository, RealGitRepository};
-use zcv_path::AbsolutePathBuf;
+use zcv_path::{AbsolutePathBuf, ProjectRootDisplay, ProjectRootId};
 
 /// `.git` 目录名（仓库发现用）。
 const DOT_GIT: &str = ".git";
@@ -36,8 +36,12 @@ pub(crate) struct Worktree {
 
 #[derive(Clone)]
 pub(crate) struct WorktreeSearchPlan {
+    pub(crate) root_id: ProjectRootId,
     pub(crate) root: AbsolutePathBuf,
+    pub(crate) root_display: ProjectRootDisplay,
     filter: TreeFilter,
+    /// 嵌套在本根内部的其它项目根；外层扫描不得重复产出这些根下的文件。
+    nested_roots: Vec<AbsolutePathBuf>,
 }
 
 impl Worktree {
@@ -62,11 +66,22 @@ impl Worktree {
     pub(crate) fn filter(&self) -> TreeFilter {
         self.filter.clone()
     }
+}
 
-    pub(crate) fn search_plan(&self) -> WorktreeSearchPlan {
-        WorktreeSearchPlan {
-            root: self.root.clone(),
-            filter: self.filter.clone(),
+impl WorktreeSearchPlan {
+    pub(crate) fn new(
+        root_id: ProjectRootId,
+        root: AbsolutePathBuf,
+        root_display: ProjectRootDisplay,
+        filter: TreeFilter,
+        nested_roots: Vec<AbsolutePathBuf>,
+    ) -> Self {
+        Self {
+            root_id,
+            root,
+            root_display,
+            filter,
+            nested_roots,
         }
     }
 }
@@ -83,8 +98,13 @@ pub(crate) struct TreeFilter {
 
 impl WorktreeSearchPlan {
     pub(crate) fn is_excluded(&self, path: &Path) -> bool {
-        path.strip_prefix(&self.root)
-            .is_ok_and(|relative| self.filter.is_excluded(relative))
+        // 外层根跳过嵌套根的整个子树；嵌套根自己的扫描计划会产出这些文件。
+        self.nested_roots
+            .iter()
+            .any(|nested| path.starts_with(nested.as_path()))
+            || path
+                .strip_prefix(&self.root)
+                .is_ok_and(|relative| self.filter.is_excluded(relative))
     }
 }
 

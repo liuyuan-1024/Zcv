@@ -10,6 +10,7 @@ use gpui::{AppContext as _, Context, Entity, TestAppContext};
 use crate::{DiffFile, DisplayHunk};
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging, DiffOperations};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
+use zcv_path::{ProjectPath, ProjectRootId, RelativePathBuf};
 use zcv_text::{
     Buffer, BufferConfig, ByteOffset, CharOffset, Edit, LargeFilePolicy, Line, StorageError,
     TextError, TextRange, TransactionMetadata, Utf16Offset,
@@ -5993,4 +5994,38 @@ fn coordinate_cursor_anchors_match_snapshot_across_excerpt_boundaries(cx: &mut T
             );
         }
     }
+}
+
+#[test]
+fn project_path_keys_order_by_stable_root_id_before_relative_path() {
+    let first_root = ProjectRootId::new(1);
+    let second_root = ProjectRootId::new(2);
+    let relative =
+        |path: &str| RelativePathBuf::from_path(Path::new(path)).expect("相对路径应有效");
+
+    let first_root_z = PathKey::for_project_path(
+        ProjectPath::new(first_root, relative("z.rs")),
+        PathOrder::Natural,
+    );
+    let second_root_a = PathKey::for_project_path(
+        ProjectPath::new(second_root, relative("a.rs")),
+        PathOrder::Natural,
+    );
+    assert!(
+        first_root_z < second_root_a,
+        "跨根顺序必须先按根 id，而不是按根内相对路径或绝对路径"
+    );
+
+    let first_root_a = PathKey::for_project_path(
+        ProjectPath::new(first_root, relative("a.rs")),
+        PathOrder::Natural,
+    );
+    assert!(first_root_a < first_root_z, "同根内仍按自然路径顺序");
+    assert_ne!(
+        first_root_a,
+        PathKey::for_project_path(
+            ProjectPath::new(second_root, relative("a.rs")),
+            PathOrder::Natural
+        )
+    );
 }

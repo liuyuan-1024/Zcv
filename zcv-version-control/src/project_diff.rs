@@ -787,14 +787,27 @@ impl DiffView {
                 },
             )
         });
-        let visible = self
+        let visible_files = self
             .files
             .iter()
             .map(|file| file.path.clone())
             .collect::<HashSet<_>>();
-        self.conflict_files.retain(|path, _| visible.contains(path));
+        let visible_display_paths = {
+            let project = self.project.read(cx);
+            self.files
+                .iter()
+                .map(|file| {
+                    project
+                        .relative_display_path(&file.path)
+                        .unwrap_or(&file.path)
+                        .to_path_buf()
+                })
+                .collect::<HashSet<_>>()
+        };
+        self.conflict_files
+            .retain(|path, _| visible_files.contains(path));
         for (display_path, excerpts) in &attached {
-            if !visible.contains(display_path) {
+            if !visible_display_paths.contains(display_path) {
                 self.multi_buffer.update(cx, |buffer, cx| {
                     buffer.remove_excerpts_for_path(&excerpts[0].0, cx);
                 });
@@ -833,7 +846,13 @@ impl DiffView {
                 continue;
             }
             let windows = conflict_excerpt_windows(&conflicts, DIFF_CONTEXT_LINES);
-            let current = attached.get(&file.path);
+            let display_path = self
+                .project
+                .read(cx)
+                .relative_display_path(&file.path)
+                .unwrap_or(&file.path)
+                .to_path_buf();
+            let current = attached.get(&display_path);
             if windows.is_empty() {
                 if let Some(current) = current {
                     self.multi_buffer.update(cx, |buffer, cx| {
@@ -846,7 +865,7 @@ impl DiffView {
                 .into_iter()
                 .map(|lines| {
                     ExcerptRange::line_range(subscription.source.clone(), lines, cx)
-                        .with_display_path(file.path.clone())
+                        .with_display_path(display_path.clone())
                 })
                 .collect::<Vec<_>>();
             let same_ranges = current.is_some_and(|current| {
@@ -887,9 +906,15 @@ impl DiffView {
             {
                 continue;
             }
+            let display_path = self
+                .project
+                .read(cx)
+                .relative_display_path(&file.path)
+                .unwrap_or(&file.path)
+                .to_path_buf();
             for (index, region) in conflicts.regions().iter().enumerate() {
                 let Some(excerpt) = snapshot.excerpts().find(|excerpt| {
-                    excerpt.display_path() == file.path
+                    excerpt.display_path() == display_path
                         && excerpt.source_range().start().get() <= region.outer.start
                         && excerpt.source_range().end().get() >= region.outer.end
                 }) else {
@@ -1327,15 +1352,15 @@ impl Item for DiffView {
 
     fn tab_content_text(&self, cx: &App) -> SharedString {
         let title = self.kind.title();
-        match self
-            .project
-            .read(cx)
-            .git_store()
-            .read(cx)
-            .active_repository_name()
-        {
-            Some(name) => format!("{title} · {name}").into(),
-            None => title.into(),
+        let project = self.project.read(cx);
+        let git_store = project.git_store();
+        let git_store = git_store.read(cx);
+        // 单根项目且活动仓库就是项目根时，根名/仓库名不提供额外消歧信息。
+        let show_repository = project.has_multiple_roots()
+            || git_store.active_repository_workdir() != project.main_root();
+        match git_store.active_repository_name() {
+            Some(name) if show_repository => format!("{title} · {name}").into(),
+            _ => title.into(),
         }
     }
 

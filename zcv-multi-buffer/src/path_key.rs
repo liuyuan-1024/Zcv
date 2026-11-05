@@ -11,7 +11,7 @@ use std::{
     sync::Arc,
 };
 
-use zcv_path::{compare_natural_paths, compare_tree_entries};
+use zcv_path::{ProjectPath, compare_natural_paths, compare_tree_entries};
 use zcv_text::BufferId;
 
 /// 组合文档在创建时固定的文件显示顺序。
@@ -21,11 +21,22 @@ pub(crate) enum PathOrder {
     Tree,
 }
 
+/// 路径身份的两种来源：项目根作用域的稳定坐标，或没有项目归属的绝对/匿名路径。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum PathIdentity {
+    /// 项目搜索、项目大纲等跨根文档使用的稳定身份：根 id + 根内相对路径。
+    Project(ProjectPath),
+    /// 单文档 diff、匿名 Buffer 等没有项目根归属的来源。
+    Unscoped { path: Arc<Path> },
+}
+
 /// excerpt 与 diff 文件在组合文档中的路径身份。
+///
+/// `order` 决定根内路径的自然/树排序；跨根时先按稳定根 id 排序，绝不能用绝对路径顺序。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PathKey {
     order: Option<PathOrder>,
-    path: Arc<Path>,
+    identity: PathIdentity,
 }
 
 impl PathKey {
@@ -36,7 +47,17 @@ impl PathKey {
     pub(crate) fn with_order(path: impl Into<PathBuf>, order: PathOrder) -> Self {
         Self {
             order: Some(order),
-            path: Arc::from(path.into()),
+            identity: PathIdentity::Unscoped {
+                path: Arc::from(path.into()),
+            },
+        }
+    }
+
+    /// 项目路径使用根 id + 相对路径作为身份；这是跨根组合文档的唯一排序输入。
+    pub(crate) fn for_project_path(path: ProjectPath, order: PathOrder) -> Self {
+        Self {
+            order: Some(order),
+            identity: PathIdentity::Project(path),
         }
     }
 
@@ -55,25 +76,52 @@ impl PathKey {
     pub(crate) fn min() -> Self {
         Self {
             order: None,
-            path: Arc::from(Path::new("")),
+            identity: PathIdentity::Unscoped {
+                path: Arc::from(Path::new("")),
+            },
         }
     }
 
     pub(crate) fn as_path(&self) -> &Path {
-        &self.path
+        match &self.identity {
+            PathIdentity::Project(path) => path.relative().as_path(),
+            PathIdentity::Unscoped { path } => path,
+        }
+    }
+
+    fn cmp_identity(&self, other: &Self) -> Ordering {
+        match (&self.identity, &other.identity) {
+            (PathIdentity::Project(left), PathIdentity::Project(right)) => {
+                left.root().cmp(&right.root()).then_with(|| {
+                    compare_relative(
+                        self.order,
+                        left.relative().as_path(),
+                        right.relative().as_path(),
+                    )
+                })
+            }
+            // 不同身份来源同时出现时保持确定性全序；项目身份优先于无作用域路径。
+            (PathIdentity::Project(_), PathIdentity::Unscoped { .. }) => Ordering::Less,
+            (PathIdentity::Unscoped { .. }, PathIdentity::Project(_)) => Ordering::Greater,
+            (PathIdentity::Unscoped { path: left }, PathIdentity::Unscoped { path: right }) => {
+                compare_relative(self.order, left, right)
+            }
+        }
+    }
+}
+
+fn compare_relative(order: Option<PathOrder>, left: &Path, right: &Path) -> Ordering {
+    match order {
+        Some(PathOrder::Tree) => compare_tree_entries((left, false), (right, false)),
+        None | Some(PathOrder::Natural) => compare_natural_paths(left, right),
     }
 }
 
 impl Ord for PathKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.order.cmp(&other.order).then_with(|| match self.order {
-            None | Some(PathOrder::Natural) => {
-                compare_natural_paths(self.as_path(), other.as_path())
-            }
-            Some(PathOrder::Tree) => {
-                compare_tree_entries((self.as_path(), false), (other.as_path(), false))
-            }
-        })
+        self.order
+            .cmp(&other.order)
+            .then_with(|| self.cmp_identity(other))
     }
 }
 

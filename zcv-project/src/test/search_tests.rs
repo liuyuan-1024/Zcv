@@ -79,7 +79,7 @@ async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppCont
     assert_eq!(
         results
             .iter()
-            .map(|file| file.display_path.clone())
+            .map(|file| file.display_path.relative().as_path().to_path_buf())
             .collect::<Vec<_>>(),
         vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
         "并行扫描必须仍按工作区路径顺序交付结果"
@@ -116,7 +116,7 @@ async fn search_results_follow_natural_project_path_order(cx: &mut TestAppContex
     assert_eq!(
         results
             .iter()
-            .map(|file| file.display_path.clone())
+            .map(|file| file.display_path.relative().as_path().to_path_buf())
             .collect::<Vec<_>>(),
         vec![PathBuf::from("file2.txt"), PathBuf::from("file10.txt")],
         "搜索流须与组合文档的自然路径顺序一致"

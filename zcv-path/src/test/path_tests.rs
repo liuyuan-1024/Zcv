@@ -118,3 +118,31 @@ fn normalize_for_comparison_keeps_missing_leaf_under_canonical_parent() {
     );
     assert!(normalized.starts_with(dunce::canonicalize(directory.path()).unwrap()));
 }
+
+#[test]
+fn project_paths_keep_root_identity_and_display_paths_are_derived() {
+    let first_root = ProjectRootId::new(1);
+    let second_root = ProjectRootId::new(2);
+    let relative = RelativePathBuf::from_path(Path::new("src/main.rs")).expect("相对路径应有效");
+
+    let first = ProjectPath::new(first_root, relative.clone());
+    let second = ProjectPath::new(second_root, relative.clone());
+    assert_eq!(first.root(), first_root);
+    assert_eq!(first.relative().as_str(), "src/main.rs");
+    assert_ne!(first, second, "相同相对路径在不同根下必须是不同身份");
+
+    let display = DisplayPath::new(
+        ProjectRootDisplay {
+            id: first_root,
+            label: std::sync::Arc::from("apps/frontend"),
+            full_path: AbsolutePathBuf::new(PathBuf::from("/work/apps/frontend"))
+                .expect("绝对路径应有效"),
+        },
+        relative,
+    );
+    assert_eq!(
+        display.to_path_buf(),
+        PathBuf::from("apps/frontend/src/main.rs")
+    );
+    assert_eq!(display.root().id, first_root);
+}

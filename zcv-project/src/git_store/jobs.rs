@@ -82,12 +82,15 @@ pub(super) enum GitJobKey {
         path: AbsolutePathBuf,
         ranges: Vec<Range<usize>>,
     },
-    /// 提交（消息参与 key：同消息双击去重，改消息重试不被去重跳过）。
+    /// 按仓库和消息去重提交任务；不同仓库的同名提交互不覆盖。
     Commit {
+        workdir: AbsolutePathBuf,
         message: String,
     },
-    /// 撤销最近一次提交（无参：同一时间只允许一个 uncommit 在途）。
-    Uncommit,
+    /// 各仓库的撤销提交任务分别去重。
+    Uncommit {
+        workdir: AbsolutePathBuf,
+    },
     /// 切换分支（名字参与 key：同名双击去重，改目标不被去重跳过）。
     CheckoutBranch {
         name: String,
@@ -131,9 +134,12 @@ pub(super) enum GitJob {
         diff: Entity<BufferDiff>,
     },
     Commit {
+        workdir: AbsolutePathBuf,
         message: String,
     },
-    Uncommit,
+    Uncommit {
+        workdir: AbsolutePathBuf,
+    },
     CheckoutBranch {
         name: String,
         on_done: Option<async_channel::Sender<GitOperationOutcome>>,
@@ -188,10 +194,13 @@ impl GitJob {
                 path: path.clone(),
                 ranges: edits.iter().map(|edit| edit.range.clone()).collect(),
             },
-            GitJob::Commit { message } => GitJobKey::Commit {
+            GitJob::Commit { workdir, message } => GitJobKey::Commit {
+                workdir: workdir.clone(),
                 message: message.clone(),
             },
-            GitJob::Uncommit => GitJobKey::Uncommit,
+            GitJob::Uncommit { workdir } => GitJobKey::Uncommit {
+                workdir: workdir.clone(),
+            },
             GitJob::CheckoutBranch { name, .. } => GitJobKey::CheckoutBranch { name: name.clone() },
             GitJob::CreateBranch { name, .. } => GitJobKey::CreateBranch { name: name.clone() },
             GitJob::DeleteBranch { name, .. } => GitJobKey::DeleteBranch { name: name.clone() },
@@ -221,7 +230,7 @@ impl GitJob {
                 ..
             } => "重做变更块".into(),
             GitJob::Commit { .. } => "提交".into(),
-            GitJob::Uncommit => "撤销提交".into(),
+            GitJob::Uncommit { .. } => "撤销提交".into(),
             GitJob::CheckoutBranch { .. } => "切换分支".into(),
             GitJob::CreateBranch { .. } => "创建分支".into(),
             GitJob::DeleteBranch { .. } => "删除分支".into(),

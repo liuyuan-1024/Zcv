@@ -36,24 +36,21 @@ fn test_delegate() -> BranchPickerDelegate {
 }
 
 #[test]
-fn display_name_and_visibility_follow_branch_state() {
+fn display_name_follows_branch_state() {
     // 有分支：显示分支名。
     assert_eq!(
         branch_display_name(Some("feature"), None).as_deref(),
         Some("feature")
     );
-    assert!(has_branch_context(Some("feature"), None));
 
     // detached HEAD（无分支但有提交）：显示 8 位短 SHA。
     assert_eq!(
         branch_display_name(None, Some("0123456789abcdef")).as_deref(),
         Some("01234567")
     );
-    assert!(has_branch_context(None, Some("0123456789abcdef")));
 
-    // 空仓库（无分支无提交）：不显示分支选择器。
+    // 空仓库（无分支无提交）：按钮没有可显示的分支名。
     assert_eq!(branch_display_name(None, None), None);
-    assert!(!has_branch_context(None, None));
 }
 
 #[test]

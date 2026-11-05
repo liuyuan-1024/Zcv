@@ -3,19 +3,17 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     slice,
-    sync::Arc,
 };
 
 use gpui::{AppContext as _, Entity, TestAppContext};
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_editor::Editor;
-use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_git::{FileStatus, GitRevision};
-use zcv_language::LanguageRegistry;
 use zcv_multi_buffer::{DisplayHunk, MultiBuffer};
 use zcv_project::Project;
 
 use super::inject_editor_diff;
+use crate::test::test_project;
 
 /// 测试用：走生产路径（快照 `resolved_diff_hunks`）读取编辑器 diff 视图。
 fn editor_diff_hunks(editor: &Entity<Editor>, cx: &mut TestAppContext) -> Vec<DisplayHunk> {
@@ -31,22 +29,6 @@ fn editor_diff_hunks(editor: &Entity<Editor>, cx: &mut TestAppContext) -> Vec<Di
     })
 }
 use zcv_settings::{SettingsStore, UserSettings};
-
-struct PassiveWatcher(FsWatcher);
-
-impl Watcher for PassiveWatcher {
-    fn add(&self, _path: &Path) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn remove(&self, _path: &Path) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn watch(&self, latency: std::time::Duration) -> FsEventStream {
-        self.0.watch(latency)
-    }
-}
 
 fn run_git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -71,16 +53,7 @@ fn project_with_repo(cx: &mut TestAppContext) -> (tempfile::TempDir, PathBuf, En
     fs::write(root.join(".gitignore"), "ignored.txt\n").expect("应写入忽略规则");
     run_git(&root, &["add", "tracked.txt", ".gitignore"]);
     run_git(&root, &["commit", "-q", "-m", "initial"]);
-    let watcher: Arc<dyn Watcher> = Arc::new(PassiveWatcher(FsWatcher::new()));
-    let project = cx.new(|cx| {
-        Project::new_with_watcher(
-            vec![root.clone()],
-            watcher,
-            Arc::new(LanguageRegistry::new()),
-            cx,
-        )
-        .expect("测试项目应创建成功")
-    });
+    let project = test_project(root.clone(), cx);
     cx.run_until_parked();
     (directory, root, project)
 }

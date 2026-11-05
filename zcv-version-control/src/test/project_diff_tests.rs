@@ -93,7 +93,7 @@ fn clamp_column_to_line(text: &Snapshot, line: usize, column: usize) -> usize {
 }
 
 use super::*;
-use crate::test::test_project;
+use crate::test::{test_project, test_project_roots};
 
 fn canonical_root(path: &Path) -> PathBuf {
     AbsolutePathBuf::canonicalize(path)
@@ -1247,13 +1247,21 @@ fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestApp
     assert!(!staged_text.contains("未暂存内容"));
     assert!(unstaged_text.contains("未暂存内容"));
     assert!(!unstaged_text.contains("line2"));
+    let repository_name = root
+        .file_name()
+        .expect("测试仓库应有名称")
+        .to_string_lossy()
+        .into_owned();
     cx.read_entity(&staged_view, |view, cx| {
         assert!(view.multi_buffer.read(cx).is_read_only());
         assert!(
             !view.editor.read(cx).supports_replace(cx),
             "只读的已暂存差异不应支持替换"
         );
-        assert_eq!(view.tab_content_text(cx), "已暂存更改");
+        assert_eq!(
+            view.tab_content_text(cx),
+            format!("已暂存更改 · {repository_name}")
+        );
         assert_eq!(
             view.tab_icon(cx).map(|icon| icon.to_string()),
             Some("icons/lock.svg".into())
@@ -1265,10 +1273,170 @@ fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestApp
             view.editor.read(cx).supports_replace(cx),
             "可编辑的未暂存差异应支持替换"
         );
-        assert_eq!(view.tab_content_text(cx), "未暂存更改");
+        assert_eq!(
+            view.tab_content_text(cx),
+            format!("未暂存更改 · {repository_name}")
+        );
         assert_eq!(
             view.tab_icon(cx).map(|icon| icon.to_string()),
             Some("icons/diff.svg".into())
+        );
+    });
+}
+
+#[gpui::test]
+fn open_diff_views_follow_active_repository(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let first_dir = tempfile::tempdir().expect("应创建第一个临时仓库");
+    let second_dir = tempfile::tempdir().expect("应创建第二个临时仓库");
+    let first = canonical_root(first_dir.path());
+    let second = canonical_root(second_dir.path());
+
+    let prepare_repository = |root: &Path, label: &str| {
+        run_in(root, &["git", "init", "-q", "-b", "master"]);
+        run_in(root, &["git", "config", "user.email", "test@example.com"]);
+        run_in(root, &["git", "config", "user.name", "Test User"]);
+        fs::write(root.join("conflict.txt"), "base\n").expect("应写入冲突基准");
+        fs::write(root.join("staged.txt"), "base\n").expect("应写入暂存基准");
+        fs::write(root.join("unstaged.txt"), "base\n").expect("应写入未暂存基准");
+        run_in(
+            root,
+            &["git", "add", "conflict.txt", "staged.txt", "unstaged.txt"],
+        );
+        run_in(root, &["git", "commit", "-q", "-m", "base"]);
+
+        run_in(root, &["git", "checkout", "-q", "-b", "feature"]);
+        fs::write(root.join("conflict.txt"), format!("{label} feature\n"))
+            .expect("应写入 feature 内容");
+        run_in(root, &["git", "add", "conflict.txt"]);
+        run_in(root, &["git", "commit", "-q", "-m", "feature"]);
+
+        run_in(root, &["git", "checkout", "-q", "master"]);
+        fs::write(root.join("conflict.txt"), format!("{label} master\n"))
+            .expect("应写入 master 内容");
+        run_in(root, &["git", "add", "conflict.txt"]);
+        run_in(root, &["git", "commit", "-q", "-m", "master"]);
+
+        let merge = Command::new("git")
+            .args(["merge", "feature"])
+            .current_dir(root)
+            .output()
+            .expect("应执行合并");
+        assert!(!merge.status.success(), "测试仓库应产生合并冲突");
+
+        fs::write(root.join("staged.txt"), format!("{label} staged\n")).expect("应写入已暂存改动");
+        run_in(root, &["git", "add", "staged.txt"]);
+        fs::write(root.join("unstaged.txt"), format!("{label} unstaged\n"))
+            .expect("应写入未暂存改动");
+    };
+    prepare_repository(&first, "first");
+    prepare_repository(&second, "second");
+
+    let project = test_project_roots(vec![first.clone(), second.clone()], cx);
+    let store = project.read_with(cx, |project, _| project.git_store());
+    for _ in 0..20 {
+        cx.run_until_parked();
+        if cx.read_entity(&store, |store, _| store.repositories().count()) == 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        cx.read_entity(&store, |store, _| store.repositories().count()),
+        2
+    );
+    store.update(cx, |store, cx| {
+        store.set_active_repository(
+            AbsolutePathBuf::new(first.clone()).expect("第一个仓库路径应为绝对路径"),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let staged = cx.new(|cx| DiffView::new(ProjectDiffKind::Staged, project.clone(), cx));
+    let unstaged = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
+    let conflict = cx.new(|cx| DiffView::new(ProjectDiffKind::Conflict, project, cx));
+    for _ in 0..3 {
+        cx.run_until_parked();
+    }
+
+    let projected_paths = |view: &Entity<DiffView>, cx: &mut TestAppContext| {
+        view.update(cx, |view, cx| {
+            view.multi_buffer.update(cx, |buffer, cx| {
+                buffer
+                    .snapshot(cx)
+                    .excerpts()
+                    .map(|excerpt| excerpt.path().to_path_buf())
+                    .collect::<Vec<_>>()
+            })
+        })
+    };
+    assert_eq!(
+        projected_paths(&staged, cx),
+        vec![first.join("staged.txt")],
+        "已暂存视图只应投影活动仓库的已暂存文件"
+    );
+    assert_eq!(
+        projected_paths(&unstaged, cx),
+        vec![first.join("unstaged.txt")],
+        "未暂存视图只应投影活动仓库的未暂存文件"
+    );
+    assert_eq!(
+        projected_paths(&conflict, cx),
+        vec![first.join("conflict.txt")],
+        "冲突视图只应投影活动仓库的冲突文件"
+    );
+
+    staged.update(cx, |view, _| {
+        view.pending_path = Some(first.join("staged.txt"));
+    });
+    store.update(cx, |store, cx| {
+        store.set_active_repository(
+            AbsolutePathBuf::new(second.clone()).expect("第二个仓库路径应为绝对路径"),
+            cx,
+        );
+    });
+    for _ in 0..3 {
+        cx.run_until_parked();
+    }
+    assert_eq!(
+        cx.read_entity(&store, |store, _| store
+            .active_repository_workdir()
+            .map(Path::to_path_buf)),
+        Some(second.clone()),
+        "活动仓库应已切换到第二个仓库"
+    );
+
+    let second_name = second
+        .file_name()
+        .expect("第二个仓库应有名称")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        projected_paths(&staged, cx),
+        vec![second.join("staged.txt")],
+        "切换活动仓库后已暂存视图应立即换到新仓库"
+    );
+    assert_eq!(
+        projected_paths(&unstaged, cx),
+        vec![second.join("unstaged.txt")],
+        "切换活动仓库后未暂存视图应立即换到新仓库"
+    );
+    assert_eq!(
+        projected_paths(&conflict, cx),
+        vec![second.join("conflict.txt")],
+        "切换活动仓库后冲突视图应立即换到新仓库"
+    );
+    staged.update(cx, |view, cx| {
+        assert!(view.pending_path.is_none(), "旧仓库的待定位路径应被清理");
+        assert!(
+            view.diff_subscriptions
+                .values()
+                .all(|subscription| !subscription.diff.read(cx).path().starts_with(&first)),
+            "旧仓库的 diff 订阅应被释放"
+        );
+        assert_eq!(
+            view.tab_content_text(cx),
+            format!("已暂存更改 · {second_name}")
         );
     });
 }

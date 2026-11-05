@@ -1,23 +1,16 @@
 //! TopBar —— 窗口级顶部外壳。
 
-use std::rc::Rc;
-
 use gpui::{
     AnyElement, AnyView, App, Context, Div, Entity, Subscription, WeakEntity, Window,
     WindowControlArea, div, prelude::*,
 };
 use zcv_actions::OpenSettings;
-use zcv_project::{
-    GitJobPhase, GitOperationKind, GitStore, GitStoreEvent, Project, RemoteOperationState,
-};
+use zcv_project::{GitStoreEvent, Project, ProjectEvent};
 use zcv_theme::{color, scale, typography};
 use zcv_ui::{Button, PopoverLayer};
 
 use crate::{
-    OnProjectSelected, Workspace,
-    branch_picker::{BranchPicker, OnBranchSelected},
-    quick_access::QuickAccess,
-    recent_projects::RecentProjects,
+    OnProjectSelected, Workspace, quick_access::QuickAccess, recent_projects::RecentProjects,
 };
 
 mod application_menu;
@@ -26,29 +19,15 @@ mod window_controls;
 use application_menu::ApplicationMenu;
 use window_controls::WindowControls;
 
-pub(crate) type TopBarCallback = Rc<dyn Fn(&mut Window, &mut App)>;
-
-#[derive(Clone)]
-pub struct TopBarCallbacks {
-    pub on_git_fetch: TopBarCallback,
-    pub on_git_pull: TopBarCallback,
-    pub on_git_push: TopBarCallback,
-}
-
 pub struct TopBar {
     pub recent_projects: Entity<RecentProjects>,
-    /// 分支选择器（显示当前分支名；与 TopBar 一样直接读取 GitStore）。
-    pub branch_picker: Entity<BranchPicker>,
     quick_access: Entity<QuickAccess>,
-    /// Git 状态权威；TopBar 只在渲染时读取，不再由宿主推送可写副本。
-    git_store: Entity<GitStore>,
     /// 应用级更新控件由 binary 装配层注入；TopBar 只负责其固定布局位置。
     update_control: Option<AnyView>,
     workspace: WeakEntity<Workspace>,
-    callbacks: TopBarCallbacks,
     window_controls: WindowControls,
     application_menu: ApplicationMenu,
-    _git_subscription: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl TopBar {
@@ -56,12 +35,9 @@ impl TopBar {
         on_selected: OnProjectSelected,
         workspace: WeakEntity<Workspace>,
         project: Entity<Project>,
-        on_branch: OnBranchSelected,
-        callbacks: TopBarCallbacks,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let git_store = project.read(cx).git_store();
         let picker_layer = PopoverLayer::default();
         let application_menu = ApplicationMenu::new(picker_layer.clone(), cx);
         let recent_projects = cx.new(|cx| {
@@ -74,30 +50,42 @@ impl TopBar {
                 cx,
             )
         });
-        let branch_picker = cx.new(|cx| {
-            BranchPicker::new(
-                git_store.clone(),
-                on_branch,
+        let quick_access = cx.new(|cx| {
+            QuickAccess::new(
+                project.clone(),
+                workspace.clone(),
                 picker_layer.clone(),
                 window,
                 cx,
             )
         });
-        let quick_access = cx.new(|cx| {
-            QuickAccess::new(project, workspace.clone(), picker_layer.clone(), window, cx)
+        let git_store = project.read(cx).git_store();
+        let git_subscription = cx.subscribe(&git_store, |_, _, event, cx| {
+            if matches!(
+                event,
+                GitStoreEvent::Repositories | GitStoreEvent::ActiveRepositoryChanged
+            ) {
+                cx.notify();
+            }
         });
-        let git_subscription = cx.subscribe(&git_store, |_, _, _: &GitStoreEvent, cx| cx.notify());
+        let project_subscription = cx.subscribe(&project, |_, _, event, cx| {
+            if matches!(
+                event,
+                ProjectEvent::WorktreeAdded(_)
+                    | ProjectEvent::WorktreeRemoved(_)
+                    | ProjectEvent::WorktreeRootChanged { .. }
+            ) {
+                cx.notify();
+            }
+        });
         Self {
             recent_projects,
-            branch_picker,
             quick_access,
-            git_store,
             update_control: None,
             workspace,
-            callbacks,
             window_controls: WindowControls::new(),
             application_menu,
-            _git_subscription: git_subscription,
+            _subscriptions: vec![git_subscription, project_subscription],
         }
     }
 
@@ -217,83 +205,7 @@ fn leading_slots(top_bar: &TopBar, cx: &App) -> Vec<AnyElement> {
     // 项目选择器
     out.push(top_bar.recent_projects.clone().into_any_element());
 
-    // Git 分支与同步/推送/拉取操作：项目不是 git 仓库时不显示。
-    let has_repositories = top_bar.git_store.read(cx).has_repositories();
-    if has_repositories {
-        // 空仓库没有分支或 HEAD，不显示分支选择器；其余仓库由选择器显示分支名或短 SHA。
-        if top_bar.branch_picker.read(cx).has_branch_context(cx) {
-            out.push(top_bar.branch_picker.clone().into_any_element());
-        }
-        // 无 remote 时 fetch/pull/push 都会报错，不给出入口；
-        // 有 remote 时同步常显（主动检查更新的兜底），推送/拉取仅在可推/可拉时出现。
-        let remote_operation_state = top_bar.git_store.read(cx).remote_operation_state();
-        if remote_operation_state.has_remote {
-            let busy = remote_operation_state.operation.is_some();
-            let operation_label = remote_operation_label(remote_operation_state);
-            out.push(
-                Button::icon("top-bar.git-fetch", "icons/arrow_circle.svg")
-                    .label(operation_label.unwrap_or("同步"))
-                    .disabled(busy)
-                    .on_click({
-                        let callback = top_bar.callbacks.on_git_fetch.clone();
-                        move |_, window, cx| callback(window, cx)
-                    })
-                    .into_any_element(),
-            );
-            if remote_operation_state.behind > 0 {
-                out.push(
-                    Button::icon_text(
-                        "top-bar.git-pull",
-                        "icons/arrow_down.svg",
-                        remote_operation_state.behind.to_string(),
-                    )
-                    .label(operation_label.unwrap_or("拉取"))
-                    .disabled(busy)
-                    .on_click({
-                        let callback = top_bar.callbacks.on_git_pull.clone();
-                        move |_, window, cx| callback(window, cx)
-                    })
-                    .into_any_element(),
-                );
-            }
-            if remote_operation_state.ahead > 0 {
-                out.push(
-                    Button::icon_text(
-                        "top-bar.git-push",
-                        "icons/arrow_up.svg",
-                        remote_operation_state.ahead.to_string(),
-                    )
-                    .label(operation_label.unwrap_or("推送"))
-                    .disabled(busy)
-                    .on_click({
-                        let callback = top_bar.callbacks.on_git_push.clone();
-                        move |_, window, cx| callback(window, cx)
-                    })
-                    .into_any_element(),
-                );
-            }
-        }
-    }
-
     out
-}
-
-fn remote_operation_label(state: RemoteOperationState) -> Option<&'static str> {
-    let operation = state.operation?;
-    Some(match state.phase.unwrap_or(GitJobPhase::Queued) {
-        GitJobPhase::Queued => match operation {
-            GitOperationKind::Fetch => "等待同步…",
-            GitOperationKind::Pull => "等待拉取…",
-            GitOperationKind::Push => "等待推送…",
-        },
-        GitJobPhase::Running => match operation {
-            GitOperationKind::Fetch => "正在同步…",
-            GitOperationKind::Pull => "正在拉取…",
-            GitOperationKind::Push => "正在推送…",
-        },
-        GitJobPhase::Cancelling => "正在取消远程操作…",
-        GitJobPhase::Reconciling => "正在确认远端状态…",
-    })
 }
 
 fn trailing_slots(

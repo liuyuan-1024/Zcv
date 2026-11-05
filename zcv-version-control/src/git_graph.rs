@@ -97,7 +97,7 @@ pub(crate) struct GitGraphView {
     layout: GraphLayoutState,
     /// 下一批加载的偏移量：已加载的提交数量（`None` 表示从历史开头开始）。
     offset: Option<usize>,
-    /// 使分支或仓库切换时已经在途的旧加载结果失效。
+    /// 使仓库或分支更新时已经在途的旧加载结果失效。
     load_generation: u64,
     loading: bool,
     /// 无更多提交（加载到空批或不足一批）。
@@ -282,7 +282,7 @@ impl GitGraphView {
         }
     }
 
-    /// 清空旧仓库或旧分支的投影，并从全部 refs 重新加载。
+    /// 清空旧分支的投影，并从指定仓库的全部 refs 重新加载。
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.load_generation = self.load_generation.wrapping_add(1);
         self.rows.clear();
@@ -639,13 +639,12 @@ impl GitGraphView {
 impl Item for GitGraphView {
     type Event = SearchEvent;
 
-    fn tab_content_text(&self, _cx: &App) -> SharedString {
-        // 多根工作区以主根（首个根）命名标签。
+    fn tab_content_text(&self, cx: &App) -> SharedString {
         self.project
-            .read(_cx)
-            .main_root()
-            .and_then(|root| root.file_name())
-            .map(|name| name.to_string_lossy().into_owned())
+            .read(cx)
+            .git_store()
+            .read(cx)
+            .active_repository_name()
             .unwrap_or_else(|| "版本控制图".to_owned())
             .into()
     }
@@ -673,7 +672,7 @@ impl Item for GitGraphView {
     }
 }
 
-/// 从布局恢复 Git 提交图；提交数据始终根据当前项目仓库重新加载。
+/// 从布局恢复 Git 提交图；提交数据根据当前活动仓库重新加载。
 pub(super) struct GitGraphSerializedItemProvider;
 
 impl SerializedItemProvider for GitGraphSerializedItemProvider {
@@ -835,6 +834,8 @@ impl GitGraphView {
 }
 
 /// 打开或复用版本控制图 Item（参考 `project_diff::deploy_at`）。
+///
+/// 提交图只读取活动仓库；同一窗口只保留一个图 Item，切换活动仓库后已有 Item 跟随刷新。
 pub fn deploy_at(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let pane = workspace.pane().clone();
     if let Some(existing) = pane

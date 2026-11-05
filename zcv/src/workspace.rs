@@ -34,8 +34,8 @@ use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_theme::{ThemeChoice, typography};
 use zcv_workspace::{
     ActivityIndicator, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
-    PaneEvent, PanelButtons, PreviewToolbar, ToastAction, ToastKind, TopBar, TopBarCallbacks,
-    Workspace, add_to_recent, load_window_bounds, remove_from_recent, save_window_bounds,
+    PaneEvent, PanelButtons, PreviewToolbar, ToastAction, ToastKind, TopBar, Workspace,
+    add_to_recent, load_window_bounds, remove_from_recent, save_window_bounds,
 };
 
 use crate::{
@@ -47,8 +47,8 @@ use zcv_path::AbsolutePathBuf;
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
 use zcv_terminal::TerminalPanel;
 use zcv_version_control::{
-    OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel, deploy_git_graph, deploy_project_diff,
-    install as install_version_control, refresh_pane_git_projection,
+    OnGitOperation, OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel, deploy_git_graph,
+    deploy_project_diff, install as install_version_control, refresh_pane_git_projection,
 };
 
 /// 新建工作区所需的文件监听后端工厂。
@@ -935,48 +935,23 @@ fn initialize_workspace(
             });
         }
     });
+    let panel_on_branch = on_branch.clone();
+    let on_git_operation: OnGitOperation = {
+        let workspace = weak_self.clone();
+        Rc::new(move |operation, _window, cx| {
+            workspace
+                .update(cx, |workspace, cx| {
+                    run_git_operation(workspace, operation, cx);
+                })
+                .ok();
+        })
+    };
 
     let top_bar = cx.new(|cx| {
-        let on_git_fetch = {
-            let workspace = weak_self.clone();
-            Rc::new(move |_window: &mut Window, cx: &mut App| {
-                workspace
-                    .update(cx, |workspace, cx| {
-                        run_git_operation(workspace, GitOperationKind::Fetch, cx);
-                    })
-                    .ok();
-            })
-        };
-        let on_git_pull = {
-            let workspace = weak_self.clone();
-            Rc::new(move |_window: &mut Window, cx: &mut App| {
-                workspace
-                    .update(cx, |workspace, cx| {
-                        run_git_operation(workspace, GitOperationKind::Pull, cx);
-                    })
-                    .ok();
-            })
-        };
-        let on_git_push = {
-            let workspace = weak_self.clone();
-            Rc::new(move |_window: &mut Window, cx: &mut App| {
-                workspace
-                    .update(cx, |workspace, cx| {
-                        run_git_operation(workspace, GitOperationKind::Push, cx);
-                    })
-                    .ok();
-            })
-        };
         TopBar::new(
             switch_project_callback(languages),
             weak_self.clone(),
             workspace.project().clone(),
-            on_branch,
-            TopBarCallbacks {
-                on_git_fetch,
-                on_git_pull,
-                on_git_push,
-            },
             window,
             cx,
         )
@@ -1007,10 +982,6 @@ fn initialize_workspace(
     let recent_projects = top_bar.read(cx).recent_projects.clone();
     workspace.register_action(move |_workspace, _: &ToggleRecentProjects, window, cx| {
         recent_projects.update(cx, |recent_projects, cx| recent_projects.toggle(window, cx));
-    });
-    let branch_picker = top_bar.read(cx).branch_picker.clone();
-    workspace.register_action(move |_workspace, _: &SelectGitBranch, window, cx| {
-        branch_picker.update(cx, |picker, cx| picker.toggle(window, cx));
     });
     workspace.set_settings_files_provider(Box::new(|_cx| zcv_settings::ensure_settings_files()));
 
@@ -1060,12 +1031,18 @@ fn initialize_workspace(
     });
 
     let version_control: Entity<VersionControlPanel> = cx.new(|cx| {
-        let mut panel = VersionControlPanel::new(project.clone(), cx);
+        let mut panel = VersionControlPanel::new(project.clone(), window, cx);
         panel.set_on_open_file(on_open_git_diff_callback(&weak_self));
         panel.set_on_open_graph(on_open_git_graph_callback(&weak_self));
+        panel.set_on_git_operation(on_git_operation);
+        panel.set_on_branch_selected(panel_on_branch);
         panel
     });
 
+    let branch_panel = version_control.clone();
+    workspace.register_action(move |_workspace, _: &SelectGitBranch, window, cx| {
+        branch_panel.update(cx, |panel, cx| panel.toggle_branch_picker(window, cx));
+    });
     workspace.register_panel(project_tree.clone(), DockPosition::Left, window, cx);
     workspace.register_panel(version_control, DockPosition::Left, window, cx);
     initialize_common_workspace(workspace, window, cx);
@@ -1087,7 +1064,14 @@ fn initialize_workspace(
     let git_store = project.read(cx).git_store();
     let git_subscription = cx.subscribe(&git_store, move |workspace, _store, event, cx| {
         let read_error = match event {
-            GitStoreEvent::UncommitFailed(error) => Some(format!("撤销提交失败：{error}")),
+            GitStoreEvent::CommitFailed(workdir, error) => Some(format!(
+                "提交仓库 {} 失败：{error}",
+                workdir.as_path().display()
+            )),
+            GitStoreEvent::UncommitFailed(workdir, error) => Some(format!(
+                "撤销仓库 {} 的提交失败：{error}",
+                workdir.as_path().display()
+            )),
             GitStoreEvent::RevisionLoadFailed(error) => Some(error.clone()),
             GitStoreEvent::StatusScanFailed(error) => Some(error.clone()),
             _ => None,
@@ -1131,15 +1115,7 @@ fn initialize_workspace(
             PaneEvent::ActivateItem { .. } | PaneEvent::RemovedItem { .. }
         ) {
             let active_path = pane.read(cx).active_path(cx);
-            // 活动仓库跟随焦点文件（最长前缀匹配）：打开/切换子项目文件后，
-            // 分支显示与 fetch/pull/push 自动指向其所属仓库。
-            if let Some(path) = &active_path {
-                workspace.project().update(cx, |project, cx| {
-                    project.git_store().update(cx, |store, cx| {
-                        store.set_active_repository_for_path(path, cx);
-                    });
-                });
-            }
+            // 活动仓库只由仓库选择器决定；切换焦点编辑器不改变它。
             project_tree_for_pane.update(cx, |tree, cx| {
                 tree.reveal_active_path(active_path, cx);
             });

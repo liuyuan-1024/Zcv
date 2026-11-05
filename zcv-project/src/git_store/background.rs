@@ -252,18 +252,25 @@ pub(super) async fn execute_job(
             JobResult::GitOperation(result)
         }
         // 提交：只提交已经暂存的内容。
-        GitJob::Commit { message } => {
+        GitJob::Commit { workdir, message } => {
             let result = repositories
-                .first()
-                .map(|repository| repository.commit(&message));
-            JobResult::GitOperation(result.unwrap_or(Ok(())))
+                .iter()
+                .find(|repository| repository.working_directory() == workdir.as_path())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("提交目标仓库已不可用：{}", workdir.as_path().display())
+                })
+                .and_then(|repository| repository.commit(&message));
+            JobResult::GitOperation(result)
         }
-        // 撤销提交：被撤销消息随结果回传，UI 线程暂存供面板填回编辑器。
-        GitJob::Uncommit => {
+        // 撤销提交：被撤销消息随结果回传，由面板填回对应仓库编辑器。
+        GitJob::Uncommit { workdir } => {
             let result = repositories
-                .first()
-                .map(|repository| repository.uncommit())
-                .unwrap_or(Ok(None));
+                .iter()
+                .find(|repository| repository.working_directory() == workdir.as_path())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("撤销目标仓库已不可用：{}", workdir.as_path().display())
+                })
+                .and_then(|repository| repository.uncommit());
             JobResult::Uncommit(result)
         }
     }

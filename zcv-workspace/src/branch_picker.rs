@@ -195,7 +195,7 @@ impl PickerDelegate for BranchPickerDelegate {
 
 /// 分支选择器 —— 自含按钮 + 浮层。
 ///
-/// 按钮显示当前分支名；项目不是 git 仓库或空仓库时选择器整体不显示。
+/// 按钮显示当前分支名；空仓库没有分支或 HEAD，由宿主不渲染该按钮。
 /// detached HEAD 显示 8 位短 SHA。
 pub struct BranchPicker {
     host: PopoverHost,
@@ -209,11 +209,6 @@ fn branch_display_name(current_branch: Option<&str>, head_commit: Option<&str>) 
     current_branch
         .map(str::to_owned)
         .or_else(|| head_commit.map(|oid| oid.chars().take(8).collect()))
-}
-
-/// 当前状态是否足以显示分支选择器。
-fn has_branch_context(current_branch: Option<&str>, head_commit: Option<&str>) -> bool {
-    current_branch.is_some() || head_commit.is_some()
 }
 
 impl BranchPicker {
@@ -254,12 +249,6 @@ impl BranchPicker {
             git_store,
             _git_subscription: git_subscription,
         }
-    }
-
-    /// 当前状态是否足以显示分支选择器。
-    pub(crate) fn has_branch_context(&self, cx: &App) -> bool {
-        let store = self.git_store.read(cx);
-        has_branch_context(store.current_branch(), store.current_head_commit())
     }
 
     /// 按钮显示名：分支名 → 8 位短 SHA（detached HEAD）。
@@ -311,11 +300,15 @@ impl Render for BranchPicker {
         };
 
         // 空仓库没有当前分支或 HEAD，直接不渲染选择器。
-        let button = Button::icon_text("top-bar.branch", "icons/git_branch.svg", display_name)
-            .label("分支")
-            .shortcut(display_shortcut(&SelectGitBranch, cx))
-            .color(color_value)
-            .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
+        let button = Button::icon_text(
+            "version-control.branch",
+            "icons/git_branch.svg",
+            display_name,
+        )
+        .label("分支")
+        .shortcut(display_shortcut(&SelectGitBranch, cx))
+        .color(color_value)
+        .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 
         let mut root = div()
             .track_focus(&self.host.focus_handle())

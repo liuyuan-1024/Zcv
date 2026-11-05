@@ -1,6 +1,8 @@
 use std::{
     cell::Cell,
+    fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::Arc,
     time::Duration,
 };
@@ -30,8 +32,16 @@ impl Watcher for QuietWatcher {
 }
 
 fn test_project(root: PathBuf, languages: Arc<LanguageRegistry>, cx: &mut App) -> Entity<Project> {
+    test_project_roots(vec![root], languages, cx)
+}
+
+fn test_project_roots(
+    roots: Vec<PathBuf>,
+    languages: Arc<LanguageRegistry>,
+    cx: &mut App,
+) -> Entity<Project> {
     cx.new(|cx| {
-        Project::new_with_watcher(vec![root], Arc::new(QuietWatcher), languages, cx)
+        Project::new_with_watcher(roots, Arc::new(QuietWatcher), languages, cx)
             .expect("测试项目根目录应可规范化")
     })
 }
@@ -452,6 +462,111 @@ fn reopening_selects_current_project_and_clears_previous_search(cx: &mut TestApp
         assert_eq!(selected_paths, project_roots);
         assert_eq!(picker.search_input().text(cx), "");
     });
+}
+
+#[gpui::test]
+fn project_button_uses_active_repository_root_and_remaining_count(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let frontend = directory.path().join("frontend");
+    let backend = directory.path().join("backend");
+    let shared = directory.path().join("shared");
+    fs::create_dir_all(&frontend).expect("应创建前端项目目录");
+    fs::create_dir_all(&backend).expect("应创建后端项目目录");
+    fs::create_dir_all(&shared).expect("应创建共享项目目录");
+    let frontend = zcv_path::AbsolutePathBuf::canonicalize(&frontend)
+        .expect("前端项目路径应可规范化")
+        .into_path_buf();
+    let backend = zcv_path::AbsolutePathBuf::canonicalize(&backend)
+        .expect("后端项目路径应可规范化")
+        .into_path_buf();
+    for root in [&frontend, &backend] {
+        let output = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .output()
+            .expect("应初始化 Git 仓库");
+        assert!(output.status.success(), "初始化 Git 仓库应成功");
+    }
+
+    let languages = Arc::new(LanguageRegistry::new());
+    let project = cx.update(|cx| {
+        test_project_roots(
+            vec![frontend.clone(), backend.clone(), shared],
+            languages,
+            cx,
+        )
+    });
+    // 扫描完成前没有活动仓库，按钮以首个根为显示基准；数量按项目根计算。
+    assert_eq!(
+        cx.update(|cx| {
+            let (name, suffix) = project_button_parts(project.read(cx), cx);
+            format!("{name}{}", suffix.expect("多项目应显示数量后缀"))
+        }),
+        "frontend...+2"
+    );
+
+    let store = project.read_with(cx, |project, _| project.git_store());
+    for _ in 0..20 {
+        cx.run_until_parked();
+        if cx.read_entity(&store, |store, _| store.repositories().count()) == 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        cx.read_entity(&store, |store, _| store.repositories().count()),
+        2
+    );
+    store.update(cx, |store, cx| {
+        store.set_active_repository(
+            zcv_path::AbsolutePathBuf::canonicalize(&backend).expect("后端项目路径应可规范化"),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        cx.update(|cx| {
+            let (name, suffix) = project_button_parts(project.read(cx), cx);
+            format!("{name}{}", suffix.expect("多项目应显示数量后缀"))
+        }),
+        "backend...+2"
+    );
+}
+
+#[gpui::test]
+fn project_button_label_has_a_width_limit(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let long_root = directory.path().join("x".repeat(120));
+    let short_root = directory.path().join("short");
+    fs::create_dir_all(&long_root).expect("应创建长名称项目目录");
+    fs::create_dir_all(&short_root).expect("应创建短名称项目目录");
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages.clone()));
+    let (_selector, cx) = cx.add_window_view(|window, cx| {
+        let project = test_project_roots(vec![long_root, short_root], languages.clone(), cx);
+        let workspace = cx.new(|cx| empty_workspace(languages, window, cx));
+        RecentProjects::new(
+            Rc::new(|_, _, _| {}),
+            project,
+            workspace.downgrade(),
+            PopoverLayer::default(),
+            window,
+            cx,
+        )
+    });
+    let label = cx
+        .debug_bounds("recent-projects-label")
+        .expect("项目按钮名称应完成布局");
+    assert!(
+        label.size.width <= px(190.0),
+        "长项目名必须限制在按钮宽度内，实际宽度为 {}",
+        label.size.width
+    );
+    assert!(
+        cx.debug_bounds("recent-projects-count").is_some(),
+        "项目名截断时其余项目数量后缀仍应可见"
+    );
 }
 
 #[gpui::test]

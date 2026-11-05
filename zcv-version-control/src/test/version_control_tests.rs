@@ -1,16 +1,18 @@
 use super::*;
 use std::{cell::Cell, fs, path::Path, sync::Arc, time::Duration};
 
-use gpui::{KeyBinding, Modifiers, TestAppContext, VisualTestContext, point, px};
+use gpui::{App, KeyBinding, Modifiers, TestAppContext, VisualTestContext, point, px, size};
 use tempfile::TempDir;
 
-use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_git::StatusCode;
 use zcv_keymap::init;
 use zcv_language::LanguageRegistry;
-use zcv_project::{Project, StatusEntry};
+use zcv_project::StatusEntry;
 use zcv_settings::{SettingsStore, UserSettings};
 use zcv_ui::tree_row_height;
+use zcv_workspace::GitBranchAction;
+
+use crate::test::{test_project, test_project_roots};
 
 /// 构造快照：路径 → 状态；diff 统计取固定样例值（staged/unstaged 可区分）。
 fn snapshot(entries: &[(&str, FileStatus)]) -> RepositorySnapshot {
@@ -68,8 +70,62 @@ fn relative(path: &str) -> RelativePathBuf {
     RelativePathBuf::from_path(Path::new(path)).expect("测试路径应为有效的仓库相对路径")
 }
 
-fn build_rows(root: &Path, repos: &[(&Path, &RepositorySnapshot)]) -> Vec<GitRow> {
-    let trees = build_section_trees(&[root.to_path_buf()], repos.iter().copied());
+fn active_workdir(
+    cx: &VisualTestContext,
+    git_store: &Entity<zcv_project::GitStore>,
+) -> Option<PathBuf> {
+    cx.read_entity(git_store, |store, _| {
+        store
+            .active_repository_workdir()
+            .map(|workdir| workdir.to_path_buf())
+    })
+}
+
+fn active_branch(
+    cx: &VisualTestContext,
+    git_store: &Entity<zcv_project::GitStore>,
+) -> Option<String> {
+    cx.read_entity(git_store, |store, _| {
+        store.current_branch().map(str::to_string)
+    })
+}
+
+fn panel_entries(
+    cx: &VisualTestContext,
+    panel: &Entity<VersionControlPanel>,
+) -> Vec<(GitSection, String)> {
+    cx.read_entity(panel, |panel, _| section_entries(panel))
+}
+
+impl VersionControlPanel {
+    fn test_workdir(&self) -> AbsolutePathBuf {
+        self.commit_states
+            .keys()
+            .next()
+            .expect("应有仓库提交框")
+            .clone()
+    }
+
+    fn test_commit_editor(&self) -> Entity<Editor> {
+        self.commit_states
+            .values()
+            .next()
+            .expect("应有仓库提交框")
+            .editor
+            .clone()
+    }
+
+    fn test_last_commit_message(&self, cx: &App) -> Option<String> {
+        let store = self.project.read(cx).git_store();
+        store
+            .read(cx)
+            .active_repository_snapshot()
+            .and_then(|(_, snapshot)| snapshot.last_commit_message.clone())
+    }
+}
+
+fn build_rows(_root: &Path, repos: &[(&Path, &RepositorySnapshot)]) -> Vec<GitRow> {
+    let trees = build_section_trees(repos.first().map(|(path, _)| *path), repos.iter().copied());
     flatten_rows(&trees, &HashSet::new(), &HashSet::new())
 }
 
@@ -78,7 +134,7 @@ fn entry_keys(rows: &[GitRow]) -> Vec<(GitSection, String)> {
     rows.iter()
         .filter_map(|row| match row {
             GitRow::Entry(entry) => Some((entry.section, entry.name.clone())),
-            GitRow::Header(_) | GitRow::Empty(_) => None,
+            GitRow::Header(..) | GitRow::Empty(_) => None,
         })
         .collect()
 }
@@ -138,7 +194,7 @@ fn headers_always_appear_and_partially_staged_entries_duplicate_across_sections(
 
 #[test]
 fn expanded_empty_sections_show_unselectable_prompt_rows() {
-    let trees = GitSections::<Vec<GitTreeNode>>::default();
+    let trees = GitSections::default();
     let rows = flatten_rows(&trees, &HashSet::new(), &HashSet::new());
 
     assert_eq!(GitSection::Staged.empty_message(), "没有已暂存的更改");
@@ -194,7 +250,10 @@ fn directories_aggregate_status_and_diff_and_respect_expansion() {
         ("src/a.rs", FileStatus::Untracked),
         ("src/sub/b.rs", modified),
     ]);
-    let trees = build_section_trees(&[root.clone()], [(root.as_path(), &snapshot)].into_iter());
+    let trees = build_section_trees(
+        Some(root.as_path()),
+        [(root.as_path(), &snapshot)].into_iter(),
+    );
 
     // 折叠：只显示顶层目录 src。
     let rows = flatten_rows(&trees, &HashSet::new(), &HashSet::new());
@@ -256,7 +315,10 @@ fn change_tree_uses_same_directory_and_name_order_as_file_tree() {
         ("File2.rs", FileStatus::Untracked),
         ("file2.rs", FileStatus::Untracked),
     ]);
-    let trees = build_section_trees(&[root.clone()], [(root.as_path(), &snapshot)].into_iter());
+    let trees = build_section_trees(
+        Some(root.as_path()),
+        [(root.as_path(), &snapshot)].into_iter(),
+    );
     let rows = flatten_rows(&trees, &HashSet::new(), &HashSet::new());
     assert_eq!(
         entry_keys(&rows),
@@ -270,18 +332,24 @@ fn change_tree_uses_same_directory_and_name_order_as_file_tree() {
 }
 
 #[test]
-fn change_tree_keys_strip_against_the_innermost_workspace_root() {
+fn active_tree_only_contains_paths_owned_by_the_active_repository() {
     let root = absolute(PathBuf::from("/project")).into_path_buf();
     let vendor = root.join("vendor");
-    let snapshot = snapshot(&[("vendor/lib.rs", FileStatus::Untracked)]);
-    // vendor 同时是独立工作区根：条目相对最内层根显示，不再带 vendor/ 前缀。
-    let trees = build_section_trees(
-        &[root.clone(), vendor],
-        [(root.as_path(), &snapshot)].into_iter(),
+    let outer = snapshot(&[("vendor/lib.rs", FileStatus::Untracked)]);
+    let inner = snapshot(&[("lib.rs", FileStatus::Untracked)]);
+
+    let outer_tree = build_section_trees(
+        Some(root.as_path()),
+        [(root.as_path(), &outer), (vendor.as_path(), &inner)].into_iter(),
     );
-    let rows = flatten_rows(&trees, &HashSet::new(), &HashSet::new());
+    assert!(entry_keys(&flatten_rows(&outer_tree, &HashSet::new(), &HashSet::new())).is_empty());
+
+    let inner_tree = build_section_trees(
+        Some(vendor.as_path()),
+        [(root.as_path(), &outer), (vendor.as_path(), &inner)].into_iter(),
+    );
     assert_eq!(
-        entry_keys(&rows),
+        entry_keys(&flatten_rows(&inner_tree, &HashSet::new(), &HashSet::new())),
         vec![(GitSection::Unstaged, "lib.rs".into())]
     );
 }
@@ -290,7 +358,10 @@ fn change_tree_keys_strip_against_the_innermost_workspace_root() {
 fn consecutive_single_change_directories_are_display_compressed() {
     let root = absolute(PathBuf::from("/project")).into_path_buf();
     let snapshot = snapshot(&[("src/components/editor/mod.rs", FileStatus::Untracked)]);
-    let trees = build_section_trees(&[root.clone()], [(root.as_path(), &snapshot)].into_iter());
+    let trees = build_section_trees(
+        Some(root.as_path()),
+        [(root.as_path(), &snapshot)].into_iter(),
+    );
     let expanded = HashSet::from([
         (GitSection::Unstaged, absolute(root.join("src"))),
         (GitSection::Unstaged, absolute(root.join("src/components"))),
@@ -305,7 +376,7 @@ fn consecutive_single_change_directories_are_display_compressed() {
         .iter()
         .filter_map(|row| match row {
             GitRow::Entry(entry) => Some((entry.name.as_str(), entry.path.as_path(), entry.depth)),
-            GitRow::Header(_) | GitRow::Empty(_) => None,
+            GitRow::Header(..) | GitRow::Empty(_) => None,
         })
         .collect();
     assert_eq!(entries.len(), 2);
@@ -316,32 +387,31 @@ fn consecutive_single_change_directories_are_display_compressed() {
 }
 
 #[test]
-fn nested_repositories_merge_into_one_tree() {
+fn switching_active_repository_switches_tree_contents() {
     let root = absolute(PathBuf::from("/project")).into_path_buf();
-    let vendor = root.join("vendor");
-    let outer = snapshot(&[("README.md", FileStatus::Untracked)]);
-    let inner = snapshot(&[("lib.rs", FileStatus::Untracked)]);
-    let repos = [(root.as_path(), &outer), (vendor.as_path(), &inner)];
-    let trees = build_section_trees(&[root.clone()], repos.into_iter());
+    let other = absolute(PathBuf::from("/other")).into_path_buf();
+    let first = snapshot(&[("README.md", FileStatus::Untracked)]);
+    let second = snapshot(&[("lib.rs", FileStatus::Untracked)]);
+    let repositories = [(root.as_path(), &first), (other.as_path(), &second)];
 
-    // vendor 为目录行，优先于根文件 README.md；展开后 lib.rs 归入其下。
-    let mut expanded = HashSet::new();
-    expanded.insert((GitSection::Unstaged, absolute(root.join("vendor"))));
-    let rows = flatten_rows(&trees, &expanded, &HashSet::new());
-    let paths: Vec<_> = rows
-        .iter()
-        .filter_map(|row| match row {
-            GitRow::Entry(entry) => Some((entry.path.clone(), entry.depth)),
-            GitRow::Header(_) | GitRow::Empty(_) => None,
-        })
-        .collect();
+    let first_rows = flatten_rows(
+        &build_section_trees(Some(root.as_path()), repositories.into_iter()),
+        &HashSet::new(),
+        &HashSet::new(),
+    );
     assert_eq!(
-        paths,
-        vec![
-            (absolute(root.join("vendor")), 0),
-            (absolute(root.join("vendor/lib.rs")), 1),
-            (absolute(root.join("README.md")), 0)
-        ]
+        entry_keys(&first_rows),
+        vec![(GitSection::Unstaged, "README.md".into())]
+    );
+
+    let second_rows = flatten_rows(
+        &build_section_trees(Some(other.as_path()), repositories.into_iter()),
+        &HashSet::new(),
+        &HashSet::new(),
+    );
+    assert_eq!(
+        entry_keys(&second_rows),
+        vec![(GitSection::Unstaged, "lib.rs".into())]
     );
 }
 
@@ -373,50 +443,277 @@ fn run_in(dir: &Path, args: &[&str]) {
     );
 }
 
-/// UI 行为测试不需要验证 OS 文件监听；使用被动后端避免外部线程向测试调度器注入事件。
-struct PassiveWatcher {
-    watcher: FsWatcher,
+fn init_test_context(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    cx.update(|cx| zcv_editor::init(cx, Arc::new(LanguageRegistry::new())));
 }
 
-impl PassiveWatcher {
-    fn new() -> Self {
-        Self {
-            watcher: FsWatcher::new(),
-        }
-    }
+#[gpui::test]
+fn repository_picker_switches_tree_stats_commit_and_graph_to_selected_repository(
+    cx: &mut TestAppContext,
+) {
+    init_test_context(cx);
+    let (root_a, _temp_a) = test_repo();
+    let (root_b, _temp_b) = test_repo();
+    fs::write(root_a.join("only_a.txt"), "A\n").expect("应写入仓库 A 的独有文件");
+    fs::write(root_b.join("only_b.txt"), "B\n").expect("应写入仓库 B 的独有文件");
+    run_in(&root_b, &["git", "add", "tracked.txt"]);
+
+    let opened_graph = Rc::new(Cell::new(0));
+    let opened_graph_for_panel = opened_graph.clone();
+    let project = test_project_roots(vec![root_a.clone(), root_b.clone()], cx);
+    let git_store = cx.read_entity(&project, |project, _| project.git_store());
+    let project_for_panel = project.clone();
+    let (panel, cx) = cx.add_window_view(move |window, cx| {
+        let mut panel = VersionControlPanel::new(project_for_panel, window, cx);
+        panel.set_on_open_graph(Rc::new(move |_, _| {
+            opened_graph_for_panel.set(opened_graph_for_panel.get() + 1);
+        }));
+        panel
+    });
+    cx.simulate_resize(size(px(420.), px(740.)));
+    cx.run_until_parked();
+    cx.run_until_parked();
+
+    let workdir_a = AbsolutePathBuf::canonicalize(&root_a).expect("仓库 A 路径应可规范化");
+    let workdir_b = AbsolutePathBuf::canonicalize(&root_b).expect("仓库 B 路径应可规范化");
+    assert_eq!(
+        active_workdir(cx, &git_store).as_deref(),
+        Some(workdir_a.as_path()),
+        "首次扫描应选中发现顺序中的第一个仓库"
+    );
+    let entries = panel_entries(cx, &panel);
+    assert!(entries.iter().any(|(_, name)| name == "only_a.txt"));
+    assert!(!entries.iter().any(|(_, name)| name == "only_b.txt"));
+
+    // 项目名按钮打开仓库选择器；选择第二项切换到仓库 B。
+    let _ = cx.refresh();
+    cx.update(|_, _| {});
+    let button = cx
+        .debug_bounds("version-control-repository-button")
+        .expect("项目名按钮应可定位");
+    cx.simulate_click(button.center(), Modifiers::default());
+    cx.run_until_parked();
+    let match_b = cx
+        .debug_bounds("picker-match-1")
+        .expect("仓库选择器应列出第二个仓库");
+    cx.simulate_click(match_b.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.run_until_parked();
+
+    assert_eq!(
+        active_workdir(cx, &git_store).as_deref(),
+        Some(workdir_b.as_path()),
+        "仓库选择器应成为活动仓库的唯一用户入口"
+    );
+    let entries = panel_entries(cx, &panel);
+    assert!(entries.iter().any(|(_, name)| name == "only_b.txt"));
+    assert!(!entries.iter().any(|(_, name)| name == "only_a.txt"));
+
+    // 提交按钮作用于界面所示仓库 B，A 的提交信息保持不变。
+    cx.update_entity(&panel, |panel, cx| {
+        panel.commit_states[&workdir_b]
+            .editor
+            .update(cx, |editor, cx| editor.set_text("提交 B 的修改", cx));
+    });
+    let _ = cx.refresh();
+    cx.update(|_, _| {});
+    let commit_button = cx
+        .debug_bounds("version-control-commit-button")
+        .expect("当前仓库提交按钮应可定位");
+    cx.simulate_click(commit_button.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let store = git_store.read(cx);
+        let a = store
+            .repositories()
+            .find(|(path, _)| *path == workdir_a.as_path())
+            .expect("仓库 A 应存在");
+        let b = store
+            .repositories()
+            .find(|(path, _)| *path == workdir_b.as_path())
+            .expect("仓库 B 应存在");
+        assert_eq!(a.1.last_commit_message.as_deref(), Some("initial"));
+        assert_eq!(b.1.last_commit_message.as_deref(), Some("提交 B 的修改"));
+        assert_eq!(
+            panel.read(cx).commit_states[&workdir_b]
+                .editor
+                .read(cx)
+                .text(cx),
+            ""
+        );
+    });
+
+    // 撤销提交也作用于当前活动仓库。
+    let undo_button = cx
+        .debug_bounds("version-control-uncommit-button")
+        .expect("当前仓库撤销提交按钮应可定位");
+    cx.simulate_click(undo_button.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let store = git_store.read(cx);
+        let b = store
+            .repositories()
+            .find(|(path, _)| *path == workdir_b.as_path())
+            .expect("仓库 B 应存在");
+        assert_eq!(b.1.last_commit_message.as_deref(), Some("initial"));
+        assert_eq!(
+            panel.read(cx).commit_states[&workdir_b]
+                .editor
+                .read(cx)
+                .text(cx),
+            "提交 B 的修改"
+        );
+    });
+
+    let graph_button = cx
+        .debug_bounds("version-control-git-graph-button")
+        .expect("提交图入口应可定位");
+    cx.simulate_click(graph_button.center(), Modifiers::default());
+    assert_eq!(opened_graph.get(), 1);
 }
 
-impl Watcher for PassiveWatcher {
-    fn add(&self, _path: &Path) -> anyhow::Result<()> {
-        Ok(())
-    }
+#[gpui::test]
+fn repository_switch_preserves_drafts_and_removal_falls_back_to_remaining_repository(
+    cx: &mut TestAppContext,
+) {
+    init_test_context(cx);
+    let (root_a, _temp_a) = test_repo();
+    let (root_b, _temp_b) = test_repo();
+    let project = test_project_roots(vec![root_a.clone(), root_b.clone()], cx);
+    let git_store = cx.read_entity(&project, |project, _| project.git_store());
+    let project_for_panel = project.clone();
+    let (panel, cx) = cx
+        .add_window_view(move |window, cx| VersionControlPanel::new(project_for_panel, window, cx));
+    cx.run_until_parked();
+    cx.run_until_parked();
+    let workdir_a = AbsolutePathBuf::canonicalize(&root_a).expect("仓库 A 路径应可规范化");
+    let workdir_b = AbsolutePathBuf::canonicalize(&root_b).expect("仓库 B 路径应可规范化");
 
-    fn remove(&self, _path: &Path) -> anyhow::Result<()> {
-        Ok(())
-    }
+    cx.update_entity(&panel, |panel, cx| {
+        panel.commit_states[&workdir_a]
+            .editor
+            .update(cx, |editor, cx| editor.set_text("A 的草稿", cx));
+        panel.commit_states[&workdir_b]
+            .editor
+            .update(cx, |editor, cx| editor.set_text("B 的草稿", cx));
+        panel.select_repository(workdir_b.clone(), cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        active_workdir(cx, &git_store).as_deref(),
+        Some(workdir_b.as_path())
+    );
+    cx.read_entity(&panel, |panel, cx| {
+        assert_eq!(
+            panel.commit_states[&workdir_b].editor.read(cx).text(cx),
+            "B 的草稿"
+        );
+    });
 
-    fn watch(&self, latency: Duration) -> FsEventStream {
-        self.watcher.watch(latency)
-    }
+    cx.update_entity(&panel, |panel, cx| {
+        panel.select_repository(workdir_a.clone(), cx);
+    });
+    cx.run_until_parked();
+    cx.read_entity(&panel, |panel, cx| {
+        assert_eq!(
+            panel.commit_states[&workdir_a].editor.read(cx).text(cx),
+            "A 的草稿",
+            "切回仓库 A 后其草稿应保留"
+        );
+    });
+
+    cx.update_entity(&panel, |panel, cx| {
+        panel.select_repository(workdir_b.clone(), cx);
+    });
+    cx.run_until_parked();
+    project.update(cx, |project, cx| {
+        project
+            .remove_worktree(&root_b, cx)
+            .expect("应移除仓库 B 的项目根")
+    });
+    cx.run_until_parked();
+    cx.run_until_parked();
+    assert_eq!(
+        active_workdir(cx, &git_store).as_deref(),
+        Some(workdir_a.as_path()),
+        "活动仓库消失后应回退到仍存在的首个仓库"
+    );
+    cx.read_entity(&panel, |panel, cx| {
+        assert!(!panel.commit_states.contains_key(&workdir_b));
+        assert_eq!(
+            panel.commit_states[&workdir_a].editor.read(cx).text(cx),
+            "A 的草稿"
+        );
+    });
 }
 
-fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
-    let watcher: Arc<dyn Watcher> = Arc::new(PassiveWatcher::new());
-    cx.new(|cx| {
-        Project::new_with_watcher(vec![root], watcher, Arc::new(LanguageRegistry::new()), cx)
-            .expect("测试项目根目录应可规范化")
-    })
+#[gpui::test]
+fn panel_branch_picker_switches_active_repository_branch(cx: &mut TestAppContext) {
+    init_test_context(cx);
+    let (root, _temp) = test_repo();
+    run_in(&root, &["git", "branch", "feature"]);
+    let project = test_project(root.clone(), cx);
+    let git_store = cx.read_entity(&project, |project, _| project.git_store());
+    let selected = Rc::new(RefCell::new(None));
+    let selected_for_panel = selected.clone();
+    let store_for_panel = git_store.clone();
+    let project_for_panel = project.clone();
+    let (_panel, cx) = cx.add_window_view(move |window, cx| {
+        let mut panel = VersionControlPanel::new(project_for_panel, window, cx);
+        panel.set_on_branch_selected(Rc::new(move |action, _, cx| {
+            if let GitBranchAction::Checkout(name) = action {
+                *selected_for_panel.borrow_mut() = Some(name.clone());
+                store_for_panel.update(cx, |store, cx| {
+                    let _task = store.checkout_branch_with_result(name, cx);
+                });
+            }
+        }));
+        panel
+    });
+    cx.run_until_parked();
+    cx.run_until_parked();
+    let _ = cx.refresh();
+    cx.update(|_, _| {});
+    let button = cx
+        .debug_bounds("version-control-branch-button")
+        .expect("分支名按钮应可定位");
+    cx.simulate_click(button.center(), Modifiers::default());
+    cx.run_until_parked();
+    let branch_index = cx.read_entity(&git_store, |store, _| {
+        store
+            .active_branch_list()
+            .expect("应能读取分支列表")
+            .iter()
+            .position(|branch| branch.name == "feature")
+            .expect("应存在 feature 分支")
+    });
+    let selector = Box::leak(format!("picker-match-{branch_index}").into_boxed_str());
+    let branch = cx
+        .debug_bounds(selector)
+        .expect("分支选择器应列出 feature 分支");
+    cx.simulate_click(branch.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.run_until_parked();
+    assert_eq!(selected.borrow().as_deref(), Some("feature"));
+    assert_eq!(
+        active_branch(cx, &git_store).as_deref(),
+        Some("feature"),
+        "面板分支选择器应切换当前活动仓库的分支"
+    );
 }
 
 #[gpui::test]
 fn empty_state_initializes_repository_and_builds_section_tree(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project_root = directory.path().to_path_buf();
     let project = test_project(project_root.clone(), cx);
     let project_for_panel = project.clone();
-    let (panel, cx) =
-        cx.add_window_view(move |_, cx| VersionControlPanel::new(project_for_panel, cx));
+    let (panel, cx) = cx
+        .add_window_view(move |window, cx| VersionControlPanel::new(project_for_panel, window, cx));
     cx.run_until_parked(); // 首次扫描完成：无仓库，行模型为空。
 
     let panel_focused = cx.update(|window, cx| panel.read(cx).focus.contains_focused(window, cx));
@@ -455,7 +752,7 @@ fn empty_state_initializes_repository_and_builds_section_tree(cx: &mut TestAppCo
 
 #[gpui::test]
 fn first_click_on_unfocused_panel_focuses_and_opens(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let open_count = Rc::new(Cell::new(0));
@@ -466,8 +763,8 @@ fn first_click_on_unfocused_panel_focuses_and_opens(cx: &mut TestAppContext) {
     let callback_path = Rc::clone(&opened_path);
 
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| {
-        let mut panel = VersionControlPanel::new(project, cx);
+    let (panel, cx) = cx.add_window_view(move |window, cx| {
+        let mut panel = VersionControlPanel::new(project, window, cx);
         panel.set_on_open_file(Rc::new(move |_, path, focus_opened_item, _, _| {
             callback_count.set(callback_count.get() + 1);
             callback_focus.set(focus_opened_item);
@@ -494,7 +791,7 @@ fn first_click_on_unfocused_panel_focuses_and_opens(cx: &mut TestAppContext) {
         // y 加 1 行偏移：顶部统计行占一行高度；
         // 冲突组固定在顶部后再经过两个冲突行。
         cx.simulate_click(
-            point(px(100.), px(f32::from(row_height) * 6.5)),
+            point(px(100.), px(f32::from(row_height) * 7.5)),
             Modifiers::default(),
         );
         cx.run_until_parked();
@@ -523,7 +820,7 @@ fn first_click_on_unfocused_panel_focuses_and_opens(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn keyboard_navigation_opens_file_as_active(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let open_count = Rc::new(Cell::new(0));
@@ -532,12 +829,12 @@ fn keyboard_navigation_opens_file_as_active(cx: &mut TestAppContext) {
     let callback_focus = Rc::clone(&last_focus_opened);
 
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| {
+    let (panel, cx) = cx.add_window_view(move |window, cx| {
         cx.bind_keys([
             KeyBinding::new("down", SelectNext, Some("GitPanel && ChangesList")),
             KeyBinding::new("enter", Activate, Some("GitPanel && ChangesList")),
         ]);
-        let mut panel = VersionControlPanel::new(project, cx);
+        let mut panel = VersionControlPanel::new(project, window, cx);
         panel.set_on_open_file(Rc::new(move |_, _, focus_opened_item, _, _| {
             callback_count.set(callback_count.get() + 1);
             callback_focus.set(focus_opened_item);
@@ -563,15 +860,15 @@ fn keyboard_navigation_opens_file_as_active(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn staged_section_opens_the_staged_project_diff(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     run_in(&root, &["git", "add", "tracked.txt"]);
     let opened_kind = Rc::new(Cell::new(None));
     let callback_kind = Rc::clone(&opened_kind);
     let project_root = root.clone();
     let project = test_project(project_root, cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| {
-        let mut panel = VersionControlPanel::new(project, cx);
+    let (panel, cx) = cx.add_window_view(move |window, cx| {
+        let mut panel = VersionControlPanel::new(project, window, cx);
         panel.set_on_open_file(Rc::new(move |kind, _, _, _, _| {
             callback_kind.set(Some(kind));
         }));
@@ -598,14 +895,14 @@ fn section_entries(panel: &VersionControlPanel) -> Vec<(GitSection, String)> {
         .iter()
         .filter_map(|row| match row {
             GitRow::Entry(entry) => Some((entry.section, entry.name.clone())),
-            GitRow::Header(_) | GitRow::Empty(_) => None,
+            GitRow::Header(..) | GitRow::Empty(_) => None,
         })
         .collect()
 }
 
 #[gpui::test]
 fn directories_expand_by_default(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     // 目录下有变更文件：首次构建后目录默认展开，子文件可见。
     let (root, _temp) = test_repo();
     fs::create_dir_all(root.join("src")).expect("应创建目录");
@@ -613,7 +910,8 @@ fn directories_expand_by_default(cx: &mut TestAppContext) {
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked(); // 扫描 + 重建 + 首次全展开
 
     let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
@@ -630,14 +928,15 @@ fn directories_expand_by_default(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn new_directories_expand_by_default_while_manually_collapsed_stay(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     fs::create_dir_all(root.join("src")).expect("应创建目录");
     fs::write(root.join("src/a.txt"), "改动\n").expect("应写入文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked(); // 扫描 + 重建
 
     // 首次：src 默认展开，子文件可见。
@@ -685,13 +984,14 @@ fn new_directories_expand_by_default_while_manually_collapsed_stay(cx: &mut Test
 
 #[gpui::test]
 fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked(); // 扫描 + 重建
 
     // 初始：未暂存组条目可见。
@@ -712,7 +1012,7 @@ fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppCon
         cx.simulate_click(
             point(
                 px(14.),
-                px(f32::from(row_height) * (header_index as f32 + 1.5)),
+                px(f32::from(row_height) * (header_index as f32 + 2.5)),
             ),
             Modifiers::default(),
         );
@@ -734,14 +1034,15 @@ fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppCon
 
 #[gpui::test]
 fn collapsed_section_keeps_header_checkbox_and_select_all(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     // 分组折叠只隐藏条目行；只要该组仍有文件，标题行全选复选框就必须常驻且可整组暂存。
     let (root, _temp) = test_repo();
     fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked();
 
     cx.update_entity(&panel, |panel, cx| {
@@ -768,7 +1069,7 @@ fn collapsed_section_keeps_header_checkbox_and_select_all(cx: &mut TestAppContex
 
 #[gpui::test]
 fn header_checkbox_selects_all_entries_in_section(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     // 两个未暂存文件：header 全选 → 全部暂存，未暂存组清空、已暂存组出现两项。
     let (root, _temp) = test_repo();
     fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
@@ -776,7 +1077,8 @@ fn header_checkbox_selects_all_entries_in_section(cx: &mut TestAppContext) {
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked();
 
     let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
@@ -827,16 +1129,16 @@ fn header_checkbox_selects_all_entries_in_section(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn space_toggles_staging_and_moves_row_between_sections(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| {
+    let (panel, cx) = cx.add_window_view(move |window, cx| {
         cx.bind_keys([
             KeyBinding::new("down", SelectNext, Some("GitPanel && ChangesList")),
             KeyBinding::new("space", ToggleStaged, Some("GitPanel && ChangesList")),
         ]);
-        VersionControlPanel::new(project, cx)
+        VersionControlPanel::new(project, window, cx)
     });
     cx.update(|window, cx| {
         let focus = panel.read(cx).focus.clone();
@@ -866,19 +1168,19 @@ fn space_toggles_staging_and_moves_row_between_sections(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn space_in_commit_editor_inserts_text_without_toggling_staging(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let project = test_project(project_root, cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| {
+    let (panel, cx) = cx.add_window_view(move |window, cx| {
         init(cx).expect("应注册内置快捷键");
-        VersionControlPanel::new(project, cx)
+        VersionControlPanel::new(project, window, cx)
     });
     cx.run_until_parked();
     cx.run_until_parked();
 
     let editor_focus = cx.read_entity(&panel, |panel, cx| {
-        panel.commit_editor.read(cx).focus_handle()
+        panel.test_commit_editor().read(cx).focus_handle()
     });
     cx.update(|window, cx| window.focus(&editor_focus, cx));
     let _ = cx.refresh();
@@ -898,7 +1200,7 @@ fn space_in_commit_editor_inserts_text_without_toggling_staging(cx: &mut TestApp
 
     cx.update(|_, cx| {
         assert_eq!(
-            panel.read(cx).commit_editor.read(cx).text(cx),
+            panel.read(cx).test_commit_editor().read(cx).text(cx),
             " ",
             "提交信息编辑器聚焦时，空格应输入文本"
         );
@@ -909,10 +1211,11 @@ fn space_in_commit_editor_inserts_text_without_toggling_staging(cx: &mut TestApp
 
 #[gpui::test]
 fn selection_border_only_shows_when_changes_tree_is_focused(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     let project = test_project(root, cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked();
     cx.run_until_parked();
 
@@ -926,7 +1229,7 @@ fn selection_border_only_shows_when_changes_tree_is_focused(cx: &mut TestAppCont
     );
 
     let commit_editor_focus = cx.read_entity(&panel, |panel, cx| {
-        panel.commit_editor.read(cx).focus_handle()
+        panel.test_commit_editor().read(cx).focus_handle()
     });
     cx.update(|window, cx| window.focus(&commit_editor_focus, cx));
     cx.run_until_parked();
@@ -950,7 +1253,7 @@ fn assert_hover_tooltip(cx: &mut VisualTestContext, row_index: usize) {
     cx.simulate_mouse_move(
         point(
             px(1907.),
-            px(f32::from(row_height) * (row_index as f32 + 1.5)),
+            px(f32::from(row_height) * (row_index as f32 + 2.5)),
         ),
         None,
         Modifiers::default(),
@@ -968,11 +1271,12 @@ fn assert_hover_tooltip(cx: &mut VisualTestContext, row_index: usize) {
 
 #[gpui::test]
 fn hovering_unchecked_checkbox_shows_tooltip(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (_panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (_panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked();
     let _ = cx.refresh();
     cx.update(|_, _| {});
@@ -984,7 +1288,7 @@ fn hovering_unchecked_checkbox_shows_tooltip(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn hovering_checkbox_shows_tooltip_with_many_rows(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     // 复现真实场景：大量变更文件（行数超过可视区域，触发 uniform_list 虚拟化）。
     let (root, _temp) = test_repo();
     for index in 0..40 {
@@ -996,7 +1300,8 @@ fn hovering_checkbox_shows_tooltip_with_many_rows(cx: &mut TestAppContext) {
     }
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (_panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (_panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked();
     let _ = cx.refresh();
     cx.update(|_, _| {});
@@ -1004,7 +1309,7 @@ fn hovering_checkbox_shows_tooltip_with_many_rows(cx: &mut TestAppContext) {
 
     // 悬停可视区第 5 行（未暂存组的一个文件）行尾复选框；顶部统计行占一行，坐标加偏移。
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
-    let hover_y = f32::from(row_height) * 7.5;
+    let hover_y = f32::from(row_height) * 8.5;
     cx.simulate_mouse_move(point(px(1907.), px(hover_y)), None, Modifiers::default());
     cx.executor().advance_clock(Duration::from_millis(600));
     cx.run_until_parked();
@@ -1019,14 +1324,15 @@ fn hovering_checkbox_shows_tooltip_with_many_rows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn hover_tooltip_survives_row_rebuild(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     // 复现真实场景：行重建（git 操作/滚动后 rebuild_rows）后再次 hover 复选框，
     // tooltip 应仍然显示。
     let (root, _temp) = test_repo();
     fs::write(root.join("second.txt"), "第二个文件\n").expect("应写入文件");
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked();
     let _ = cx.refresh();
     cx.update(|_, _| {});
@@ -1035,7 +1341,7 @@ fn hover_tooltip_survives_row_rebuild(cx: &mut TestAppContext) {
     // 先悬停未暂存组的一个文件复选框，确认 tooltip 正常；顶部统计行占一行，坐标加偏移。
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     cx.simulate_mouse_move(
-        point(px(1907.), px(f32::from(row_height) * 6.5)),
+        point(px(1907.), px(f32::from(row_height) * 7.5)),
         None,
         Modifiers::default(),
     );
@@ -1064,13 +1370,13 @@ fn hover_tooltip_survives_row_rebuild(cx: &mut TestAppContext) {
 
     // 移开鼠标再移回剩余未暂存文件的复选框；顶部统计行占一行。
     cx.simulate_mouse_move(
-        point(px(100.), px(f32::from(row_height) * 6.5)),
+        point(px(100.), px(f32::from(row_height) * 7.5)),
         None,
         Modifiers::default(),
     );
     cx.run_until_parked();
     cx.simulate_mouse_move(
-        point(px(1907.), px(f32::from(row_height) * 6.5)),
+        point(px(1907.), px(f32::from(row_height) * 7.5)),
         None,
         Modifiers::default(),
     );
@@ -1087,7 +1393,7 @@ fn hover_tooltip_survives_row_rebuild(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn hover_tooltip_with_partially_staged_file(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     // 部分暂存（MM）：文件同时出现在已暂存与未暂存两组，两个复选框 id 相同
     // （按 path 生成）——验证两组的 tooltip 是否互相干扰。
     let (root, _temp) = test_repo();
@@ -1097,7 +1403,8 @@ fn hover_tooltip_with_partially_staged_file(cx: &mut TestAppContext) {
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (_panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (_panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked();
     let _ = cx.refresh();
     cx.update(|_, _| {});
@@ -1108,7 +1415,7 @@ fn hover_tooltip_with_partially_staged_file(cx: &mut TestAppContext) {
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     // 先悬停未暂存组的复选框（第 5 行）。
     cx.simulate_mouse_move(
-        point(px(1907.), px(f32::from(row_height) * 6.5)),
+        point(px(1907.), px(f32::from(row_height) * 7.5)),
         None,
         Modifiers::default(),
     );
@@ -1125,11 +1432,12 @@ fn hover_tooltip_with_partially_staged_file(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn hovering_checked_checkbox_shows_tooltip(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked();
     let _ = cx.refresh();
     cx.update(|_, _| {});
@@ -1154,14 +1462,14 @@ fn hovering_checked_checkbox_shows_tooltip(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn checkbox_click_stages_file_without_opening_it(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     let project_root = root.clone();
     let open_count = Rc::new(Cell::new(0));
     let callback_count = Rc::clone(&open_count);
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| {
-        let mut panel = VersionControlPanel::new(project, cx);
+    let (panel, cx) = cx.add_window_view(move |window, cx| {
+        let mut panel = VersionControlPanel::new(project, window, cx);
         panel.set_on_open_file(Rc::new(move |_, _, _, _, _| {
             callback_count.set(callback_count.get() + 1);
         }));
@@ -1176,7 +1484,7 @@ fn checkbox_click_stages_file_without_opening_it(cx: &mut TestAppContext) {
     // 顶部统计行占一行，坐标加偏移。
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     cx.simulate_click(
-        point(px(1907.), px(f32::from(row_height) * 6.5)),
+        point(px(1907.), px(f32::from(row_height) * 7.5)),
         Modifiers::default(),
     );
     cx.run_until_parked();
@@ -1197,14 +1505,15 @@ fn checkbox_click_stages_file_without_opening_it(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn commit_button_commits_without_panel_focus(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     // 回归：焦点不在版本控制面板时，点击"提交"按钮也应生效。
     // dispatch_action 从当前焦点沿焦点链派发，面板 handler 收不到动作，按钮必须直接调用面板方法而不是依赖焦点链。
     let (root, _temp) = test_repo();
     run_in(&root, &["git", "add", "tracked.txt"]);
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked(); // 首次扫描完成（tracked.txt 已暂存）。
     cx.run_until_parked();
 
@@ -1214,7 +1523,7 @@ fn commit_button_commits_without_panel_focus(cx: &mut TestAppContext) {
     cx.update(|_, cx| {
         panel.update(cx, |panel, cx| {
             panel
-                .commit_editor
+                .test_commit_editor()
                 .update(cx, |editor, cx| editor.set_text("按钮提交", cx));
         });
     });
@@ -1231,28 +1540,29 @@ fn commit_button_commits_without_panel_focus(cx: &mut TestAppContext) {
 
     cx.update(|_, cx| {
         assert_eq!(
-            panel.read(cx).last_commit_message.as_deref(),
+            panel.read(cx).test_last_commit_message(cx).as_deref(),
             Some("按钮提交"),
             "焦点不在面板时点击提交按钮也应提交"
         );
-        let text = panel.read(cx).commit_editor.read(cx).text(cx);
+        let text = panel.read(cx).test_commit_editor().read(cx).text(cx);
         assert!(text.is_empty(), "提交成功后编辑器应清空，实际：{text:?}");
     });
 }
 
 #[gpui::test]
 fn commit_flow_clears_editor_and_refreshes_last_commit(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     run_in(&root, &["git", "add", "tracked.txt"]);
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked(); // 首次扫描完成（tracked.txt 已暂存）。
     cx.run_until_parked();
 
     // 底部提交区显示初始提交的 subject。
-    let initial = cx.read_entity(&panel, |panel, _| panel.last_commit_message.clone());
+    let initial = cx.read_entity(&panel, |panel, cx| panel.test_last_commit_message(cx));
     assert_eq!(
         initial.as_deref(),
         Some("initial"),
@@ -1263,9 +1573,9 @@ fn commit_flow_clears_editor_and_refreshes_last_commit(cx: &mut TestAppContext) 
     cx.update(|window, cx| {
         panel.update(cx, |panel, cx| {
             panel
-                .commit_editor
+                .test_commit_editor()
                 .update(cx, |editor, cx| editor.set_text("改动提交", cx));
-            panel.handle_commit(&Commit, window, cx);
+            panel.commit_repository(&panel.test_workdir(), window, cx);
         });
     });
     cx.run_until_parked(); // commit job 完成
@@ -1273,10 +1583,10 @@ fn commit_flow_clears_editor_and_refreshes_last_commit(cx: &mut TestAppContext) 
 
     // 编辑器清空、上次提交信息更新、工作树干净。
     cx.update(|_, cx| {
-        let text = panel.read(cx).commit_editor.read(cx).text(cx);
+        let text = panel.read(cx).test_commit_editor().read(cx).text(cx);
         assert!(text.is_empty(), "提交成功后编辑器应清空，实际：{text:?}");
         assert_eq!(
-            panel.read(cx).last_commit_message.as_deref(),
+            panel.read(cx).test_last_commit_message(cx).as_deref(),
             Some("改动提交"),
             "上次提交信息应刷新为新提交 subject"
         );
@@ -1295,14 +1605,14 @@ fn commit_flow_clears_editor_and_refreshes_last_commit(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn commit_shortcut_submits_staged_changes_from_editor(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     run_in(&root, &["git", "add", "tracked.txt"]);
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| {
+    let (panel, cx) = cx.add_window_view(move |window, cx| {
         init(cx).expect("应注册内置快捷键");
-        VersionControlPanel::new(project, cx)
+        VersionControlPanel::new(project, window, cx)
     });
     cx.run_until_parked();
     cx.run_until_parked();
@@ -1310,9 +1620,9 @@ fn commit_shortcut_submits_staged_changes_from_editor(cx: &mut TestAppContext) {
     let editor_focus = cx.update(|_, cx| {
         panel.update(cx, |panel, cx| {
             panel
-                .commit_editor
+                .test_commit_editor()
                 .update(cx, |editor, cx| editor.set_text("快捷键提交", cx));
-            panel.commit_editor.read(cx).focus_handle()
+            panel.test_commit_editor().read(cx).focus_handle()
         })
     });
     cx.update(|window, cx| window.focus(&editor_focus, cx));
@@ -1326,7 +1636,7 @@ fn commit_shortcut_submits_staged_changes_from_editor(cx: &mut TestAppContext) {
 
     cx.update(|_, cx| {
         assert_eq!(
-            panel.read(cx).last_commit_message.as_deref(),
+            panel.read(cx).test_last_commit_message(cx).as_deref(),
             Some("快捷键提交"),
             "提交信息框聚焦时，提交快捷键应提交当前暂存"
         );
@@ -1335,22 +1645,23 @@ fn commit_shortcut_submits_staged_changes_from_editor(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn commit_without_staged_changes_is_ignored(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     fs::write(root.join("untracked.txt"), "新文件\n").expect("应创建未跟踪文件");
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked();
     cx.run_until_parked();
 
     cx.update(|window, cx| {
         panel.update(cx, |panel, cx| {
             panel
-                .commit_editor
+                .test_commit_editor()
                 .update(cx, |editor, cx| editor.set_text("改动提交", cx));
-            panel.handle_commit(&Commit, window, cx);
+            panel.commit_repository(&panel.test_workdir(), window, cx);
         });
     });
     cx.run_until_parked();
@@ -1358,14 +1669,20 @@ fn commit_without_staged_changes_is_ignored(cx: &mut TestAppContext) {
 
     cx.update(|_, cx| {
         let panel = panel.read(cx);
-        assert!(!panel.pending_commit, "无已暂存改动时不应发起提交");
+        assert!(
+            panel
+                .commit_states
+                .values()
+                .all(|state| state.pending_message.is_none()),
+            "无已暂存改动时不应发起提交"
+        );
         assert_eq!(
-            panel.commit_editor.read(cx).text(cx),
+            panel.test_commit_editor().read(cx).text(cx),
             "改动提交",
             "未发起提交时应保留提交信息"
         );
         assert_eq!(
-            panel.last_commit_message.as_deref(),
+            panel.test_last_commit_message(cx).as_deref(),
             Some("initial"),
             "无已暂存改动时 HEAD 不应变化"
         );
@@ -1395,7 +1712,7 @@ fn commit_without_staged_changes_is_ignored(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn uncommit_restores_previous_message_into_editor(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     let (root, _temp) = test_repo();
     // 第二次提交：多行消息（subject + 空行 + body），随后制造未暂存改动。
     fs::write(root.join("tracked.txt"), "第二次内容\n").expect("应修改文件");
@@ -1408,26 +1725,29 @@ fn uncommit_restores_previous_message_into_editor(cx: &mut TestAppContext) {
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked();
     cx.run_until_parked();
 
     // 触发 uncommit（等价于"撤销"按钮的 handler 行为）。
     cx.update(|window, cx| {
-        panel.update(cx, |panel, cx| panel.handle_uncommit(&Uncommit, window, cx));
+        panel.update(cx, |panel, cx| {
+            panel.handle_uncommit(&Uncommit, window, cx);
+        });
     });
     cx.run_until_parked(); // uncommit job 完成
     cx.run_until_parked(); // 重扫落地 → Head 事件
 
     // 被撤销提交的完整消息（含 body）填回编辑器；上次提交信息回到 initial。
     cx.update(|_, cx| {
-        let text = panel.read(cx).commit_editor.read(cx).text(cx);
+        let text = panel.read(cx).test_commit_editor().read(cx).text(cx);
         assert_eq!(
             text, "第二次提交\n\n详细说明",
             "uncommit 后应把被撤销提交的完整消息填回编辑器"
         );
         assert_eq!(
-            panel.read(cx).last_commit_message.as_deref(),
+            panel.read(cx).test_last_commit_message(cx).as_deref(),
             Some("initial"),
             "上次提交信息应回到被撤销提交之前的提交"
         );
@@ -1436,7 +1756,7 @@ fn uncommit_restores_previous_message_into_editor(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn uncommit_button_restores_message_without_panel_focus(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_test_context(cx);
     // 回归：焦点不在版本控制面板时，点击"撤销"按钮也应生效（与 commit 按钮同理：不依赖焦点链派发）。
     let (root, _temp) = test_repo();
     fs::write(root.join("tracked.txt"), "第二次内容\n").expect("应修改文件");
@@ -1449,7 +1769,8 @@ fn uncommit_button_restores_message_without_panel_focus(cx: &mut TestAppContext)
 
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
-    let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
     cx.run_until_parked();
     cx.run_until_parked();
 
@@ -1468,13 +1789,13 @@ fn uncommit_button_restores_message_without_panel_focus(cx: &mut TestAppContext)
     cx.run_until_parked(); // 重扫落地 → Head 事件
 
     cx.update(|_, cx| {
-        let text = panel.read(cx).commit_editor.read(cx).text(cx);
+        let text = panel.read(cx).test_commit_editor().read(cx).text(cx);
         assert_eq!(
             text, "第二次提交\n\n详细说明",
             "焦点不在面板时点击撤销按钮也应撤销提交并填回消息"
         );
         assert_eq!(
-            panel.read(cx).last_commit_message.as_deref(),
+            panel.read(cx).test_last_commit_message(cx).as_deref(),
             Some("initial"),
             "撤销后上次提交信息应回到 initial"
         );

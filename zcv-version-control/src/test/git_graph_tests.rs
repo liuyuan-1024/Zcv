@@ -1,8 +1,12 @@
+use std::{fs, path::PathBuf, process::Command};
+
 use zcv_actions::DeployFind;
 
 use super::*;
-use crate::test::test_project;
+use crate::test::{test_project, test_project_roots};
 use gpui::TestAppContext;
+use tempfile::TempDir;
+use zcv_path::AbsolutePathBuf;
 use zcv_settings::{SettingsStore, UserSettings};
 
 struct GitGraphSearchHost {
@@ -10,10 +14,69 @@ struct GitGraphSearchHost {
     toolbar: Entity<GitGraphToolbar>,
 }
 
+fn git_repo(subject: &str) -> (PathBuf, TempDir) {
+    let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+    let root = temp_dir.path().to_path_buf();
+    run_git(&root, &["init", "-q", "-b", "master"]);
+    run_git(&root, &["config", "user.email", "test@example.com"]);
+    run_git(&root, &["config", "user.name", "Test User"]);
+    fs::write(root.join("file.txt"), "内容\n").expect("应写入文件");
+    run_git(&root, &["add", "file.txt"]);
+    run_git(&root, &["commit", "-q", "-m", subject]);
+    (root, temp_dir)
+}
+
+fn run_git(dir: &std::path::Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("应执行 git 命令");
+    assert!(
+        output.status.success(),
+        "命令 {:?} 失败：{}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 impl Render for GitGraphSearchHost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().child(self.toolbar.clone()).child(self.view.clone())
     }
+}
+
+#[gpui::test]
+fn git_graph_follows_active_repository_after_switch(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (root_a, _temp_a) = git_repo("仓库 A 的提交");
+    let (root_b, _temp_b) = git_repo("仓库 B 的提交");
+    let project = test_project_roots(vec![root_a, root_b.clone()], cx);
+    let git_store = cx.read_entity(&project, |project, _| project.git_store());
+    let view = cx.new(|cx| GitGraphView::new(project, cx));
+    cx.run_until_parked();
+    cx.run_until_parked();
+
+    let subjects = |cx: &mut TestAppContext| {
+        cx.read_entity(&view, |view, _| {
+            view.rows
+                .iter()
+                .map(|row| row.commit.subject.clone())
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(subjects(cx), vec!["仓库 A 的提交"]);
+
+    git_store.update(cx, |store, cx| {
+        store.set_active_repository(AbsolutePathBuf::canonicalize(&root_b).unwrap(), cx);
+    });
+    cx.run_until_parked();
+    cx.run_until_parked();
+    assert_eq!(
+        subjects(cx),
+        vec!["仓库 B 的提交"],
+        "已打开的提交图应跟随活动仓库切换"
+    );
 }
 
 #[gpui::test]

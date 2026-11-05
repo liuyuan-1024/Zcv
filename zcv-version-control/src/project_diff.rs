@@ -368,6 +368,12 @@ impl ProjectDiffKind {
     }
 }
 
+#[derive(Clone)]
+enum DiffViewEvent {
+    Editor(EditorEvent),
+    RepositoryChanged,
+}
+
 struct DiffView {
     kind: ProjectDiffKind,
     project: Entity<Project>,
@@ -510,7 +516,9 @@ impl DiffView {
             project.resolve_conflict(path, conflict_index, choice, cx)
         });
         if let Err(error) = result {
-            cx.emit(EditorEvent::Error(format!("保存冲突解决结果失败：{error}")));
+            cx.emit(DiffViewEvent::Editor(EditorEvent::Error(format!(
+                "保存冲突解决结果失败：{error}"
+            ))));
             return;
         }
         self.sync_conflict_projection(cx);
@@ -586,7 +594,7 @@ impl DiffView {
             // 此时重试待定位路径，避免首次点击只能停在默认的第一个文件，第二次点击才生效。
             cx.observe(&multi_buffer, |view, _, cx| view.apply_pending_path(cx)),
             cx.subscribe(&editor, |_, _, event: &EditorEvent, cx| {
-                cx.emit(event.clone());
+                cx.emit(DiffViewEvent::Editor(event.clone()));
             }),
             // 展开状态变化由 MultiBuffer 自己按文件重物化并推显示链；视图只需跟随重绘，不再整体重建投影。
             cx.subscribe(&editor, |_view, _, event: &EditorEvent, cx| match event {
@@ -609,14 +617,22 @@ impl DiffView {
                     }
                     view.refresh_files(cx);
                 }
-                GitStoreEvent::RevisionSupportChanged => view.refresh_files(cx),
-                GitStoreEvent::HunkOperationFailed(message) => {
-                    cx.emit(EditorEvent::Error(format!("变更块操作失败：{message}")));
+                GitStoreEvent::RevisionSupportChanged | GitStoreEvent::ActiveRepositoryChanged => {
+                    if matches!(event, GitStoreEvent::ActiveRepositoryChanged) {
+                        view.reset_projection_for_repository_change(cx);
+                    }
+                    view.refresh_files(cx);
                 }
-                GitStoreEvent::ActiveRepositoryChanged
-                | GitStoreEvent::JobsUpdated
-                | GitStoreEvent::Uncommitted(_)
-                | GitStoreEvent::UncommitFailed(_)
+                GitStoreEvent::HunkOperationFailed(message) => {
+                    cx.emit(DiffViewEvent::Editor(EditorEvent::Error(format!(
+                        "变更块操作失败：{message}"
+                    ))));
+                }
+                GitStoreEvent::JobsUpdated
+                | GitStoreEvent::Committed(_)
+                | GitStoreEvent::CommitFailed(_, _)
+                | GitStoreEvent::Uncommitted(_, _)
+                | GitStoreEvent::UncommitFailed(_, _)
                 | GitStoreEvent::RevisionLoadFailed(_)
                 | GitStoreEvent::StatusScanFailed(_) => {}
             }),
@@ -656,24 +672,46 @@ impl DiffView {
         self.files.is_empty()
     }
 
+    /// 活动仓库切换时，旧仓库的投影、订阅与待定位路径都不再属于当前视图。
+    ///
+    /// 不同仓库可能存在相同的相对路径，不能依赖显示路径判断旧投影是否仍可见；
+    /// 这里先整体清除本视图拥有的投影，再由 refresh_files 从新仓库重建。
+    fn reset_projection_for_repository_change(&mut self, cx: &mut Context<Self>) {
+        self.pending_path = None;
+        self.editor
+            .update(cx, |editor, cx| editor.reset_diff_hunk_expansion_state(cx));
+        if self.kind == ProjectDiffKind::Conflict {
+            self.conflict_files.clear();
+            self.multi_buffer.update(cx, |buffer, cx| buffer.clear(cx));
+            self.editor
+                .update(cx, |editor, cx| editor.set_editor_hunks(Vec::new(), cx));
+        } else {
+            self.diff_subscriptions.clear();
+            self.editor.update(cx, |editor, cx| {
+                editor.clear_diffs(cx);
+            });
+        }
+        cx.emit(DiffViewEvent::RepositoryChanged);
+    }
+
     /// 从 GitStore 权威快照重建文件集合；真实内容始终复用 Project 的文档实体。
     fn refresh_files(&mut self, cx: &mut Context<Self>) {
         let git_store = self.project.read(cx).git_store();
         let changed = {
             let store = git_store.read(cx);
             let mut changed = store
-                .repositories()
-                .flat_map(|(workdir, snapshot)| {
-                    snapshot
-                        .statuses_by_path
-                        .iter()
+                .active_repository_workdir()
+                .map(|workdir| {
+                    store
+                        .statuses_for_repository(workdir)
                         .filter(|(_, entry)| self.kind.includes(entry.status))
-                        .map(move |(relative, entry)| GitChangeFile {
+                        .map(|(relative, entry)| GitChangeFile {
                             path: workdir.join(relative.as_path()),
                             status: entry.status,
                         })
+                        .collect::<Vec<_>>()
                 })
-                .collect::<Vec<_>>();
+                .unwrap_or_default();
             changed.sort_by(|left, right| {
                 compare_tree_entries((&left.path, false), (&right.path, false))
             });
@@ -681,6 +719,13 @@ impl DiffView {
         };
 
         self.files = changed;
+        let pending_path_is_stale = self
+            .pending_path
+            .as_ref()
+            .is_some_and(|pending| !self.files.iter().any(|file| &file.path == pending));
+        if pending_path_is_stale {
+            self.pending_path = None;
+        }
         let visible_source_paths = self
             .files
             .iter()
@@ -1159,10 +1204,10 @@ impl DiffView {
                 }
                 if let Some(error) = error {
                     this.update(cx, |_, cx| {
-                        cx.emit(EditorEvent::Error(format!(
+                        cx.emit(DiffViewEvent::Editor(EditorEvent::Error(format!(
                             "读取变更文件失败（{}）：{error}",
                             file.path.display()
-                        )));
+                        ))));
                     })
                     .ok();
                     continue;
@@ -1230,7 +1275,7 @@ impl DiffView {
         }
     }
 }
-impl EventEmitter<EditorEvent> for DiffView {}
+impl EventEmitter<DiffViewEvent> for DiffView {}
 
 impl Focusable for DiffView {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -1278,10 +1323,20 @@ impl Render for DiffView {
 }
 
 impl Item for DiffView {
-    type Event = EditorEvent;
+    type Event = DiffViewEvent;
 
-    fn tab_content_text(&self, _cx: &App) -> SharedString {
-        self.kind.title().into()
+    fn tab_content_text(&self, cx: &App) -> SharedString {
+        let title = self.kind.title();
+        match self
+            .project
+            .read(cx)
+            .git_store()
+            .read(cx)
+            .active_repository_name()
+        {
+            Some(name) => format!("{title} · {name}").into(),
+            None => title.into(),
+        }
     }
 
     fn tab_icon(&self, _cx: &App) -> Option<SharedString> {
@@ -1289,7 +1344,10 @@ impl Item for DiffView {
     }
 
     fn to_item_events(event: &Self::Event, emit: &mut dyn FnMut(ItemEvent)) {
-        <Editor as Item>::to_item_events(event, emit);
+        match event {
+            DiffViewEvent::Editor(event) => <Editor as Item>::to_item_events(event, emit),
+            DiffViewEvent::RepositoryChanged => emit(ItemEvent::UpdateTab),
+        }
     }
 
     fn active_path(&self, cx: &App) -> Option<PathBuf> {
@@ -1516,7 +1574,8 @@ fn subscribe_to_open_excerpts(
     cx: &mut Context<Workspace>,
 ) {
     cx.subscribe_in(view, window, |workspace, view, event, window, cx| {
-        let EditorEvent::OpenExcerptsRequested { locations, .. } = event else {
+        let DiffViewEvent::Editor(EditorEvent::OpenExcerptsRequested { locations, .. }) = event
+        else {
             return;
         };
         for location in locations {

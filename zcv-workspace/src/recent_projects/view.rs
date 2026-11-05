@@ -12,8 +12,8 @@ use std::{
 };
 
 use gpui::{
-    Action, AnyElement, App, ClickEvent, Context, Entity, Render, WeakEntity, Window, div,
-    prelude::*,
+    Action, AnyElement, App, ClickEvent, Context, Entity, Pixels, Render, Subscription, WeakEntity,
+    Window, div, prelude::*, px,
 };
 use zcv_actions::{
     AddDirectoryToProject, DeleteRecentProject, OpenLocalDirectory, OpenLocalFile,
@@ -22,9 +22,9 @@ use zcv_actions::{
 use zcv_fuzzy::Matcher;
 use zcv_keymap::{KeyBindings, display_shortcut};
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, picker_divider, toggle_picker};
-use zcv_project::Project;
-use zcv_theme::{color, scale};
-use zcv_ui::{Button, ListItem, PopoverHost, PopoverLayer, SvgIcon};
+use zcv_project::{GitStoreEvent, Project, ProjectEvent};
+use zcv_theme::{color, scale, typography};
+use zcv_ui::{Button, ButtonLike, ListItem, PopoverHost, PopoverLayer, SvgIcon, TooltipSpec};
 
 use crate::{
     ToastKind, Workspace,
@@ -39,6 +39,44 @@ pub type OnProjectSelected = Rc<dyn Fn(Vec<PathBuf>, &mut Window, &mut App)>;
 
 /// 最近项目向宿主上报用户可见错误的回调（由装配层决定 toast 呈现）。
 type ErrorReporter = Rc<dyn Fn(String, &mut App)>;
+
+/// 项目按钮中名称区域的最大宽度；完整项目列表由展开浮层提供。
+const PROJECT_BUTTON_MAX_WIDTH: Pixels = px(190.0);
+
+fn project_root_name(root: &Path) -> String {
+    root.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root.to_string_lossy().into_owned())
+}
+
+/// 项目按钮的显示基准：活动仓库所属根优先，其次首个根。
+fn ordered_project_roots(project: &Project, cx: &App) -> Vec<PathBuf> {
+    let roots = project.roots().map(Path::to_path_buf).collect::<Vec<_>>();
+    let git_store = project.git_store();
+    let active_root = git_store
+        .read(cx)
+        .active_repository_workdir()
+        .and_then(|workdir| project.root_for_path(workdir))
+        .map(Path::to_path_buf);
+    let Some(active_root) = active_root else {
+        return roots;
+    };
+    let mut ordered = Vec::with_capacity(roots.len());
+    ordered.push(active_root.clone());
+    ordered.extend(roots.into_iter().filter(|root| root != &active_root));
+    ordered
+}
+
+/// 项目按钮的名称与固定后缀分开返回，名称单独截断，其余项目数量始终可见。
+fn project_button_parts(project: &Project, cx: &App) -> (String, Option<String>) {
+    let roots = ordered_project_roots(project, cx);
+    let Some(first) = roots.first() else {
+        return ("选择项目".to_owned(), None);
+    };
+    let name = project_root_name(first);
+    let suffix = (roots.len() > 1).then(|| format!("...+{}", roots.len() - 1));
+    (name, suffix)
+}
 
 // ═══ 数据源 ═══════════════════════════════════════════════════════
 
@@ -341,6 +379,7 @@ impl PickerDelegate for RecentProjectsDelegate {
 pub struct RecentProjects {
     host: PopoverHost,
     picker: Entity<Picker<RecentProjectsDelegate>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl RecentProjects {
@@ -369,6 +408,25 @@ impl RecentProjects {
                 }
             })
         };
+        let git_store = project.read(cx).git_store();
+        let git_subscription = cx.subscribe(&git_store, |_, _, event, cx| {
+            if matches!(
+                event,
+                GitStoreEvent::Repositories | GitStoreEvent::ActiveRepositoryChanged
+            ) {
+                cx.notify();
+            }
+        });
+        let project_subscription = cx.subscribe(&project, |_, _, event, cx| {
+            if matches!(
+                event,
+                ProjectEvent::WorktreeAdded(_)
+                    | ProjectEvent::WorktreeRemoved(_)
+                    | ProjectEvent::WorktreeRootChanged { .. }
+            ) {
+                cx.notify();
+            }
+        });
         let delegate = RecentProjectsDelegate::new(project, projects, on_selected, on_error, cx);
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
@@ -377,7 +435,11 @@ impl RecentProjects {
             picker.set_on_dismiss(host.on_dismiss_handler())
         });
 
-        Self { host, picker }
+        Self {
+            host,
+            picker,
+            _subscriptions: vec![git_subscription, project_subscription],
+        }
     }
 
     /// 外部切换（快捷键/按钮等）。
@@ -426,23 +488,38 @@ impl Render for RecentProjects {
             color::current(cx).text
         };
 
-        // 按钮上显示主根名称（多根工作区显示首个根），没有时显示「选择项目」
-        let button_text = self
-            .picker
-            .read(cx)
-            .delegate()
-            .project
-            .read(cx)
-            .main_root()
-            .and_then(Path::file_name)
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "选择项目".to_owned());
+        let project = self.picker.read(cx).delegate().project.clone();
+        let (button_name, button_suffix) = project_button_parts(project.read(cx), cx);
+        let mut tooltip = TooltipSpec::from_lines(["最近项目"]);
+        if let Some(shortcut) = display_shortcut(&ToggleRecentProjects, cx) {
+            tooltip = tooltip.shortcut(shortcut);
+        }
 
-        let button = Button::text("recent-projects", button_text)
-            .label("最近项目")
-            .shortcut(display_shortcut(&ToggleRecentProjects, cx))
-            .color(color_value)
-            .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
+        let button = ButtonLike::new("recent-projects")
+            .padding(scale::S2)
+            .tooltip(tooltip)
+            .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)))
+            .child(
+                div()
+                    .debug_selector(|| "recent-projects-label".into())
+                    .max_w(PROJECT_BUTTON_MAX_WIDTH)
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .font(typography::ui_font())
+                    .text_size(window.rem_size())
+                    .line_height(typography::ui_line_at(window.rem_size(), cx))
+                    .text_color(color_value)
+                    .child(div().flex_1().min_w_0().truncate().child(button_name))
+                    .when_some(button_suffix, |row, suffix| {
+                        row.child(
+                            div()
+                                .debug_selector(|| "recent-projects-count".into())
+                                .flex_none()
+                                .child(suffix),
+                        )
+                    }),
+            );
 
         let mut root = div()
             .track_focus(&self.host.focus_handle())
@@ -450,7 +527,11 @@ impl Render for RecentProjects {
             .key_context("RecentProjects")
             .on_action(cx.listener(Self::handle_delete_recent))
             .relative()
-            .child(button);
+            .child(
+                div()
+                    .debug_selector(|| "recent-projects-button".into())
+                    .child(button),
+            );
 
         // 浮层
         if self.host.is_open() {

@@ -70,7 +70,7 @@ fn coalesce_refresh_paths(mut paths: Vec<RelativePathBuf>) -> Vec<RelativePathBu
 
 /// GitStore 通知事件。
 ///
-/// 单窗口简化：事件均无 payload（除提交撤销结果），订阅方收到后按需重读 GitStore 状态。
+/// 状态变化事件由订阅方重读 GitStore；提交结果携带工作目录以定位对应草稿。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitStoreEvent {
     /// 仓库集合发生变化（发现/消失）。
@@ -79,14 +79,18 @@ pub enum GitStoreEvent {
     Statuses,
     /// 当前分支、HEAD 或分支列表发生变化。
     Head,
-    /// 活动仓库变化（跟随焦点文件切换；订阅方重读 `current_branch()`，无需 payload）。
+    /// 活动仓库变化（由仓库选择器设置或仓库消失后回退；订阅方重读 GitStore，无需 payload）。
     ActiveRepositoryChanged,
     /// 后台 job 集合变化（开始/完成/取消）；订阅方重读 `current_job()`。
     JobsUpdated,
-    /// 撤销提交成功：携带被撤销的提交消息（面板填回提交信息编辑器）。
-    Uncommitted(String),
+    /// 指定仓库提交成功，面板清除该仓库已提交的草稿。
+    Committed(AbsolutePathBuf),
+    /// 指定仓库提交失败。
+    CommitFailed(AbsolutePathBuf, String),
+    /// 撤销提交成功：携带仓库与被撤销的完整消息。
+    Uncommitted(AbsolutePathBuf, String),
     /// 撤销提交失败：携带完整错误信息，由工作区向用户提示。
-    UncommitFailed(String),
+    UncommitFailed(AbsolutePathBuf, String),
     /// 变更块操作失败：携带错误信息（面板提示错误并恢复被 optimistic 抑制的 hunk）。
     HunkOperationFailed(String),
     /// 修订读取失败；缓存保持原内容，由工作区统一提示。
@@ -146,7 +150,7 @@ pub struct RepositorySnapshot {
     pub branch: Option<String>,
     pub head: Option<String>,
     /// 最近一次提交的 subject（首行；无提交时为 None）。
-    /// 底部提交区显示用，status 扫描时顺手读取 `%(contents:subject)`。
+    /// 仓库提交区显示用，status 扫描时读取 `%(contents:subject)`。
     pub last_commit_message: Option<String>,
     /// 是否配置了 remote。
     pub has_remote: bool,
@@ -458,7 +462,24 @@ impl GitStore {
                     }
                     let Some(prepared) = this.update(&mut cx, |store, _| store.prepare_job(&job))
                     else {
-                        this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
+                        this.update(&mut cx, |store, cx| {
+                            match &job {
+                                GitJob::Commit { workdir, .. } => {
+                                    cx.emit(GitStoreEvent::CommitFailed(
+                                        workdir.clone(),
+                                        "目标仓库已不可用".into(),
+                                    ))
+                                }
+                                GitJob::Uncommit { workdir } => {
+                                    cx.emit(GitStoreEvent::UncommitFailed(
+                                        workdir.clone(),
+                                        "目标仓库已不可用".into(),
+                                    ))
+                                }
+                                _ => {}
+                            }
+                            store.finish_job(scheduled.id, cx);
+                        });
                         continue;
                     };
                     // 标记在途任务（状态栏开始显示）。
@@ -954,29 +975,52 @@ impl GitStore {
         }
     }
 
-    /// 提交暂存内容（消息来自面板提交信息编辑器）。
+    /// 提交指定仓库的暂存内容（消息来自该仓库的提交信息编辑器）。
     ///
-    /// 成功后重扫，Head/Statuses 事件驱动面板清空编辑器并刷新上次提交信息。
-    pub fn commit(&mut self, message: String, cx: &mut Context<Self>) {
-        if self.repositories.is_empty() {
-            self.schedule_scan(cx);
+    /// 成功后发送带仓库身份的完成事件并重扫；快照刷新上次提交信息。
+    pub fn commit(&mut self, workdir: AbsolutePathBuf, message: String, cx: &mut Context<Self>) {
+        if !self.has_staged_changes(workdir.as_path()) {
+            cx.emit(GitStoreEvent::CommitFailed(
+                workdir,
+                "目标仓库没有已暂存改动".into(),
+            ));
             return;
         }
-        if !self.has_staged_changes() {
-            return;
+        if self
+            .schedule_job(
+                GitJob::Commit {
+                    workdir: workdir.clone(),
+                    message,
+                },
+                cx,
+            )
+            .is_none()
+        {
+            cx.emit(GitStoreEvent::CommitFailed(
+                workdir,
+                "提交任务未能启动".into(),
+            ));
         }
-        self.schedule_job(GitJob::Commit { message }, cx);
     }
 
     /// 撤销最近一次提交；
     /// 根提交删除当前本地分支引用，普通提交回退到第一个父提交。
-    /// 被撤销消息填回提交信息编辑器，失败由订阅方提示用户。
-    pub fn uncommit(&mut self, cx: &mut Context<Self>) {
-        if self.repositories.is_empty() {
-            self.schedule_scan(cx);
-            return;
+    /// 被撤销消息填回该仓库提交信息编辑器，失败由订阅方提示用户。
+    pub fn uncommit(&mut self, workdir: AbsolutePathBuf, cx: &mut Context<Self>) {
+        if self
+            .schedule_job(
+                GitJob::Uncommit {
+                    workdir: workdir.clone(),
+                },
+                cx,
+            )
+            .is_none()
+        {
+            cx.emit(GitStoreEvent::UncommitFailed(
+                workdir,
+                "撤销提交任务未能启动".into(),
+            ));
         }
-        self.schedule_job(GitJob::Uncommit, cx);
     }
 
     pub fn checkout_branch_with_result(
@@ -1167,62 +1211,64 @@ impl GitStore {
 
     /// 当前活动仓库的分支名（无仓库、active 未建立或活动仓库为空仓库时为 None）。
     pub fn current_branch(&self) -> Option<&str> {
-        self.active_repo_workdir
-            .as_ref()
-            .and_then(|workdir| self.repo_by_workdir(workdir))
+        self.active_repository()
             .and_then(|repository| repository.snapshot.branch.as_deref())
     }
 
     /// 当前活动仓库 HEAD 提交的完整 oid（detached HEAD 时存在；空仓库无提交时为 None）。
     pub fn current_head_commit(&self) -> Option<&str> {
-        self.active_repo_workdir
-            .as_ref()
-            .and_then(|workdir| self.repo_by_workdir(workdir))
+        self.active_repository()
             .and_then(|repository| repository.snapshot.head.as_deref())
     }
 
-    /// 全部仓库变更行数汇总（staged 与 unstaged 合并计数），版本控制面板顶部统计用。
-    pub fn total_diff_stat(&self) -> DiffStat {
+    /// 指定仓库自身（排除嵌套仓库）的状态条目；调用方决定分组与忽略过滤。
+    pub fn statuses_for_repository<'a>(
+        &'a self,
+        workdir: &'a Path,
+    ) -> impl Iterator<Item = (&'a RelativePathBuf, &'a StatusEntry)> + 'a {
+        self.repo_by_workdir(workdir)
+            .into_iter()
+            .flat_map(move |repository| {
+                let workdir = repository.repository.working_directory();
+                repository
+                    .snapshot
+                    .statuses_by_path
+                    .iter()
+                    .filter(move |(relative, _)| {
+                        self.status_belongs_to_repository(workdir, relative)
+                    })
+            })
+    }
+
+    /// 指定仓库的变更行数（staged 与 unstaged 合并计数）。
+    pub fn diff_stat_for_repository(&self, workdir: &Path) -> DiffStat {
         let mut total = DiffStat::default();
-        for repository in &self.repositories {
-            for entry in repository.snapshot.statuses_by_path.values() {
-                if entry.status.is_ignored() {
-                    continue;
-                }
-                total.added += entry.staged_diff_stat.added + entry.unstaged_diff_stat.added;
-                total.deleted += entry.staged_diff_stat.deleted + entry.unstaged_diff_stat.deleted;
+        for (_, entry) in self.statuses_for_repository(workdir) {
+            if entry.status.is_ignored() {
+                continue;
             }
+            total.added += entry.staged_diff_stat.added + entry.unstaged_diff_stat.added;
+            total.deleted += entry.staged_diff_stat.deleted + entry.unstaged_diff_stat.deleted;
         }
         total
     }
 
     /// 活动仓库的本地分支列表（无仓库、active 未建立时为 None；空仓库为空列表）。
-    ///
-    /// 与 current_branch 同仓库选择策略，保证分支按钮与列表一致。
     pub fn active_branch_list(&self) -> Option<&[Branch]> {
-        self.active_repo_workdir
-            .as_ref()
-            .and_then(|workdir| self.repo_by_workdir(workdir))
+        self.active_repository()
             .map(|repository| repository.snapshot.branch_list.as_slice())
     }
 
-    /// 活动仓库最近一次提交的 subject（底部提交区显示）。
-    ///
-    /// 仓库选择与 fetch/pull/push、提交目标一致（`active_repository`），保证"显示的提交信息"与"提交目标仓库"对齐。
-    pub fn last_commit_message(&self) -> Option<&str> {
-        self.active_repository()
-            .and_then(|repository| repository.snapshot.last_commit_message.as_deref())
+    /// 指定仓库是否存在已暂存改动。
+    pub fn has_staged_changes(&self, workdir: &Path) -> bool {
+        self.statuses_for_repository(workdir)
+            .any(|(_, entry)| entry.status.has_staged())
     }
 
-    /// 活动仓库是否存在已暂存改动（提交按钮与提交动作的资格判断来源）。
-    pub fn has_staged_changes(&self) -> bool {
-        self.active_repository().is_some_and(|repository| {
-            repository
-                .snapshot
-                .statuses_by_path
-                .values()
-                .any(|entry| entry.status.has_staged())
-        })
+    /// 状态条目是否归指定仓库自身所有；嵌套仓库的条目不能计入外层仓库。
+    fn status_belongs_to_repository(&self, workdir: &Path, relative: &RelativePathBuf) -> bool {
+        self.repo_for_path(&workdir.join(relative.as_path()))
+            .is_some_and(|owner| owner.repository.working_directory() == workdir)
     }
 
     /// 按 working_directory 查找仓库。
@@ -1232,19 +1278,11 @@ impl GitStore {
             .find(|repository| repository.repository.working_directory() == workdir)
     }
 
-    /// 操作目标仓库：active 已建立时用它，否则回退「首个有分支的仓库」→「首个」。
-    ///
-    /// fetch/pull/push、提交、uncommit 与底部提交信息显示共用此选择（操作以 active 仓库为目标，空仓库也执行）。
+    /// 当前活动仓库；活动仓库身份由仓库选择器显式设置，并在仓库消失后按扫描生命周期回退。
     fn active_repository(&self) -> Option<&Repository> {
         self.active_repo_workdir
             .as_ref()
             .and_then(|workdir| self.repo_by_workdir(workdir))
-            .or_else(|| {
-                self.repositories
-                    .iter()
-                    .find(|repository| repository.snapshot.branch.is_some())
-            })
-            .or_else(|| self.repositories.first())
     }
 
     /// 活动仓库的远程操作状态（可推送/可拉取判定依据）。
@@ -1258,9 +1296,7 @@ impl GitStore {
             })
             .min_by_key(|(id, _, _)| *id);
         let mut state = self
-            .active_repo_workdir
-            .as_ref()
-            .and_then(|workdir| self.repo_by_workdir(workdir))
+            .active_repository()
             .map(|repository| RemoteOperationState {
                 has_remote: repository.snapshot.has_remote,
                 ahead: repository.snapshot.ahead,
@@ -1276,18 +1312,38 @@ impl GitStore {
         state
     }
 
-    /// 按路径更新活动仓库（最长前缀匹配；焦点文件切换时由 Workspace 调用）。
+    /// 当前活动仓库的工作目录；提交、分支、远程操作与提交图共用这一选择。
+    pub fn active_repository_workdir(&self) -> Option<&Path> {
+        self.active_repo_workdir.as_deref()
+    }
+
+    /// 当前活动仓库的显示名；无活动仓库时为 None。
+    pub fn active_repository_name(&self) -> Option<String> {
+        let workdir = self.active_repository_workdir()?;
+        Some(
+            workdir
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| workdir.to_string_lossy().into_owned()),
+        )
+    }
+
+    /// 当前活动仓库的工作目录与只读快照。
+    pub fn active_repository_snapshot(&self) -> Option<(&Path, &RepositorySnapshot)> {
+        let repository = self.active_repository()?;
+        Some((
+            repository.repository.working_directory(),
+            &repository.snapshot,
+        ))
+    }
+
+    /// 显式选择活动仓库；仓库必须仍在当前发现集合中。
     ///
-    /// 路径可能未 canonicalize（如设置文件入口），先归一化再匹配；
-    /// 路径不在任何仓库中（如已删除）时保持当前活动仓库不变。
-    pub fn set_active_repository_for_path(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let Ok(path) = canonicalize_path(path) else {
+    /// 选择是活动仓库的唯一用户入口，焦点编辑器切换不得改变它。
+    pub fn set_active_repository(&mut self, workdir: AbsolutePathBuf, cx: &mut Context<Self>) {
+        if self.repo_by_workdir(workdir.as_path()).is_none() {
             return;
-        };
-        let Some(repository) = self.repo_for_path(&path) else {
-            return;
-        };
-        let workdir = repository_working_directory(repository.repository.as_ref());
+        }
         if self.active_repo_workdir.as_ref() != Some(&workdir) {
             self.active_repo_workdir = Some(workdir);
             cx.emit(GitStoreEvent::ActiveRepositoryChanged);
@@ -1527,11 +1583,11 @@ impl GitStore {
         present
     }
 
-    /// 后台加载活动仓库的提交图数据（一次性读，不进 job 队列、不维护快照状态）。
+    /// 后台加载当前活动仓库的提交图数据（一次性读，不进 job 队列、不维护快照状态）。
     ///
     /// `offset` 为已跳过的提交数量：`None` 从历史开头开始，`Some(offset)` 从该位置继续；
     /// `limit` 为单批提交数上限。lane 布局由版本控制视图计算。
-    /// 无活动仓库时返回空列表。仿 `load_revision_document` 的 `background.spawn` 一次性后台读模式。
+    /// 仿 `load_revision_document` 的 `background.spawn` 一次性后台读模式。
     pub fn load_commit_graph(
         &self,
         offset: Option<usize>,
@@ -1539,7 +1595,7 @@ impl GitStore {
     ) -> Task<anyhow::Result<Vec<GraphCommit>>> {
         let background = self.background.clone();
         let Some(repository) = self.active_repository() else {
-            return background.spawn(async { Ok(Vec::new()) });
+            return background.spawn(async move { anyhow::bail!("当前没有活动仓库") });
         };
         let repository = repository.repository.clone();
         background.spawn(async move { repository.commit_graph(offset, limit) })
@@ -1813,9 +1869,9 @@ impl GitStore {
                     grouped_diff_requests: Vec::new(),
                 })
             }
-            // 提交/撤销提交：作用于活动仓库（与 GitOperation 同选择策略）。
-            GitJob::Commit { .. } | GitJob::Uncommit => {
-                let repository = self.active_repository()?;
+            // 提交和撤销提交的仓库身份由任务固定，不受焦点切换影响。
+            GitJob::Commit { workdir, .. } | GitJob::Uncommit { workdir } => {
+                let repository = self.repo_by_workdir(workdir.as_path())?;
                 Some(JobPreparation {
                     roots,
                     repositories: vec![repository.repository.clone()],

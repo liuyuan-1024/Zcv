@@ -46,7 +46,7 @@ fn test_workspace(
 ) -> Workspace {
     let project = cx.new(|cx| {
         Project::new_with_watcher(
-            root,
+            vec![root],
             Arc::new(PassiveWatcher::new()),
             Arc::new(LanguageRegistry::new()),
             cx,
@@ -93,7 +93,7 @@ fn project_search_folds_all_files_in_one_display_update(cx: &mut TestAppContext)
     let registry = Arc::new(LanguageRegistry::new());
     let project = cx.new(|cx| {
         Project::new_with_watcher(
-            directory.path().to_path_buf(),
+            vec![directory.path().to_path_buf()],
             Arc::new(PassiveWatcher::new()),
             registry.clone(),
             cx,
@@ -279,7 +279,7 @@ fn project_search_view_and_search_bar_release_together(cx: &mut TestAppContext) 
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = cx.new(|cx| {
         Project::new_with_watcher(
-            directory.path().to_path_buf(),
+            vec![directory.path().to_path_buf()],
             Arc::new(PassiveWatcher::new()),
             Arc::new(LanguageRegistry::new()),
             cx,

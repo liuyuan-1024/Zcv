@@ -147,7 +147,7 @@ fn document_toolbar(cx: &mut TestAppContext) -> Entity<DocumentToolbar> {
     let pane = cx.new(Pane::new);
     let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
     let root = AbsolutePathBuf::canonicalize(Path::new(".")).expect("测试项目目录应可规范化");
-    let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
+    let project = cx.new(|cx| Project::new(vec![root], Arc::new(LanguageRegistry::new()), cx));
     let language_registry = cx.read_entity(&project, |project, _| project.language_registry());
     let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
     cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, language_registry, cx))
@@ -282,7 +282,7 @@ fn hidden_document_search_does_not_search_a_composite_editor(cx: &mut TestAppCon
 fn project_search_view_acts_as_editor_and_owns_its_toolbar(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let root = AbsolutePathBuf::canonicalize(Path::new(".")).expect("测试项目目录应可规范化");
-    let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
+    let project = cx.new(|cx| Project::new(vec![root], Arc::new(LanguageRegistry::new()), cx));
     let view = cx.new(|cx| crate::project_search::ProjectSearchView::new(project, cx));
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {

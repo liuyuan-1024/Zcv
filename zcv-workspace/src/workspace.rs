@@ -37,7 +37,7 @@ mod workspace_state;
 pub(crate) mod test_support;
 
 pub use activity_indicator::ActivityIndicator;
-pub use branch_picker::{GitBranchAction, OnBranchSelected};
+pub use branch_picker::{BranchPicker, GitBranchAction, OnBranchSelected};
 pub use breadcrumbs::Breadcrumbs;
 pub use dock::{Dock, DockPosition};
 pub use item::{Item, ItemEvent, ItemHandle};
@@ -63,7 +63,7 @@ pub use status_bar::StatusItemView;
 pub use status_color::git_status_color;
 pub use toast::{ToastAction, ToastId, ToastKind};
 pub use toolbar::{Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
-pub use top_bar::{TopBar, TopBarCallbacks};
+pub use top_bar::TopBar;
 pub use window_bounds::{load_window_bounds, save_window_bounds};
 pub use workspace_state::Workspace;
 

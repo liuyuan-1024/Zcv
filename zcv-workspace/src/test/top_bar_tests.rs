@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 
 use gpui::{Bounds, Context, Pixels, TestAppContext, canvas, px};
 

@@ -230,7 +230,6 @@ impl GitStore {
                 GitJob::GitInit
                 | GitJob::StageFiles { .. }
                 | GitJob::ResolveConflicts { .. }
-                | GitJob::Commit { .. }
                 | GitJob::CheckoutBranch { .. }
                 | GitJob::CreateBranch { .. }
                 | GitJob::DeleteBranch { .. },
@@ -241,17 +240,30 @@ impl GitStore {
                     self.schedule_scan(cx);
                 }
             }
-            (GitJob::Uncommit, JobResult::Uncommit(result)) => match result {
+            (GitJob::Commit { workdir, .. }, JobResult::GitOperation(result)) => match result {
+                Ok(()) => {
+                    cx.emit(GitStoreEvent::Committed(workdir.clone()));
+                    self.schedule_scan(cx);
+                }
+                Err(error) => cx.emit(GitStoreEvent::CommitFailed(
+                    workdir.clone(),
+                    format!("{error:#}"),
+                )),
+            },
+            (GitJob::Uncommit { workdir }, JobResult::Uncommit(result)) => match result {
                 Ok(Some(message)) => {
                     // 事件直接携带被撤销消息，面板订阅后填回提交信息编辑器，无需跨事件暂存。
-                    cx.emit(GitStoreEvent::Uncommitted(message));
+                    cx.emit(GitStoreEvent::Uncommitted(workdir.clone(), message));
                     self.schedule_scan(cx);
                 }
                 Ok(None) => {
                     self.schedule_scan(cx);
                 }
                 Err(error) => {
-                    cx.emit(GitStoreEvent::UncommitFailed(format!("{error:#}")));
+                    cx.emit(GitStoreEvent::UncommitFailed(
+                        workdir.clone(),
+                        format!("{error:#}"),
+                    ));
                 }
             },
             _ => {}

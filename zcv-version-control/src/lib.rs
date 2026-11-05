@@ -4,6 +4,7 @@ mod editor_diff;
 mod git_graph;
 mod graph;
 mod project_diff;
+mod repository_picker;
 mod version_control;
 
 #[cfg(test)]
@@ -16,7 +17,7 @@ use git_graph::GitGraphSerializedItemProvider;
 pub use git_graph::deploy_at as deploy_git_graph;
 use project_diff::ProjectDiffSerializedItemProvider;
 pub use project_diff::{ProjectDiffKind, deploy_at as deploy_project_diff};
-pub use version_control::{OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel};
+pub use version_control::{OnGitOperation, OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel};
 
 pub use editor_diff::{
     inject_editor_diff, refresh_pane_git_projection, sync_editor_conflict_hunks,

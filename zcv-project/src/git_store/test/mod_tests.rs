@@ -74,7 +74,9 @@ fn scan_discovers_repository_and_reports_status(cx: &mut gpui::TestAppContext) {
 
     // 汇总行数：未暂存修改计 2 增（第一行改写为已修改 → 1 删 1 增？numstat 按行粒度），
     // 这里只断言 added 不为零且 deleted 反映改写。
-    let total = cx.read_entity(&git_store, |store, _| store.total_diff_stat());
+    let total = cx.read_entity(&git_store, |store, _| {
+        store.diff_stat_for_repository(absolute(root.clone()).as_path())
+    });
     assert!(total.added >= 1, "未暂存新增应计入汇总");
 }
 
@@ -221,7 +223,7 @@ fn refresh_request_during_running_refresh_is_never_dropped(cx: &mut gpui::TestAp
 }
 
 #[gpui::test]
-fn total_diff_stat_merges_staged_and_unstaged(cx: &mut gpui::TestAppContext) {
+fn diff_stat_for_repository_merges_staged_and_unstaged(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     // 先做一次未暂存修改（1 增 1 删：改写第二行内容）。
     fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n").expect("应写入文件");
@@ -229,7 +231,9 @@ fn total_diff_stat_merges_staged_and_unstaged(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
-    let total = cx.read_entity(&git_store, |store, _| store.total_diff_stat());
+    let total = cx.read_entity(&git_store, |store, _| {
+        store.diff_stat_for_repository(absolute(root.clone()).as_path())
+    });
     assert_eq!((total.added, total.deleted), (1, 1), "未暂存 1 增 1 删");
 
     // 暂存后再次修改：staged 与 unstaged 各计一份，合并计数。
@@ -237,7 +241,9 @@ fn total_diff_stat_merges_staged_and_unstaged(cx: &mut gpui::TestAppContext) {
     fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n第三行\n").expect("应写入文件");
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
-    let total = cx.read_entity(&git_store, |store, _| store.total_diff_stat());
+    let total = cx.read_entity(&git_store, |store, _| {
+        store.diff_stat_for_repository(absolute(root.clone()).as_path())
+    });
     assert_eq!((total.added, total.deleted), (2, 1), "暂存与未暂存合并计数");
 
     let branch = cx.read_entity(&git_store, |store, _| {
@@ -1165,7 +1171,8 @@ fn stage_paths_moves_file_between_sections(cx: &mut gpui::TestAppContext) {
     });
     assert!(unstaged, "修改后应为未暂存状态");
     assert!(
-        !cx.read_entity(&git_store, |store, _| store.has_staged_changes()),
+        !cx.read_entity(&git_store, |store, _| store
+            .has_staged_changes(absolute(root.clone()).as_path())),
         "只有未暂存改动时不应具备提交资格"
     );
 
@@ -1201,7 +1208,8 @@ fn stage_paths_moves_file_between_sections(cx: &mut gpui::TestAppContext) {
         "整文件暂存后应保留已暂存的增减行数"
     );
     assert!(
-        cx.read_entity(&git_store, |store, _| store.has_staged_changes()),
+        cx.read_entity(&git_store, |store, _| store
+            .has_staged_changes(absolute(root.clone()).as_path())),
         "存在已暂存改动时应具备提交资格"
     );
 
@@ -1224,8 +1232,65 @@ fn stage_paths_moves_file_between_sections(cx: &mut gpui::TestAppContext) {
     });
     assert!(unstaged_again, "取消暂存后应回到未暂存状态");
     assert!(
-        !cx.read_entity(&git_store, |store, _| store.has_staged_changes()),
+        !cx.read_entity(&git_store, |store, _| store
+            .has_staged_changes(absolute(root.clone()).as_path())),
         "取消全部暂存后应失去提交资格"
+    );
+}
+
+#[gpui::test]
+fn commit_and_uncommit_target_active_repository(cx: &mut gpui::TestAppContext) {
+    let (root_a, _temp_a) = test_git_repo();
+    let (root_b, _temp_b) = test_git_repo();
+    fs::write(root_a.join("tracked.txt"), "仓库 A 的修改\n").expect("应修改仓库 A");
+    run_git(&root_a, &["add", "tracked.txt"]);
+    let before_a = rev_parse(&root_a);
+    let before_b = rev_parse(&root_b);
+
+    let git_store =
+        cx.new(|cx| GitStore::new(vec![root_a.clone(), root_b.clone()], test_registry(), cx));
+    git_store.update(cx, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    git_store.update(cx, |store, cx| {
+        store.set_active_repository(absolute(root_a.clone()), cx);
+        assert!(store.has_staged_changes(&absolute(root_a.clone()).into_path_buf()));
+        assert!(!store.has_staged_changes(&absolute(root_b.clone()).into_path_buf()));
+        store.commit(absolute(root_a.clone()), "提交仓库 A 的修改".into(), cx);
+    });
+    cx.run_until_parked();
+    cx.run_until_parked();
+
+    assert_ne!(rev_parse(&root_a), before_a, "提交应落在活动仓库 A");
+    assert_eq!(rev_parse(&root_b), before_b, "未选中的仓库 B 不应变化");
+    git_store.update(cx, |store, cx| store.uncommit(absolute(root_a.clone()), cx));
+    cx.run_until_parked();
+    cx.run_until_parked();
+    assert_eq!(rev_parse(&root_a), before_a, "撤销提交也应作用于活动仓库 A");
+    assert_eq!(rev_parse(&root_b), before_b);
+}
+
+#[gpui::test]
+fn commit_graph_loads_active_repository(cx: &mut gpui::TestAppContext) {
+    let (root_a, _temp_a) = test_git_repo();
+    let (root_b, _temp_b) = test_git_repo();
+    run_git(&root_a, &["commit", "--amend", "-m", "仓库 A 的初始提交"]);
+    run_git(&root_b, &["commit", "--amend", "-m", "仓库 B 的初始提交"]);
+
+    let git_store =
+        cx.new(|cx| GitStore::new(vec![root_a.clone(), root_b.clone()], test_registry(), cx));
+    git_store.update(cx, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    let graph = git_store.update(cx, |store, cx| {
+        store.set_active_repository(absolute(root_a.clone()), cx);
+        store.load_commit_graph(None, 10)
+    });
+    let commits = cx.foreground_executor().block_test(graph);
+    let commits = commits.expect("应读取仓库 A 的提交图");
+    assert_eq!(commits[0].subject, "仓库 A 的初始提交");
+    assert!(
+        commits
+            .iter()
+            .all(|commit| commit.subject != "仓库 B 的初始提交")
     );
 }
 
@@ -1711,7 +1776,49 @@ fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut gpui::TestApp
 }
 
 #[gpui::test]
-fn active_repository_follows_focused_path(cx: &mut gpui::TestAppContext) {
+fn status_entries_are_scoped_to_their_owning_repository(cx: &mut gpui::TestAppContext) {
+    let (root, _temp) = test_git_repo();
+    let nested = root.join("nested");
+    fs::create_dir(&nested).expect("应创建嵌套仓库目录");
+    run_git(&nested, &["init", "-q", "-b", "feature"]);
+    fs::write(nested.join("new.txt"), "嵌套未跟踪\n").expect("应写入嵌套未跟踪文件");
+
+    let git_store =
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+
+    let outer = absolute(root.clone());
+    let outer_paths = cx.read_entity(&git_store, |store, _| {
+        store
+            .statuses_for_repository(outer.as_path())
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>()
+    });
+    assert!(
+        outer_paths
+            .iter()
+            .all(|path| !path.as_path().starts_with("nested")),
+        "外层仓库不能包含嵌套仓库的状态：{outer_paths:?}"
+    );
+
+    let nested_workdir = absolute(nested.clone());
+    let nested_paths = cx.read_entity(&git_store, |store, _| {
+        store
+            .statuses_for_repository(nested_workdir.as_path())
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>()
+    });
+    assert!(
+        nested_paths
+            .iter()
+            .any(|path| path.as_path() == Path::new("new.txt")),
+        "嵌套仓库应包含自己的未跟踪文件：{nested_paths:?}"
+    );
+}
+
+#[gpui::test]
+fn active_repository_is_explicit_and_falls_back_when_missing(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     let nested = root.join("nested");
     fs::create_dir(&nested).expect("应创建嵌套目录");
@@ -1727,28 +1834,51 @@ fn active_repository_follows_focused_path(cx: &mut gpui::TestAppContext) {
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
-    // 初始 active = 第一个发现的仓库（root，分支 master）。
+    let active_workdir = |cx: &mut gpui::TestAppContext, store: &gpui::Entity<GitStore>| {
+        cx.read_entity(store, |store, _| {
+            store
+                .active_repository_workdir()
+                .map(|workdir| workdir.to_path_buf())
+        })
+    };
     let branch = |cx: &mut gpui::TestAppContext, store: &gpui::Entity<GitStore>| {
         cx.read_entity(store, |store, _| store.current_branch().map(str::to_string))
     };
+    assert_eq!(
+        active_workdir(cx, &git_store).as_deref(),
+        Some(absolute(root.clone()).as_path()),
+        "初始 active 应为发现顺序中的第一个仓库"
+    );
     assert_eq!(branch(cx, &git_store).as_deref(), Some("master"));
 
-    // 焦点切到嵌套仓库内文件 → active 跟随，分支变 feature。
+    // 显式选择嵌套仓库后，后续扫描不得改变用户选择。
+    let nested_workdir = absolute(nested.clone());
     cx.update_entity(&git_store, |store, cx| {
-        store.set_active_repository_for_path(&nested.join("n.txt"), cx);
+        store.set_active_repository(nested_workdir.clone(), cx);
     });
+    assert_eq!(
+        active_workdir(cx, &git_store).as_deref(),
+        Some(nested_workdir.as_path())
+    );
     assert_eq!(branch(cx, &git_store).as_deref(), Some("feature"));
 
-    // 焦点切回 root 仓库文件 → 回到 master。
-    cx.update_entity(&git_store, |store, cx| {
-        store.set_active_repository_for_path(&root.join("tracked.txt"), cx);
-    });
-    assert_eq!(branch(cx, &git_store).as_deref(), Some("master"));
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        active_workdir(cx, &git_store).as_deref(),
+        Some(nested_workdir.as_path()),
+        "扫描不得把活动仓库重置回第一个仓库"
+    );
 
-    // 不在任何仓库中的路径（如已删除文件）→ active 保持不变。
-    cx.update_entity(&git_store, |store, cx| {
-        store.set_active_repository_for_path(&root.join(".."), cx);
-    });
+    // 活动仓库消失后，回退到仍存在的首个仓库。
+    fs::remove_dir_all(&nested).expect("应删除嵌套仓库");
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        active_workdir(cx, &git_store).as_deref(),
+        Some(absolute(root.clone()).as_path()),
+        "活动仓库消失后应回退到仍存在的仓库"
+    );
     assert_eq!(branch(cx, &git_store).as_deref(), Some("master"));
 }
 
@@ -1783,7 +1913,7 @@ fn git_operation_targets_active_repository(cx: &mut gpui::TestAppContext) {
 
     // active 切到嵌套仓库，本地新提交后 push。
     cx.update_entity(&git_store, |store, cx| {
-        store.set_active_repository_for_path(&nested.join("n.txt"), cx);
+        store.set_active_repository(absolute(nested.clone()), cx);
     });
     fs::write(nested.join("new.txt"), "新提交\n").expect("应写入文件");
     run_git(&nested, &["add", "new.txt"]);

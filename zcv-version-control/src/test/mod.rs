@@ -28,9 +28,13 @@ impl Watcher for PassiveWatcher {
 }
 
 pub(crate) fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
+    test_project_roots(vec![root], cx)
+}
+
+pub(crate) fn test_project_roots(roots: Vec<PathBuf>, cx: &mut TestAppContext) -> Entity<Project> {
     cx.new(|cx| {
         Project::new_with_watcher(
-            vec![root],
+            roots,
             Arc::new(PassiveWatcher),
             Arc::new(LanguageRegistry::new()),
             cx,

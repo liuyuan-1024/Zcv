@@ -28,9 +28,12 @@ impl MultiBuffer {
     }
 
     fn sync_snapshot_from_state(&mut self) {
-        if !self.snapshot_dirty {
-            return;
-        }
+        let source_updates = match mem::replace(&mut self.snapshot_refresh, SnapshotRefresh::Clean)
+        {
+            SnapshotRefresh::Clean => return,
+            SnapshotRefresh::SourceUpdates(updates) => Some(updates),
+            SnapshotRefresh::SourceTopologyChanged => None,
+        };
 
         // `MultiBufferSnapshot` 同时拥有 excerpts、变换树和每个源的 `BufferSnapshot`。
         // 这里必须整帧替换：不能先更新源表、再等 excerpts 树在下一次读取时补齐，否则同一快照会把旧范围解析到新文本上。
@@ -42,7 +45,6 @@ impl MultiBuffer {
             capture_map: Arc::clone(&source.capture_map),
             is_dirty: source.is_dirty,
         };
-        let source_updates = self.snapshot_source_updates.take();
         let topology_changed = self.snapshot.topology_version != self.state.topology_version;
         let file_sources = if topology_changed {
             let mut files = TreeMap::default();
@@ -121,10 +123,11 @@ impl MultiBuffer {
             }
         };
         // 在移动 source_indices 前解析单文件源索引。
-        let singleton_source_index = self
-            .singleton_source
-            .as_ref()
-            .and_then(|source| source_indices.get(&source.entity_id()).copied());
+        let singleton_source_index = self.singleton_source.as_ref().map(|source| {
+            *source_indices
+                .get(&source.entity_id())
+                .expect("单文件文档的工作区源必须存在于组合快照")
+        });
         self.snapshot = MultiBufferSnapshot {
             projection_version: self.state.projection_version,
             topology_version: self.state.topology_version,
@@ -143,11 +146,18 @@ impl MultiBuffer {
             capture_names: Arc::clone(&self.state.capture_names),
             metadata_version: self.state.metadata_epoch,
             diff_display: self.diff.clone(),
-            singleton: self.singleton_source.is_some(),
             singleton_source_index,
         };
-        self.snapshot_dirty = false;
-        self.snapshot_source_updates = Some(HashSet::new());
+    }
+
+    pub(crate) fn mark_snapshot_changed(&mut self) {
+        if matches!(self.snapshot_refresh, SnapshotRefresh::Clean) {
+            self.snapshot_refresh = SnapshotRefresh::SourceUpdates(HashSet::new());
+        }
+    }
+
+    pub(crate) fn mark_source_topology_changed(&mut self) {
+        self.snapshot_refresh = SnapshotRefresh::SourceTopologyChanged;
     }
 
     /// 普通编辑器的工作区源（展开 diff 时作为新侧输入）。

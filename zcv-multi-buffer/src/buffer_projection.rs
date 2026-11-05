@@ -7,7 +7,7 @@ use super::*;
 impl MultiBuffer {
     /// 登记一段投影变化：同步帧内只累积净编辑，帧末一次性发布；帧外立即发布。
     pub(crate) fn publish_projection_change(&mut self, incremental: SourceIncremental) {
-        self.snapshot_dirty = true;
+        self.mark_snapshot_changed();
         if let Some(sync) = &mut self.projection_sync {
             // 累积精确输出增量，帧末统一重定基到投影版本；不以树比较粗范围替代。
             sync.changes = sync.changes.compose_projection_edits(&incremental.batch);

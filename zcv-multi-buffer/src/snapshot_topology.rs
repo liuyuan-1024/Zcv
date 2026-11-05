@@ -114,7 +114,7 @@ impl MultiBufferSnapshot {
             self.logical_excerpt_snapshot(excerpt, previous_cursor.start().text.len)
         });
         iter::from_fn(move || {
-            if self.singleton {
+            if self.is_singleton() {
                 return None;
             }
             loop {

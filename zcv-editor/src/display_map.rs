@@ -1002,10 +1002,6 @@ pub(crate) struct DisplayMap {
     editor_hunks: Arc<[EditorHunk]>,
     /// 搜索命中的显示输入（显示装饰领域键之一）。
     search: Option<SearchDecorationInput>,
-    /// 宿主注入的显式折叠候选；语法候选由 `DisplaySnapshot` 按行即时查询。
-
-    /// 当前显示快照的版本号；每次替换 `snapshot` 时前进。
-    display_version: u64,
 }
 
 fn default_tab_width() -> NonZeroUsize {
@@ -1013,10 +1009,11 @@ fn default_tab_width() -> NonZeroUsize {
 }
 
 impl DisplayMap {
-    /// 前进显示版本；任何替换当前显示快照的路径都必须调用它。
-    fn next_display_version(&mut self) -> u64 {
-        self.display_version += 1;
-        self.display_version
+    /// 从当前已发布快照派生下一版本；构造首帧从 1 开始。
+    fn next_display_version(&self) -> u64 {
+        self.snapshot
+            .as_ref()
+            .map_or(1, |snapshot| snapshot.version + 1)
     }
 }
 
@@ -1061,8 +1058,6 @@ impl DisplayMap {
             buffer_subscription: None,
             editor_hunks: Arc::from([]),
             search: None,
-
-            display_version: 0,
         };
         this.commit_snapshot(&wrap_snapshot, &[], cx);
         // 换行层自己拥有后台重排；
@@ -1150,7 +1145,7 @@ impl DisplayMap {
                 .decorations
                 .with_diff_inputs(Arc::clone(&self.editor_hunks)),
         );
-        snapshot.version = self.next_display_version();
+        snapshot.version += 1;
         self.snapshot = Some(snapshot);
         cx.notify();
     }
@@ -1167,7 +1162,7 @@ impl DisplayMap {
             ))
         });
         snapshot.decorations = Arc::new(snapshot.decorations.with_search(search));
-        snapshot.version = self.next_display_version();
+        snapshot.version += 1;
         self.snapshot = Some(snapshot);
         cx.notify();
     }

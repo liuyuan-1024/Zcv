@@ -195,6 +195,30 @@ fn no_op_sync_keeps_the_display_projection_stable(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn display_version_advances_across_decoration_and_topology_changes(cx: &mut TestAppContext) {
+    let buffer = Buffer::from_text("paragraph".to_string(), BufferConfig::default())
+        .expect("测试 Buffer 应能创建");
+    let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
+    let initial = display_snapshot(cx, &map).version();
+    let range = MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(4))
+        .expect("搜索范围应合法");
+
+    cx.update_entity(&map, |map, cx| {
+        map.set_search_decorations(Some(SearchDecorationInput::new(vec![range].into(), 0)), cx);
+    });
+    let decorated = display_snapshot(cx, &map).version();
+    assert!(decorated > initial, "装饰变化必须推进显示版本");
+
+    cx.update_entity(&map, |map, cx| map.set_search_decorations(None, cx));
+    let cleared = display_snapshot(cx, &map).version();
+    assert!(cleared > decorated, "清除装饰必须推进显示版本");
+
+    set_tab_width(cx, &map, NonZeroUsize::new(8).unwrap());
+    let topology_changed = display_snapshot(cx, &map).version();
+    assert!(topology_changed > cleared, "投影变化必须沿同一版本链推进");
+}
+
+#[gpui::test]
 fn display_pipeline_receives_the_source_transaction_batch(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let source_buffer = Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())

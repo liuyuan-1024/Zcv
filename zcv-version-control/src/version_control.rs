@@ -961,7 +961,11 @@ impl Render for VersionControlPanel {
         });
 
         // 仓库标题行、统计行、列表与提交区必须放进同一个 flex_col 容器（列表 flex_1 占满剩余高度）。
-        let mut body = div().size_full().flex().flex_col();
+        let mut body = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .when(active.is_some(), |body| body.pt(scale::S4));
         if let Some((_, has_branch)) = active {
             body = body
                 .child(render_repository_header(

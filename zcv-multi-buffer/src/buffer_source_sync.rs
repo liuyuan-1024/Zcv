@@ -103,7 +103,7 @@ impl MultiBuffer {
         source_id: EntityId,
         snapshot: LanguageBufferSnapshot,
     ) {
-        self.snapshot_dirty = true;
+        self.mark_snapshot_changed();
         self.state.metadata_epoch = self.state.metadata_epoch.wrapping_add(1);
         if let Some(excerpt_source) = self
             .state
@@ -129,13 +129,15 @@ impl MultiBuffer {
         let Some(source_index) = self.state.source_indices.get(&source_id).copied() else {
             return;
         };
-        if let Some(updates) = &mut self.snapshot_source_updates {
+        self.mark_snapshot_changed();
+        if let SnapshotRefresh::SourceUpdates(updates) = &mut self.snapshot_refresh {
             updates.insert(source_index);
         }
     }
 
     fn mark_all_source_snapshots_changed(&mut self) {
-        if let Some(updates) = &mut self.snapshot_source_updates {
+        self.mark_snapshot_changed();
+        if let SnapshotRefresh::SourceUpdates(updates) = &mut self.snapshot_refresh {
             updates.extend(0..self.state.sources.len());
         }
     }

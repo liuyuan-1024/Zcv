@@ -64,8 +64,7 @@ impl MultiBuffer {
                 path_order,
                 ..MultiBufferSnapshot::empty()
             },
-            snapshot_dirty: true,
-            snapshot_source_updates: None,
+            snapshot_refresh: SnapshotRefresh::SourceTopologyChanged,
             projection_sync: None,
         }
     }

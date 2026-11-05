@@ -10,7 +10,7 @@ use std::{
 
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Font,
-    IntoElement, KeyContext, Pixels, Point, Render, Styled, TextRun, TouchPhase, Window, div,
+    IntoElement, KeyContext, Pixels, Point, Render, Styled, Task, TextRun, TouchPhase, Window, div,
     point, prelude::*, px,
 };
 use zcv_actions::{
@@ -320,8 +320,8 @@ pub struct Editor {
     gutter_hovered: bool,
     /// 拖拽选择自动滚动的越界状态；由 16ms 定时器持续消费，与拖动事件频率解耦。
     drag_autoscroll: DragAutoscroll,
-    /// 是否已有一个自动滚动 tick 在途（防止重复调度）。
-    drag_autoscroll_scheduled: bool,
+    /// 当前手势的自动滚动计时任务；手势结束或 Editor 销毁时取消。
+    drag_autoscroll_task: Option<Task<()>>,
     /// 自动滚动后等待新布局命中测试的指针位置。
     pending_drag_hit_test: Option<Point<Pixels>>,
     /// 文件内搜索状态（搜索条执行过一次搜索后存在，编辑后自动重搜）。
@@ -1312,7 +1312,7 @@ impl Editor {
     ) {
         self.structured_selection_history.clear();
         self.drag_autoscroll.clear();
-        self.drag_autoscroll_scheduled = false;
+        self.drag_autoscroll_task = None;
         self.pending_drag_hit_test = None;
         let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
         let offset = if extend {
@@ -1566,7 +1566,7 @@ impl Editor {
     /// 鼠标松开：把临时选区提交到已确定集合。
     pub(super) fn end_selection(&mut self) {
         self.drag_autoscroll.clear();
-        self.drag_autoscroll_scheduled = false;
+        self.drag_autoscroll_task = None;
         self.pending_drag_hit_test = None;
         if let Some(pending) = self.pending_selection.take() {
             self.selections = pending.selection;
@@ -1599,18 +1599,16 @@ impl Editor {
 
     /// 调度下一次自动滚动 tick；已有 tick 在途时不重复调度。
     pub(super) fn schedule_drag_autoscroll(&mut self, cx: &mut Context<Self>) {
-        if self.drag_autoscroll_scheduled || !self.drag_autoscroll.is_active() {
+        if self.drag_autoscroll_task.is_some() || !self.drag_autoscroll.is_active() {
             return;
         }
-        self.drag_autoscroll_scheduled = true;
-        cx.spawn(async move |this, cx| {
+        self.drag_autoscroll_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(AUTOSCROLL_INTERVAL).await;
             let _ = this.update(cx, |this, cx| {
-                this.drag_autoscroll_scheduled = false;
+                this.drag_autoscroll_task = None;
                 this.drag_autoscroll_tick(cx);
             });
-        })
-        .detach();
+        }));
     }
 
     fn drag_autoscroll_tick(&mut self, cx: &mut Context<Self>) {
@@ -1858,7 +1856,7 @@ impl Editor {
             scroll_manager: ScrollManager::default(),
             diff_hunk_delegate: None,
             drag_autoscroll: DragAutoscroll::default(),
-            drag_autoscroll_scheduled: false,
+            drag_autoscroll_task: None,
             pending_drag_hit_test: None,
             search: None,
             composition: None,

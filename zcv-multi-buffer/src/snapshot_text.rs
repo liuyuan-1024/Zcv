@@ -59,7 +59,7 @@ impl MultiBufferSnapshot {
     }
 
     pub fn is_singleton(&self) -> bool {
-        self.singleton
+        self.singleton_source_index.is_some()
     }
 
     /// 指定组合偏移所属源语言解析后的编辑器设置。

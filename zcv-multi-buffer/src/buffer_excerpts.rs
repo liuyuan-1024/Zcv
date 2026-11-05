@@ -14,8 +14,7 @@ impl MultiBuffer {
         cx: &mut Context<Self>,
     ) {
         self.assert_no_active_transaction("MultiBuffer::replace_all_excerpts");
-        self.snapshot_dirty = true;
-        self.snapshot_source_updates = None;
+        self.mark_source_topology_changed();
         self.state.topology_version = self.state.topology_version.wrapping_add(1);
         let mut unique_sources = Vec::<Entity<LanguageBuffer>>::new();
         let mut unique_source_ids = HashSet::new();
@@ -497,8 +496,7 @@ impl MultiBuffer {
         cx: &mut Context<Self>,
     ) -> usize {
         if !new_sources.is_empty() {
-            self.snapshot_dirty = true;
-            self.snapshot_source_updates = None;
+            self.mark_source_topology_changed();
         }
         let first_new_source = self.state.sources.len();
         if new_sources.is_empty() {

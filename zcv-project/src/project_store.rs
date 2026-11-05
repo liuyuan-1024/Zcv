@@ -120,6 +120,8 @@ struct ProjectWorktree {
     id: ProjectRootId,
     root: AbsolutePathBuf,
     snapshot: Worktree,
+    /// 注册失败时不可把同路径的外部文档监听当作根监听移除。
+    watch_registered: bool,
 }
 
 impl Project {
@@ -169,14 +171,19 @@ impl Project {
         let fs_task = Self::spawn_fs_task(&fs_watcher, cx);
 
         let mut pending_file_watcher_errors = Vec::new();
+        let mut root_watch_registrations = Vec::with_capacity(roots.len());
         for root in &roots {
-            if let Err(error) = fs_watcher.add(root.as_path()) {
-                pending_file_watcher_errors.push(FileWatcherError {
-                    operation: FileWatcherOperation::Add,
-                    path: root.as_path().to_path_buf(),
-                    error: format!("{error:#}"),
-                });
-            }
+            root_watch_registrations.push(match fs_watcher.add(root.as_path()) {
+                Ok(()) => true,
+                Err(error) => {
+                    pending_file_watcher_errors.push(FileWatcherError {
+                        operation: FileWatcherOperation::Add,
+                        path: root.as_path().to_path_buf(),
+                        error: format!("{error:#}"),
+                    });
+                    false
+                }
+            });
         }
 
         let git_store = cx.new(|cx| {
@@ -196,10 +203,12 @@ impl Project {
             worktrees: roots
                 .into_iter()
                 .enumerate()
-                .map(|(index, root)| ProjectWorktree {
+                .zip(root_watch_registrations)
+                .map(|((index, root), watch_registered)| ProjectWorktree {
                     id: ProjectRootId::new(index as u64 + 1),
                     root: root.clone(),
                     snapshot: Worktree::new(root),
+                    watch_registered,
                 })
                 .collect(),
             scan_exclusions: Vec::new(),
@@ -430,13 +439,17 @@ impl Project {
             "项目已在工作区中：{}",
             root.display()
         );
-        if let Err(error) = self.fs_watcher.add(root.as_path()) {
-            cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
-                operation: FileWatcherOperation::Add,
-                path: root.as_path().to_path_buf(),
-                error: format!("{error:#}"),
-            }));
-        }
+        let watch_registered = match self.fs_watcher.add(root.as_path()) {
+            Ok(()) => true,
+            Err(error) => {
+                cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
+                    operation: FileWatcherOperation::Add,
+                    path: root.as_path().to_path_buf(),
+                    error: format!("{error:#}"),
+                }));
+                false
+            }
+        };
         let mut snapshot = Worktree::new(root.clone());
         snapshot.set_exclusions(&self.scan_exclusions);
         let id = ProjectRootId::new(self.next_root_id);
@@ -445,7 +458,19 @@ impl Project {
             id,
             root: root.clone(),
             snapshot,
+            watch_registered,
         });
+        if watch_registered {
+            let covered_buffers = self
+                .external_buffer_watches
+                .iter()
+                .filter(|(_, parent)| parent.as_path().starts_with(root.as_path()))
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>();
+            for id in covered_buffers {
+                self.release_external_watch(id, cx);
+            }
+        }
         self.sync_git_roots(cx);
         cx.emit(ProjectEvent::WorktreeAdded {
             id,
@@ -466,7 +491,9 @@ impl Project {
             .position(|worktree| worktree.root.as_path() == root.as_path())
             .ok_or_else(|| anyhow::anyhow!("项目不在工作区中：{}", root.display()))?;
         let removed = self.worktrees.remove(index);
-        if let Err(error) = self.fs_watcher.remove(root.as_path()) {
+        if removed.watch_registered
+            && let Err(error) = self.fs_watcher.remove(root.as_path())
+        {
             cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
                 operation: FileWatcherOperation::Remove,
                 path: root.as_path().to_path_buf(),
@@ -731,7 +758,11 @@ impl Project {
         *count -= 1;
         if *count == 0 {
             self.external_watch_counts.remove(&parent);
-            if let Err(error) = self.fs_watcher.remove(parent.as_path()) {
+            // 新根可能复用原外部目录的同一后端注册，此时只交出外部文档的所有权。
+            let root_owns_watch = self.worktrees.iter().any(|worktree| {
+                worktree.watch_registered && worktree.root.as_path() == parent.as_path()
+            });
+            if !root_owns_watch && let Err(error) = self.fs_watcher.remove(parent.as_path()) {
                 cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
                     operation: FileWatcherOperation::Remove,
                     path: parent.as_path().to_path_buf(),

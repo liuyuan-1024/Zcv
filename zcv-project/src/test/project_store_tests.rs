@@ -1,6 +1,7 @@
 use std::{
+    collections::HashSet,
     fs,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -391,6 +392,31 @@ fn released_document_drops_project_subscription_and_path_index(cx: &mut TestAppC
 
 struct FailingWatcher {
     watcher: FsWatcher,
+}
+
+#[derive(Default)]
+struct TrackingWatcher {
+    paths: Mutex<HashSet<PathBuf>>,
+    fail_add: Mutex<Option<PathBuf>>,
+}
+
+impl Watcher for TrackingWatcher {
+    fn add(&self, path: &Path) -> anyhow::Result<()> {
+        if self.fail_add.lock().unwrap().as_deref() == Some(path) {
+            return Err(anyhow::anyhow!("测试监听失败"));
+        }
+        self.paths.lock().unwrap().insert(path.to_path_buf());
+        Ok(())
+    }
+
+    fn remove(&self, path: &Path) -> anyhow::Result<()> {
+        self.paths.lock().unwrap().remove(path);
+        Ok(())
+    }
+
+    fn watch(&self, _latency: std::time::Duration) -> FsEventStream {
+        Box::pin(futures::stream::pending())
+    }
 }
 
 impl FailingWatcher {
@@ -1552,6 +1578,112 @@ fn external_files_share_parent_watch_until_last_document_closes(cx: &mut TestApp
     project.read_with(cx, |project, _| {
         assert!(project.external_watch_counts.is_empty())
     });
+}
+
+#[gpui::test]
+fn adding_root_transfers_external_file_watch_ownership(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = AbsolutePathBuf::canonicalize(directory.path()).expect("目录应可规范化");
+    let file = root.join("outside.txt");
+    fs::write(&file, "内容").expect("应创建文件");
+    let watcher = Arc::new(TrackingWatcher::default());
+    let project = cx.new(|cx| Project::empty_with_watcher(test_languages(), watcher.clone(), cx));
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应打开项目外文件");
+    assert!(watcher.paths.lock().unwrap().contains(root.as_path()));
+
+    project
+        .update(cx, |project, cx| {
+            project.add_worktree(root.as_path().to_path_buf(), cx)
+        })
+        .expect("应将文件目录加入项目根");
+    drop(buffer);
+    cx.update(|_| {});
+    cx.run_until_parked();
+
+    assert!(
+        watcher.paths.lock().unwrap().contains(root.as_path()),
+        "文档关闭后项目根仍须保持监听"
+    );
+    project.read_with(cx, |project, _| {
+        assert!(project.external_buffer_watches.is_empty());
+        assert!(project.external_watch_counts.is_empty());
+    });
+}
+
+#[gpui::test]
+fn removing_root_returns_live_file_to_external_watch(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = AbsolutePathBuf::canonicalize(directory.path()).expect("目录应可规范化");
+    let file = root.join("outside.txt");
+    fs::write(&file, "内容").expect("应创建文件");
+    let watcher = Arc::new(TrackingWatcher::default());
+    let project = cx.new(|cx| Project::empty_with_watcher(test_languages(), watcher.clone(), cx));
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应打开项目外文件");
+
+    project
+        .update(cx, |project, cx| {
+            project.add_worktree(root.as_path().to_path_buf(), cx)
+        })
+        .expect("应将文件目录加入项目根");
+    project
+        .update(cx, |project, cx| {
+            project.remove_worktree(root.as_path(), cx)
+        })
+        .expect("应移除项目根");
+    assert!(
+        watcher.paths.lock().unwrap().contains(root.as_path()),
+        "仍打开的文档必须接管目录监听"
+    );
+    project.read_with(cx, |project, _| {
+        assert_eq!(project.external_buffer_watches.len(), 1);
+        assert_eq!(project.external_watch_counts.len(), 1);
+    });
+
+    drop(buffer);
+    cx.update(|_| {});
+    cx.run_until_parked();
+    assert!(watcher.paths.lock().unwrap().is_empty());
+}
+
+#[gpui::test]
+fn failed_root_watch_does_not_claim_external_file_registration(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = AbsolutePathBuf::canonicalize(directory.path()).expect("目录应可规范化");
+    let file = root.join("outside.txt");
+    fs::write(&file, "内容").expect("应创建文件");
+    let watcher = Arc::new(TrackingWatcher::default());
+    let project = cx.new(|cx| Project::empty_with_watcher(test_languages(), watcher.clone(), cx));
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&file, cx))
+        .expect("应打开项目外文件");
+    *watcher.fail_add.lock().unwrap() = Some(root.as_path().to_path_buf());
+
+    project
+        .update(cx, |project, cx| {
+            project.add_worktree(root.as_path().to_path_buf(), cx)
+        })
+        .expect("监听失败仍应保留项目根并发出错误事件");
+    project.read_with(cx, |project, _| {
+        assert_eq!(project.external_buffer_watches.len(), 1);
+    });
+    project
+        .update(cx, |project, cx| {
+            project.remove_worktree(root.as_path(), cx)
+        })
+        .expect("应移除项目根");
+    assert!(watcher.paths.lock().unwrap().contains(root.as_path()));
+
+    drop(buffer);
+    cx.update(|_| {});
+    cx.run_until_parked();
+    assert!(watcher.paths.lock().unwrap().is_empty());
 }
 
 #[gpui::test]

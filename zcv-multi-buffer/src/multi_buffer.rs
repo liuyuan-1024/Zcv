@@ -2489,9 +2489,7 @@ pub struct MultiBufferSnapshot {
     metadata_version: u64,
     /// diff 显示输入与文本／语言元数据分离：它只驱动装饰替换，不触发显示拓扑同步。
     diff_display: Option<Arc<DiffDisplaySnapshot>>,
-    /// 单文件组合文档：此语义下不产生任何 excerpt 边界。
-    singleton: bool,
-    /// 单文件文档的权威工作区源索引；`None` 表示真正的多来源组合文档。
+    /// 单文件文档的权威工作区源索引；存在时不产生 excerpt 边界。
     ///
     /// 单文件大纲必须来自该源的完整语法快照，不能按 excerpt/diff 片段裁剪。
     singleton_source_index: Option<usize>,
@@ -3099,7 +3097,6 @@ impl From<Snapshot> for MultiBufferSnapshot {
             capture_names,
             metadata_version: 0,
             diff_display: None,
-            singleton: true,
             singleton_source_index: Some(0),
         }
     }
@@ -3115,7 +3112,6 @@ impl MultiBufferSnapshot {
         snapshot.diff_transforms = SumTree::new(());
         snapshot.path_keys = Arc::from([]);
         snapshot.excerpt_sources = TreeMap::default();
-        snapshot.singleton = false;
         snapshot.singleton_source_index = None;
         snapshot
     }
@@ -3196,13 +3192,18 @@ pub struct MultiBuffer {
     diff_expanded_by_default: bool,
     /// 当前一致的组合快照；只由 MultiBuffer 的同步入口替换。
     snapshot: MultiBufferSnapshot,
-    /// 当前快照是否需要从可变组合状态重新对齐。
-    snapshot_dirty: bool,
-    /// `None` 表示源集合拓扑变化，需要重建源表；`Some` 只记录待替换的源索引。
-    /// 源表仍会与 excerpts、diff transforms 在同一快照帧提交。
-    snapshot_source_updates: Option<HashSet<usize>>,
+    /// 待发布快照的源表更新范围；excerpts 与 diff transforms 始终在同一帧提交。
+    snapshot_refresh: SnapshotRefresh,
     /// 当前是否处于源与 diff 的同一同步帧；存在时不提前发布投影版本。
     projection_sync: Option<ProjectionSync>,
+}
+
+enum SnapshotRefresh {
+    Clean,
+    /// 仅替换指定源的快照；空集合表示只有投影或其他元数据变化。
+    SourceUpdates(HashSet<usize>),
+    /// 源集合改变，必须重新派生源表及其身份索引。
+    SourceTopologyChanged,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

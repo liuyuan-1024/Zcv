@@ -1691,7 +1691,7 @@ impl MultiBuffer {
         let mut next = current.with_version(version);
         next.segments.insert_or_replace(segment, ());
         self.diff = Some(Arc::new(next));
-        self.snapshot_dirty = true;
+        self.mark_snapshot_changed();
         self.notify_if_not_syncing(cx);
     }
 
@@ -1704,7 +1704,7 @@ impl MultiBuffer {
             return;
         }
         self.diff = Some(Arc::new(next));
-        self.snapshot_dirty = true;
+        self.mark_snapshot_changed();
         self.notify_if_not_syncing(cx);
     }
 
@@ -1726,7 +1726,7 @@ impl MultiBuffer {
         let segments = self.derive_diff_display_segments();
         let identities_unchanged = current.segments.iter().eq(segments.iter());
         if identities_unchanged && !hunk_display_changed {
-            self.snapshot_dirty = true;
+            self.mark_snapshot_changed();
             self.notify_if_not_syncing(cx);
             return;
         }
@@ -1736,7 +1736,7 @@ impl MultiBuffer {
         } else {
             Arc::new(DiffDisplaySnapshot::from_segments(version, segments))
         });
-        self.snapshot_dirty = true;
+        self.mark_snapshot_changed();
         self.notify_if_not_syncing(cx);
     }
 }

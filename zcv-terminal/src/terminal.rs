@@ -572,7 +572,7 @@ impl TerminalBuilder {
             font_size_override: None,
             mouse_gesture: None,
             selection_drag: None,
-            selection_autoscroll_scheduled: false,
+            selection_autoscroll_task: None,
         }))
     }
 }
@@ -645,7 +645,8 @@ pub(crate) struct Terminal {
     /// 终端交互手势的唯一状态所有者。
     mouse_gesture: Option<MouseGesture>,
     selection_drag: Option<SelectionDrag>,
-    selection_autoscroll_scheduled: bool,
+    /// 当前选区手势的自动滚动计时任务；结束手势或销毁终端时取消。
+    selection_autoscroll_task: Option<Task<()>>,
 }
 
 impl Terminal {
@@ -917,6 +918,7 @@ impl Terminal {
                 true,
             ) {
                 self.write_to_pty(bytes);
+                self.selection_autoscroll_task = None;
                 self.mouse_gesture = Some(MouseGesture::Reporting(event.button));
                 return true;
             }
@@ -932,6 +934,7 @@ impl Terminal {
             3 => SelectionType::Lines,
             _ => SelectionType::Simple,
         };
+        self.selection_autoscroll_task = None;
         self.mouse_gesture = Some(MouseGesture::Selecting);
         self.selection_drag = Some(SelectionDrag {
             geometry,
@@ -993,7 +996,7 @@ impl Terminal {
     ) {
         let gesture = self.mouse_gesture.take();
         self.selection_drag = None;
-        self.selection_autoscroll_scheduled = false;
+        self.selection_autoscroll_task = None;
 
         let Some(MouseGesture::Reporting(button)) = gesture else {
             return;
@@ -1019,18 +1022,16 @@ impl Terminal {
     }
 
     fn schedule_selection_autoscroll(&mut self, cx: &mut Context<Self>) {
-        if self.selection_autoscroll_scheduled {
+        if self.selection_autoscroll_task.is_some() {
             return;
         }
-        self.selection_autoscroll_scheduled = true;
-        cx.spawn(async move |this, cx| {
+        self.selection_autoscroll_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(AUTOSCROLL_INTERVAL).await;
             let _ = this.update(cx, |terminal, cx| {
-                terminal.selection_autoscroll_scheduled = false;
+                terminal.selection_autoscroll_task = None;
                 terminal.selection_autoscroll_tick(cx);
             });
-        })
-        .detach();
+        }));
     }
 
     fn selection_autoscroll_tick(&mut self, cx: &mut Context<Self>) {

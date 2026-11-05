@@ -758,6 +758,35 @@ fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+fn restarted_drag_does_not_replay_the_previous_autoscroll_tick(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let buffer = test_buffer(cx, scrolling_text());
+    let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx));
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    let click = point(px(120.), px(2.));
+    let viewport_height = cx.read_entity(&editor, |editor, _| {
+        editor.last_bounds.expect("渲染后应有视口尺寸").size.height
+    });
+    let drag_to = point(click.x, viewport_height + px(200.));
+    cx.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(drag_to, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(drag_to, MouseButton::Left, Modifiers::default());
+
+    cx.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(drag_to, Some(MouseButton::Left), Modifiers::default());
+    let (before, delta) = cx.read_entity(&editor, |editor, _| {
+        (editor.scroll_top(), editor.drag_autoscroll.delta().y)
+    });
+    assert!(delta < px(0.), "视口下方拖拽必须产生滚动量");
+    cx.executor().advance_clock(Duration::from_millis(20));
+    cx.run_until_parked();
+    let after = cx.read_entity(&editor, |editor, _| editor.scroll_top());
+    assert_eq!(after, before - delta, "旧手势的定时器不能增加本次滚动量");
+}
+
+#[gpui::test]
 fn mouse_dragging_beyond_right_edge_autoscrolls_horizontally(cx: &mut TestAppContext) {
     let settings = UserSettings {
         soft_wrap: SoftWrapMode::None,

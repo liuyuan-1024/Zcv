@@ -54,7 +54,7 @@ pub(crate) fn display_only_terminal(
         font_size_override: None,
         mouse_gesture: None,
         selection_drag: None,
-        selection_autoscroll_scheduled: false,
+        selection_autoscroll_task: None,
     }
 }
 

@@ -3,8 +3,8 @@ use crate::test_support::empty_workspace;
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Modifiers, Pixels,
-    SharedString, TestAppContext, canvas, point,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Modifiers, SharedString,
+    TestAppContext, point, size,
 };
 use zcv_language::LanguageRegistry;
 use zcv_settings::{SettingsStore, UserSettings};
@@ -260,39 +260,24 @@ fn line_column_entry_reuses_input_and_normal_search_does_not_offer_navigation(
     });
 }
 
-struct ResultsLayoutView {
-    input_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
-    results_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
+struct OffsetQuickAccessHost {
+    search: Entity<QuickAccess>,
+    _workspace: Entity<Workspace>,
+    previous: FocusHandle,
 }
 
-impl Render for ResultsLayoutView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let input_bounds = self.input_bounds.clone();
-        let results_bounds = self.results_bounds.clone();
+impl Render for OffsetQuickAccessHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
-            .relative()
-            .w(px(420.0))
-            .h(search_height(window, cx))
+            .size_full()
+            .child(div().track_focus(&self.previous))
             .child(
-                canvas(
-                    move |bounds, _, _| *input_bounds.borrow_mut() = Some(bounds),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .top(Pixels::ZERO)
-                .w_full()
-                .h_full(),
+                div()
+                    .ml(px(220.0))
+                    .mt(px(180.0))
+                    .w(SEARCH_WIDTH)
+                    .child(self.search.clone()),
             )
-            .child(positioned_results(
-                canvas(
-                    move |bounds, _, _| *results_bounds.borrow_mut() = Some(bounds),
-                    |_, _, _, _| {},
-                )
-                .w_full()
-                .h(px(100.0)),
-                window,
-                cx,
-            ))
     }
 }
 
@@ -477,24 +462,56 @@ fn command_candidates_come_from_described_actions(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn results_start_at_the_top_bar_input_bottom(cx: &mut TestAppContext) {
-    let input_bounds = Rc::new(RefCell::new(None));
-    let results_bounds = Rc::new(RefCell::new(None));
-    let input = input_bounds.clone();
-    let results = results_bounds.clone();
-    let _window = cx.add_window(move |_, _| ResultsLayoutView {
-        input_bounds: input,
-        results_bounds: results,
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages.clone()));
+    let (host, visual) = cx.add_window_view(|window, cx| {
+        let workspace = cx.new(|cx| empty_workspace(languages, window, cx));
+        let project = workspace.read(cx).project().clone();
+        OffsetQuickAccessHost {
+            search: cx.new(|cx| {
+                QuickAccess::new(
+                    project,
+                    workspace.downgrade(),
+                    PopoverLayer::default(),
+                    window,
+                    cx,
+                )
+            }),
+            _workspace: workspace,
+            previous: cx.focus_handle(),
+        }
     });
-    cx.run_until_parked();
+    let window = *visual.windows().last().expect("窗口应已创建");
+    visual.simulate_window_resize(window, size(px(720.0), px(600.0)));
+    let (search, previous) = visual.read_entity(&host, |host, _| {
+        (host.search.clone(), host.previous.clone())
+    });
+    visual.update(|window, cx| window.focus(&previous, cx));
+    search.update_in(visual, |search, window, cx| search.focus(window, cx));
+    visual.run_until_parked();
 
-    let input = input_bounds.borrow().expect("搜索框必须完成布局");
-    let results = results_bounds.borrow().expect("搜索结果必须完成布局");
-    assert_eq!(results.left(), input.left());
-    assert_eq!(
-        results.top(),
-        input.bottom(),
-        "搜索结果应紧贴顶栏输入框下边缘"
+    let input = visual
+        .debug_bounds("quick-access-input")
+        .expect("搜索框必须完成布局");
+    let results = visual
+        .debug_bounds("overlay-panel")
+        .expect("搜索结果必须完成布局");
+    assert!(
+        (results.left() - input.left()).abs() <= px(1.0),
+        "搜索结果应与输入框左侧对齐：输入框 {input:?}，结果 {results:?}"
     );
+    assert!(
+        (results.top() - input.bottom()).abs() <= px(1.0),
+        "搜索结果应紧贴顶栏输入框下边缘：输入框 {input:?}，结果 {results:?}"
+    );
+
+    visual.simulate_click(results.center(), Modifiers::default());
+    visual.read_entity(&search, |search, _| assert!(search.host.is_open()));
+    visual.simulate_click(point(px(20.0), px(20.0)), Modifiers::default());
+    visual.run_until_parked();
+    visual.read_entity(&search, |search, _| assert!(!search.host.is_open()));
+    visual.update(|window, _| assert!(previous.is_focused(window)));
 }
 
 #[gpui::test]

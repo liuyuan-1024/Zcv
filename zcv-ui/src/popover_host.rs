@@ -11,7 +11,7 @@ use std::{
 use gpui::{App, FocusHandle, WeakFocusHandle, Window, div, prelude::*};
 use zcv_theme::{color, scale};
 
-use crate::{OverlayAnchor, OverlayOutside, overlay};
+use crate::{OverlayOutside, overlay};
 
 /// 浮层内容视图调用的关闭回调。
 pub type PopoverDismissHandler = Box<dyn Fn(&mut Window, &mut App)>;
@@ -245,7 +245,7 @@ impl PopoverHost {
             .overflow_hidden()
             .child(content);
 
-        let mut mounted = overlay(window).anchor(OverlayAnchor::AtSlot);
+        let mut mounted = overlay(window);
         if intercept_background {
             mounted = mounted.outside(OverlayOutside::Intercept(Box::new(move |_, window, cx| {
                 if let Some(active) = layer.dismiss(id) {

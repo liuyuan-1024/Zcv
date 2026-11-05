@@ -1,13 +1,16 @@
 //! 顶栏统一入口：普通访问聚合文件和命令，行列入口复用输入和结果面板。
 
 use std::{
+    cell::Cell,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
 };
 
 use gpui::{
-    App, Context, Entity, ListAlignment, ListOffset, ListSizingBehavior, ListState, MouseButton,
-    Pixels, Render, Subscription, Task, WeakEntity, Window, deferred, div, list, prelude::*, px,
+    App, Bounds, Context, Entity, ListAlignment, ListOffset, ListSizingBehavior, ListState,
+    MouseButton, Pixels, Render, Subscription, Task, WeakEntity, Window, canvas, div, list, point,
+    prelude::*, px,
 };
 use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev, commands,
@@ -16,7 +19,8 @@ use zcv_fuzzy::{MatchScore, Matcher};
 use zcv_project::{Project, ProjectEvent, owning_workspace_root};
 use zcv_theme::{FileIcons, color, scale};
 use zcv_ui::{
-    EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, ListItem, PopoverHost, PopoverLayer, SvgIcon,
+    EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, ListItem, OverlayAnchor, OverlayOutside,
+    PopoverHost, PopoverLayer, SvgIcon, overlay,
 };
 
 use crate::{ItemHandle, Workspace, typography_for_window};
@@ -29,18 +33,6 @@ type OnFileOpen = Box<dyn Fn(PathBuf, &mut Window, &mut App)>;
 
 fn search_height(window: &Window, cx: &App) -> Pixels {
     typography_for_window(window, cx).ui_line() + scale::to_pixels(scale::S4, window) * 2.0
-}
-
-fn positioned_results(content: impl IntoElement, window: &Window, cx: &App) -> impl IntoElement {
-    deferred(
-        div()
-            .absolute()
-            .top(search_height(window, cx))
-            .left(Pixels::ZERO)
-            .w_full()
-            .child(content),
-    )
-    .with_priority(1)
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -494,7 +486,12 @@ impl QuickAccess {
         self.restore_focus(window, cx);
     }
 
-    fn results(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn results(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+        input_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    ) -> impl IntoElement {
         let entity = cx.entity();
         let query = self.input.text(cx);
         let width = scale::to_pixels(SEARCH_WIDTH, window);
@@ -542,59 +539,78 @@ impl QuickAccess {
         .with_sizing_behavior(ListSizingBehavior::Infer)
         .flex_grow(1.0)
         .min_h_0();
-        positioned_results(
-            div()
-                .w_full()
-                .max_h(RESULTS_MAX_HEIGHT.min(window.viewport_size().height))
-                .flex()
-                .flex_col()
-                .overflow_hidden()
-                .rounded_lg()
-                .border_1()
-                .border_color(color::current(cx).border)
-                .bg(color::current(cx).elevated_surface_background)
-                .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .when(self.results.is_empty(), |el| {
-                    el.child(
-                        div()
-                            .w_full()
-                            .p(scale::S8)
-                            .text_color(color::current(cx).text_placeholder)
-                            .child(match (&self.mode, input_mode(&query)) {
-                                (AccessMode::LineColumn(_), InputMode::Empty) => {
-                                    "输入行列数字，例如 42:8、第42行第8列".to_string()
-                                }
-                                (AccessMode::LineColumn(_), _) => {
-                                    "请输入有效的行号或行列".to_string()
-                                }
-                                (AccessMode::Mixed, InputMode::Empty) => {
-                                    "输入文件或命令 · > 仅搜索命令".to_string()
-                                }
-                                (AccessMode::Mixed, InputMode::Commands("")) => {
-                                    "输入命令名称".to_string()
-                                }
-                                (AccessMode::Mixed, InputMode::Mixed(_))
-                                    if self.state.load_state == FileLoadState::Loading =>
-                                {
-                                    "正在查找文件…".to_string()
-                                }
-                                _ => "无搜索结果".to_string(),
-                            }),
-                    )
-                })
-                .when(!self.results.is_empty(), |el| el.child(result_list)),
-            window,
-            cx,
-        )
+        let weak = cx.weak_entity();
+        overlay(window)
+            .anchor(OverlayAnchor::AtLocalPosition(point(
+                Pixels::ZERO,
+                search_height(window, cx),
+            )))
+            .min_width(width)
+            .outside(OverlayOutside::Passthrough(Box::new(
+                move |event, window, cx| {
+                    let bounds = input_bounds.get().expect("快捷访问输入区域必须完成布局");
+                    if bounds.contains(&event.position) {
+                        return;
+                    }
+                    if let Some(search) = weak.upgrade() {
+                        search.update(cx, |search, cx| search.restore_focus(window, cx));
+                    }
+                },
+            )))
+            .child(
+                div()
+                    .w_full()
+                    .max_h(RESULTS_MAX_HEIGHT.min(window.viewport_size().height))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(color::current(cx).border)
+                    .bg(color::current(cx).elevated_surface_background)
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .when(self.results.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .w_full()
+                                .p(scale::S8)
+                                .text_color(color::current(cx).text_placeholder)
+                                .child(match (&self.mode, input_mode(&query)) {
+                                    (AccessMode::LineColumn(_), InputMode::Empty) => {
+                                        "输入行列数字，例如 42:8、第42行第8列".to_string()
+                                    }
+                                    (AccessMode::LineColumn(_), _) => {
+                                        "请输入有效的行号或行列".to_string()
+                                    }
+                                    (AccessMode::Mixed, InputMode::Empty) => {
+                                        "输入文件或命令 · > 仅搜索命令".to_string()
+                                    }
+                                    (AccessMode::Mixed, InputMode::Commands("")) => {
+                                        "输入命令名称".to_string()
+                                    }
+                                    (AccessMode::Mixed, InputMode::Mixed(_))
+                                        if self.state.load_state == FileLoadState::Loading =>
+                                    {
+                                        "正在查找文件…".to_string()
+                                    }
+                                    _ => "无搜索结果".to_string(),
+                                }),
+                        )
+                    })
+                    .when(!self.results.is_empty(), |el| el.child(result_list)),
+            )
     }
 }
 
 impl Render for QuickAccess {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = color::current(cx);
+        let input_bounds = Rc::new(Cell::new(None));
+        let measured_bounds = input_bounds.clone();
         div()
             .id("top-bar.quick-access")
+            .debug_selector(|| "quick-access-input".into())
             .key_context("Picker")
             .relative()
             .flex()
@@ -626,12 +642,32 @@ impl Render for QuickAccess {
                 cx.stop_propagation();
             }))
             .child(
+                canvas(
+                    move |bounds, _, _| measured_bounds.set(Some(bounds)),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top(Pixels::ZERO)
+                .left(Pixels::ZERO)
+                .w_full()
+                .h_full(),
+            )
+            .child(
                 SvgIcon::new("icons/magnifying_glass.svg")
                     .size(window.rem_size())
                     .color(colors.icon_muted),
             )
             .child(div().flex_1().min_w_0().child(self.input.render()))
-            .when(self.host.is_open(), |el| el.child(self.results(window, cx)))
+            .when(self.host.is_open(), |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top(Pixels::ZERO)
+                        .left(Pixels::ZERO)
+                        .w_full()
+                        .child(self.results(window, cx, input_bounds)),
+                )
+            })
     }
 }
 

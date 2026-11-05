@@ -14,8 +14,8 @@ type OutsideHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App)>;
 
 /// 浮层锚定方式。
 pub enum OverlayAnchor {
-    /// 锚定在挂载点旁（触发器下方）。
-    AtSlot,
+    /// 相对挂载点定位（如触发器旁或顶栏输入框下缘）。
+    AtLocalPosition(Point<Pixels>),
     /// 出现在窗口坐标（如右键光标处）。
     AtPosition(Point<Pixels>),
 }
@@ -40,7 +40,7 @@ pub struct Overlay<'a> {
 pub fn overlay(window: &Window) -> Overlay<'_> {
     Overlay {
         window,
-        anchor: OverlayAnchor::AtSlot,
+        anchor: OverlayAnchor::AtLocalPosition(point(Pixels::ZERO, Pixels::ZERO)),
         min_width: None,
         outside: None,
     }
@@ -72,13 +72,13 @@ impl Overlay<'_> {
         let available_width = win_size.width - margin * 2.0;
         let suggested_width = self.min_width.map(|width| width.min(available_width));
 
-        let mut anchored = anchored().snap_to_window_with_margin(margin);
-        anchored = match self.anchor {
-            OverlayAnchor::AtSlot => anchored
+        let mut anchored_panel = anchored().snap_to_window_with_margin(margin);
+        anchored_panel = match self.anchor {
+            OverlayAnchor::AtLocalPosition(position) => anchored_panel
                 .anchor(Anchor::TopLeft)
-                .position(point(Pixels::ZERO, Pixels::ZERO))
+                .position(position)
                 .position_mode(gpui::AnchoredPositionMode::Local),
-            OverlayAnchor::AtPosition(position) => anchored.position(position),
+            OverlayAnchor::AtPosition(position) => anchored_panel.position(position),
         };
 
         let mut panel = div()
@@ -98,21 +98,22 @@ impl Overlay<'_> {
             Some(OverlayOutside::Intercept(handler)) => {
                 overlay = overlay.child(
                     deferred(
-                        div()
-                            .absolute()
-                            .top(Pixels::ZERO)
-                            .left(Pixels::ZERO)
-                            .w(win_size.width)
-                            .h(win_size.height)
-                            .occlude()
-                            .on_mouse_down(MouseButton::Left, handler),
+                        anchored()
+                            .position(point(Pixels::ZERO, Pixels::ZERO))
+                            .child(
+                                div()
+                                    .w(win_size.width)
+                                    .h(win_size.height)
+                                    .occlude()
+                                    .on_mouse_down(MouseButton::Left, handler),
+                            ),
                     )
                     .with_priority(0),
                 );
             }
             None => {}
         }
-        overlay.child(deferred(anchored.child(panel)).with_priority(1))
+        overlay.child(deferred(anchored_panel.child(panel)).with_priority(1))
     }
 }
 

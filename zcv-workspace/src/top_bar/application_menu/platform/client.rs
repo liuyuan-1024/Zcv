@@ -6,8 +6,7 @@ use gpui::{
 };
 use zcv_theme::{color, scale};
 use zcv_ui::{
-    Button, ContextMenu, ContextMenuEntry, OverlayAnchor, OverlayOutside, PopoverHost,
-    PopoverLayer, overlay,
+    Button, ContextMenu, ContextMenuEntry, OverlayOutside, PopoverHost, PopoverLayer, overlay,
 };
 
 use super::super::super::TopBar;
@@ -239,7 +238,6 @@ impl Render for ApplicationMenuView {
                         }));
                     slot = slot.child(
                         overlay(window)
-                            .anchor(OverlayAnchor::AtSlot)
                             .min_width(ContextMenu::SUGGESTED_WIDTH)
                             .outside(on_outside)
                             .child(menu),

@@ -156,19 +156,25 @@ fn send_request(request: &InitialOpen) -> Result<()> {
 }
 
 fn encode_request(request: &InitialOpen) -> Result<Vec<u8>> {
-    let (kind, path) = match request {
+    let (kind, paths) = match request {
         InitialOpen::Empty => (0, None),
-        InitialOpen::File(path) => (1, Some(path)),
-        InitialOpen::Project(path) => (2, Some(path)),
+        InitialOpen::File(paths) => (1, Some(paths)),
+        InitialOpen::Project(paths) => (2, Some(paths)),
     };
-    let units: Vec<u16> = match path {
-        Some(path) => std::path::absolute(path)
-            .with_context(|| format!("无法解析启动路径：{}", path.display()))?
-            .as_os_str()
-            .encode_wide()
-            .collect(),
-        None => Vec::new(),
-    };
+    let mut units = Vec::new();
+    if let Some(paths) = paths {
+        ensure!(!paths.is_empty(), "打开请求缺少路径");
+        for path in paths {
+            units.extend(
+                std::path::absolute(path)
+                    .with_context(|| format!("无法解析启动路径：{}", path.display()))?
+                    .as_os_str()
+                    .encode_wide(),
+            );
+            units.push(0);
+        }
+    }
+    ensure!(units.len() <= 32767, "打开请求路径过长");
     let length = u32::try_from(units.len()).context("文件路径过长")?;
     let mut bytes = Vec::with_capacity(5 + units.len() * 2);
     bytes.push(kind);
@@ -196,11 +202,22 @@ fn read_request(pipe: HANDLE) -> Result<InitialOpen> {
 }
 
 fn decode_request(kind: u8, units: &[u16]) -> Result<InitialOpen> {
-    let path = PathBuf::from(OsString::from_wide(units));
+    let paths = if units.is_empty() {
+        Vec::new()
+    } else {
+        ensure!(units.last() == Some(&0), "无效的文件打开请求");
+        units[..units.len() - 1]
+            .split(|unit| *unit == 0)
+            .map(|path| {
+                ensure!(!path.is_empty(), "无效的文件打开请求");
+                Ok(PathBuf::from(OsString::from_wide(path)))
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
     match kind {
         0 if units.is_empty() => Ok(InitialOpen::Empty),
-        1 if !units.is_empty() => Ok(InitialOpen::File(path)),
-        2 if !units.is_empty() => Ok(InitialOpen::Project(path)),
+        1 if !paths.is_empty() => Ok(InitialOpen::File(paths)),
+        2 if !paths.is_empty() => Ok(InitialOpen::Project(paths)),
         _ => Err(anyhow!("无效的文件打开请求")),
     }
 }

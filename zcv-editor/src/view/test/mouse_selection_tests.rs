@@ -577,6 +577,49 @@ fn selection_extension_crosses_folded_placeholder_and_continues(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn reverse_drag_from_fold_placeholder_end_selects_the_hidden_range(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let buffer = test_buffer(cx, "anchor\nhidden one\nafter");
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
+    });
+    cx.run_until_parked();
+
+    editor.update(cx, |editor, cx| {
+        editor
+            .display_map
+            .update(cx, |map, cx| {
+                let display = map.snapshot(cx);
+                let snapshot = display.buffer_snapshot();
+                let range = snapshot.anchor_at(b(6), Affinity::Before)
+                    ..snapshot.anchor_at(b(17), Affinity::After);
+                map.fold_range(range, FoldPlaceholder::default(), cx)
+            })
+            .expect("测试范围应能折叠");
+    });
+
+    editor.update(cx, |editor, cx| {
+        editor.begin_selection(
+            DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(7)),
+            1,
+            false,
+            cx,
+        );
+        editor.update_selection(
+            DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(6)),
+            cx,
+        );
+    });
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.selections(cx),
+            selections(Selection::new(b(17), b(6)))
+        );
+    });
+}
+
+#[gpui::test]
 fn shift_double_click_extends_by_word_granularity(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let buffer = test_buffer(cx, "one two three");

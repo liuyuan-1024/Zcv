@@ -209,7 +209,7 @@ impl FragmentedLine {
 
     /// 行内 x 坐标最近的光标边界在完整行文本中的字节位置。
     ///
-    /// 折叠占位符内部没有可编辑边界，落在元素内部时吸附到元素起点。
+    /// 折叠占位符内部没有可编辑边界，按元素的实际像素宽度吸附到两端。
     fn closest_index_for_x(&self, x: Pixels) -> usize {
         let mut start_x = Pixels::ZERO;
         let mut start = 0usize;
@@ -240,7 +240,12 @@ impl FragmentedLine {
                 LineFragment::Element { len, size, .. } => {
                     let end_x = start_x + size.width;
                     if x < end_x {
-                        return start;
+                        return start
+                            + if x - start_x < size.width * 0.5 {
+                                0
+                            } else {
+                                *len
+                            };
                     }
                     start_x = end_x;
                     start += len;

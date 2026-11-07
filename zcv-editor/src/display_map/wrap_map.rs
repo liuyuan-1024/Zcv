@@ -575,6 +575,10 @@ impl WrapSnapshot {
                         row_start + segment.merged_range.start,
                     ));
                     let (start, end) = fold.input_range_at_output(output);
+                    // 行末占位符没有后续文本段承接右边界，该点始终属于折叠终点。
+                    if merged_byte >= segment.merged_range.end {
+                        return Ok(end);
+                    }
                     match bias {
                         FoldBias::Left => Ok(start),
                         FoldBias::Right => Ok(end),

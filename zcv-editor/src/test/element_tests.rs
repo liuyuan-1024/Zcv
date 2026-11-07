@@ -1,5 +1,6 @@
 use crate::display_map::{
-    DiffDecorationSnapshot, DisplayMap, DisplaySnapshot, FoldPlaceholder, SearchDecorationInput,
+    DiffDecorationSnapshot, DisplayMap, DisplaySnapshot, FoldBias, FoldPlaceholder,
+    SearchDecorationInput,
     test_support::{WrapRowKind, projected_line_text},
 };
 
@@ -1457,7 +1458,7 @@ fn folded_projection_rows_drive_layout_and_hit_testing(cx: &mut TestAppContext) 
 }
 
 /// 折叠占位符是真正的行内元素片段：跨片段坐标与命中必须穿过文本→元素→文本，
-/// 落在元素内部的索引吸附到元素起点，元素之后回到元素终点。
+/// 元素内部的点击按像素中点吸附到前后边界，元素之后回到元素终点。
 #[gpui::test]
 fn folded_element_participates_in_cross_fragment_coordinates(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
@@ -1546,7 +1547,40 @@ fn folded_element_participates_in_cross_fragment_coordinates(cx: &mut TestAppCon
             assert_eq!(
                 line.closest_index_for_x(element_start + px(5.)),
                 6,
-                "元素区间命中必须返回元素边界"
+                "元素左半侧命中必须返回起点"
+            );
+            assert_eq!(
+                line.closest_index_for_x(element_start + px(25.)),
+                6 + element_len,
+                "元素右半侧命中必须返回终点"
+            );
+            assert_eq!(
+                layout.display_point_for_position(point(
+                    layout.lines[0].origin.x + element_start + px(25.),
+                    layout.lines[0].origin.y + px(5.),
+                )),
+                Some(DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(7),)),
+                "鼠标命中必须把占位符右半侧映射到其后方显示列"
+            );
+            assert_eq!(
+                layout
+                    .display_snapshot
+                    .display_point_to_offset(DisplayPoint::new(
+                        DisplayRow::ZERO,
+                        DisplayColumn::new(7),
+                    ))
+                    .expect("占位符后方显示列应能映射回源文本"),
+                MultiBufferOffset::new(17),
+            );
+            assert_eq!(
+                layout
+                    .display_snapshot
+                    .display_point_to_offset_with_bias(
+                        DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(6)),
+                        FoldBias::Right,
+                    )
+                    .expect("占位符内点的右偏置应映射到折叠终点"),
+                MultiBufferOffset::new(17),
             );
             for index in 0..6 {
                 assert_eq!(

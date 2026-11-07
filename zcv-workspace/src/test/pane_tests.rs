@@ -630,6 +630,39 @@ fn preview_is_unique_and_shares_the_source_document(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn fixed_preview_is_reused_after_source_is_opened_again(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    init_previews(cx);
+    let pane = cx.new(Pane::new);
+    let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
+    let path = PathBuf::from("shared.svg");
+
+    open_transient_file_in_test(cx, &pane, path.clone(), buffer.clone());
+    let preview_id = cx.read_entity(&pane, |pane, _| pane.active.expect("单击应打开预览"));
+    pane.update(cx, |pane, cx| pane.promote_transient_tab(preview_id, cx));
+    open_file_in_test(cx, &pane, path, buffer);
+    cx.read_entity(&pane, |pane, cx| {
+        assert_eq!(pane.tabs.len(), 2);
+        assert_active_is_preview(pane, cx, false);
+    });
+
+    toggle_preview_in_test(cx, &pane);
+    cx.read_entity(&pane, |pane, cx| {
+        assert_eq!(pane.tabs.len(), 2, "同一路径只能有一个预览标签");
+        assert_eq!(pane.active, Some(preview_id));
+        assert_active_is_preview(pane, cx, true);
+    });
+
+    let same_file = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
+    open_transient_file_in_test(cx, &pane, PathBuf::from("shared.svg"), same_file);
+    cx.read_entity(&pane, |pane, cx| {
+        assert_eq!(pane.tabs.len(), 2, "再次单击也应复用固定预览");
+        assert_eq!(pane.active, Some(preview_id));
+        assert_active_is_preview(pane, cx, true);
+    });
+}
+
+#[gpui::test]
 fn serialized_pane_keeps_fixed_preview_and_its_active_position(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     init_previews(cx);

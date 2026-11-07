@@ -235,7 +235,7 @@ impl Pane {
                     self.promote_transient_tab(source_id, cx);
                     return self.activate_item_at(source_index, window, cx);
                 }
-                if let Some(preview_index) = self.preview_index_for_source(source_id, cx) {
+                if let Some(preview_index) = self.preview_index_for_path(&path, cx) {
                     return self.activate_item_at(preview_index, window, cx);
                 }
                 let focus = self.activate_item_at(source_index, window, cx);
@@ -311,13 +311,13 @@ impl Pane {
         }
 
         let source_item = self.tabs[index].boxed_clone();
-        if let Some(preview_index) = self.preview_index_for_source(item_id, cx) {
+        let path = source_item.item_path(cx)?;
+        if let Some(preview_index) = self.preview_index_for_path(&path, cx) {
             let focus = self.activate_item_at(preview_index, window, cx);
             window.focus(&focus, cx);
             window.refresh();
             return Some(focus);
         }
-        let path = source_item.item_path(cx)?;
         let provider = source_provider_for(&path, cx)?;
         let multi_buffer = source_item.multi_buffer(cx)?;
         let preview = provider.create(
@@ -500,14 +500,6 @@ impl Pane {
     fn preview_index_for_path(&self, path: &Path, cx: &App) -> Option<usize> {
         self.tabs.iter().position(|item| {
             is_preview_item(item.as_ref(), cx) && item.item_path(cx).as_deref() == Some(path)
-        })
-    }
-
-    fn preview_index_for_source(&self, source_id: EntityId, cx: &App) -> Option<usize> {
-        self.tabs.iter().position(|item| {
-            item.as_preview_item(cx)
-                .and_then(|preview| preview.source_item(cx))
-                .is_some_and(|source| source.item_id() == source_id)
         })
     }
 

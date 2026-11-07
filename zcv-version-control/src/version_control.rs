@@ -346,8 +346,8 @@ pub struct VersionControlPanel {
     focus_listeners_initialized: bool,
     project: Entity<Project>,
     state: Rc<RefCell<TreeState<(GitSection, AbsolutePathBuf), GitRow>>>,
-    /// 用户显式折叠的目录（(分组, 路径)）；未折叠的目录默认展开，新出现的目录自动展开。
-    collapsed_dirs: HashSet<(GitSection, AbsolutePathBuf)>,
+    /// 用户显式折叠的目录路径；暂存状态变化只改变分组，不改变目录的展开状态。
+    collapsed_dirs: HashSet<AbsolutePathBuf>,
     /// 折叠的分区（点击分区标题行首 chevron 切换；折叠时该分区条目不渲染）。
     collapsed_sections: Rc<RefCell<HashSet<GitSection>>>,
     /// 活动仓库各分组的顶层变更路径；标题行复选框可见性与全选以此为准，不随折叠变化。
@@ -577,7 +577,7 @@ impl VersionControlPanel {
         let previous_workdirs: Vec<_> = self.commit_states.keys().cloned().collect();
         self.commit_states
             .retain(|workdir, _| all_workdirs.contains(workdir));
-        self.collapsed_dirs.retain(|(_, path)| {
+        self.collapsed_dirs.retain(|path| {
             owning_workdir(&previous_workdirs, path.as_path())
                 .is_some_and(|owner| all_workdirs.contains(owner))
         });
@@ -616,17 +616,12 @@ impl VersionControlPanel {
                 .collect(),
         };
         let mut state = self.state.borrow_mut();
-        state.expanded.retain(|(_, path)| {
-            owning_workdir(&previous_workdirs, path.as_path())
-                .is_some_and(|owner| all_workdirs.contains(owner))
-        });
-        // 目录默认展开：未显式折叠的目录（含新出现的目录）都展开，用户折叠状态保持。
+        // 展开行只从当前树与目录的折叠意图派生；目录跨分组移动时复用同一路径的状态。
         let directories = collect_directory_keys(&trees);
-        state.expanded.extend(
-            directories
-                .into_iter()
-                .filter(|key| !self.collapsed_dirs.contains(key)),
-        );
+        state.expanded = directories
+            .into_iter()
+            .filter(|(_, path)| !self.collapsed_dirs.contains(path))
+            .collect();
         let rows = flatten_rows(&trees, &state.expanded, &self.collapsed_sections.borrow());
         state.replace_rows(rows);
         state.ensure_selected();
@@ -684,9 +679,9 @@ impl VersionControlPanel {
             let was_expanded = self.state.borrow().expanded.contains(&key);
             self.state.borrow_mut().toggle_expand(&key);
             if was_expanded {
-                self.collapsed_dirs.insert(key);
+                self.collapsed_dirs.insert(entry.path);
             } else {
-                self.collapsed_dirs.remove(&key);
+                self.collapsed_dirs.remove(&entry.path);
             }
             self.rebuild_rows(cx);
         } else if let Some(callback) = self.on_open_file.clone() {
@@ -725,7 +720,7 @@ impl VersionControlPanel {
     fn handle_collapse(&mut self, _: &Collapse, window: &mut Window, cx: &mut Context<Self>) {
         // 记录被折叠的目录，使重建后保持折叠（其余目录仍默认展开）。
         if let Some(key) = self.selected_directory_key(true) {
-            self.collapsed_dirs.insert(key);
+            self.collapsed_dirs.insert(key.1);
         }
         let rebuild = self.state.borrow_mut().collapse_selection();
         if rebuild {
@@ -738,7 +733,7 @@ impl VersionControlPanel {
     fn handle_expand(&mut self, _: &Expand, window: &mut Window, cx: &mut Context<Self>) {
         // 展开的目录解除折叠记录。
         if let Some(key) = self.selected_directory_key(false) {
-            self.collapsed_dirs.remove(&key);
+            self.collapsed_dirs.remove(&key.1);
         }
         let rebuild = self.state.borrow_mut().expand_selection();
         if rebuild {

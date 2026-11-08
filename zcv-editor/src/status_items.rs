@@ -14,6 +14,7 @@ use crate::Editor;
 /// 底栏光标位置显示。
 struct CursorPosition {
     cursor_text: String,
+    can_navigate: bool,
     _subscription: Option<Subscription>,
 }
 
@@ -21,6 +22,7 @@ impl CursorPosition {
     fn new() -> Self {
         Self {
             cursor_text: String::new(),
+            can_navigate: false,
             _subscription: None,
         }
     }
@@ -29,6 +31,7 @@ impl CursorPosition {
 impl StatusItemView for CursorPosition {
     fn set_active_pane_item(&mut self, item: Option<&dyn ItemHandle>, cx: &mut Context<Self>) {
         self._subscription = None;
+        self.can_navigate = item.is_some_and(|item| item.can_navigate_to_line_column(cx));
 
         if let Some(editor) = item.and_then(|item| item.act_as::<Editor>(cx)) {
             self._subscription = Some(cx.observe(&editor, |this, editor, cx| {
@@ -49,6 +52,9 @@ impl Render for CursorPosition {
         // 无活动编辑器时隐藏（终端、空工作区等场景不显示空按钮）。
         if self.cursor_text.is_empty() {
             return div().into_any_element();
+        }
+        if !self.can_navigate {
+            return div().child(self.cursor_text.clone()).into_any_element();
         }
         Button::text("status-bar.cursor", self.cursor_text.clone())
             .label("跳转到行/列")
@@ -85,7 +91,10 @@ impl StatusItemView for ActiveBufferLanguage {
     fn set_active_pane_item(&mut self, item: Option<&dyn ItemHandle>, cx: &mut Context<Self>) {
         self._subscription = None;
 
-        if let Some(editor) = item.and_then(|item| item.act_as::<Editor>(cx)) {
+        let editor = item
+            .filter(|item| item.as_preview_item(cx).is_none())
+            .and_then(|item| item.act_as::<Editor>(cx));
+        if let Some(editor) = editor {
             self._subscription = Some(cx.observe(&editor, |this, editor, cx| {
                 this.sync_language(&editor, cx);
                 cx.notify();
@@ -101,7 +110,7 @@ impl StatusItemView for ActiveBufferLanguage {
 
 impl Render for ActiveBufferLanguage {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        // 无活动编辑器或无语言时隐藏（终端、空工作区等场景不显示空按钮）。
+        // 无活动编辑器或无语言时隐藏（终端、预览、空工作区等场景不显示空按钮）。
         if self.language.is_empty() {
             return div().into_any_element();
         }

@@ -122,7 +122,8 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         false
     }
 
-    fn can_navigate_to_line_column(&self, _line: usize, _column: usize, _cx: &App) -> bool {
+    /// 当前 Item 是否支持以源码逻辑行列定位，与某个具体坐标是否有效无关。
+    fn can_navigate_to_line_column(&self, _cx: &App) -> bool {
         false
     }
 
@@ -206,7 +207,7 @@ pub trait ItemHandle: Send + 'static {
     fn visible_source_anchor(&self, cx: &mut App) -> Option<MultiBufferAnchor>;
     fn reveal_source_anchor(&self, anchor: MultiBufferAnchor, cx: &mut App) -> bool;
     fn navigate_to_line_column(&self, line: usize, column: usize, cx: &mut App) -> bool;
-    fn can_navigate_to_line_column(&self, line: usize, column: usize, cx: &App) -> bool;
+    fn can_navigate_to_line_column(&self, cx: &App) -> bool;
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>>;
     fn as_searchable(&self, cx: &App) -> Option<Box<dyn SearchableItemHandle>>;
     fn can_save(&self, cx: &App) -> bool;
@@ -320,8 +321,8 @@ impl<T: Item> ItemHandle for Entity<T> {
         })
     }
 
-    fn can_navigate_to_line_column(&self, line: usize, column: usize, cx: &App) -> bool {
-        self.read(cx).can_navigate_to_line_column(line, column, cx)
+    fn can_navigate_to_line_column(&self, cx: &App) -> bool {
+        self.read(cx).can_navigate_to_line_column(cx)
     }
 
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>> {

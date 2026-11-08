@@ -341,7 +341,7 @@ fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext)
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer, cx));
 
     editor.update(cx, |editor, cx| {
-        assert!(<Editor as zcv_workspace::Item>::can_navigate_to_line_column(editor, 0, 2, cx));
+        assert!(<Editor as zcv_workspace::Item>::can_navigate_to_line_column(editor, cx));
         assert!(editor.navigate_to_line_column(0, 2, cx));
         assert_eq!(
             editor.selections(cx).primary().head(),
@@ -352,7 +352,7 @@ fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext)
             editor.selections(cx).primary().head(),
             MultiBufferOffset::new(12)
         );
-        assert!(<Editor as zcv_workspace::Item>::can_navigate_to_line_column(editor, 99, 99, cx));
+        assert!(<Editor as zcv_workspace::Item>::can_navigate_to_line_column(editor, cx));
         assert!(editor.navigate_to_line_column(99, 0, cx));
         assert_eq!(
             editor.selections(cx).primary().head(),
@@ -377,7 +377,7 @@ fn navigate_to_line_column_clamps_empty_document(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "");
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer, cx));
     editor.update(cx, |editor, cx| {
-        assert!(<Editor as zcv_workspace::Item>::can_navigate_to_line_column(editor, 999, 999, cx));
+        assert!(<Editor as zcv_workspace::Item>::can_navigate_to_line_column(editor, cx));
         assert!(editor.navigate_to_line_column(999, 999, cx));
         assert_eq!(
             editor.selections(cx).primary().head(),

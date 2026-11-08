@@ -103,6 +103,15 @@ enum AccessMode {
     LineColumn(Box<dyn ItemHandle>),
 }
 
+impl AccessMode {
+    fn line_column_supported(&self, cx: &App) -> bool {
+        match self {
+            Self::Mixed => false,
+            Self::LineColumn(target) => target.can_navigate_to_line_column(cx),
+        }
+    }
+}
+
 fn input_mode(query: &str) -> InputMode<'_> {
     let query = query.trim();
     if let Some(command) = query.strip_prefix('>') {
@@ -402,10 +411,15 @@ impl QuickAccess {
         let query = self.input.text(cx);
         self.results = match &self.mode {
             AccessMode::Mixed => ranked_results(&self.state.files, &self.commands, &query),
-            AccessMode::LineColumn(target) => parse_line_column(query.trim())
-                .filter(|&(line, column)| target.can_navigate_to_line_column(line, column, cx))
-                .map(|(line, column)| vec![SearchResult::LineColumn { line, column }])
-                .unwrap_or_default(),
+            AccessMode::LineColumn(_) => {
+                if !self.mode.line_column_supported(cx) {
+                    Vec::new()
+                } else {
+                    parse_line_column(query.trim())
+                        .map(|(line, column)| vec![SearchResult::LineColumn { line, column }])
+                        .unwrap_or_default()
+                }
+            }
         };
         let count = self.results.len();
         self.selected_index = 0;
@@ -577,6 +591,11 @@ impl QuickAccess {
                                 .p(scale::S8)
                                 .text_color(color::current(cx).text_placeholder)
                                 .child(match (&self.mode, input_mode(&query)) {
+                                    (AccessMode::LineColumn(_), _)
+                                        if !self.mode.line_column_supported(cx) =>
+                                    {
+                                        "该文件不支持跳转到指定行列".to_string()
+                                    }
                                     (AccessMode::LineColumn(_), InputMode::Empty) => {
                                         "输入行列数字，例如 42:8、第42行第8列".to_string()
                                     }

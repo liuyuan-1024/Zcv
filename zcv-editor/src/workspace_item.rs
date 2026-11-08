@@ -25,6 +25,7 @@ impl Item for Editor {
             EditorEvent::Edited { .. } => emit(ItemEvent::Edit),
             EditorEvent::OpenExcerptsRequested { .. } => {}
             EditorEvent::DocumentChanged
+            | EditorEvent::SelectionsChanged
             | EditorEvent::DiffHunksExpandedChanged
             | EditorEvent::BufferFoldChanged => {}
             EditorEvent::Error(message) => emit(ItemEvent::Error(message.clone())),
@@ -126,8 +127,8 @@ impl Item for Editor {
         Editor::navigate_to_line_column(self, line, column, cx)
     }
 
-    fn can_navigate_to_line_column(&self, line: usize, column: usize, cx: &App) -> bool {
-        Editor::navigation_offset(&self.render_snapshot(cx), line, column).is_some()
+    fn can_navigate_to_line_column(&self, _cx: &App) -> bool {
+        true
     }
 
     fn save(

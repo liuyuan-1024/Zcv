@@ -23,6 +23,7 @@ use gpui::{
 };
 use pulldown_cmark::Alignment;
 use zcv_actions::{Copy, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp};
+use zcv_editor::{Editor, EditorEvent};
 use zcv_language::{
     HighlightSpan, LanguageRegistry, SnippetHighlightCancellation, SnippetHighlights,
     highlight_snippet_with_cancellation,
@@ -125,6 +126,7 @@ pub(crate) struct MarkdownPreviewView {
     refresh_generation: u64,
     refresh_task: Option<Task<()>>,
     _document_subscription: Subscription,
+    _editor_subscription: Option<Subscription>,
     _item_subscription: Subscription,
     math_images: Arc<MathImages>,
     math_content_size: Option<Pixels>,
@@ -156,6 +158,15 @@ impl MarkdownPreviewView {
             if matches!(event, MultiBufferEvent::TextChanged) {
                 view.schedule_refresh(cx);
             }
+        });
+        let editor_subscription = source_item.act_as::<Editor>(cx).map(|editor| {
+            cx.subscribe(&editor, |view, editor, event: &EditorEvent, cx| {
+                if matches!(event, EditorEvent::SelectionsChanged) {
+                    let anchor = editor.read(cx).cursor_anchor();
+                    *view.pending_reveal.borrow_mut() = Some(anchor);
+                    cx.notify();
+                }
+            })
         });
         let this = cx.entity().downgrade();
         let item_subscription = source_item.subscribe_to_item_events(
@@ -203,6 +214,7 @@ impl MarkdownPreviewView {
             refresh_generation: 0,
             refresh_task: None,
             _document_subscription: document_subscription,
+            _editor_subscription: editor_subscription,
             _item_subscription: item_subscription,
             math_images: Arc::new(HashMap::new()),
             math_content_size: None,
@@ -2243,6 +2255,19 @@ impl Item for MarkdownPreviewView {
         true
     }
 
+    fn navigate_to_line_column(
+        &mut self,
+        line: usize,
+        column: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.source_item.navigate_to_line_column(line, column, cx)
+    }
+
+    fn can_navigate_to_line_column(&self, cx: &App) -> bool {
+        self.source_item.can_navigate_to_line_column(cx)
+    }
+
     fn visible_source_anchor(&mut self, cx: &mut Context<Self>) -> Option<MultiBufferAnchor> {
         self.top_visible_source_anchor(cx)
     }
@@ -2305,8 +2330,10 @@ impl Item for MarkdownPreviewView {
     ) -> Option<AnyEntity> {
         if type_id == TypeId::of::<Self>() {
             Some(self_handle.clone().into())
-        } else {
+        } else if type_id == TypeId::of::<Editor>() {
             self.source_item.act_as_type(type_id, cx)
+        } else {
+            None
         }
     }
 }

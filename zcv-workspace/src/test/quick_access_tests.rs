@@ -15,6 +15,32 @@ struct NavigableItem {
     focus: FocusHandle,
 }
 
+struct UnsupportedItem {
+    focus: FocusHandle,
+}
+
+impl Focusable for UnsupportedItem {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl EventEmitter<()> for UnsupportedItem {}
+
+impl crate::Item for UnsupportedItem {
+    type Event = ();
+
+    fn tab_content_text(&self, _: &App) -> SharedString {
+        "不支持行列导航的文档".into()
+    }
+}
+
+impl Render for UnsupportedItem {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().track_focus(&self.focus)
+    }
+}
+
 impl Focusable for NavigableItem {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -30,7 +56,7 @@ impl crate::Item for NavigableItem {
         "测试文档".into()
     }
 
-    fn can_navigate_to_line_column(&self, _line: usize, _column: usize, _: &App) -> bool {
+    fn can_navigate_to_line_column(&self, _cx: &App) -> bool {
         true
     }
 
@@ -257,6 +283,42 @@ fn line_column_entry_reuses_input_and_normal_search_does_not_offer_navigation(
                 .iter()
                 .any(|result| matches!(result, SearchResult::LineColumn { .. }))
         );
+    });
+}
+
+#[gpui::test]
+fn line_column_entry_for_unsupported_item_has_no_navigation_result(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages.clone()));
+    let (host, cx) = cx.add_window_view(|window, cx| {
+        let workspace = cx.new(|cx| empty_workspace(languages, window, cx));
+        let project = workspace.read(cx).project().clone();
+        FocusHost {
+            search: cx.new(|cx| {
+                QuickAccess::new(
+                    project,
+                    workspace.downgrade(),
+                    PopoverLayer::default(),
+                    window,
+                    cx,
+                )
+            }),
+            _workspace: workspace,
+            previous: cx.focus_handle(),
+            other: cx.focus_handle(),
+        }
+    });
+    let search = cx.read_entity(&host, |host, _| host.search.clone());
+    search.update_in(cx, |search, window, cx| {
+        let item = cx.new(|cx| UnsupportedItem {
+            focus: cx.focus_handle(),
+        });
+        search.focus_line_column(Box::new(item), window, cx);
+        assert!(!search.mode.line_column_supported(cx));
+        search.input.set_text("42:8", cx);
+        search.refresh_results(cx);
+        assert!(search.results.is_empty());
     });
 }
 

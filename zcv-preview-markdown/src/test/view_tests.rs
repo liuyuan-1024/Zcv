@@ -412,11 +412,9 @@ fn preview_coalesces_rapid_document_changes(cx: &mut TestAppContext) {
     });
 }
 
-/// 预览工具区由工作区的 PreviewToolbar 承担；
-/// 预览视图通过 `act_as_type` 暴露源码编辑器，但自身不是编辑器 Item，
-/// 工具项注册方据此隐藏通用文档工具栏，两行工具区不会重复显示。
+/// Markdown 预览按 Zed 的 Item 能力暴露关联的 Editor。
 #[gpui::test]
-fn preview_exposes_the_source_editor_as_a_proxy(cx: &mut TestAppContext) {
+fn preview_exposes_associated_editor(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     editor.update(cx, |editor, cx| {
@@ -438,14 +436,53 @@ fn preview_exposes_the_source_editor_as_a_proxy(cx: &mut TestAppContext) {
     let item_id = view.entity_id();
     let handle: Box<dyn zcv_workspace::ItemHandle> = Box::new(view);
     cx.read(|cx| {
+        assert!(handle.act_as::<Editor>(cx).is_some());
         let exposed = handle
+            .as_preview_item(cx)
+            .expect("预览应暴露预览身份")
+            .source_item(cx)
+            .expect("源码派生预览应提供源码 Item")
             .act_as::<Editor>(cx)
-            .expect("预览仍应向工作区暴露源码编辑器");
+            .expect("源码 Item 应为编辑器");
         assert_ne!(
             exposed.entity_id(),
             item_id,
             "预览暴露的是源码编辑器，自身不是编辑器 Item"
         );
+    });
+}
+
+#[gpui::test]
+fn line_column_navigation_updates_source_selection_and_reveals_preview(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let editor = cx.new(|cx| Editor::auto_height(1, None, Arc::new(LanguageRegistry::new()), cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_text("# 标题\n\n正文", cx);
+        editor.set_file_path(PathBuf::from("README.md"), cx);
+    });
+    let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let view = cx.new(|cx| {
+        MarkdownPreviewView::new(
+            PreviewDocument::Source {
+                path: PathBuf::from("README.md"),
+                source_item: Box::new(editor.clone()),
+                multi_buffer,
+                open_path: None,
+            },
+            cx,
+        )
+    });
+    cx.update(|cx| {
+        assert!(view.read(cx).can_navigate_to_line_column(cx));
+        assert!(view.update(cx, |view, cx| view.navigate_to_line_column(2, 1, cx)));
+    });
+    cx.run_until_parked();
+    let anchor = cx.read_entity(&editor, |editor, _| editor.cursor_anchor());
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(*view.pending_reveal.borrow(), Some(anchor));
+    });
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.cursor_text(cx), "3:2");
     });
 }
 fn math_inline(source: &str) -> Inline {

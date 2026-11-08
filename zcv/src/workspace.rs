@@ -1126,7 +1126,7 @@ fn initialize_workspace(
                 .tabs()
                 .iter()
                 .find(|item| item.item_id() == *item_id)
-                .and_then(|item| item.act_as::<Editor>(cx))
+                .and_then(|item| source_editor_for_item(item.as_ref(), cx))
         {
             subscribe_to_editor_events(workspace, editor, cx);
         }
@@ -1243,7 +1243,7 @@ fn initialize_workspace(
         .read(cx)
         .tabs()
         .iter()
-        .filter_map(|item| item.act_as::<Editor>(cx))
+        .filter_map(|item| source_editor_for_item(item.as_ref(), cx))
         .collect::<Vec<_>>();
     for editor in editors {
         subscribe_to_editor_events(&mut *workspace, editor, cx);
@@ -1258,6 +1258,17 @@ fn apply_theme(theme: &str, cx: &mut App, window: Option<&Window>) {
 
 /// 普通编辑器的文本变化只同步工作区文本上的冲突标记；
 /// 其余 Git diff 投影由 zcv-version-control 的拥有域能力承载。
+fn source_editor_for_item(
+    item: &dyn zcv_workspace::ItemHandle,
+    cx: &App,
+) -> Option<Entity<Editor>> {
+    item.act_as::<Editor>(cx).or_else(|| {
+        item.as_preview_item(cx)
+            .and_then(|preview| preview.source_item(cx))
+            .and_then(|source| source.act_as::<Editor>(cx))
+    })
+}
+
 fn subscribe_to_editor_events(
     workspace: &mut Workspace,
     editor: Entity<Editor>,

@@ -602,6 +602,7 @@ impl DiffView {
                     cx.notify()
                 }
                 EditorEvent::DocumentChanged
+                | EditorEvent::SelectionsChanged
                 | EditorEvent::Edited { .. }
                 | EditorEvent::PathChanged
                 | EditorEvent::DirtyChanged

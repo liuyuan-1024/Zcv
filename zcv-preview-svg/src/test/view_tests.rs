@@ -59,11 +59,9 @@ fn preview_starts_loading_and_installs_background_result(cx: &mut TestAppContext
     });
 }
 
-/// 预览工具区由工作区的 PreviewToolbar 承担；
-/// 预览视图通过 `act_as_type` 暴露源码编辑器，但自身不是编辑器 Item，
-/// 工具项注册方据此隐藏通用文档工具栏，两行工具区不会重复显示。
+/// 预览保持独立 Item 身份，源码只通过 PreviewItem 关系访问。
 #[gpui::test]
-fn preview_exposes_the_source_editor_as_a_proxy(cx: &mut TestAppContext) {
+fn preview_keeps_its_identity_and_exposes_source_explicitly(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     editor.update(cx, |editor, cx| {
@@ -88,9 +86,14 @@ fn preview_exposes_the_source_editor_as_a_proxy(cx: &mut TestAppContext) {
     let item_id = view.entity_id();
     let handle: Box<dyn zcv_workspace::ItemHandle> = Box::new(view);
     cx.read(|cx| {
+        assert!(handle.act_as::<Editor>(cx).is_none());
         let exposed = handle
+            .as_preview_item(cx)
+            .expect("预览应暴露预览身份")
+            .source_item(cx)
+            .expect("源码派生预览应提供源码 Item")
             .act_as::<Editor>(cx)
-            .expect("预览仍应向工作区暴露源码编辑器");
+            .expect("源码 Item 应为编辑器");
         assert_ne!(
             exposed.entity_id(),
             item_id,

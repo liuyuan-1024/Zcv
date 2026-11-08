@@ -69,6 +69,8 @@ pub(super) const NAVIGATION_TOP_OFFSET: usize = 4;
 /// Editor 自身的领域事件。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditorEvent {
+    /// 编辑器选择位置发生变化。
+    SelectionsChanged,
     /// 编辑器关联的文件路径发生变化。
     PathChanged,
     /// 文档内容被编辑；只在真实事务提交时发布。
@@ -1108,7 +1110,13 @@ impl Editor {
 
     fn selections_did_change(&mut self, cx: &mut Context<Self>) {
         self.blink_manager.update(cx, BlinkManager::pause_blinking);
+        cx.emit(EditorEvent::SelectionsChanged);
         cx.notify();
+    }
+
+    /// 当前选择活动端在源码文档中的稳定位置。
+    pub fn cursor_anchor(&self) -> MultiBufferAnchor {
+        self.anchored_selections().primary().head()
     }
 
     /// 把 offset 版选区集合重锚定到当前显示快照版本。

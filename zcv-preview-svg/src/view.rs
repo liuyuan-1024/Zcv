@@ -4,15 +4,14 @@
 //! [`Item::source_item`] 让 Pane 能在预览与源码之间切换而不依赖具体视图类型。
 
 use std::{
-    any::TypeId,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use gpui::{
-    AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Image, ImageFormat,
-    IntoElement, ObjectFit, Render, RenderImage, SharedString, Styled, StyledImage, Subscription,
-    Task, Window, div, img, prelude::*, size,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Image, ImageFormat, IntoElement,
+    ObjectFit, Render, RenderImage, SharedString, Styled, StyledImage, Subscription, Task, Window,
+    div, img, prelude::*, size,
 };
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
@@ -306,19 +305,6 @@ impl Item for SvgPreviewView {
     ) -> Task<anyhow::Result<()>> {
         self.source_item
             .reload_conflicted_files(project, window, cx)
-    }
-
-    fn act_as_type(
-        &self,
-        type_id: TypeId,
-        self_handle: &Entity<Self>,
-        cx: &App,
-    ) -> Option<AnyEntity> {
-        if type_id == TypeId::of::<Self>() {
-            Some(self_handle.clone().into())
-        } else {
-            self.source_item.act_as_type(type_id, cx)
-        }
     }
 }
 

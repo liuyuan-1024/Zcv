@@ -626,29 +626,29 @@ impl ProjectTreePanel {
         context
     }
 
-    fn activate_selected(
+    fn activate_entry(
         &mut self,
+        path: &AbsolutePathBuf,
         focus_opened_item: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (path, is_dir) = {
+        let is_dir = {
             let state = self.state.borrow();
-            match state.selected_idx() {
-                Some(idx) => (Some(state.rows[idx].path.clone()), state.rows[idx].is_dir),
-                None => (None, false),
-            }
+            state
+                .rows
+                .iter()
+                .find(|row| &row.path == path)
+                .map(|row| row.is_dir)
         };
-        let Some(path) = path else {
+        let Some(is_dir) = is_dir else {
             return;
         };
-        // 游标已在本行时才走到这里（mouse_down 已收拢/保持）；
-        // 切勿再调 select()——它会清空多选集合，使集合内行的激活把拖拽载荷打回单项。
         if is_dir {
-            self.state.borrow_mut().toggle_expand(&path);
+            self.state.borrow_mut().toggle_expand(path);
             self.rebuild_rows(cx);
         } else if let Some(callback) = self.on_open_file.clone() {
-            callback(path.into_path_buf(), focus_opened_item, window, cx);
+            callback(path.clone().into_path_buf(), focus_opened_item, window, cx);
         }
         window.refresh();
     }
@@ -660,7 +660,10 @@ impl ProjectTreePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.activate_selected(true, window, cx);
+        let path = self.state.borrow().selected.clone();
+        if let Some(path) = path {
+            self.activate_entry(&path, true, window, cx);
+        }
     }
 
     fn stop_drag_scroll(&mut self) {

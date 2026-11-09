@@ -130,10 +130,24 @@ fn multi_select_drag_filters_each_source_independently() {
     let src = abs(root.join("src"));
     let inner = abs(src.join("inner.txt"));
     let other = abs(root.join("other.txt"));
-    // 多选拖到 src/自身：目录源因「移入自身子树」被拒，
-    // src 内文件因「落回原目录」被剔除，项目外文件正常放行。
+    // 纯移动过滤器逐项判断来源；树内落点解析会先取消放到载荷成员上的整次拖拽。
     let kept = filter_movable_sources(&[src.clone(), inner, other.clone()], &src);
     assert_eq!(kept, vec![other]);
+}
+
+#[test]
+fn dropping_on_any_dragged_row_has_no_target() {
+    let root = abs("/proj");
+    let directory = abs(root.join("dst"));
+    let file = abs(root.join("a.txt"));
+    let drag = TreeDrag {
+        active_selection: directory.clone(),
+        marked_selections: vec![directory.clone(), file.clone()].into(),
+        preview_name: "dst".into(),
+    };
+    assert_eq!(internal_drop_target_dir(&drag, &directory, true), None);
+    assert_eq!(internal_drop_target_dir(&drag, &file, false), None);
+    assert_eq!(internal_drop_target_dir(&drag, &root, true), Some(root));
 }
 
 #[test]

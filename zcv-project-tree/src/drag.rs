@@ -163,6 +163,18 @@ pub(crate) fn drop_target_dir(
     paste_target_dir(Some(row_path), row_is_dir)
 }
 
+/// 树内拖拽落点：放回本次拖拽载荷中的任一行视为取消整次拖拽。
+pub(crate) fn internal_drop_target_dir(
+    dragged: &TreeDrag,
+    row_path: &AbsolutePathBuf,
+    row_is_dir: bool,
+) -> Option<AbsolutePathBuf> {
+    if dragged.items().contains(row_path) {
+        return None;
+    }
+    drop_target_dir(row_path, row_is_dir)
+}
+
 /// 合法性过滤（纯函数）：逐项判断拖拽源能否移入目标目录，返回可移动的源列表。
 ///
 /// 拒绝规则：

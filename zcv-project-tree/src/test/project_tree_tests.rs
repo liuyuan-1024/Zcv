@@ -1013,7 +1013,6 @@ fn expanding_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
 #[gpui::test]
 fn activating_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
-    // 回归：鼠标点击/键盘激活目录统一走 TreeActivate handler（toggle_expand），
     // 展开后的新行 git 状态需在激活时补齐。
     let (root, _temp) = test_git_repo();
     let sub = root.join("sub");
@@ -1025,7 +1024,7 @@ fn activating_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
 
-    // 模拟鼠标点击：选中行后激活（与键盘 enter 同一 handler）。
+    // 键盘激活当前选中行。
     cx.add_window_view(|window, cx| {
         tree.update(cx, |tree, _| {
             tree.state.borrow_mut().select(abs(sub.clone()));
@@ -1205,6 +1204,80 @@ fn three_file_project(
     fs::write(&file_c, "c").expect("应创建测试文件");
     let project = test_project(root.clone(), cx);
     (directory, project, file_a, file_b, file_c)
+}
+
+#[gpui::test]
+fn clicking_marked_file_activates_clicked_row_and_collapses_selection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
+    let (_temp, project, file_a, file_b, _) = three_file_project(cx);
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let opened_for_callback = Rc::clone(&opened);
+    let (tree, cx) = cx.add_window_view(move |_, cx| {
+        let mut tree = ProjectTreePanel::new(project, cx);
+        tree.set_on_open_file(Rc::new(move |path, focus, _, _| {
+            opened_for_callback.borrow_mut().push((path, focus));
+        }));
+        tree
+    });
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+    cx.simulate_click(point(px(10.), row_y(1)), Modifiers::default());
+    cx.simulate_click(point(px(10.), row_y(2)), secondary);
+    cx.read_entity(&tree, |tree, _| {
+        assert_eq!(
+            tree.state.borrow().selected.as_deref(),
+            Some(abs(file_b.clone()).as_path())
+        );
+        assert_eq!(tree.state.borrow().selected_set().len(), 2);
+    });
+
+    cx.simulate_click(point(px(10.), row_y(1)), Modifiers::default());
+    assert_eq!(opened.borrow().last(), Some(&(file_a.clone(), false)));
+    cx.read_entity(&tree, |tree, _| {
+        let state = tree.state.borrow();
+        assert_eq!(state.selected.as_deref(), Some(abs(file_a).as_path()));
+        assert!(state.selected_set().is_empty());
+    });
+}
+
+#[gpui::test]
+fn clicking_marked_directory_toggles_clicked_row(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = abs(directory.path()).into_path_buf();
+    let dir_a = root.join("a");
+    let dir_b = root.join("b");
+    fs::create_dir(&dir_a).expect("应创建目录 a");
+    fs::create_dir(&dir_b).expect("应创建目录 b");
+    let project = test_project(root, cx);
+    let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+    cx.simulate_click(point(px(10.), row_y(1)), Modifiers::default());
+    cx.simulate_click(point(px(10.), row_y(2)), secondary);
+    cx.read_entity(&tree, |tree, _| {
+        let state = tree.state.borrow();
+        assert!(state.expanded.contains(&abs(dir_a.clone())));
+        assert!(!state.expanded.contains(&abs(dir_b.clone())));
+        assert_eq!(state.selected_set().len(), 2);
+    });
+
+    cx.simulate_click(point(px(10.), row_y(1)), Modifiers::default());
+    cx.read_entity(&tree, |tree, _| {
+        let state = tree.state.borrow();
+        assert!(!state.expanded.contains(&abs(dir_a.clone())));
+        assert!(!state.expanded.contains(&abs(dir_b)));
+        assert_eq!(state.selected.as_deref(), Some(abs(dir_a).as_path()));
+        assert!(state.selected_set().is_empty());
+    });
 }
 
 #[gpui::test]
@@ -2323,6 +2396,41 @@ fn simulate_drag(cx: &mut VisualTestContext, from_row: usize, to_row: usize) {
         Modifiers::default(),
     );
     cx.run_until_parked();
+}
+
+#[gpui::test]
+fn dropping_multi_selection_on_its_own_directory_cancels_entire_move(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (_temp, project, _root, file_a, _file_b, _file_c, target) = drag_project(cx);
+    let move_count = Rc::new(Cell::new(0));
+    let move_count_for_callback = Rc::clone(&move_count);
+    let (tree, cx) = cx.add_window_view(move |_, cx| {
+        let mut tree = ProjectTreePanel::new(project, cx);
+        tree.set_on_move(Rc::new(move |_, _, _, _| {
+            move_count_for_callback.set(move_count_for_callback.get() + 1);
+            Ok(())
+        }));
+        tree
+    });
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+    cx.update(|_, cx| {
+        tree.update(cx, |tree, cx| {
+            let mut state = tree.state.borrow_mut();
+            state.select(abs(target.clone()));
+            state.toggle_selection(&abs(file_a.clone()));
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+
+    // 行序 [根, dst, a.txt, ...]。拖回起点，以及落到多选中的另一行都应取消。
+    simulate_drag(cx, 1, 1);
+    simulate_drag(cx, 2, 2);
+    simulate_drag(cx, 2, 1);
+    assert_eq!(move_count.get(), 0);
+    assert!(file_a.is_file());
+    assert!(!target.join("a.txt").exists());
 }
 
 #[gpui::test]

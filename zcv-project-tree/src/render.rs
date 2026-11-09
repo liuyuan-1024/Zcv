@@ -17,7 +17,10 @@ use zcv_workspace::git_status_color;
 
 use super::{
     ProjectTreePanel, ProjectTreeRow,
-    drag::{DraggedEntryView, TreeDrag, drop_target_dir, filter_movable_sources},
+    drag::{
+        DraggedEntryView, TreeDrag, drop_target_dir, filter_movable_sources,
+        internal_drop_target_dir,
+    },
     editing::{EditOperation, EditState},
 };
 
@@ -171,7 +174,10 @@ pub(super) fn render_blank_area(
         .drag_over::<TreeDrag>({
             let root = root.clone();
             move |mut style: StyleRefinement, dragged: &TreeDrag, _, cx| {
-                let droppable = !filter_movable_sources(&dragged.items(), &root).is_empty();
+                let droppable =
+                    internal_drop_target_dir(dragged, &root, true).is_some_and(|target| {
+                        !filter_movable_sources(&dragged.items(), &target).is_empty()
+                    });
                 if droppable {
                     style.background = Some(Fill::from(color::current(cx).element_hover));
                 }
@@ -346,9 +352,10 @@ pub(super) fn render_row(
         .drag_over::<TreeDrag>({
             let path = path.clone();
             move |mut style: StyleRefinement, dragged: &TreeDrag, _, cx| {
-                let droppable = drop_target_dir(&path, is_dir).is_some_and(|target| {
-                    !filter_movable_sources(&dragged.items(), &target).is_empty()
-                });
+                let droppable =
+                    internal_drop_target_dir(dragged, &path, is_dir).is_some_and(|target| {
+                        !filter_movable_sources(&dragged.items(), &target).is_empty()
+                    });
                 if droppable {
                     style.background = Some(Fill::from(color::current(cx).element_hover));
                 }
@@ -499,15 +506,14 @@ pub(super) fn render_row(
                             if let Some((intent_path, action)) = tree.pending_click_intent.take()
                                 && intent_path == path
                             {
+                                tree.state.borrow_mut().select(path.clone());
+                                cx.notify();
                                 match action {
-                                    RowClickAction::Toggle => {
-                                        tree.activate_selected(true, window, cx)
+                                    RowClickAction::Toggle | RowClickAction::Activate => {
+                                        tree.activate_entry(&path, true, window, cx)
                                     }
                                     RowClickAction::Preview => {
-                                        tree.activate_selected(false, window, cx)
-                                    }
-                                    RowClickAction::Activate => {
-                                        tree.activate_selected(true, window, cx)
+                                        tree.activate_entry(&path, false, window, cx)
                                     }
                                 }
                             }

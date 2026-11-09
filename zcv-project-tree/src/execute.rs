@@ -13,7 +13,7 @@ use zcv_ui::ConfirmAnswer;
 
 use super::{
     ProjectTreePanel,
-    drag::{TreeDrag, drop_target_dir, filter_movable_sources},
+    drag::{TreeDrag, filter_movable_sources, internal_drop_target_dir},
     transfer::{
         ConflictDecision, ConflictSession, TransferMode, TreeClipboard, paste_target_dir,
         sanitize_selection,
@@ -259,7 +259,7 @@ impl ProjectTreePanel {
         if self.edit_state.is_some() || self.conflict.is_some() {
             return;
         }
-        let Some(target_dir) = drop_target_dir(row_path, row_is_dir) else {
+        let Some(target_dir) = internal_drop_target_dir(dragged, row_path, row_is_dir) else {
             return;
         };
         // 放下信任渲染期冻结的载荷：拖拽内容恒等于发起时所见选区，拖拽期间选区如何变化都不影响移动清单；

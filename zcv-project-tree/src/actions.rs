@@ -8,7 +8,7 @@ use zcv_actions::{
     TreeSelectPrev, TreeSelectPrevExtend, TreeTrash,
 };
 
-use super::{ProjectTreePanel, ProjectTreeRow, transfer::sanitize_selection};
+use super::{ProjectTreePanel, ProjectTreeRow};
 
 impl ProjectTreePanel {
     pub(super) fn handle_tree_select_prev(
@@ -117,19 +117,18 @@ impl ProjectTreePanel {
         if self.roots.is_empty() {
             return;
         }
-        let (targets, neighbor_path) = {
+        let targets = self.sanitized_selection();
+        if targets.is_empty() {
+            return;
+        }
+        let neighbor_path = {
             let state = self.state.borrow();
-            let targets = sanitize_selection(state.effective_selection(), &self.roots);
-            // 集合为空且游标在根：sanitize 剔除根行后为空，保持“根行不可删除”。
-            if targets.is_empty() {
-                return;
-            }
             let target_set: HashSet<_> = targets.iter().collect();
             let first_index = state
                 .rows
                 .iter()
                 .position(|row| target_set.contains(&row.path));
-            let neighbor_path = first_index.and_then(|index| {
+            first_index.and_then(|index| {
                 let survivors: Vec<&ProjectTreeRow> = state
                     .rows
                     .iter()
@@ -139,8 +138,7 @@ impl ProjectTreePanel {
                     .get(index)
                     .or_else(|| survivors.last())
                     .map(|row| row.path.clone())
-            });
-            (targets, neighbor_path)
+            })
         };
         let Some(on_trash) = self.on_trash.clone() else {
             self.report_error("项目树删除失败：未配置项目删除服务".into(), cx);

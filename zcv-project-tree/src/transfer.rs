@@ -1,7 +1,5 @@
-//! 传输逻辑纯模块：选中集净化、剪贴板语义、冲突决策会话与粘贴目标推断。
-//!
-//! copy/cut/paste 的语义规则集中于此（面板 mod.rs 只做接线），便于单测覆盖；
-//! `sanitize_selection` 由面板 mod.rs 迁入，原实现与单测一并迁移。
+//! 文件操作规则：选择净化、移动合法性、目标路径计划与冲突决策会话。
+//! 拖拽和粘贴通过同一传输计划进入执行层；交互来源随冲突会话保留。
 
 use std::collections::HashSet;
 use zcv_path::AbsolutePathBuf;
@@ -29,6 +27,30 @@ pub(crate) fn sanitize_selection(
         kept.push(path);
     }
     kept
+}
+
+/// 移动源过滤：拒绝移入自身子树、落回原位置，以及会覆盖源祖先的目标。
+/// 多选逐项判断；树内落点预览与最终传输计划共用这条规则。
+pub(crate) fn filter_movable_sources(
+    sources: &[AbsolutePathBuf],
+    target_dir: &AbsolutePathBuf,
+) -> Vec<AbsolutePathBuf> {
+    sources
+        .iter()
+        .filter(|source| {
+            if target_dir.starts_with(source.as_path()) {
+                return false;
+            }
+            match source.file_name() {
+                Some(name) => {
+                    let destination = target_dir.join(name);
+                    !source.starts_with(&destination)
+                }
+                None => false,
+            }
+        })
+        .cloned()
+        .collect()
 }
 
 /// 项目树剪贴板：复制与剪切两种语义（粘贴执行方式由种类决定）。
@@ -66,6 +88,50 @@ pub(crate) enum TransferMode {
     Move,
 }
 
+/// 文件操作的发起入口；结果呈现与剪贴板生命周期由入口决定。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TransferOrigin {
+    Paste,
+    InternalDrag,
+    ExternalDrop,
+}
+
+/// 输入入口解析出的文件操作请求；执行层只消费确定的源路径和目标目录。
+pub(crate) struct TransferRequest {
+    pub(crate) mode: TransferMode,
+    pub(crate) origin: TransferOrigin,
+    pub(crate) target_dir: AbsolutePathBuf,
+    pub(crate) sources: Vec<AbsolutePathBuf>,
+}
+
+/// 已解析目标路径的传输计划；冲突预检只消费这份确定的项清单。
+pub(crate) struct TransferPlan {
+    pub(crate) mode: TransferMode,
+    pub(crate) origin: TransferOrigin,
+    pub(crate) items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
+}
+
+impl TransferRequest {
+    /// 将目标目录与源名称组合为操作清单，并剔除落回原路径的无操作项。
+    pub(crate) fn prepare(self) -> TransferPlan {
+        let items = self
+            .sources
+            .into_iter()
+            .filter_map(|source| {
+                let name = source.file_name()?;
+                let dest = AbsolutePathBuf::new(self.target_dir.join(name))
+                    .expect("绝对目标目录与源名称组合后仍须为绝对路径");
+                (dest != source).then_some((source, dest))
+            })
+            .collect();
+        TransferPlan {
+            mode: self.mode,
+            origin: self.origin,
+            items,
+        }
+    }
+}
+
 /// 冲突项的用户决策。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ConflictDecision {
@@ -83,8 +149,9 @@ pub(crate) enum ConflictDecision {
 pub(crate) struct ConflictSession {
     /// 传输方式（Copy/Move），决策完成后据此分派执行。
     pub(crate) mode: TransferMode,
-    /// 粘贴目标目录（浮层文案与执行期参考）。
-    pub(crate) target_dir: AbsolutePathBuf,
+    pub(crate) origin: TransferOrigin,
+    /// 与冲突项同属本次操作、可直接执行的项。
+    pub(crate) clean_items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
     /// 冲突项 (源, 目标) 队列。
     pub(crate) items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
     /// 已记录的决策（与 items 按序对应）。
@@ -96,12 +163,14 @@ pub(crate) struct ConflictSession {
 impl ConflictSession {
     pub(crate) fn new(
         mode: TransferMode,
-        target_dir: AbsolutePathBuf,
+        origin: TransferOrigin,
+        clean_items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
         items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
     ) -> Self {
         Self {
             mode,
-            target_dir,
+            origin,
+            clean_items,
             items,
             decisions: Vec::new(),
             index: 0,

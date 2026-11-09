@@ -97,7 +97,8 @@ fn clipboard_paths_accessor_covers_both_variants() {
 fn session(mode: TransferMode) -> ConflictSession {
     ConflictSession::new(
         mode,
-        abs("/proj/dst"),
+        TransferOrigin::Paste,
+        Vec::new(),
         vec![
             (abs("/proj/a.txt"), abs("/proj/dst/a.txt")),
             (abs("/proj/b.txt"), abs("/proj/dst/b.txt")),
@@ -163,7 +164,12 @@ fn session_with_mixed_decisions_preserves_order() {
 
 #[test]
 fn empty_session_is_immediately_resolved() {
-    let session = ConflictSession::new(TransferMode::Copy, abs("/proj/dst"), Vec::new());
+    let session = ConflictSession::new(
+        TransferMode::Copy,
+        TransferOrigin::Paste,
+        Vec::new(),
+        Vec::new(),
+    );
     assert!(session.is_empty());
     assert_eq!(session.len(), 0);
     assert!(session.is_resolved(), "空会话无待决策项，视为已解决");

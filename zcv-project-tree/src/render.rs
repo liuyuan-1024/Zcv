@@ -17,11 +17,9 @@ use zcv_workspace::git_status_color;
 
 use super::{
     ProjectTreePanel, ProjectTreeRow,
-    drag::{
-        DraggedEntryView, TreeDrag, drop_target_dir, filter_movable_sources,
-        internal_drop_target_dir,
-    },
+    drag::{DragSession, DraggedEntryView, TreeDrag, drop_target_dir, resolve_internal_drop},
     editing::{EditOperation, EditState},
+    transfer::TransferOrigin,
 };
 
 impl ProjectTreePanel {
@@ -137,6 +135,7 @@ pub(super) fn render_list(
 /// 内容不足时此区域可见但列表无可滚动偏移，转发无效果。
 pub(super) fn render_blank_area(
     root: AbsolutePathBuf,
+    roots: Rc<[AbsolutePathBuf]>,
     weak: WeakEntity<ProjectTreePanel>,
     focus: gpui::FocusHandle,
 ) -> gpui::Stateful<Div> {
@@ -173,11 +172,9 @@ pub(super) fn render_blank_area(
         // 落点高亮（主题悬停色）：仅对存在可移动项时提示，与行落点一致。
         .drag_over::<TreeDrag>({
             let root = root.clone();
+            let roots = Rc::clone(&roots);
             move |mut style: StyleRefinement, dragged: &TreeDrag, _, cx| {
-                let droppable =
-                    internal_drop_target_dir(dragged, &root, true).is_some_and(|target| {
-                        !filter_movable_sources(&dragged.items(), &target).is_empty()
-                    });
+                let droppable = resolve_internal_drop(dragged, &root, true, &roots).is_some();
                 if droppable {
                     style.background = Some(Fill::from(color::current(cx).element_hover));
                 }
@@ -227,7 +224,12 @@ pub(super) fn render_blank_area(
                     tree.update(cx, |tree, cx| {
                         tree.stop_drag_scroll();
                         tree.reset_drag_hover();
-                        tree.import_external_paths(paths, root.clone(), cx);
+                        tree.import_external_paths(
+                            paths,
+                            root.clone(),
+                            TransferOrigin::ExternalDrop,
+                            cx,
+                        );
                     });
                 }
                 cx.stop_propagation();
@@ -339,11 +341,13 @@ pub(super) fn render_row(
         .when_some(drag_payload, |element, drag| {
             let weak = render_context.weak.clone();
             element.on_drag(drag, move |drag, _, _, cx| {
-                // 拖拽正式开始：清掉上一次拖拽遗留的悬停展开状态。
+                // 拖拽正式开始：由会话持有载荷与临时导航状态。
                 // 载荷即渲染期冻结的选区快照（见 drag_payload 处源码结论），与用户按下时所见选区一致；
                 // 堆叠预览与数量徽标都以载荷 items 为准。
                 if let Some(tree) = weak.upgrade() {
-                    tree.update(cx, |tree, _| tree.reset_drag_hover());
+                    tree.update(cx, |tree, _| {
+                        tree.drag_session = Some(DragSession::new(drag.clone()));
+                    });
                 }
                 cx.new(|_| DraggedEntryView::new(drag.clone()))
             })
@@ -351,11 +355,9 @@ pub(super) fn render_row(
         // 落点候选行高亮（主题悬停色）：仅对存在可移动项的落点提示，移入自身子树、落回原目录等非法落点不亮。
         .drag_over::<TreeDrag>({
             let path = path.clone();
+            let roots = Rc::clone(&render_context.roots);
             move |mut style: StyleRefinement, dragged: &TreeDrag, _, cx| {
-                let droppable =
-                    internal_drop_target_dir(dragged, &path, is_dir).is_some_and(|target| {
-                        !filter_movable_sources(&dragged.items(), &target).is_empty()
-                    });
+                let droppable = resolve_internal_drop(dragged, &path, is_dir, &roots).is_some();
                 if droppable {
                     style.background = Some(Fill::from(color::current(cx).element_hover));
                 }
@@ -371,7 +373,7 @@ pub(super) fn render_row(
                 style
             }
         })
-        // 拖拽悬停自动展开：悬停折叠目录行约 500ms 后展开（计时器存面板字段）。
+        // 拖拽悬停自动展开：悬停有效的折叠目录约 500ms 后加入会话的临时展开投影。
         // on_drag_move 在捕获阶段对全部注册行派发且不做命中检测：仅光标真正位于本行范围内才处理，命中后阻断其余行的后续派发。
         .on_drag_move::<TreeDrag>({
             let weak = render_context.weak.clone();
@@ -411,7 +413,12 @@ pub(super) fn render_row(
                     tree.update(cx, |tree, cx| {
                         tree.stop_drag_scroll();
                         tree.reset_drag_hover();
-                        tree.import_external_paths(paths, target_dir, cx);
+                        tree.import_external_paths(
+                            paths,
+                            target_dir,
+                            TransferOrigin::ExternalDrop,
+                            cx,
+                        );
                     });
                     cx.stop_propagation();
                 }
@@ -529,6 +536,7 @@ pub(super) fn render_row(
 pub(super) struct ProjectTreeRenderContext {
     pub(super) state: Rc<RefCell<TreeState<AbsolutePathBuf, ProjectTreeRow>>>,
     pub(super) rows: Rc<[ProjectTreeRow]>,
+    pub(super) roots: Rc<[AbsolutePathBuf]>,
     pub(super) focus: gpui::FocusHandle,
     /// 条目点击直接调用 Entity 方法，
     /// 不依赖 dispatch_action 的焦点链分发。

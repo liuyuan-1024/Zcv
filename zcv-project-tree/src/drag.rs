@@ -1,16 +1,17 @@
 //! 树内拖拽移动：拖拽载荷、跟随预览、落点目标解析与合法性过滤。
 //!
-//! 拖拽移动与剪切粘贴共用同一条 Move + 冲突确认管线（drop 最终调用 `ProjectTreePanel::begin_transfer`，见 mod.rs），本模块只承载与面板状态无关的纯逻辑，便于单测覆盖。
+//! 拖拽会话持有临时导航状态；落点解析为渲染、高亮和执行提供同一结果。
+//! 文件移动与剪切粘贴共用传输管线，文件状态不由拖拽会话持有。
 
-use std::{path::Path, rc::Rc};
+use std::{collections::HashSet, path::Path, rc::Rc};
 
-use gpui::{App, Context, Div, FontWeight, Window, div, prelude::*, px};
+use gpui::{App, Context, Div, FontWeight, Task, Window, div, prelude::*, px};
 use zcv_path::AbsolutePathBuf;
 use zcv_theme::{FileIcons, color, scale, typography};
 use zcv_ui::SvgIcon;
 use zcv_workspace::typography_for_window;
 
-use super::transfer::paste_target_dir;
+use super::transfer::{filter_movable_sources, paste_target_dir, sanitize_selection};
 
 /// 树内拖拽载荷：被拖行与渲染期冻结的多选标记快照，跟随预览显示的名称。
 ///
@@ -33,6 +34,30 @@ impl TreeDrag {
         } else {
             vec![self.active_selection.clone()]
         }
+    }
+}
+
+/// 一次树内拖拽拥有的导航状态；临时展开不写入用户的目录展开意图。
+pub(crate) struct DragSession {
+    pub(crate) dragged: TreeDrag,
+    pub(crate) hovered_directory: Option<AbsolutePathBuf>,
+    pub(crate) hover_expand_task: Option<Task<()>>,
+    pub(crate) temporary_expanded: HashSet<AbsolutePathBuf>,
+}
+
+impl DragSession {
+    pub(crate) fn new(dragged: TreeDrag) -> Self {
+        Self {
+            dragged,
+            hovered_directory: None,
+            hover_expand_task: None,
+            temporary_expanded: HashSet::new(),
+        }
+    }
+
+    pub(crate) fn clear_hover(&mut self) {
+        self.hovered_directory = None;
+        self.hover_expand_task = None;
     }
 }
 
@@ -164,47 +189,27 @@ pub(crate) fn drop_target_dir(
 }
 
 /// 树内拖拽落点：放回本次拖拽载荷中的任一行视为取消整次拖拽。
-pub(crate) fn internal_drop_target_dir(
+pub(crate) struct DropCandidate {
+    pub(crate) target_dir: AbsolutePathBuf,
+    pub(crate) sources: Vec<AbsolutePathBuf>,
+}
+
+pub(crate) fn resolve_internal_drop(
     dragged: &TreeDrag,
     row_path: &AbsolutePathBuf,
     row_is_dir: bool,
-) -> Option<AbsolutePathBuf> {
-    if dragged.items().contains(row_path) {
+    roots: &[AbsolutePathBuf],
+) -> Option<DropCandidate> {
+    let items = dragged.items();
+    if items.contains(row_path) {
         return None;
     }
-    drop_target_dir(row_path, row_is_dir)
-}
-
-/// 合法性过滤（纯函数）：逐项判断拖拽源能否移入目标目录，返回可移动的源列表。
-///
-/// 拒绝规则：
-/// - 目标落在源自身子树内（含源本身）：`target_dir.starts_with(source)`，目录不能移入自己的后代（会产生路径循环）；
-/// - 移动结果与源相同（落回原目录，无变化）或目标是源的祖先目录（覆盖移动会摧毁源数据，与 `move_path` 的对称守卫一致）：静默剔除。
-///
-/// 多选拖拽时对每个源逐项独立判断，非法项剔除、合法项照常移动。
-pub(crate) fn filter_movable_sources(
-    sources: &[AbsolutePathBuf],
-    target_dir: &AbsolutePathBuf,
-) -> Vec<AbsolutePathBuf> {
-    sources
-        .iter()
-        .filter(|source| {
-            if target_dir.starts_with(source.as_path()) {
-                return false;
-            }
-            match source.file_name() {
-                Some(name) => {
-                    let destination = target_dir.join(name);
-                    // starts_with 含等号，一次判断覆盖两种情形：
-                    // 目标 == 源（落回原目录无变化）与目标是源的祖先（非法落点不高亮、不进冲突浮层）。
-                    !source.starts_with(&destination)
-                }
-                // 无文件名的路径（如项目根）不参与移动。
-                None => false,
-            }
-        })
-        .cloned()
-        .collect()
+    let target_dir = drop_target_dir(row_path, row_is_dir)?;
+    let sources = filter_movable_sources(&sanitize_selection(items, roots), &target_dir);
+    (!sources.is_empty()).then_some(DropCandidate {
+        target_dir,
+        sources,
+    })
 }
 
 #[cfg(test)]

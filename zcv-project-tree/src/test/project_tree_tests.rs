@@ -30,7 +30,7 @@ use zcv_ui::{ConfirmAnswer, tree_row_height};
 use super::{
     editing::EditOperation,
     execute::HOVER_EXPAND_DELAY,
-    transfer::{TransferMode, TreeClipboard},
+    transfer::{TransferMode, TransferOrigin, TreeClipboard},
 };
 
 use super::*;
@@ -1721,8 +1721,11 @@ fn copy_paste_reports_progress_middle_state_and_clears_on_completion(cx: &mut Te
     // 直接驱动两项复制（粘贴的 Copy 执行入口）：派发后后台任务尚未被驱动，
     // 此刻读取可稳定卡住复制进行中的 Some((n, total)) 中间态。
     tree.update(cx, |tree, cx| {
+        // 粘贴入口负责展开目标；直接驱动执行入口时先建立相同的可见状态。
+        tree.state.borrow_mut().expanded.insert(abs(target.clone()));
         tree.execute_copy(
             TransferMode::Copy,
+            TransferOrigin::Paste,
             vec![
                 (abs(file_a.clone()), abs(target.join("a.txt"))),
                 (abs(file_b.clone()), abs(target.join("b.txt"))),
@@ -2425,12 +2428,61 @@ fn dropping_multi_selection_on_its_own_directory_cancels_entire_move(cx: &mut Te
     cx.run_until_parked();
 
     // 行序 [根, dst, a.txt, ...]。拖回起点，以及落到多选中的另一行都应取消。
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let directory_row = point(px(10.), px(f32::from(row_height) + 1.));
+    cx.simulate_mouse_down(directory_row, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        point(px(14.), directory_row.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(directory_row, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    cx.read_entity(&tree, |tree, _| {
+        assert!(
+            tree.drag_session
+                .as_ref()
+                .is_some_and(|session| session.hover_expand_task.is_none())
+        );
+    });
+    cx.executor().advance_clock(HOVER_EXPAND_DELAY * 2);
+    cx.run_until_parked();
+    cx.simulate_mouse_up(directory_row, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    cx.read_entity(&tree, |tree, _| {
+        assert!(!tree.state.borrow().expanded.contains(&abs(target.clone())));
+    });
     simulate_drag(cx, 1, 1);
     simulate_drag(cx, 2, 2);
     simulate_drag(cx, 2, 1);
     assert_eq!(move_count.get(), 0);
     assert!(file_a.is_file());
     assert!(!target.join("a.txt").exists());
+}
+
+#[gpui::test]
+fn dragging_file_does_not_consume_cut_clipboard(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let (_temp, project, _root, file_a, _file_b, file_c, target) = drag_project(cx);
+    let project_for_move = project.clone();
+    let (tree, cx) = cx.add_window_view(move |_, cx| {
+        let mut tree = ProjectTreePanel::new(project, cx);
+        tree.set_on_move(Rc::new(move |from, to, overwrite, cx| {
+            project_for_move.update(cx, |project, cx| {
+                project.move_path(&from, &to, overwrite, cx)
+            })
+        }));
+        tree.clipboard = Some(TreeClipboard::Cut(vec![abs(file_c)]));
+        tree
+    });
+    cx.run_until_parked();
+
+    simulate_drag(cx, 2, 1);
+    assert!(target.join("a.txt").is_file());
+    assert!(!file_a.exists());
+    cx.read_entity(&tree, |tree, _| {
+        assert!(matches!(tree.clipboard, Some(TreeClipboard::Cut(_))));
+    });
 }
 
 #[gpui::test]
@@ -2621,12 +2673,15 @@ fn drag_file_into_directory_moves_it_via_move_pipeline(cx: &mut TestAppContext) 
     );
     cx.read_entity(&tree, |tree, _| {
         assert!(tree.conflict.is_none(), "无冲突放下不应进入会话");
-        assert!(tree.hover_expand_task.is_none(), "放下后悬停状态应清理");
-        assert!(tree.drag_hover_path.is_none(), "放下后悬停记录应清理");
+        assert!(tree.drag_session.is_none(), "放下后拖拽会话应清理");
+        assert!(
+            !tree.state.borrow().expanded.contains(&abs(target.clone())),
+            "放下不会改变目标目录的展开意图"
+        );
         assert_eq!(
             tree.state.borrow().selected.as_deref(),
-            Some(target.join("a.txt").as_path()),
-            "移动后游标应收拢到首个成功目标"
+            Some(target.as_path()),
+            "目标仍折叠时游标应停在可见目录"
         );
     });
 }
@@ -3060,8 +3115,10 @@ fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAp
     cx.executor().advance_clock(REFRESH_DEBOUNCE);
     cx.run_until_parked();
 
-    // 第二轮：行序变为 [根, dst, dst/a.txt, dst/b.txt]（目录子项紧随目录）；
-    // 点选两个已移入文件再多选，拖回根目录行（行 0），不得受首轮状态残留影响。
+    // 拖拽成功后保持目标目录折叠；显式展开后再选两个已移入文件。
+    cx.simulate_click(point(px(10.), row_y(1)), Modifiers::default());
+    cx.run_until_parked();
+    // 第二轮行序为 [根, dst, dst/a.txt, dst/b.txt]，拖回根目录行（行 0）。
     cx.simulate_click(point(px(10.), row_y(2)), Modifiers::default());
     cx.simulate_click(point(px(10.), row_y(3)), secondary);
     cx.run_until_parked();
@@ -3117,7 +3174,7 @@ fn drag_directory_into_its_own_subtree_is_rejected(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn drag_hovering_folded_directory_expands_it_after_delay(cx: &mut TestAppContext) {
+fn drag_hover_expansion_is_temporary_after_cancel_and_drop(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (_temp, project, _root, _file_a, _file_b, target) = paste_project(cx);
     let project_for_move = project.clone();
@@ -3154,7 +3211,10 @@ fn drag_hovering_folded_directory_expands_it_after_delay(cx: &mut TestAppContext
     );
     cx.run_until_parked();
     assert!(
-        cx.read_entity(&tree, |tree, _| tree.hover_expand_task.is_some()),
+        cx.read_entity(&tree, |tree, _| tree
+            .drag_session
+            .as_ref()
+            .is_some_and(|session| session.hover_expand_task.is_some())),
         "悬停折叠目录行应调度展开计时器"
     );
 
@@ -3168,16 +3228,86 @@ fn drag_hovering_folded_directory_expands_it_after_delay(cx: &mut TestAppContext
         );
     });
 
-    // 到点：自动展开且计时器清理。
+    // 到点：只在拖拽会话内临时展开，计时器清理。
     cx.executor().advance_clock(HOVER_EXPAND_DELAY / 2);
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
         assert!(
-            tree.state.borrow().expanded.contains(&abs(target.clone())),
-            "悬停约 500ms 后折叠目录应自动展开"
+            tree.drag_session
+                .as_ref()
+                .is_some_and(|session| session.temporary_expanded.contains(&abs(target.clone()))),
+            "悬停约 500ms 后目录应在会话中临时展开"
         );
-        assert!(tree.hover_expand_task.is_none(), "到期后计时器应清理");
-        assert!(tree.drag_hover_path.is_none(), "到期后悬停记录应清理");
+        assert!(!tree.state.borrow().expanded.contains(&abs(target.clone())));
+        assert!(
+            tree.drag_session
+                .as_ref()
+                .is_some_and(|session| session.hover_expand_task.is_none())
+        );
+        assert!(
+            tree.drag_session
+                .as_ref()
+                .is_some_and(|session| session.hovered_directory.is_none())
+        );
+    });
+    cx.simulate_mouse_move(
+        point(px(10.), row_y(2)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        point(px(10.), row_y(2)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.read_entity(&tree, |tree, _| {
+        assert!(tree.drag_session.is_none());
+        assert!(!tree.state.borrow().expanded.contains(&abs(target.clone())));
+        assert!(
+            tree.state
+                .borrow()
+                .rows
+                .iter()
+                .any(|row| row.path == abs(target.clone()) && !row.expanded)
+        );
+    });
+
+    // 再次拖到同一目录，悬停展开后成功放下，也应恢复用户的折叠意图。
+    cx.simulate_mouse_down(
+        point(px(10.), row_y(2)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        point(px(14.), row_y(2)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        point(px(10.), row_y(1)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.executor().advance_clock(HOVER_EXPAND_DELAY);
+    cx.run_until_parked();
+    cx.simulate_mouse_up(
+        point(px(10.), row_y(1)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    assert!(target.join("a.txt").is_file());
+    cx.read_entity(&tree, |tree, _| {
+        assert!(tree.drag_session.is_none());
+        assert!(!tree.state.borrow().expanded.contains(&abs(target.clone())));
+        assert!(
+            tree.state
+                .borrow()
+                .rows
+                .iter()
+                .any(|row| row.path == abs(target.clone()) && !row.expanded)
+        );
     });
 }
 
@@ -3464,7 +3594,10 @@ fn drag_moving_to_blank_area_cancels_hover_expand(cx: &mut TestAppContext) {
     );
     cx.run_until_parked();
     assert!(
-        cx.read_entity(&tree, |tree, _| tree.hover_expand_task.is_some()),
+        cx.read_entity(&tree, |tree, _| tree
+            .drag_session
+            .as_ref()
+            .is_some_and(|session| session.hover_expand_task.is_some())),
         "悬停折叠目录行应调度展开计时器"
     );
 
@@ -3477,10 +3610,17 @@ fn drag_moving_to_blank_area_cancels_hover_expand(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
         assert!(
-            tree.hover_expand_task.is_none(),
+            tree.drag_session
+                .as_ref()
+                .is_some_and(|session| session.hover_expand_task.is_none()),
             "移到空白应清掉悬停展开计时"
         );
-        assert!(tree.drag_hover_path.is_none(), "移到空白应清掉悬停记录");
+        assert!(
+            tree.drag_session
+                .as_ref()
+                .is_some_and(|session| session.hovered_directory.is_none()),
+            "移到空白应清掉悬停记录"
+        );
     });
 
     // 越过延迟后：折叠目录不被展开。

@@ -145,9 +145,29 @@ fn dropping_on_any_dragged_row_has_no_target() {
         marked_selections: vec![directory.clone(), file.clone()].into(),
         preview_name: "dst".into(),
     };
-    assert_eq!(internal_drop_target_dir(&drag, &directory, true), None);
-    assert_eq!(internal_drop_target_dir(&drag, &file, false), None);
-    assert_eq!(internal_drop_target_dir(&drag, &root, true), Some(root));
+    assert!(resolve_internal_drop(&drag, &directory, true, std::slice::from_ref(&root)).is_none());
+    assert!(resolve_internal_drop(&drag, &file, false, std::slice::from_ref(&root)).is_none());
+    // 根目录也不是有效目标：两项都已位于根目录。
+    assert!(resolve_internal_drop(&drag, &root, true, std::slice::from_ref(&root)).is_none());
+}
+
+#[test]
+fn drop_candidate_uses_the_same_project_selection_as_file_actions() {
+    let first_root = abs("/first");
+    let second_root = abs("/second");
+    let directory = abs(first_root.join("src"));
+    let nested = abs(directory.join("main.rs"));
+    let outside = abs("/outside/file.txt");
+    let target = abs(second_root.join("dst"));
+    let drag = TreeDrag {
+        active_selection: directory.clone(),
+        marked_selections: vec![directory.clone(), nested, outside, first_root.clone()].into(),
+        preview_name: "src".into(),
+    };
+    let candidate = resolve_internal_drop(&drag, &target, true, &[first_root, second_root])
+        .expect("另一项目根下的目录应可作为目标");
+    assert_eq!(candidate.target_dir, target);
+    assert_eq!(candidate.sources, vec![directory]);
 }
 
 #[test]

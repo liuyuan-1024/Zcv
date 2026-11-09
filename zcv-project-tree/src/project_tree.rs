@@ -8,6 +8,7 @@
 
 use std::{
     cell::RefCell,
+    collections::HashSet,
     path::{Path, PathBuf},
     rc::Rc,
     time::Duration,
@@ -61,7 +62,7 @@ mod render;
 mod transfer;
 
 use context_menu::DeployedContextMenu;
-use drag::TreeDrag;
+use drag::{DragSession, TreeDrag};
 use editing::EditState;
 use item::ProjectTreeRow;
 use render::{ProjectTreeRenderContext, render_blank_area, render_empty_state, render_list};
@@ -129,8 +130,6 @@ pub struct ProjectTreePanel {
     /// 按下时暂存的点击动作意图（行路径, 动作）：click（mouse_up 未拖拽）派发时消费执行打开/展开；
     /// 拖拽消费了 click 时意图残留，由下次按下清除。
     pending_click_intent: Option<(AbsolutePathBuf, RowClickAction)>,
-    /// 冲突会话期间暂存的非冲突项：决策完成后与冲突项合成完整执行清单。
-    pending_clean_items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
     /// 复制进度（已完成数, 总数)：进度条数据源，None 时不渲染。
     active_transfer: Option<(usize, usize)>,
     /// 当前打开的右键菜单会话；右键部署时创建，
@@ -157,11 +156,8 @@ pub struct ProjectTreePanel {
     /// 拖拽多选载荷是选中集按可见行序派生的快照；行模型替换或选中集变化时重建。
     drag_marked: Rc<[AbsolutePathBuf]>,
     drag_marked_generation: Option<u64>,
-    /// 拖拽悬停展开计时：悬停折叠目录行约 500ms 自动展开；
-    /// 悬停目标变化/放下/取消时 take 置空（Task drop 即取消）。
-    hover_expand_task: Option<Task<()>>,
-    /// 当前拖拽悬停的目录行路径：到期任务校验悬停未移开的依据。
-    drag_hover_path: Option<AbsolutePathBuf>,
+    /// 树内拖拽会话拥有悬停计时与临时展开投影。
+    drag_session: Option<DragSession>,
     /// 拖拽悬停在面板边缘期间持续滚动；内部与外部拖拽共用。
     drag_scroll_task: Option<Task<()>>,
     /// 当前指针位置决定的每帧滚动量；拖拽移动只更新此值，不重建任务。
@@ -169,6 +165,24 @@ pub struct ProjectTreePanel {
 }
 
 impl ProjectTreePanel {
+    fn visible_expanded(&self) -> HashSet<AbsolutePathBuf> {
+        let mut expanded = self.state.borrow().expanded.clone();
+        if let Some(session) = &self.drag_session {
+            expanded.extend(session.temporary_expanded.iter().cloned());
+        }
+        expanded
+    }
+
+    fn finish_drag_session(&mut self, cx: &mut Context<Self>) {
+        self.stop_drag_scroll();
+        if let Some(mut session) = self.drag_session.take() {
+            session.clear_hover();
+            if !session.temporary_expanded.is_empty() {
+                self.rebuild_rows(cx);
+            }
+        }
+    }
+
     pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let menu_host = PopoverHost::new(focus.clone(), PopoverLayer::default());
@@ -220,7 +234,6 @@ impl ProjectTreePanel {
             clipboard: None,
             conflict: None,
             pending_click_intent: None,
-            pending_clean_items: Vec::new(),
             active_transfer: None,
             context_menu: None,
             menu_host,
@@ -234,8 +247,7 @@ impl ProjectTreePanel {
             row_snapshot: Vec::new().into(),
             drag_marked: Vec::new().into(),
             drag_marked_generation: None,
-            hover_expand_task: None,
-            drag_hover_path: None,
+            drag_session: None,
             drag_scroll_task: None,
             drag_scroll_step: Pixels::ZERO,
         };
@@ -253,7 +265,7 @@ impl ProjectTreePanel {
             self.row_snapshot = Vec::new().into();
             return;
         }
-        let expanded = self.state.borrow().expanded.clone();
+        let expanded = self.visible_expanded();
         self.pending_rebuild = Some(cx.spawn(async move |this, cx| {
             // 收集任务需在 UI 线程创建（读取 Project 实体），完成后回 UI 线程应用。
             let Ok(collect) = this.update(cx, |panel, cx| {
@@ -280,7 +292,7 @@ impl ProjectTreePanel {
         if self.roots.is_empty() {
             return;
         }
-        let expanded = self.state.borrow().expanded.clone();
+        let expanded = self.visible_expanded();
         let rows: Vec<ProjectTreeRow> = rows
             .into_iter()
             .map(|(entry, status)| {
@@ -737,8 +749,8 @@ impl ProjectTreePanel {
 impl gpui::Render for ProjectTreePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         if !cx.has_active_drag() {
+            self.finish_drag_session(cx);
             self.stop_drag_scroll();
-            self.reset_drag_hover();
         }
         let typography = typography_for_window(window, cx);
         if self.name_edit_focus_subscription.is_none() {
@@ -765,6 +777,7 @@ impl gpui::Render for ProjectTreePanel {
                 let render_context = ProjectTreeRenderContext {
                     state: Rc::clone(&self.state),
                     rows: display_rows,
+                    roots: self.roots.clone().into(),
                     focus: self.focus.clone(),
                     weak: cx.weak_entity(),
                     edit_state: self.edit_state.clone(),
@@ -789,6 +802,7 @@ impl gpui::Render for ProjectTreePanel {
                     ))
                     .child(render_blank_area(
                         root,
+                        self.roots.clone().into(),
                         cx.weak_entity(),
                         self.focus.clone(),
                     ))
@@ -906,10 +920,7 @@ impl gpui::Render for ProjectTreePanel {
                     if cx.has_active_drag()
                         && let Some(tree) = weak.upgrade()
                     {
-                        tree.update(cx, |tree, _| {
-                            tree.stop_drag_scroll();
-                            tree.reset_drag_hover();
-                        });
+                        tree.update(cx, |tree, cx| tree.finish_drag_session(cx));
                     }
                 }
             })

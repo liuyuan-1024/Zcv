@@ -13,10 +13,10 @@ use zcv_ui::ConfirmAnswer;
 
 use super::{
     ProjectTreePanel,
-    drag::{TreeDrag, filter_movable_sources, internal_drop_target_dir},
+    drag::{TreeDrag, resolve_internal_drop},
     transfer::{
-        ConflictDecision, ConflictSession, TransferMode, TreeClipboard, paste_target_dir,
-        sanitize_selection,
+        ConflictDecision, ConflictSession, TransferMode, TransferOrigin, TransferRequest,
+        TreeClipboard, paste_target_dir, sanitize_selection,
     },
 };
 
@@ -172,14 +172,28 @@ impl ProjectTreePanel {
         else {
             return;
         };
+        if external.is_some() || self.clipboard.is_some() {
+            // 粘贴主动展示结果；拖拽与传输层不修改用户的目录展开意图。
+            if self.state.borrow_mut().expanded.insert(target_dir.clone()) {
+                self.rebuild_rows(cx);
+            }
+        }
         if let Some(paths) = external {
-            self.import_external_paths(&paths, target_dir, cx);
+            self.import_external_paths(&paths, target_dir, TransferOrigin::Paste, cx);
         } else if let Some(clipboard) = self.clipboard.clone() {
             let mode = match &clipboard {
                 TreeClipboard::Copied(_) => TransferMode::Copy,
                 TreeClipboard::Cut(_) => TransferMode::Move,
             };
-            self.begin_transfer(mode, target_dir, clipboard.paths().to_vec(), cx);
+            self.begin_transfer(
+                TransferRequest {
+                    mode,
+                    origin: TransferOrigin::Paste,
+                    target_dir,
+                    sources: clipboard.paths().to_vec(),
+                },
+                cx,
+            );
         }
     }
 
@@ -187,6 +201,7 @@ impl ProjectTreePanel {
         &mut self,
         paths: &ExternalPaths,
         target_dir: AbsolutePathBuf,
+        origin: TransferOrigin,
         cx: &mut Context<Self>,
     ) {
         if self.edit_state.is_some() || self.conflict.is_some() || self.active_transfer.is_some() {
@@ -207,42 +222,39 @@ impl ProjectTreePanel {
                 return;
             }
         };
-        self.begin_transfer(TransferMode::CopyExternal, target_dir, sources, cx);
+        self.begin_transfer(
+            TransferRequest {
+                mode: TransferMode::CopyExternal,
+                origin,
+                target_dir,
+                sources,
+            },
+            cx,
+        );
     }
 
-    pub(super) fn begin_transfer(
-        &mut self,
-        mode: TransferMode,
-        target_dir: AbsolutePathBuf,
-        sources: Vec<AbsolutePathBuf>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn begin_transfer(&mut self, request: TransferRequest, cx: &mut Context<Self>) {
         // 双保险：拖拽放下与冲突决策完成后也经此入口，传输进行中一律拒绝，避免双任务并发写同一目标与进度竞态。
         if self.active_transfer.is_some() {
             return;
         }
-        // 展开目标目录：传输产生的新条目在刷新后立即可见。
-        self.state.borrow_mut().expanded.insert(target_dir.clone());
         // 目标与源相同（落回原目录）的项为无操作，静默剔除。
-        let items: Vec<(AbsolutePathBuf, AbsolutePathBuf)> = sources
-            .iter()
-            .filter_map(|source| {
-                let name = source.file_name()?;
-                let dest = AbsolutePathBuf::new(target_dir.join(name)).ok()?;
-                (dest != *source).then(|| (source.clone(), dest))
-            })
-            .collect();
-        if items.is_empty() {
+        let plan = request.prepare();
+        if plan.items.is_empty() {
             return;
         }
         // 冲突预检：目标已存在的项进入会话，其余为非冲突项。
         let (conflicts, clean): (Vec<_>, Vec<_>) =
-            items.into_iter().partition(|(_, dest)| dest.exists());
+            plan.items.into_iter().partition(|(_, dest)| dest.exists());
         if conflicts.is_empty() {
-            self.execute_transfer(mode, clean, &HashSet::new(), cx);
+            self.execute_transfer(plan.mode, plan.origin, clean, &HashSet::new(), cx);
         } else {
-            self.pending_clean_items = clean;
-            self.conflict = Some(ConflictSession::new(mode, target_dir, conflicts));
+            self.conflict = Some(ConflictSession::new(
+                plan.mode,
+                plan.origin,
+                clean,
+                conflicts,
+            ));
             cx.notify();
         }
     }
@@ -254,22 +266,23 @@ impl ProjectTreePanel {
         row_is_dir: bool,
         cx: &mut Context<Self>,
     ) {
-        self.stop_drag_scroll();
-        self.reset_drag_hover();
+        self.finish_drag_session(cx);
         if self.edit_state.is_some() || self.conflict.is_some() {
             return;
         }
-        let Some(target_dir) = internal_drop_target_dir(dragged, row_path, row_is_dir) else {
+        let Some(candidate) = resolve_internal_drop(dragged, row_path, row_is_dir, &self.roots)
+        else {
             return;
         };
-        // 放下信任渲染期冻结的载荷：拖拽内容恒等于发起时所见选区，拖拽期间选区如何变化都不影响移动清单；
-        // 净化（排除根与项目外路径、祖先后代重叠）在此处与剪切粘贴共用同一套规则（sanitize_selection），过期路径由 execute_move 的存在性检查兜底。
-        let items = sanitize_selection(dragged.items(), &self.roots);
-        let sources = filter_movable_sources(&items, &target_dir);
-        if sources.is_empty() {
-            return;
-        }
-        self.begin_transfer(TransferMode::Move, target_dir, sources, cx);
+        self.begin_transfer(
+            TransferRequest {
+                mode: TransferMode::Move,
+                origin: TransferOrigin::InternalDrag,
+                target_dir: candidate.target_dir,
+                sources: candidate.sources,
+            },
+            cx,
+        );
     }
 
     pub(super) fn handle_drag_hover(
@@ -279,19 +292,26 @@ impl ProjectTreePanel {
         expanded: bool,
         cx: &mut Context<Self>,
     ) {
-        if is_dir && !expanded {
-            if self.drag_hover_path.as_ref() == Some(&path) {
+        let Some(session) = self.drag_session.as_mut() else {
+            return;
+        };
+        let droppable =
+            resolve_internal_drop(&session.dragged, &path, is_dir, &self.roots).is_some();
+        if is_dir && !expanded && droppable {
+            if session.hovered_directory.as_ref() == Some(&path) {
                 return;
             }
-            self.drag_hover_path = Some(path.clone());
+            session.clear_hover();
+            session.hovered_directory = Some(path.clone());
             let timer = cx.background_executor().timer(HOVER_EXPAND_DELAY);
-            self.hover_expand_task = Some(cx.spawn(async move |this, cx| {
+            session.hover_expand_task = Some(cx.spawn(async move |this, cx| {
                 timer.await;
                 let _ = this.update(cx, |tree, cx| {
-                    // 到期校验悬停记录仍有效：移开/放下/取消都会先清掉该字段。
-                    if tree.drag_hover_path.as_ref() == Some(&path) {
-                        tree.reset_drag_hover();
-                        tree.state.borrow_mut().expanded.insert(path.clone());
+                    if let Some(session) = tree.drag_session.as_mut()
+                        && session.hovered_directory.as_ref() == Some(&path)
+                    {
+                        session.clear_hover();
+                        session.temporary_expanded.insert(path.clone());
                         tree.rebuild_rows(cx);
                     }
                 });
@@ -302,8 +322,9 @@ impl ProjectTreePanel {
     }
 
     pub(super) fn reset_drag_hover(&mut self) {
-        self.drag_hover_path = None;
-        self.hover_expand_task = None;
+        if let Some(session) = self.drag_session.as_mut() {
+            session.clear_hover();
+        }
     }
 
     pub(super) fn handle_tree_cancel_conflict(
@@ -313,7 +334,6 @@ impl ProjectTreePanel {
         cx: &mut Context<Self>,
     ) {
         if self.conflict.take().is_some() {
-            self.pending_clean_items.clear();
             cx.notify();
         }
     }
@@ -334,20 +354,15 @@ impl ProjectTreePanel {
             ConfirmAnswer::Confirm => session.record_decision(ConflictDecision::Overwrite),
             ConfirmAnswer::Skip => session.record_decision(ConflictDecision::Skip),
             ConfirmAnswer::Cancel => {
-                self.pending_clean_items.clear();
                 cx.notify();
                 return;
             }
         }
         if session.is_resolved() {
             let mode = session.mode;
-            // 会话可能跨多次渲染：执行前重展开目标目录（幂等），确保新条目可见。
-            self.state
-                .borrow_mut()
-                .expanded
-                .insert(session.target_dir.clone());
-            let mut items = std::mem::take(&mut self.pending_clean_items);
+            let origin = session.origin;
             let decisions = session.decisions().to_vec();
+            let mut items = session.clean_items;
             let mut overwrite_set: HashSet<AbsolutePathBuf> = HashSet::new();
             for ((source, dest), decision) in session.items.into_iter().zip(decisions) {
                 if decision == ConflictDecision::Overwrite {
@@ -355,7 +370,7 @@ impl ProjectTreePanel {
                     items.push((source, dest));
                 }
             }
-            self.execute_transfer(mode, items, &overwrite_set, cx);
+            self.execute_transfer(mode, origin, items, &overwrite_set, cx);
         } else {
             self.conflict = Some(session);
             cx.notify();
@@ -365,6 +380,7 @@ impl ProjectTreePanel {
     pub(super) fn execute_transfer(
         &mut self,
         mode: TransferMode,
+        origin: TransferOrigin,
         items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
         overwrite_set: &HashSet<AbsolutePathBuf>,
         cx: &mut Context<Self>,
@@ -373,15 +389,16 @@ impl ProjectTreePanel {
             return;
         }
         match mode {
-            TransferMode::Move => self.execute_move(items, overwrite_set, cx),
+            TransferMode::Move => self.execute_move(origin, items, overwrite_set, cx),
             TransferMode::Copy | TransferMode::CopyExternal => {
-                self.execute_copy(mode, items, overwrite_set, cx)
+                self.execute_copy(mode, origin, items, overwrite_set, cx)
             }
         }
     }
 
     pub(super) fn execute_move(
         &mut self,
+        origin: TransferOrigin,
         items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
         overwrite_set: &HashSet<AbsolutePathBuf>,
         cx: &mut Context<Self>,
@@ -417,29 +434,61 @@ impl ProjectTreePanel {
             self.rebuild_rows(cx);
             // 剪切降级为复制（首次粘贴后剪贴板项可再次粘贴）；
             // 全部失败时保持剪切可重试。
-            self.clipboard = self.clipboard.take().map(TreeClipboard::into_copied);
-        }
-        // 游标收拢：apply_rename 已迁移 selected；selected 未落在任何成功目标（含其子路径）时指向首个成功目标。
-        // 移动完成一律回到单选态：迁移后的旧多选集合若残留，下一轮「点选 + cmd 点击」会命中集合变成 toggle 移除，多选拖拽随之间歇性退化为单项（首次拖放后的状态残留）。
-        {
-            let mut state = self.state.borrow_mut();
-            let selected_in_moved = state.selected.as_ref().is_some_and(|selected| {
-                moved
-                    .iter()
-                    .any(|(_, to)| selected.starts_with(to.as_path()))
-            });
-            if !selected_in_moved && let Some((_, first_dest)) = moved.first() {
-                state.selected = Some(first_dest.clone());
+            if origin == TransferOrigin::Paste {
+                self.clipboard = self.clipboard.take().map(TreeClipboard::into_copied);
             }
-            state.clear_selected_set();
-            state.anchor = state.selected.clone();
         }
+        self.present_transfer_result(
+            origin,
+            moved
+                .into_iter()
+                .map(|(_, dest)| dest)
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
         cx.notify();
+    }
+
+    fn present_transfer_result(
+        &mut self,
+        origin: TransferOrigin,
+        destinations: &[AbsolutePathBuf],
+    ) {
+        let Some(first) = destinations.first() else {
+            return;
+        };
+        if origin == TransferOrigin::ExternalDrop {
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        let selected = if origin == TransferOrigin::InternalDrag {
+            state
+                .selected
+                .as_ref()
+                .filter(|selected| {
+                    destinations
+                        .iter()
+                        .any(|dest| selected.starts_with(dest.as_path()))
+                })
+                .cloned()
+                .unwrap_or_else(|| first.clone())
+        } else {
+            first.clone()
+        };
+        let target = selected.parent().map(|parent| {
+            AbsolutePathBuf::new(parent.to_path_buf()).expect("目标目录必须为绝对路径")
+        });
+        let selected = match target {
+            Some(parent) if !state.expanded.contains(&parent) => parent,
+            _ => selected,
+        };
+        state.select(selected);
     }
 
     pub(super) fn execute_copy(
         &mut self,
         mode: TransferMode,
+        origin: TransferOrigin,
         items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
         overwrite_set: &HashSet<AbsolutePathBuf>,
         cx: &mut Context<Self>,
@@ -498,9 +547,7 @@ impl ProjectTreePanel {
             // 全部完成：清进度并选中首个成功目标（select 重置多选集合，回到单选态）。
             let _ = this.update(cx, |tree, cx| {
                 tree.active_transfer = None;
-                if let Some(first) = succeeded.first() {
-                    tree.state.borrow_mut().select(first.clone());
-                }
+                tree.present_transfer_result(origin, &succeeded);
                 cx.notify();
             });
         })

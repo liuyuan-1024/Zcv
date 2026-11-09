@@ -949,7 +949,6 @@ fn new_directories_expand_by_default_while_manually_collapsed_stay(cx: &mut Test
         .into_path_buf();
     cx.update_entity(&panel, |panel, cx| {
         let key = (GitSection::Unstaged, absolute(canonical_root.join("src")));
-        panel.collapsed_dirs.insert(key.1.clone());
         panel.state.borrow_mut().expanded.remove(&key);
         panel.rebuild_rows(cx);
     });
@@ -983,7 +982,7 @@ fn new_directories_expand_by_default_while_manually_collapsed_stay(cx: &mut Test
 }
 
 #[gpui::test]
-fn staging_a_collapsed_directory_preserves_its_state(cx: &mut TestAppContext) {
+fn staging_a_collapsed_directory_opens_new_section_by_default(cx: &mut TestAppContext) {
     init_test_context(cx);
     let (root, _temp) = test_repo();
     fs::create_dir_all(root.join("src")).expect("应创建目录");
@@ -999,7 +998,6 @@ fn staging_a_collapsed_directory_preserves_its_state(cx: &mut TestAppContext) {
     let directory = absolute(root.join("src"));
     cx.update_entity(&panel, |panel, cx| {
         let key = (GitSection::Unstaged, directory.clone());
-        panel.collapsed_dirs.insert(key.1.clone());
         panel.state.borrow_mut().expanded.remove(&key);
         panel.rebuild_rows(cx);
         panel.toggle_staged_for(GitSection::Unstaged, &directory, cx);
@@ -1010,8 +1008,8 @@ fn staging_a_collapsed_directory_preserves_its_state(cx: &mut TestAppContext) {
     let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
     assert!(entries.contains(&(GitSection::Staged, "src".into())));
     assert!(
-        !entries.contains(&(GitSection::Staged, "a.txt".into())),
-        "暂存后目录仍应折叠"
+        entries.contains(&(GitSection::Staged, "a.txt".into())),
+        "目标分区中新出现的目录应默认展开"
     );
 
     cx.update_entity(&panel, |panel, cx| {
@@ -1022,9 +1020,59 @@ fn staging_a_collapsed_directory_preserves_its_state(cx: &mut TestAppContext) {
     let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
     assert!(entries.contains(&(GitSection::Unstaged, "src".into())));
     assert!(
-        !entries.contains(&(GitSection::Unstaged, "a.txt".into())),
-        "取消暂存后目录仍应折叠"
+        entries.contains(&(GitSection::Unstaged, "a.txt".into())),
+        "源分区目录消失后再次出现应默认展开"
     );
+}
+
+#[gpui::test]
+fn same_directory_in_staged_and_unstaged_expands_independently(cx: &mut TestAppContext) {
+    init_test_context(cx);
+    let (root, _temp) = test_repo();
+    fs::create_dir_all(root.join("src")).expect("应创建目录");
+    fs::write(root.join("src/a.txt"), "已暂存内容\n").expect("应写入文件");
+    run_in(&root, &["git", "add", "src/a.txt"]);
+    fs::write(root.join("src/a.txt"), "已暂存内容\n未暂存内容\n").expect("应修改文件");
+
+    let project = test_project(root.clone(), cx);
+    let (panel, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
+    cx.run_until_parked();
+
+    let root = AbsolutePathBuf::canonicalize(&root)
+        .expect("仓库根应可规范化")
+        .into_path_buf();
+    let staged = (GitSection::Staged, absolute(root.join("src")));
+    let unstaged = (GitSection::Unstaged, staged.1.clone());
+    cx.update(|window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.state.borrow_mut().select(unstaged.clone());
+            panel.activate_selected(true, window, cx);
+        });
+    });
+    let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+    assert!(entries.contains(&(GitSection::Staged, "a.txt".into())));
+    assert!(!entries.contains(&(GitSection::Unstaged, "a.txt".into())));
+
+    cx.update(|window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.state.borrow_mut().select(staged.clone());
+            panel.activate_selected(true, window, cx);
+        });
+    });
+    let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+    assert!(!entries.contains(&(GitSection::Staged, "a.txt".into())));
+    assert!(!entries.contains(&(GitSection::Unstaged, "a.txt".into())));
+
+    cx.update(|window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.state.borrow_mut().select(unstaged.clone());
+            panel.activate_selected(true, window, cx);
+        });
+    });
+    let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+    assert!(!entries.contains(&(GitSection::Staged, "a.txt".into())));
+    assert!(entries.contains(&(GitSection::Unstaged, "a.txt".into())));
 }
 
 #[gpui::test]

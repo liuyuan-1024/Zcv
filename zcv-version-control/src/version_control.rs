@@ -307,7 +307,7 @@ fn flatten_nodes(
     }
 }
 
-/// 收集所有分组树中的目录节点键（(分组, 绝对路径)），供默认全展开使用。
+/// 收集所有分组树中的目录节点键（分组、绝对路径）。
 fn collect_directory_keys(
     trees: &GitSections<Vec<GitTreeNode>>,
 ) -> HashSet<(GitSection, AbsolutePathBuf)> {
@@ -331,14 +331,6 @@ fn collect_dirs(
     }
 }
 
-/// 路径所属的仓库工作目录（最长前缀匹配）。
-fn owning_workdir<'a>(workdirs: &'a [AbsolutePathBuf], path: &Path) -> Option<&'a AbsolutePathBuf> {
-    workdirs
-        .iter()
-        .filter(|workdir| path.starts_with(workdir.as_path()))
-        .max_by_key(|workdir| workdir.as_path().components().count())
-}
-
 // ═══ Entity ═══════════════════════════════════════════════════════
 
 pub struct VersionControlPanel {
@@ -346,8 +338,8 @@ pub struct VersionControlPanel {
     focus_listeners_initialized: bool,
     project: Entity<Project>,
     state: Rc<RefCell<TreeState<(GitSection, AbsolutePathBuf), GitRow>>>,
-    /// 用户显式折叠的目录路径；暂存状态变化只改变分组，不改变目录的展开状态。
-    collapsed_dirs: HashSet<AbsolutePathBuf>,
+    /// 上次重建时存在的目录键，用于区分新目录与已折叠目录。
+    directory_keys: HashSet<(GitSection, AbsolutePathBuf)>,
     /// 折叠的分区（点击分区标题行首 chevron 切换；折叠时该分区条目不渲染）。
     collapsed_sections: Rc<RefCell<HashSet<GitSection>>>,
     /// 活动仓库各分组的顶层变更路径；标题行复选框可见性与全选以此为准，不随折叠变化。
@@ -457,7 +449,7 @@ impl VersionControlPanel {
             focus_listeners_initialized: false,
             project,
             state: Rc::new(RefCell::new(TreeState::new(row_entry_key))),
-            collapsed_dirs: HashSet::new(),
+            directory_keys: HashSet::new(),
             collapsed_sections: Rc::new(RefCell::new(HashSet::new())),
             section_paths: GitSections::default(),
             scroll_handle: scroll_handle.clone(),
@@ -574,13 +566,8 @@ impl VersionControlPanel {
                 build_section_trees(store.active_repository_workdir(), store.repositories());
             (all_workdirs, trees)
         };
-        let previous_workdirs: Vec<_> = self.commit_states.keys().cloned().collect();
         self.commit_states
             .retain(|workdir, _| all_workdirs.contains(workdir));
-        self.collapsed_dirs.retain(|path| {
-            owning_workdir(&previous_workdirs, path.as_path())
-                .is_some_and(|owner| all_workdirs.contains(owner))
-        });
         for workdir in &all_workdirs {
             if self.commit_states.contains_key(workdir) {
                 continue;
@@ -616,12 +603,12 @@ impl VersionControlPanel {
                 .collect(),
         };
         let mut state = self.state.borrow_mut();
-        // 展开行只从当前树与目录的折叠意图派生；目录跨分组移动时复用同一路径的状态。
         let directories = collect_directory_keys(&trees);
-        state.expanded = directories
-            .into_iter()
-            .filter(|(_, path)| !self.collapsed_dirs.contains(path))
-            .collect();
+        state.expanded.retain(|key| directories.contains(key));
+        state
+            .expanded
+            .extend(directories.difference(&self.directory_keys).cloned());
+        self.directory_keys = directories;
         let rows = flatten_rows(&trees, &state.expanded, &self.collapsed_sections.borrow());
         state.replace_rows(rows);
         state.ensure_selected();
@@ -675,14 +662,7 @@ impl VersionControlPanel {
         };
         if entry.is_dir {
             let key = (entry.section, entry.path.clone());
-            // 翻转展开标记，并同步"用户显式折叠"记录（决定后续重建是否保持折叠）。
-            let was_expanded = self.state.borrow().expanded.contains(&key);
             self.state.borrow_mut().toggle_expand(&key);
-            if was_expanded {
-                self.collapsed_dirs.insert(entry.path);
-            } else {
-                self.collapsed_dirs.remove(&entry.path);
-            }
             self.rebuild_rows(cx);
         } else if let Some(callback) = self.on_open_file.clone() {
             let kind = ProjectDiffKind::from(entry.section);
@@ -718,10 +698,6 @@ impl VersionControlPanel {
     }
 
     fn handle_collapse(&mut self, _: &Collapse, window: &mut Window, cx: &mut Context<Self>) {
-        // 记录被折叠的目录，使重建后保持折叠（其余目录仍默认展开）。
-        if let Some(key) = self.selected_directory_key(true) {
-            self.collapsed_dirs.insert(key.1);
-        }
         let rebuild = self.state.borrow_mut().collapse_selection();
         if rebuild {
             self.rebuild_rows(cx);
@@ -731,28 +707,12 @@ impl VersionControlPanel {
     }
 
     fn handle_expand(&mut self, _: &Expand, window: &mut Window, cx: &mut Context<Self>) {
-        // 展开的目录解除折叠记录。
-        if let Some(key) = self.selected_directory_key(false) {
-            self.collapsed_dirs.remove(&key.1);
-        }
         let rebuild = self.state.borrow_mut().expand_selection();
         if rebuild {
             self.rebuild_rows(cx);
         }
         self.scroll_to_selection();
         window.refresh();
-    }
-
-    /// 选中行的目录键；`expanded` 为 true 时只取展开中的目录（折叠操作），否则只取折叠的目录（展开操作）。
-    fn selected_directory_key(&self, expanded: bool) -> Option<(GitSection, AbsolutePathBuf)> {
-        let state = self.state.borrow();
-        let idx = state.selected_idx()?;
-        match state.rows.get(idx)? {
-            GitRow::Entry(entry) if entry.is_dir && entry.expanded == expanded => {
-                Some((entry.section, entry.path.clone()))
-            }
-            _ => None,
-        }
     }
 
     fn handle_activate(&mut self, _: &Activate, window: &mut Window, cx: &mut Context<Self>) {

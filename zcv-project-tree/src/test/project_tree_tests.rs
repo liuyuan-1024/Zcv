@@ -455,10 +455,10 @@ fn rename_actions_edit_and_confirm_the_selected_row(cx: &mut TestAppContext) {
     fs::write(&old_path, "content").expect("应创建测试文件");
     let project = test_project(root, cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
+    let project_for_rename = project.clone();
     tree.update(cx, |tree, _| {
-        tree.set_on_rename(Rc::new(|from, to, _| {
-            fs::rename(from, to)?;
-            Ok(())
+        tree.set_on_rename(Rc::new(move |from, to, cx| {
+            project_for_rename.update(cx, |project, cx| project.rename_path(&from, &to, cx))
         }));
         tree.state.borrow_mut().select(abs(old_path.clone()));
     });
@@ -577,15 +577,10 @@ fn one_create_action_infers_nested_files_and_directories_from_the_path(cx: &mut 
     let folder = root.join("assets/icons");
     let project = test_project(root.clone(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
+    let project_for_create = project.clone();
     tree.update(cx, |tree, _| {
-        tree.set_on_create(Rc::new(|path, is_dir, _| {
-            fs::create_dir_all(path.parent().unwrap())?;
-            if is_dir {
-                fs::create_dir(path)?;
-            } else {
-                File::create(path)?;
-            }
-            Ok(())
+        tree.set_on_create(Rc::new(move |path, is_dir, cx| {
+            project_for_create.update(cx, |project, cx| project.create_path(&path, is_dir, cx))
         }));
     });
     // 面板初始行重建异步完成，ensure_selected 才有可选行。
@@ -1485,17 +1480,17 @@ fn trash_action_deletes_multiple_selected_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn scheduled_refresh_coalesces_rapid_entries_changed_events(cx: &mut TestAppContext) {
+fn project_tree_updates_when_worktree_snapshot_changes(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (temp, project, _file_a, _file_b, _file_c) = three_file_project(cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
 
-    // 批量新建文件后连发两次 EntriesChanged（模拟事件风暴）。
+    // 新建条目经 Project 的扫描层进入快照，面板订阅快照变化自行更新。
     let file = abs(temp.path()).into_path_buf().join("new.txt");
-    fs::write(&file, "content").expect("应创建测试文件");
-    tree.update(cx, |tree, cx| tree.schedule_refresh(cx));
-    tree.update(cx, |tree, cx| tree.schedule_refresh(cx));
+    project.update(cx, |project, cx| {
+        project.create_path(&file, false, cx).unwrap()
+    });
     cx.run_until_parked();
 
     let contains_new_file = |cx: &mut TestAppContext| {
@@ -1507,13 +1502,7 @@ fn scheduled_refresh_coalesces_rapid_entries_changed_events(cx: &mut TestAppCont
                 .any(|row| row.path.as_path() == file)
         })
     };
-    // 防抖窗口内未到期：行模型尚未包含新文件。
-    assert!(!contains_new_file(cx), "防抖窗口内不应刷新行模型");
-
-    // 推进 120ms：被覆盖的旧任务作废，只有最新会话执行一次刷新。
-    cx.executor().advance_clock(REFRESH_DEBOUNCE);
-    cx.run_until_parked();
-    assert!(contains_new_file(cx), "到期后应完成一次合并刷新");
+    assert!(contains_new_file(cx), "目录快照变化后应显示新文件");
 }
 
 // ═══ M3：剪贴板、粘贴与冲突确认 ═══════════════════════════
@@ -3110,9 +3099,7 @@ fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAp
         "首轮多选拖拽应移动全部选中项"
     );
 
-    // 模拟文件监听触发的防抖刷新到期：行模型异步重建，选区键随之迁移/剪枝。
-    tree.update(cx, |tree, cx| tree.schedule_refresh(cx));
-    cx.executor().advance_clock(REFRESH_DEBOUNCE);
+    // 目录快照变化会自行重建行模型，选区键随之迁移或剪枝。
     cx.run_until_parked();
 
     // 拖拽成功后保持目标目录折叠；显式展开后再选两个已移入文件。

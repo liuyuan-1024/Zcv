@@ -1317,7 +1317,7 @@ fn fs_events_trigger_incremental_git_status_refresh(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn only_structural_fs_events_request_tree_rebuild(cx: &mut TestAppContext) {
+fn worktree_snapshot_reconciles_changed_events_with_directory_contents(cx: &mut TestAppContext) {
     use std::{cell::Cell, rc::Rc};
 
     cx.set_global(SettingsStore::new(UserSettings::default()));
@@ -1326,6 +1326,10 @@ fn only_structural_fs_events_request_tree_rebuild(cx: &mut TestAppContext) {
     let file = root.join("a.txt");
     fs::write(&file, "x").expect("应创建文件");
     let project = test_project(root.clone(), cx);
+    let root_path = AbsolutePathBuf::canonicalize(&root).unwrap();
+    project.update(cx, |project, cx| {
+        project.request_expanded_directories(HashSet::from([root_path.clone()]), cx);
+    });
     cx.run_until_parked();
 
     let entries_changed = Rc::new(Cell::new(0u32));
@@ -1338,7 +1342,7 @@ fn only_structural_fs_events_request_tree_rebuild(cx: &mut TestAppContext) {
         })
     });
 
-    // 纯内容变化不改变可见行结构：只更新 Git 状态，不请求项目树重建。
+    // 内容事件使目录失效，但核对后条目不变，不发布快照变化。
     fs::write(&file, "y").expect("应修改文件");
     project.update(cx, |project, cx| {
         project.process_fs_events(
@@ -1347,18 +1351,14 @@ fn only_structural_fs_events_request_tree_rebuild(cx: &mut TestAppContext) {
         );
     });
     cx.run_until_parked();
-    assert_eq!(
-        entries_changed.get(),
-        0,
-        "纯内容变化不应触发 EntriesChanged"
-    );
+    assert_eq!(entries_changed.get(), 0, "内容变化不应触发条目快照变化");
 
-    // 新增条目改变可见行结构：请求一次重建。
+    // 创建通知被后续写入覆盖时，Changed 仍须让扫描层发现新条目。
     let new_file = root.join("b.txt");
     fs::write(&new_file, "z").expect("应创建文件");
     project.update(cx, |project, cx| {
         project.process_fs_events(
-            vec![PathEvent::new(new_file, Some(PathEventKind::Created)).unwrap()],
+            vec![PathEvent::new(new_file.clone(), Some(PathEventKind::Changed)).unwrap()],
             cx,
         );
     });
@@ -1366,8 +1366,83 @@ fn only_structural_fs_events_request_tree_rebuild(cx: &mut TestAppContext) {
     assert_eq!(
         entries_changed.get(),
         1,
-        "新增条目应触发一次 EntriesChanged"
+        "Changed 事件也应使新增条目进入快照"
     );
+    let paths = cx.read_entity(&project, |project, _| {
+        project.worktrees[0]
+            .snapshot
+            .visible_entries(&HashSet::from([root_path.clone()]))
+            .into_iter()
+            .map(|entry| entry.path.into_path_buf())
+            .collect::<Vec<_>>()
+    });
+    assert!(paths.contains(&root_path.join("b.txt")));
+
+    let renamed = root.join("c.txt");
+    fs::rename(&new_file, &renamed).unwrap();
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(renamed.clone(), Some(PathEventKind::Changed)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(entries_changed.get(), 2, "重命名后的目录内容应进入快照");
+
+    let child = root.join("d.txt");
+    fs::write(&child, "目录变化通知").unwrap();
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(root.clone(), Some(PathEventKind::Changed)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(entries_changed.get(), 3, "目录 Changed 也应核对其子项");
+
+    fs::remove_file(&renamed).unwrap();
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![PathEvent::new(renamed.clone(), Some(PathEventKind::Removed)).unwrap()],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(entries_changed.get(), 4, "删除后应发布条目快照变化");
+}
+
+#[gpui::test]
+fn changing_scan_exclusions_replaces_cached_directory_contents(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().unwrap();
+    let root = AbsolutePathBuf::canonicalize(directory.path()).unwrap();
+    fs::write(root.join("hidden.txt"), "x").unwrap();
+    let project = test_project(root.as_path().to_path_buf(), cx);
+    let expanded = HashSet::from([root.clone()]);
+    project.update(cx, |project, cx| {
+        project.request_expanded_directories(expanded.clone(), cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.read_entity(&project, |project, _| {
+        project.worktrees[0]
+            .snapshot
+            .visible_entries(&expanded)
+            .iter()
+            .any(|entry| entry.name == "hidden.txt")
+    }));
+
+    project.update(cx, |project, cx| {
+        project.set_exclusions(&["**/hidden.txt".to_string()]);
+        project.request_expanded_directories(expanded.clone(), cx);
+    });
+    cx.run_until_parked();
+    assert!(!cx.read_entity(&project, |project, _| {
+        project.worktrees[0]
+            .snapshot
+            .visible_entries(&expanded)
+            .iter()
+            .any(|entry| entry.name == "hidden.txt")
+    }));
 }
 
 #[gpui::test]

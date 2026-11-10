@@ -154,6 +154,54 @@ fn test_extend_sorted_keeps_entries_after_replaced_path() {
 }
 
 #[test]
+fn coalescing_preserves_structural_and_rescan_hints() {
+    let created = PathEvent::new(
+        test_absolute_path("/root/batch.txt"),
+        Some(PathEventKind::Created),
+    )
+    .unwrap();
+    let mut same_batch = Vec::new();
+    extend_sorted(
+        &mut same_batch,
+        vec![created.clone(), changed("/root/batch.txt")],
+    );
+    assert_eq!(same_batch, vec![created]);
+
+    let mut pending = vec![
+        PathEvent::new(
+            test_absolute_path("/root/new.txt"),
+            Some(PathEventKind::Created),
+        )
+        .unwrap(),
+    ];
+    extend_sorted(&mut pending, vec![changed("/root/new.txt")]);
+    assert_eq!(pending[0].kind, Some(PathEventKind::Created));
+
+    extend_sorted(&mut pending, vec![rescan("/root/new.txt")]);
+    extend_sorted(&mut pending, vec![changed("/root/new.txt")]);
+    assert_eq!(pending[0].kind, Some(PathEventKind::Rescan));
+
+    let mut pending = vec![
+        PathEvent::new(
+            test_absolute_path("/root/replaced.txt"),
+            Some(PathEventKind::Removed),
+        )
+        .unwrap(),
+    ];
+    extend_sorted(
+        &mut pending,
+        vec![
+            PathEvent::new(
+                test_absolute_path("/root/replaced.txt"),
+                Some(PathEventKind::Created),
+            )
+            .unwrap(),
+        ],
+    );
+    assert_eq!(pending[0].kind, Some(PathEventKind::Rescan));
+}
+
+#[test]
 fn test_path_semantics_can_be_queried_for_existing_path() {
     let temp = tempfile::tempdir().unwrap();
     let first = temp.path().join("ZcvCaseProbe");

@@ -1,12 +1,13 @@
 //! Worktree —— 项目目录快照层。
 //!
 //! 职责边界：目录遍历、扫描排除规则、git 仓库发现与路径命名语义住在这一层；
+//! 已加载目录的条目由 Worktree 持有，文件事件使受影响目录失效，后台核对后更新快照。
 //! git 状态与忽略标志由 `Project` 在收集可见行时从 `GitStore` 的不可变快照派生。
-//! 本层只提供静态目录查询（`children`），展开、深度与可见行是项目树视图状态，由 UI 层自行构建。
+//! 展开、深度与选中仍属于项目树视图状态。
 
 use std::{
-    collections::HashSet,
-    fs,
+    collections::{HashMap, HashSet},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -20,7 +21,7 @@ const DOT_GIT: &str = ".git";
 /// 目录快照层的静态条目：由 Worktree 遍历产出，不含展开/深度等视图状态。
 ///
 /// `is_ignored` 由 `Project` 在收集可见行时从 Git 状态快照派生并写入，与条目的 Git 状态色相互独立。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeEntry {
     pub path: AbsolutePathBuf,
     pub name: String,
@@ -28,10 +29,12 @@ pub struct WorktreeEntry {
     pub is_ignored: bool,
 }
 
-/// 项目目录快照层：持有根路径与扫描排除规则，提供静态目录查询。
+/// 项目目录快照层：持有根路径、扫描排除规则和已加载目录的条目。
 pub(crate) struct Worktree {
     root: AbsolutePathBuf,
     filter: TreeFilter,
+    children: HashMap<AbsolutePathBuf, Vec<WorktreeEntry>>,
+    dirty: HashSet<AbsolutePathBuf>,
 }
 
 #[derive(Clone)]
@@ -49,22 +52,122 @@ impl Worktree {
         Self {
             root,
             filter: TreeFilter::new(&[]),
+            children: HashMap::new(),
+            dirty: HashSet::new(),
         }
     }
 
-    /// 更换项目根目录（展开与选中状态由 UI 层重置，本层只换根）。
+    /// 更换项目根目录并清除旧根的条目快照；展开与选中状态由项目树迁移。
     pub(crate) fn set_root(&mut self, root: AbsolutePathBuf) {
         self.root = root;
+        self.children.clear();
+        self.dirty.clear();
     }
 
     /// 更新扫描排除规则（设置变化时由 Project 调用）。
     pub(crate) fn set_exclusions(&mut self, exclusions: &[String]) {
         self.filter = TreeFilter::new(exclusions);
+        self.children.clear();
+        self.dirty.clear();
     }
 
     /// 当前过滤规则的克隆（后台可见行收集任务捕获用）。
     pub(crate) fn filter(&self) -> TreeFilter {
         self.filter.clone()
+    }
+
+    pub(crate) fn directories_to_scan(
+        &self,
+        expanded: &HashSet<AbsolutePathBuf>,
+    ) -> Vec<AbsolutePathBuf> {
+        expanded
+            .iter()
+            .filter(|path| {
+                self.includes_expanded_directory(path)
+                    && (!self.children.contains_key(*path) || self.dirty.contains(*path))
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn expanded_directories_loaded(&self, expanded: &HashSet<AbsolutePathBuf>) -> bool {
+        expanded
+            .iter()
+            .filter(|path| self.includes_expanded_directory(path))
+            .all(|path| self.children.contains_key(path) && !self.dirty.contains(path))
+    }
+
+    fn includes_expanded_directory(&self, path: &AbsolutePathBuf) -> bool {
+        path.strip_prefix(&self.root)
+            .is_ok_and(|relative| !self.filter.is_excluded(relative))
+    }
+
+    pub(crate) fn invalidate(&mut self, path: &Path, recursive: bool) {
+        if recursive {
+            self.dirty.extend(
+                self.children
+                    .keys()
+                    .filter(|directory| directory.starts_with(path))
+                    .cloned(),
+            );
+        }
+        let directory =
+            AbsolutePathBuf::new(path.to_path_buf()).expect("项目内文件事件路径必须是绝对路径");
+        if self.children.contains_key(&directory) {
+            self.dirty.insert(directory);
+        }
+        for parent in path.ancestors().skip(1) {
+            let directory =
+                AbsolutePathBuf::new(parent.to_path_buf()).expect("项目目录祖先必须是绝对路径");
+            if self.children.contains_key(&directory) {
+                self.dirty.insert(directory);
+                break;
+            }
+        }
+    }
+
+    pub(crate) fn mark_scanned_directory_dirty(&mut self, directory: AbsolutePathBuf) {
+        self.dirty.insert(directory);
+    }
+
+    pub(crate) fn scan_failed(&mut self, directory: AbsolutePathBuf) {
+        self.dirty.remove(&directory);
+        self.children.entry(directory).or_default();
+    }
+
+    pub(crate) fn apply_scan(
+        &mut self,
+        directory: AbsolutePathBuf,
+        entries: Vec<WorktreeEntry>,
+    ) -> (bool, bool) {
+        self.dirty.remove(&directory);
+        let previous = self.children.insert(directory.clone(), entries);
+        let current = &self.children[&directory];
+        let changed = previous.as_ref() != Some(current);
+        let existing_changed = previous.is_some() && changed;
+        let removed_directories = previous
+            .into_iter()
+            .flatten()
+            .filter(|old| {
+                old.is_dir
+                    && !current
+                        .iter()
+                        .any(|entry| entry.path == old.path && entry.is_dir)
+            })
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+        for removed in removed_directories {
+            self.children.retain(|path, _| !path.starts_with(&removed));
+            self.dirty.retain(|path| !path.starts_with(&removed));
+        }
+        (changed, existing_changed)
+    }
+
+    pub(crate) fn visible_entries(
+        &self,
+        expanded: &HashSet<AbsolutePathBuf>,
+    ) -> Vec<WorktreeEntry> {
+        collect_visible_entries(&self.root, expanded, &self.children)
     }
 }
 
@@ -131,20 +234,33 @@ impl TreeFilter {
 
 /// 读取 `dir` 的直接子项（纯函数，可在后台线程执行）：目录优先、名称自然排序，扫描排除名单命中即过滤。
 ///
-/// `collect_visible_entries` 逐层递归复用本函数，排序与排除规则天然一致。
-fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<WorktreeEntry> {
-    let mut entries: Vec<_> = match fs::read_dir(dir) {
-        Ok(rd) => rd
-            .filter_map(|entry| {
-                let path = entry.ok()?.path();
-                let is_dir = path.is_dir();
-                Some((path, is_dir))
-            })
-            .collect(),
-        Err(_) => return Vec::new(),
+/// Worktree 后台扫描使用本函数，排序与排除规则天然一致。
+pub(crate) fn children_sorted(
+    dir: &Path,
+    root: &Path,
+    filter: &TreeFilter,
+) -> io::Result<Vec<WorktreeEntry>> {
+    let read_dir = match fs::read_dir(dir) {
+        Ok(read_dir) => read_dir,
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error),
     };
+    let mut entries = read_dir
+        .map(|entry| {
+            let path = entry?.path();
+            let is_dir = path.is_dir();
+            Ok((path, is_dir))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
     entries.sort_by(|a, b| zcv_path::compare_tree_entries((&a.0, a.1), (&b.0, b.1)));
-    entries
+    Ok(entries
         .into_iter()
         .filter_map(|(path, is_dir)| {
             let name = path.file_name()?.to_string_lossy().to_string();
@@ -160,7 +276,7 @@ fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<Worktree
                 is_ignored: false,
             })
         })
-        .collect()
+        .collect())
 }
 
 /// 工作区根集合中路径的所属根；嵌套根命中多个时取最长前缀（最内层根）。
@@ -178,15 +294,14 @@ pub fn owning_workspace_root<'a, R: AsRef<Path> + 'a + ?Sized>(
         .max_by_key(|root| root.as_os_str().len())
 }
 
-/// 收集可见行（纯函数，可在后台线程执行）：根行 + 按 `expanded` 递归展开。
+/// 从已加载条目收集可见行：根行 + 按 `expanded` 递归展开。
 ///
-/// 排序与排除规则与 `Worktree::children` 一致；
-/// 本函数只做静态遍历，Git 状态与忽略标志由 `Project` 在收集任务的同一次后台快照中合并。
+/// 排序与排除规则已在扫描时确定；Git 状态与忽略标志由 `Project` 在收集任务的同一次后台快照中合并。
 /// 展开、深度与选中是视图状态，由 UI 层决定。
 pub(crate) fn collect_visible_entries(
     root: &AbsolutePathBuf,
     expanded: &HashSet<AbsolutePathBuf>,
-    filter: &TreeFilter,
+    children: &HashMap<AbsolutePathBuf, Vec<WorktreeEntry>>,
 ) -> Vec<WorktreeEntry> {
     let root_name = root
         .file_name()
@@ -199,26 +314,25 @@ pub(crate) fn collect_visible_entries(
         is_ignored: false,
     }];
     if expanded.contains(root) {
-        collect_expanded_children(root.as_path(), root.as_path(), expanded, filter, &mut rows);
+        collect_expanded_children(root, expanded, children, &mut rows);
     }
     rows
 }
 
 /// 递归收集目录下已展开的子项（`collect_visible_entries` 的递归体）。
 fn collect_expanded_children(
-    dir: &Path,
-    root: &Path,
+    dir: &AbsolutePathBuf,
     expanded: &HashSet<AbsolutePathBuf>,
-    filter: &TreeFilter,
+    children: &HashMap<AbsolutePathBuf, Vec<WorktreeEntry>>,
     rows: &mut Vec<WorktreeEntry>,
 ) {
-    for entry in children_sorted(dir, root, filter) {
+    for entry in children.get(dir).into_iter().flatten() {
         if entry.is_dir && expanded.contains(&entry.path) {
             let path = entry.path.clone();
-            rows.push(entry);
-            collect_expanded_children(path.as_path(), root, expanded, filter, rows);
+            rows.push(entry.clone());
+            collect_expanded_children(&path, expanded, children, rows);
         } else {
-            rows.push(entry);
+            rows.push(entry.clone());
         }
     }
 }

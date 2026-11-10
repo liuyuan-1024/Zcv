@@ -35,7 +35,7 @@ use super::{
     git_store::{GitStatusSnapshot, GitStore},
     search::{self, SearchResults},
     text_file::{BufferLoadError, BufferSaveError, decode_to_string, write_buffer_to},
-    worktree::{Worktree, WorktreeEntry, WorktreeSearchPlan, collect_visible_entries},
+    worktree::{Worktree, WorktreeEntry, WorktreeSearchPlan, children_sorted},
 };
 
 /// 项目文件监听的合并窗口；对齐 worktree 的 FS_WATCH_LATENCY。
@@ -89,6 +89,14 @@ pub enum ProjectEvent {
         to: PathBuf,
     },
     EntriesChanged,
+    /// 已请求目录的扫描结束，供等待首次加载的面板完成显示投影。
+    WorktreeScanCompleted,
+    DirectoryScanFailed {
+        path: PathBuf,
+        error: String,
+    },
+    /// 磁盘路径可能变化；供直接搜索文件系统的消费方失效缓存。
+    FileSystemChanged,
     FileWatcherError(FileWatcherError),
 }
 
@@ -114,6 +122,11 @@ pub struct Project {
     pending_file_watcher_errors: Vec<FileWatcherError>,
     /// 下一个待分配的根 id；根移除后不复用。
     next_root_id: u64,
+    requested_expanded: HashSet<AbsolutePathBuf>,
+    scan_generation: u64,
+    scan_in_flight: bool,
+    scan_task: Option<Task<()>>,
+    worktree_invalidation_epoch: u64,
 }
 
 struct ProjectWorktree {
@@ -224,6 +237,11 @@ impl Project {
             language_registry: languages,
             pending_file_watcher_errors,
             next_root_id: root_count + 1,
+            requested_expanded: HashSet::new(),
+            scan_generation: 0,
+            scan_in_flight: false,
+            scan_task: None,
+            worktree_invalidation_epoch: 0,
         }
     }
 
@@ -249,6 +267,11 @@ impl Project {
             language_registry: languages,
             pending_file_watcher_errors: Vec::new(),
             next_root_id: 1,
+            requested_expanded: HashSet::new(),
+            scan_generation: 0,
+            scan_in_flight: false,
+            scan_task: None,
+            worktree_invalidation_epoch: 0,
         }
     }
 
@@ -460,6 +483,7 @@ impl Project {
             snapshot,
             watch_registered,
         });
+        self.cancel_worktree_scan();
         if watch_registered {
             let covered_buffers = self
                 .external_buffer_watches
@@ -491,6 +515,7 @@ impl Project {
             .position(|worktree| worktree.root.as_path() == root.as_path())
             .ok_or_else(|| anyhow::anyhow!("项目不在工作区中：{}", root.display()))?;
         let removed = self.worktrees.remove(index);
+        self.cancel_worktree_scan();
         if removed.watch_registered
             && let Err(error) = self.fs_watcher.remove(root.as_path())
         {
@@ -526,15 +551,159 @@ impl Project {
 
     /// 更新目录扫描的排除规则（设置变化时由设置订阅方调用）；新添加的 worktree 沿用同一份名单。
     pub fn set_exclusions(&mut self, exclusions: &[String]) {
+        if self.scan_exclusions == exclusions {
+            return;
+        }
         self.scan_exclusions = exclusions.to_vec();
         for worktree in &mut self.worktrees {
             worktree.snapshot.set_exclusions(exclusions);
         }
+        self.cancel_worktree_scan();
     }
 
-    /// 后台收集当前展开状态下的可见行，并同帧派生每行的 Git 状态。
+    fn cancel_worktree_scan(&mut self) {
+        self.scan_generation += 1;
+        self.scan_in_flight = false;
+        self.scan_task = None;
+    }
+
+    /// 项目树提交当前展开意图；Worktree 只加载尚未缓存或已失效的目录。
+    pub fn request_expanded_directories(
+        &mut self,
+        expanded: HashSet<AbsolutePathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        self.requested_expanded = expanded;
+        self.schedule_worktree_scan(cx);
+    }
+
+    pub fn expanded_directories_loaded(&self, expanded: &HashSet<AbsolutePathBuf>) -> bool {
+        self.worktrees
+            .iter()
+            .all(|worktree| worktree.snapshot.expanded_directories_loaded(expanded))
+    }
+
+    fn schedule_worktree_scan(&mut self, cx: &mut Context<Self>) {
+        if self.scan_in_flight {
+            return;
+        }
+        let plans = self
+            .worktrees
+            .iter()
+            .filter_map(|worktree| {
+                let directories = worktree
+                    .snapshot
+                    .directories_to_scan(&self.requested_expanded);
+                (!directories.is_empty()).then(|| {
+                    (
+                        worktree.id,
+                        worktree.root.clone(),
+                        worktree.snapshot.filter(),
+                        directories,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        if plans.is_empty() {
+            return;
+        }
+        self.scan_in_flight = true;
+        self.scan_generation += 1;
+        let generation = self.scan_generation;
+        let invalidation_epoch = self.worktree_invalidation_epoch;
+        self.scan_task = Some(cx.spawn(
+            move |project: WeakEntity<Self>, asynccx: &mut AsyncApp| {
+                let mut cx = asynccx.clone();
+                async move {
+                    let scans = cx
+                        .background_executor()
+                        .spawn(async move {
+                            plans
+                                .into_iter()
+                                .flat_map(|(id, root, filter, directories)| {
+                                    directories
+                                        .into_iter()
+                                        .map(move |directory| {
+                                            let entries = children_sorted(
+                                                directory.as_path(),
+                                                root.as_path(),
+                                                &filter,
+                                            );
+                                            (id, directory, entries)
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .await;
+                    let _ = project.update(&mut cx, |project, cx| {
+                        if generation != project.scan_generation {
+                            return;
+                        }
+                        project.scan_in_flight = false;
+                        let rescan = invalidation_epoch != project.worktree_invalidation_epoch;
+                        let mut changed = false;
+                        let mut existing_changed = false;
+                        for (id, directory, entries) in scans {
+                            if let Some(worktree) =
+                                project.worktrees.iter_mut().find(|tree| tree.id == id)
+                            {
+                                let entries = match entries {
+                                    Ok(entries) => entries,
+                                    Err(error) => {
+                                        worktree.snapshot.scan_failed(directory.clone());
+                                        cx.emit(ProjectEvent::DirectoryScanFailed {
+                                            path: directory.into_path_buf(),
+                                            error: error.to_string(),
+                                        });
+                                        continue;
+                                    }
+                                };
+                                let (entry_changed, prior_changed) =
+                                    worktree.snapshot.apply_scan(directory.clone(), entries);
+                                if rescan {
+                                    worktree.snapshot.mark_scanned_directory_dirty(directory);
+                                }
+                                changed |= entry_changed;
+                                existing_changed |= prior_changed;
+                            }
+                        }
+                        if changed {
+                            if existing_changed {
+                                project
+                                    .git_store
+                                    .update(cx, |store, cx| store.schedule_scan(cx));
+                            }
+                            cx.emit(ProjectEvent::EntriesChanged);
+                        } else {
+                            cx.emit(ProjectEvent::WorktreeScanCompleted);
+                        }
+                        project.schedule_worktree_scan(cx);
+                    });
+                }
+            },
+        ));
+    }
+
+    fn invalidate_worktree_paths(&mut self, paths: &[(&Path, bool)], cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            return;
+        }
+        for &(path, recursive) in paths {
+            for worktree in &mut self.worktrees {
+                if path.starts_with(worktree.root.as_path()) {
+                    worktree.snapshot.invalidate(path, recursive);
+                }
+            }
+        }
+        self.worktree_invalidation_epoch += 1;
+        self.schedule_worktree_scan(cx);
+        cx.emit(ProjectEvent::FileSystemChanged);
+    }
+
+    /// 从 Worktree 条目快照收集当前可见行，并同帧派生每行的 Git 状态。
     ///
-    /// 目录扫描与状态查询在同一个后台任务内完成，返回一份可直接渲染的完整行集，避免行模型先落地、状态再异步回填造成「无状态中间帧」。
+    /// 条目快照与状态查询在同一个后台任务内合并，返回可直接渲染的完整行集，避免行模型先落地、状态再异步回填造成「无状态中间帧」。
     /// 忽略状态也随这次派生一并确定，不再作为单独的渲染期查询。
     pub fn collect_visible_rows(
         &self,
@@ -547,18 +716,15 @@ impl Project {
                 .background_executor()
                 .spawn(async { Vec::<(WorktreeEntry, Option<FileStatus>)>::new() });
         }
-        let plans = self
+        let entries = self
             .worktrees
             .iter()
-            .map(|worktree| (worktree.root.clone(), worktree.snapshot.filter()))
+            .flat_map(|worktree| worktree.snapshot.visible_entries(&expanded))
             .collect::<Vec<_>>();
         // 在 UI 线程捕获不可变状态快照，后台任务只读；GitStore 仍是状态的唯一所有者。
         let snapshot: Arc<GitStatusSnapshot> = self.git_store.read(cx).status_snapshot();
         cx.background_executor().spawn(async move {
-            let mut entries = Vec::new();
-            for (root, filter) in &plans {
-                entries.extend(collect_visible_entries(root, &expanded, filter));
-            }
+            let mut entries = entries;
             let rows = entries
                 .iter()
                 .map(|entry| (entry.path.clone(), entry.is_dir))
@@ -1100,6 +1266,7 @@ impl Project {
             let id = worktree.id;
             worktree.root = new_root.clone();
             worktree.snapshot.set_root(new_root.clone());
+            self.cancel_worktree_scan();
             // 根路径变化后 GitStore 的扫描基准与路径归属同步更新。
             self.sync_git_roots(cx);
             cx.emit(ProjectEvent::WorktreeRootChanged {
@@ -1108,7 +1275,7 @@ impl Project {
                 to: new_root.as_path().to_path_buf(),
             });
         } else {
-            cx.emit(ProjectEvent::EntriesChanged);
+            self.invalidate_worktree_paths(&[(&from, true), (&to, true)], cx);
         }
         Ok(())
     }
@@ -1141,11 +1308,14 @@ impl Project {
 
         fs::create_dir_all(parent)?;
         if is_dir {
-            fs::create_dir(path)?;
+            fs::create_dir(&path)?;
         } else {
-            OpenOptions::new().write(true).create_new(true).open(path)?;
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
         }
-        cx.emit(ProjectEvent::EntriesChanged);
+        self.invalidate_worktree_paths(&[(&path, false)], cx);
         Ok(())
     }
 
@@ -1153,7 +1323,7 @@ impl Project {
     ///
     /// 同步完成路径校验后返回驱动任务：回收站调用在后台线程执行，避免 Shell 的模态消息循环
     /// 在 UI 线程重入 gpui 导致崩溃（与 `copy_path` 的边界一致）。是否真正回收、回收站已满时
-    /// 如何处置，全部交给系统决定；本方法只转发结果并在成功后发出 `EntriesChanged`。
+    /// 如何处置，全部交给系统决定；成功后由 Worktree 核对受影响目录。
     pub fn trash_path(
         &mut self,
         path: &Path,
@@ -1183,8 +1353,8 @@ impl Project {
                         .await;
                     match result {
                         Ok(()) => {
-                            let _ = project.update(&mut cx, |_, cx| {
-                                cx.emit(ProjectEvent::EntriesChanged);
+                            let _ = project.update(&mut cx, |project, cx| {
+                                project.invalidate_worktree_paths(&[(&path, true)], cx);
                             });
                             Ok(())
                         }
@@ -1253,13 +1423,13 @@ impl Project {
         }
         self.buffer_store.rename_path(&indexed_from, &indexed_to);
         // from 不可能是根（校验已排除），条目变化无需区分 WorktreeRootChanged。
-        cx.emit(ProjectEvent::EntriesChanged);
+        self.invalidate_worktree_paths(&[(&from, true), (&to, true)], cx);
         Ok(())
     }
 
     /// 在工作区内递归复制文件或目录到新位置（可跨项目根；后台执行，不阻塞 UI 线程）。
     ///
-    /// 同步完成参数校验后返回驱动任务：复制本体在后台线程执行，完成后由任务内部发出 `EntriesChanged`；
+    /// 同步完成参数校验后返回驱动任务：复制本体在后台线程执行，完成后由 Worktree 核对目标目录；
     /// 任务返回值携带执行结果（调用方驱动进度用）。
     /// 失败通过任务结果交给调用方展示；失败项不发出变更事件。
     pub fn copy_path(
@@ -1334,14 +1504,15 @@ impl Project {
             cx.spawn(move |project: WeakEntity<Self>, asynccx: &mut AsyncApp| {
                 let mut cx = asynccx.clone();
                 async move {
+                    let target = destination.clone();
                     let result = cx
                         .background_executor()
                         .spawn(async move { copy_entry_overwrite(&source, &destination) })
                         .await;
                     match result {
                         Ok(()) => {
-                            let _ = project.update(&mut cx, |_, cx| {
-                                cx.emit(ProjectEvent::EntriesChanged);
+                            let _ = project.update(&mut cx, |project, cx| {
+                                project.invalidate_worktree_paths(&[(&target, true)], cx);
                             });
                             Ok(())
                         }
@@ -1390,7 +1561,7 @@ impl Project {
         let structural = worktree_events.iter().any(|event| {
             matches!(
                 event.kind,
-                Some(PathEventKind::Removed | PathEventKind::Rescan)
+                Some(PathEventKind::Removed | PathEventKind::Rescan) | None
             )
         });
         let changed: Vec<PathBuf> = worktree_events
@@ -1412,18 +1583,19 @@ impl Project {
                     store.refresh_statuses_for_paths(&changed, cx);
                 }
             });
-            // 只有目录结构可能变化时才重建项目树行模型：
-            // 纯内容变化（Changed）不改变可见行集合，交给 Git 状态事件更新颜色即可；
-            // .git 内部事件只影响 Git 状态，不应触发整树重建。
-            let tree_changed = worktree_events.iter().any(|event| {
-                matches!(
-                    event.kind,
-                    Some(PathEventKind::Created | PathEventKind::Removed | PathEventKind::Rescan)
-                ) && !is_dot_git_path(&event.path)
-            });
-            if tree_changed {
-                cx.emit(ProjectEvent::EntriesChanged);
-            }
+            // 事件只是失效提示；Worktree 核对已加载目录后才发布真实条目变化。
+            // .git 内部事件只影响 Git 状态。
+            let paths = worktree_events
+                .iter()
+                .filter(|event| !is_dot_git_path(&event.path))
+                .map(|event| {
+                    (
+                        event.path.as_path(),
+                        matches!(event.kind, Some(PathEventKind::Rescan) | None),
+                    )
+                })
+                .collect::<Vec<_>>();
+            self.invalidate_worktree_paths(&paths, cx);
         }
     }
 }

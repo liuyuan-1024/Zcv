@@ -1052,7 +1052,14 @@ fn coalesce_pending_rescans(pending: &mut Vec<PathEvent>, events: &mut Vec<PathE
 /// 将 `new` 合并到 `dst`（两者均为按 path 排序的列表），按 path 去重。
 fn extend_sorted(dst: &mut Vec<PathEvent>, mut new: Vec<PathEvent>) {
     new.sort_by(|a, b| a.path.cmp(&b.path));
-    new.dedup_by(|a, b| a.path == b.path);
+    new.dedup_by(|current, previous| {
+        if current.path == previous.path {
+            previous.kind = merge_event_kinds(previous.kind, current.kind);
+            true
+        } else {
+            false
+        }
+    });
 
     if dst.is_empty() {
         *dst = new;
@@ -1073,8 +1080,9 @@ fn extend_sorted(dst: &mut Vec<PathEvent>, mut new: Vec<PathEvent>) {
                 j += 1;
             }
             Ordering::Equal => {
-                // 保留新事件（覆盖旧事件）
-                result.push(new[j].clone());
+                let mut event = new[j].clone();
+                event.kind = merge_event_kinds(dst[i].kind, event.kind);
+                result.push(event);
                 i += 1;
                 j += 1;
             }
@@ -1083,6 +1091,23 @@ fn extend_sorted(dst: &mut Vec<PathEvent>, mut new: Vec<PathEvent>) {
     result.extend(dst[i..].iter().cloned());
     result.extend(new[j..].iter().cloned());
     *dst = result;
+}
+
+/// 合并窗口中的事件只用于提示消费方重新核对磁盘，不能丢掉结构变化或失步信号。
+fn merge_event_kinds(
+    old: Option<PathEventKind>,
+    new: Option<PathEventKind>,
+) -> Option<PathEventKind> {
+    use PathEventKind::{Changed, Created, Removed, Rescan};
+    match (old, new) {
+        (Some(Created), Some(Created)) => Some(Created),
+        (Some(Removed), Some(Removed)) => Some(Removed),
+        (Some(Changed), Some(Changed)) => Some(Changed),
+        (Some(Changed), Some(Created)) | (Some(Created), Some(Changed)) => Some(Created),
+        (Some(Changed), Some(Removed)) | (Some(Removed), Some(Changed)) => Some(Removed),
+        (Some(Rescan), _) | (_, Some(Rescan)) | (None, _) | (_, None) => Some(Rescan),
+        (Some(Created), Some(Removed)) | (Some(Removed), Some(Created)) => Some(Rescan),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════

@@ -1134,8 +1134,7 @@ fn initialize_workspace(
         refresh_pane_git_projection(workspace.pane(), workspace.project(), cx);
     });
 
-    // 项目事件订阅：工作区根集合变化与文件树变化驱动项目树刷新；
-    // 根集合变化时，最近项目条目同步从旧集合换成新集合。
+    // 项目事件订阅：根集合变化同步项目树与最近项目；条目快照由面板自行订阅。
     let project_tree_for_project = project_tree.clone();
     let recent_roots = Rc::new(RefCell::new(
         project
@@ -1160,11 +1159,20 @@ fn initialize_workspace(
                     tree.worktree_set_changed(cx);
                 });
             }
-            ProjectEvent::EntriesChanged => {
-                project_tree_for_project.update(cx, |tree, cx| tree.schedule_refresh(cx));
-            }
+            ProjectEvent::EntriesChanged
+            | ProjectEvent::WorktreeScanCompleted
+            | ProjectEvent::FileSystemChanged => {}
             ProjectEvent::FileWatcherError(error) => {
                 show_file_watcher_error(workspace, error, cx);
+            }
+            ProjectEvent::DirectoryScanFailed { path, error } => {
+                workspace.show_toast(
+                    ToastKind::Error,
+                    format!("读取项目目录失败（{}）：{error}", path.display()),
+                    vec![],
+                    Some(Duration::from_secs(8)),
+                    cx,
+                );
             }
         });
 
@@ -1187,7 +1195,7 @@ fn initialize_workspace(
             workspace.apply_typography_settings(&settings, cx);
             window.set_rem_size(workspace.typography().ui_size());
             apply_theme(&settings.theme, cx, Some(window));
-            project_tree_for_settings.update(cx, |tree, cx| tree.refresh(cx));
+            project_tree_for_settings.update(cx, |tree, cx| tree.settings_changed(cx));
             cx.notify();
         });
 

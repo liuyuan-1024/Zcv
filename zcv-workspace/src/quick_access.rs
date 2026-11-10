@@ -317,7 +317,7 @@ impl QuickAccess {
         let project_subscription = cx.subscribe(&project, |search, _, event, cx| {
             if matches!(
                 event,
-                ProjectEvent::EntriesChanged
+                ProjectEvent::FileSystemChanged
                     | ProjectEvent::WorktreeAdded { .. }
                     | ProjectEvent::WorktreeRemoved { .. }
                     | ProjectEvent::WorktreeRootChanged { .. }

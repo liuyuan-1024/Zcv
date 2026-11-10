@@ -1,7 +1,7 @@
 //! ProjectTreePanel —— 项目文件树 Entity 组件。
 //!
 //! 持有 `Rc<RefCell<TreeState>>` 管理展开/选中状态和缓存行模型。
-//! 目录遍历、排除规则与 git 状态合并由 `Project`（worktree 快照层）产出，渲染与键盘导航只消费行模型缓存。
+//! 目录条目快照由 `Project` 的 Worktree 持有，面板只从快照派生可见行、渲染与键盘导航。
 //! 多选（shift/cmd 点击、shift 方向键）、复制/剪切/粘贴与拖拽移动共用同一套净化与冲突确认管线。
 //! 模块划分：本文件承载实体与行模型管理；
 //! 渲染见 render.rs，键盘动作见 actions.rs，名称编辑见 editing.rs，剪贴板与传输执行见 execute.rs，拖拽/传输纯逻辑见 drag.rs / transfer.rs。
@@ -15,16 +15,15 @@ use std::{
 };
 
 use gpui::{
-    App, AsyncApp, Bounds, Context, DragMoveEvent, Entity, EventEmitter, ExternalPaths,
-    FileDropEvent, FocusHandle, KeyContext, MouseButton, MouseExitEvent, Pixels, Point,
-    ScrollStrategy, Task, UniformListScrollHandle, WeakEntity, Window, div, point, prelude::*, px,
-    relative,
+    App, Bounds, Context, DragMoveEvent, Entity, EventEmitter, ExternalPaths, FileDropEvent,
+    FocusHandle, KeyContext, MouseButton, MouseExitEvent, Pixels, Point, ScrollStrategy, Task,
+    UniformListScrollHandle, WeakEntity, Window, div, point, prelude::*, px, relative,
 };
 use zcv_actions::TreeActivate;
 use zcv_editor::Editor;
 use zcv_git::FileStatus;
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
-use zcv_project::{GitStoreEvent, Project, WorktreeEntry, translate_path};
+use zcv_project::{GitStoreEvent, Project, ProjectEvent, WorktreeEntry, translate_path};
 use zcv_theme::{color, fixed, scale};
 use zcv_ui::{
     ConfirmOverlay, ContextMenu, OverlayAnchor, OverlayOutside, PopoverHost, PopoverLayer,
@@ -74,8 +73,6 @@ mod project_tree_tests;
 
 // ── Entity ──────────────────────────────────────────────────────────
 
-/// EntriesChanged 防抖窗口：批量文件操作的事件风暴合并为一次行模型重建。
-const REFRESH_DEBOUNCE: Duration = Duration::from_millis(120);
 const DRAG_SCROLL_INTERVAL: Duration = Duration::from_millis(16);
 
 /// 边缘滚动按面板高度的 15% / 5% 分区，避免窄边缘区在高面板上难以触发。
@@ -137,14 +134,11 @@ pub struct ProjectTreePanel {
     context_menu: Option<DeployedContextMenu>,
     /// 右键菜单的浮层会话：互斥与焦点归还。
     menu_host: PopoverHost,
-    /// 防抖刷新任务：新调度直接覆盖旧任务。
-    refresh_task: Option<Task<()>>,
-    /// 防抖会话代次：每次调度自增，到期任务校验代次未变才执行刷新。
-    refresh_generation: u64,
     /// 行重建代次：每次派发自增，apply_rebuild 校验一致才应用（过期结果丢弃）。
     rebuild_generation: u64,
     /// 进行中的行重建任务：新派发覆盖旧任务（Task drop 即取消）。
     pending_rebuild: Option<Task<()>>,
+    awaiting_scan: bool,
     /// Git 状态重算代次：状态事件连续到达时只接受最新快照结果。
     status_refresh_generation: u64,
     /// 后台计算当前行模型 Git 状态的任务。
@@ -212,6 +206,12 @@ impl ProjectTreePanel {
             }
         })
         .detach();
+        cx.subscribe(&project, |tree, _, event, cx| match event {
+            ProjectEvent::EntriesChanged => tree.rebuild_rows(cx),
+            ProjectEvent::WorktreeScanCompleted if tree.awaiting_scan => tree.rebuild_rows(cx),
+            _ => {}
+        })
+        .detach();
         let scroll_handle = UniformListScrollHandle::default();
         let scrollbar = Scrollbar::vertical(scroll_handle.clone());
         let mut this = Self {
@@ -237,10 +237,9 @@ impl ProjectTreePanel {
             active_transfer: None,
             context_menu: None,
             menu_host,
-            refresh_task: None,
-            refresh_generation: 0,
             rebuild_generation: 0,
             pending_rebuild: None,
+            awaiting_scan: false,
             status_refresh_generation: 0,
             pending_status_refresh: None,
             pending_reveal: None,
@@ -255,19 +254,30 @@ impl ProjectTreePanel {
         this
     }
 
-    /// 重建可见行：后台收集目录条目，完成回 UI 线程应用；新派发覆盖旧任务（过期结果由代次校验丢弃）。
+    /// 重建可见行：请求加载展开目录，再从 Project 快照派生行；过期结果由代次校验丢弃。
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
         self.rebuild_generation += 1;
         let generation = self.rebuild_generation;
         if self.roots.is_empty() {
             // 无 worktree 的空态：行模型为空，无需后台收集。
+            self.pending_rebuild = None;
+            self.awaiting_scan = false;
             self.state.borrow_mut().replace_rows(Vec::new());
             self.row_snapshot = Vec::new().into();
             return;
         }
         let expanded = self.visible_expanded();
+        self.project.update(cx, |project, cx| {
+            project.request_expanded_directories(expanded.clone(), cx);
+        });
+        if !self.project.read(cx).expanded_directories_loaded(&expanded) {
+            self.pending_rebuild = None;
+            self.awaiting_scan = true;
+            return;
+        }
+        self.awaiting_scan = false;
         self.pending_rebuild = Some(cx.spawn(async move |this, cx| {
-            // 收集任务需在 UI 线程创建（读取 Project 实体），完成后回 UI 线程应用。
+            // Git 状态投影任务需在 UI 线程创建（读取 Project 实体），完成后回 UI 线程应用。
             let Ok(collect) = this.update(cx, |panel, cx| {
                 panel.project.read(cx).collect_visible_rows(expanded, cx)
             }) else {
@@ -526,35 +536,13 @@ impl ProjectTreePanel {
         cx.notify();
     }
 
-    /// 刷新行模型；同时从设置读取最新的扫描排除名单并重建过滤规则。
-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+    /// 设置变化时同步扫描排除名单并重建可见行。
+    pub fn settings_changed(&mut self, cx: &mut Context<Self>) {
         let exclusions = SettingsStore::file_scan_exclusions(cx);
         self.project
             .update(cx, |project, _| project.set_exclusions(&exclusions));
         self.rebuild_rows(cx);
         cx.notify();
-    }
-
-    /// 防抖刷新：120ms 内的连续 EntriesChanged（批量文件操作的事件风暴）合并为一次重建。
-    ///
-    /// 新调度直接覆盖旧任务；到期后校验会话代次未变才执行刷新，避免旧任务双重重建。
-    pub fn schedule_refresh(&mut self, cx: &mut Context<Self>) {
-        self.refresh_generation += 1;
-        let generation = self.refresh_generation;
-        let timer = cx.background_executor().timer(REFRESH_DEBOUNCE);
-        self.refresh_task = Some(cx.spawn(
-            move |this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
-                let mut cx = asynccx.clone();
-                async move {
-                    timer.await;
-                    let _ = this.update(&mut cx, |tree, cx| {
-                        if tree.refresh_generation == generation {
-                            tree.refresh(cx);
-                        }
-                    });
-                }
-            },
-        ));
     }
 
     /// 面板根集合中路径的所属根；嵌套根命中多个时取最长前缀（最内层根）。

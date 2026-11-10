@@ -8,7 +8,7 @@ SOURCE="$ROOT/assets/branding/Zcv.svg"
 MAC_ICON="$ROOT/assets/branding/Zcv.icns"
 WINDOWS_ICON="$ROOT/assets/branding/Zcv.ico"
 
-for tool in rsvg-convert iconutil python3; do
+for tool in rsvg-convert iconutil sips python3; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "缺少图标生成工具: $tool" >&2
         exit 1
@@ -25,9 +25,41 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 ICONSET="$TEMP_DIR/Zcv.iconset"
 mkdir -p "$ICONSET"
 
+# 平台图标使用相同取景范围，SVG 原稿保持不变。
+ICON_SOURCE="$TEMP_DIR/icon-source.svg"
+python3 - "$SOURCE" "$ICON_SOURCE" <<'PY'
+from pathlib import Path
+import sys
+import xml.etree.ElementTree as ET
+
+source, output = sys.argv[1], Path(sys.argv[2])
+tree = ET.parse(source)
+root = tree.getroot()
+x, y, width, height = map(float, root.attrib["viewBox"].split())
+scale = 1.08
+new_width, new_height = width / scale, height / scale
+root.set(
+    "viewBox",
+    f"{x + (width - new_width) / 2:g} "
+    f"{y + (height - new_height) / 2:g} "
+    f"{new_width:g} {new_height:g}",
+)
+ET.register_namespace("", "http://www.w3.org/2000/svg")
+tree.write(output, encoding="utf-8", xml_declaration=True)
+PY
+
 for size in 16 24 32 48 64 128 256 512 1024; do
-    rsvg-convert --format png --width "$size" --height "$size" \
-        --output "$TEMP_DIR/icon_${size}.png" "$SOURCE"
+    if (( size <= 64 )); then
+        render_size=$((size * 4))
+        rsvg-convert --format png --width "$render_size" --height "$render_size" \
+            --output "$TEMP_DIR/large_${size}.png" "$ICON_SOURCE"
+        sips --resampleHeightWidth "$size" "$size" \
+            "$TEMP_DIR/large_${size}.png" \
+            --out "$TEMP_DIR/icon_${size}.png" >/dev/null
+    else
+        rsvg-convert --format png --width "$size" --height "$size" \
+            --output "$TEMP_DIR/icon_${size}.png" "$ICON_SOURCE"
+    fi
 done
 
 cp "$TEMP_DIR/icon_16.png" "$ICONSET/icon_16x16.png"

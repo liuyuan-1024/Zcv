@@ -23,7 +23,7 @@ fn children_return_sorted_static_entries() {
     fs::write(directory.path().join("banana.rs"), "fn main() {}").expect("应创建文件");
 
     let worktree = Worktree::new(absolute(directory.path()));
-    let entries = children_sorted(directory.path(), directory.path(), &worktree.filter());
+    let entries = children_sorted(directory.path(), directory.path(), &worktree.filter()).unwrap();
 
     // 目录优先、名称升序；Git 状态不属于目录快照层。
     assert_eq!(
@@ -33,13 +33,14 @@ fn children_return_sorted_static_entries() {
             .collect::<Vec<_>>(),
         vec!["zebra_dir", "apple.rs", "banana.rs"]
     );
-    // 不存在或不可读目录返回空。
+    // 不存在的目录按已删除处理。
     assert!(
         children_sorted(
             &directory.path().join("missing"),
             directory.path(),
             &worktree.filter()
         )
+        .unwrap()
         .is_empty()
     );
 }
@@ -52,7 +53,7 @@ fn children_use_tree_order_for_mixed_case_and_numbers() {
         fs::write(directory.path().join(name), name).expect("应创建文件");
     }
     let worktree = Worktree::new(absolute(directory.path()));
-    let entries = children_sorted(directory.path(), directory.path(), &worktree.filter());
+    let entries = children_sorted(directory.path(), directory.path(), &worktree.filter()).unwrap();
     assert_eq!(
         entries
             .iter()
@@ -76,16 +77,20 @@ fn file_scan_exclusions_hide_entries_and_their_children() {
 
     assert!(
         !children_sorted(directory.path(), directory.path(), &worktree.filter())
+            .unwrap()
             .iter()
             .any(|entry| entry.path.as_path() == target),
         "排除名单命中的目录不应出现"
     );
     assert!(
-        children_sorted(&target, directory.path(), &worktree.filter()).is_empty(),
+        children_sorted(&target, directory.path(), &worktree.filter())
+            .unwrap()
+            .is_empty(),
         "被排除目录内部也不加载"
     );
     assert!(
         children_sorted(directory.path(), directory.path(), &worktree.filter())
+            .unwrap()
             .iter()
             .any(|entry| entry.path.as_path() == visible)
     );
@@ -104,7 +109,11 @@ fn collect_visible_entries_returns_root_then_expanded_descendants() {
     // 只展开根：行集 = [根, src]（root.rs 被排除，src 折叠不深入）。
     let root = absolute(directory.path());
     let expanded = HashSet::from([root.clone()]);
-    let rows = collect_visible_entries(&root, &expanded, &worktree.filter());
+    worktree.apply_scan(
+        root.clone(),
+        children_sorted(root.as_path(), root.as_path(), &worktree.filter()).unwrap(),
+    );
+    let rows = worktree.visible_entries(&expanded);
     assert_eq!(rows.len(), 2);
     assert!(rows[0].is_dir);
     assert_eq!(rows[0].path.as_path(), directory.path());
@@ -112,7 +121,13 @@ fn collect_visible_entries_returns_root_then_expanded_descendants() {
 
     // 根、src、feature 都展开：行集 = [根, src, feature, mod.rs]，排序与 children 一致。
     let expanded = HashSet::from([root.clone(), absolute(&src), absolute(&src.join("feature"))]);
-    let rows = collect_visible_entries(&root, &expanded, &worktree.filter());
+    for directory in [&src, &src.join("feature")] {
+        worktree.apply_scan(
+            absolute(directory),
+            children_sorted(directory, root.as_path(), &worktree.filter()).unwrap(),
+        );
+    }
+    let rows = worktree.visible_entries(&expanded);
     let paths: Vec<_> = rows.iter().map(|row| row.path.clone()).collect();
     assert_eq!(
         paths,

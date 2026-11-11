@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Context as _, Result, ensure};
 use globset::Glob;
-use serde::{Deserialize, Deserializer, de::Visitor};
+use serde::{Deserialize, Deserializer, Serialize, de::Visitor};
 use zcv_theme::ThemeChoice;
 
 /// 软换行模式的设置值。
@@ -19,7 +19,7 @@ use zcv_theme::ThemeChoice;
 /// - `none`：不换行，超长行靠水平滚动查看；
 /// - `editor-width`：行宽超过编辑器文本区宽度时换行，窗口 resize 实时重排；
 /// - `bounded`：在 `preferred_line_length`（列数 × em 宽）与编辑器宽度（取小者）处换行。
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SoftWrapMode {
     None,
@@ -28,7 +28,7 @@ pub enum SoftWrapMode {
 }
 
 /// 自动缩进策略。
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoIndentMode {
     None,
@@ -38,7 +38,7 @@ pub enum AutoIndentMode {
 }
 
 /// 编辑器光标形状。
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CursorShape {
     #[default]
@@ -49,7 +49,7 @@ pub enum CursorShape {
 }
 
 /// 终端光标形状由设置解析层确定，消费方不再处理未知字符串。
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TerminalCursorShape {
     Block,
@@ -58,10 +58,14 @@ pub enum TerminalCursorShape {
     Hollow,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-pub(crate) struct CursorAnimationSettingsContent {
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
+pub struct CursorAnimationSettingsContent {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) enabled: Option<bool>,
 }
 
@@ -115,9 +119,9 @@ pub(crate) struct BuiltinCursorAnimationSettings {
 }
 
 /// `null` 明确表示使用系统默认 shell；缺少用户配置键则表示不覆盖内置值。
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
-pub(crate) enum TerminalShellSetting {
+pub enum TerminalShellSetting {
     System,
     Program(String),
 }
@@ -147,19 +151,39 @@ impl TabConfig {
 }
 
 /// 按语言覆盖的 Tab / 缩进策略；字段为 `None` 时沿用全局默认。
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
-pub(crate) struct LanguageOverrideContent {
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) tab_size: Option<NonZeroUsize>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) insert_spaces: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) indent_guides: Option<IndentGuideSettingsContent>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) remove_trailing_whitespace_on_save: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) ensure_final_newline_on_save: Option<bool>,
+pub struct LanguageOverrideContent {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tab_size: Option<NonZeroUsize>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub insert_spaces: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub indent_guides: Option<IndentGuideSettingsContent>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub remove_trailing_whitespace_on_save: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ensure_final_newline_on_save: Option<bool>,
 }
 
 /// 一门语言的 Tab / 缩进覆盖值。
@@ -179,13 +203,21 @@ pub struct IndentGuideSettings {
     pub line_width: u32,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-pub(crate) struct IndentGuideSettingsContent {
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) enabled: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) line_width: Option<NonZeroU32>,
+pub struct IndentGuideSettingsContent {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub enabled: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub line_width: Option<NonZeroU32>,
 }
 
 impl IndentGuideSettingsContent {
@@ -199,69 +231,189 @@ impl IndentGuideSettingsContent {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+/// 用户设置文件的完整覆盖内容；字段为 `None` 表示未在用户文件中填写。
+///
+/// 该类型是面板与手写 `settings.json` 共用的可编辑表示：两者都先经过
+/// `parse_user_settings` / `validate_user_settings`，再由 `merge` 生成运行时值。
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
-pub(crate) struct UserSettingsContent {
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) theme: Option<ThemeChoice>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) content_font_size: Option<f32>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) ui_font_size: Option<f32>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) content_line_height: Option<f32>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) tab_size: Option<NonZeroUsize>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) insert_spaces: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) indent_guides: Option<IndentGuideSettingsContent>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) soft_wrap: Option<SoftWrapMode>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) minimum_contrast_for_highlights: Option<f32>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) cursor_shape: Option<CursorShape>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) cursor_blink: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) cursor_animation: Option<CursorAnimationSettingsContent>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) preferred_line_length: Option<usize>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) file_scan_exclusions: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) use_autoclose: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) use_auto_surround: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) auto_indent: Option<AutoIndentMode>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) extend_comment_on_newline: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) extend_list_on_newline: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) remove_trailing_whitespace_on_save: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) ensure_final_newline_on_save: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) terminal_font_size: Option<f32>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) terminal_line_height: Option<f32>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) terminal_max_scroll_history_lines: Option<usize>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) terminal_cursor_shape: Option<TerminalCursorShape>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) terminal_alternate_scroll: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) terminal_option_as_meta: Option<bool>,
+pub struct UserSettingsContent {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub theme: Option<ThemeChoice>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content_font_size: Option<f32>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ui_font_size: Option<f32>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content_line_height: Option<f32>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tab_size: Option<NonZeroUsize>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub insert_spaces: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub indent_guides: Option<IndentGuideSettingsContent>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub soft_wrap: Option<SoftWrapMode>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub minimum_contrast_for_highlights: Option<f32>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cursor_shape: Option<CursorShape>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cursor_blink: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cursor_animation: Option<CursorAnimationSettingsContent>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub preferred_line_length: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub file_scan_exclusions: Option<Vec<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_autoclose: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_auto_surround: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auto_indent: Option<AutoIndentMode>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub extend_comment_on_newline: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub extend_list_on_newline: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub remove_trailing_whitespace_on_save: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ensure_final_newline_on_save: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terminal_font_size: Option<f32>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terminal_line_height: Option<f32>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terminal_max_scroll_history_lines: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terminal_cursor_shape: Option<TerminalCursorShape>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terminal_alternate_scroll: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terminal_option_as_meta: Option<bool>,
     /// 缺失与显式 null 分别表示“不覆盖内置值”和“使用系统 shell”。
-    #[serde(default, deserialize_with = "deserialize_terminal_shell")]
-    pub(crate) terminal_shell: Option<TerminalShellSetting>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_terminal_shell",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terminal_shell: Option<TerminalShellSetting>,
     /// 按语言覆盖的 Tab / 缩进策略；键为语言展示名。
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    pub(crate) languages: Option<HashMap<String, LanguageOverrideContent>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub languages: Option<HashMap<String, LanguageOverrideContent>>,
 }
 
 /// 缺失字段由 `#[serde(default)]` 处理；字段一旦出现，显式 null 必须报错而不是被当作未填写。
@@ -359,7 +511,7 @@ pub(crate) fn parse_user_settings(content: &str) -> Result<UserSettingsContent> 
     Ok(settings)
 }
 
-/// 用户设置的值校验；解析只负责 JSON 结构与类型。
+/// 用户文件与面板写入共用同一套值校验；解析只负责 JSON 结构与类型。
 pub(crate) fn validate_user_settings(settings: &UserSettingsContent) -> Result<()> {
     validate_positive_numbers(&[
         ("content_font_size", settings.content_font_size),

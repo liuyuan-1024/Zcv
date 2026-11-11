@@ -5,7 +5,7 @@ use gpui::{AppContext, TestAppContext};
 use url::Url;
 
 use crate::app_menus;
-use zcv_actions::{About, AddDirectoryToProject, OpenLocalFile};
+use zcv_actions::{About, AddDirectoryToProject, OpenLocalFile, OpenSettings};
 use zcv_language::LanguageRegistry;
 use zcv_settings::{
     GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore, UserSettings,
@@ -23,6 +23,50 @@ fn prompt_remains_answerable_until_dismissed(cx: &mut TestAppContext) {
     cx.update(|cx| retain_prompt_until_answer(prompt, cx));
     cx.run_until_parked();
     assert!(answer.send(0).is_ok());
+}
+
+#[gpui::test]
+fn open_settings_opens_a_single_settings_window(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        let reporter = cx.new(|_| SettingsErrorReporter::default());
+        cx.set_global(GlobalSettingsErrorReporter(reporter));
+        cx.set_global(SettingsStore::new(UserSettings::default()));
+        zcv_editor::init(cx, test_languages());
+        app_menus::install(cx);
+        crate::settings_window::install(cx, test_languages());
+    });
+    let (_workspace, visual) = cx.add_window_view(|window, cx| {
+        build_workspace(&[], test_languages(), quiet_watcher(), window, cx)
+    });
+
+    visual.dispatch_action(OpenSettings);
+    visual.run_until_parked();
+
+    let count = visual.update(|_, cx| {
+        cx.windows()
+            .into_iter()
+            .filter(|window| {
+                window
+                    .downcast::<zcv_settings_window::SettingsWindow>()
+                    .is_some()
+            })
+            .count()
+    });
+    assert_eq!(count, 1, "打开设置应创建独立设置窗口");
+
+    visual.dispatch_action(OpenSettings);
+    visual.run_until_parked();
+    let count = visual.update(|_, cx| {
+        cx.windows()
+            .into_iter()
+            .filter(|window| {
+                window
+                    .downcast::<zcv_settings_window::SettingsWindow>()
+                    .is_some()
+            })
+            .count()
+    });
+    assert_eq!(count, 1, "重复打开设置应复用已有窗口");
 }
 
 #[gpui::test]

@@ -30,6 +30,7 @@ fn application_menus_expose_existing_editor_commands(cx: &mut TestAppContext) {
                 "app::About",
                 "app::CheckForUpdates",
                 "workspace::OpenSettings",
+                "workspace::OpenSettingsFile",
                 "window_controls::QuitWindow"
             ]
         );

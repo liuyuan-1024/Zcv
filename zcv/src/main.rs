@@ -4,6 +4,7 @@ mod app_menus;
 mod auto_update;
 mod harness;
 mod open_with;
+mod settings_window;
 #[cfg(target_os = "windows")]
 mod single_instance;
 mod workspace;
@@ -163,6 +164,7 @@ fn main() {
         workspace::install_open_local_directory_action(Arc::clone(&languages), cx);
         workspace::install_add_directory_to_project_action(cx);
         app_menus::install(cx);
+        settings_window::install(cx, Arc::clone(&languages));
         auto_update::init(cx, update_error);
 
         // 更新 helper 需要在有限时间内确认新版本已经启动；

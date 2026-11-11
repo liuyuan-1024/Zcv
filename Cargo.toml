@@ -27,6 +27,7 @@ members = [
     "zcv-project",
     "zcv-search",
     "zcv-settings",
+    "zcv-settings-window",
     "zcv-terminal",
     "zcv-text",
     "zcv-theme",
@@ -37,7 +38,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.10.62"
+version = "0.10.63"
 edition = "2024"
 
 [workspace.lints.rust]
@@ -68,6 +69,7 @@ zcv-project = { path = "zcv-project" }
 zcv-project-tree = { path = "zcv-project-tree" }
 zcv-search = { path = "zcv-search" }
 zcv-settings = { path = "zcv-settings" }
+zcv-settings-window = { path = "zcv-settings-window" }
 zcv-terminal = { path = "zcv-terminal" }
 zcv-text = { path = "zcv-text" }
 zcv-theme = { path = "zcv-theme" }

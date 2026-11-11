@@ -1,10 +1,12 @@
-use std::fs;
+use gpui::{BorrowAppContext as _, TestAppContext};
+use std::{cell::Cell, fs, num::NonZeroU32, rc::Rc};
 use zcv_theme::ThemeChoice;
 
 use super::*;
 use crate::{
     file::ensure_settings_file,
     schema::{TerminalShellSetting, parse_builtin_settings, parse_user_settings},
+    store::update_user_settings_at,
 };
 
 #[test]
@@ -12,7 +14,7 @@ fn missing_user_settings_file_contains_only_overrides() {
     let directory = tempfile::tempdir().expect("应创建临时设置目录");
     let path = directory.path().join("settings.json");
 
-    let template = "// 配置项和当前默认值见同目录的 settings.reference.jsonc。\n{}\n";
+    let template = "// 设置可在 Zcv 设置窗口中修改；此文件只保存显式覆盖值。\n{}\n";
     ensure_settings_file(&path, template).expect("应创建用户设置文件");
 
     assert_eq!(
@@ -425,4 +427,137 @@ fn explicit_null_reports_location() {
     let detailed = format!("{error:#}");
     assert!(detailed.contains("配置项不能为 null"), "{detailed}");
     assert!(detailed.contains("line 3 column 1"), "{detailed}");
+}
+
+#[test]
+fn serialized_overrides_round_trip_including_explicit_null_shell() {
+    let content = UserSettingsContent {
+        theme: Some(ThemeChoice::Named("light")),
+        content_font_size: Some(18.0),
+        indent_guides: Some(IndentGuideSettingsContent {
+            enabled: Some(false),
+            line_width: NonZeroU32::new(2),
+        }),
+        terminal_shell: Some(TerminalShellSetting::System),
+        ..UserSettingsContent::default()
+    };
+
+    let text = crate::file::serialize_user_settings(&content).unwrap();
+    assert!(text.contains("\"terminal_shell\": null"));
+    assert_eq!(parse_user_settings(&text).unwrap(), content);
+}
+
+#[gpui::test]
+fn settings_window_update_writes_file_and_manual_edit_reuses_the_same_store_path(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| cx.set_global(SettingsStore::new(UserSettings::default())));
+    let directory = tempfile::tempdir().expect("应创建临时设置目录");
+    let path = directory.path().join("settings.json");
+    fs::write(&path, r#"{"theme":"dark"}"#).expect("应写入初始设置");
+
+    cx.update(|cx| {
+        let changed = update_user_settings_at(&path, cx, |content| {
+            content.content_font_size = Some(18.0);
+            content.indent_guides = Some(IndentGuideSettingsContent {
+                enabled: Some(false),
+                line_width: NonZeroU32::new(2),
+            });
+        })
+        .expect("面板写入应成功");
+        assert!(changed);
+
+        let settings = SettingsStore::get(cx);
+        assert_eq!(settings.theme, ThemeChoice::Named("dark"));
+        assert_eq!(settings.content_font_size, 18.0);
+        assert!(!settings.indent_guides.enabled);
+        assert_eq!(settings.indent_guides.line_width, 2);
+    });
+
+    let written = fs::read_to_string(&path).expect("应读取面板写入结果");
+    let parsed = parse_user_settings(&written).expect("写入结果必须能重新解析");
+    assert_eq!(parsed.theme, Some(ThemeChoice::Named("dark")));
+    assert_eq!(parsed.content_font_size, Some(18.0));
+    assert_eq!(
+        parsed.indent_guides,
+        Some(IndentGuideSettingsContent {
+            enabled: Some(false),
+            line_width: NonZeroU32::new(2),
+        })
+    );
+
+    // 手工编辑 settings.json 后，文件监听读取同一文本并走同一个 store 入口。
+    let manually_edited = r#"{"theme":"light","content_font_size":20}"#;
+    fs::write(&path, manually_edited).expect("应模拟手工编辑");
+    cx.update(|cx| {
+        let changed = cx
+            .update_global::<SettingsStore, _>(|store, _| store.set_user_settings(manually_edited))
+            .expect("手工编辑应成功加载");
+        assert!(changed);
+
+        let settings = SettingsStore::get(cx);
+        assert_eq!(settings.theme, ThemeChoice::Named("light"));
+        assert_eq!(settings.content_font_size, 20.0);
+        assert_eq!(settings.indent_guides, IndentGuideSettings::default());
+        let overrides = SettingsStore::user_settings_content(cx);
+        assert_eq!(overrides.theme, Some(ThemeChoice::Named("light")));
+        assert_eq!(overrides.content_font_size, Some(20.0));
+        assert_eq!(overrides.indent_guides, None);
+    });
+}
+
+#[gpui::test]
+fn settings_store_notifies_observers_for_settings_window_and_manual_updates(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| cx.set_global(SettingsStore::new(UserSettings::default())));
+    let notifications = Rc::new(Cell::new(0));
+    let counter = notifications.clone();
+    let subscription =
+        cx.update(|cx| cx.observe_global::<SettingsStore>(move |_| counter.set(counter.get() + 1)));
+    cx.run_until_parked();
+
+    let directory = tempfile::tempdir().expect("应创建临时设置目录");
+    let path = directory.path().join("settings.json");
+    fs::write(&path, r#"{"theme":"dark"}"#).expect("应写入初始设置");
+
+    cx.update(|cx| {
+        update_user_settings_at(&path, cx, |content| {
+            content.content_font_size = Some(18.0);
+        })
+        .expect("面板写入应成功");
+    });
+    assert_eq!(notifications.get(), 1, "面板写入应通知设置观察者");
+
+    let manually_edited = r#"{"theme":"light"}"#;
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, _| store.set_user_settings(manually_edited))
+            .expect("手工编辑应成功加载");
+    });
+    assert_eq!(notifications.get(), 2, "手工编辑应通知设置观察者");
+    drop(subscription);
+}
+
+#[gpui::test]
+fn rejected_settings_window_update_keeps_file_and_runtime_snapshot(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.set_global(SettingsStore::new(UserSettings::default())));
+    let directory = tempfile::tempdir().expect("应创建临时设置目录");
+    let path = directory.path().join("settings.json");
+    let original = r#"{"theme":"dark"}"#;
+    fs::write(&path, original).expect("应写入初始设置");
+
+    let before = cx.read(SettingsStore::get);
+    cx.update(|cx| {
+        let result = update_user_settings_at(&path, cx, |content| {
+            content.terminal_shell = Some(TerminalShellSetting::Program(String::new()));
+        });
+        assert!(result.is_err(), "空 shell 必须被设置层拒绝");
+        assert_eq!(SettingsStore::get(cx), before);
+    });
+
+    assert_eq!(
+        fs::read_to_string(&path).expect("应读取设置文件"),
+        original,
+        "校验失败不得改写设置文件"
+    );
 }

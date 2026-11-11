@@ -573,7 +573,7 @@ fn finish_build_workspace(
     workspace
 }
 
-fn retain_prompt_until_answer(prompt: oneshot::Receiver<usize>, cx: &App) {
+pub(crate) fn retain_prompt_until_answer(prompt: oneshot::Receiver<usize>, cx: &App) {
     // Windows 原生对话框在接收端被丢弃时取消。
     cx.spawn(async move |_| {
         let _ = prompt.await;
@@ -961,7 +961,7 @@ fn initialize_workspace(
     top_bar.update(cx, |bar, cx| {
         bar.set_update_control(update_button.into(), cx);
     });
-    workspace.set_titlebar(top_bar.clone().into(), cx);
+    workspace.set_top_bar(top_bar.clone().into(), cx);
     // TopBar 组件不在主焦点链上：把搜索框与选择器的命令 handler 注册到 Workspace 根节点。
     let quick_access_bar = top_bar.clone();
     workspace.register_action(move |_workspace, _: &FocusQuickAccess, window, cx| {
@@ -983,7 +983,6 @@ fn initialize_workspace(
     workspace.register_action(move |_workspace, _: &ToggleRecentProjects, window, cx| {
         recent_projects.update(cx, |recent_projects, cx| recent_projects.toggle(window, cx));
     });
-    workspace.set_settings_files_provider(Box::new(|_cx| zcv_settings::ensure_settings_files()));
 
     // ═══ 面板创建与注册 ═══════════════════════════════════════════
 

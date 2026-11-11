@@ -1,7 +1,7 @@
 use gpui::{AnyElement, App, Window, WindowControlArea, div, prelude::*, px};
 use zcv_theme::color;
 
-pub(super) fn render(window: &Window, cx: &App) -> AnyElement {
+pub fn render(window: &Window, cx: &App) -> AnyElement {
     let maximized = window.is_maximized();
     let controls = window.window_controls();
     div()

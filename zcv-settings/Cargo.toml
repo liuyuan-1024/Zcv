@@ -19,6 +19,7 @@ zcv-fs-watch.workspace = true
 zcv-theme.workspace = true
 
 [dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 
 [lints]

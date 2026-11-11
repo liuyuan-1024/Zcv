@@ -6,25 +6,25 @@ use gpui::{
 };
 use zcv_actions::OpenSettings;
 use zcv_project::{GitStoreEvent, Project, ProjectEvent};
-use zcv_theme::{color, scale, typography};
+use zcv_theme::{color, scale};
 use zcv_ui::{Button, PopoverLayer};
 
 use crate::{
-    OnProjectSelected, Workspace, quick_access::QuickAccess, recent_projects::RecentProjects,
+    OnProjectSelected, Workspace,
+    quick_access::QuickAccess,
+    recent_projects::RecentProjects,
+    window_controls::{self, WindowControls},
 };
 
 mod application_menu;
-mod window_controls;
 
 use application_menu::ApplicationMenu;
-use window_controls::WindowControls;
 
 pub struct TopBar {
     pub recent_projects: Entity<RecentProjects>,
     quick_access: Entity<QuickAccess>,
     /// 应用级更新控件由 binary 装配层注入；TopBar 只负责其固定布局位置。
     update_control: Option<AnyView>,
-    workspace: WeakEntity<Workspace>,
     window_controls: WindowControls,
     application_menu: ApplicationMenu,
     _subscriptions: Vec<Subscription>,
@@ -82,7 +82,6 @@ impl TopBar {
             recent_projects,
             quick_access,
             update_control: None,
-            workspace,
             window_controls: WindowControls::new(),
             application_menu,
             _subscriptions: vec![git_subscription, project_subscription],
@@ -113,9 +112,9 @@ impl TopBar {
 
 impl gpui::Render for TopBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        let height = bar_height(window, cx);
+        let height = window_controls::top_bar_height(window, cx);
         self.window_controls.align(window, height);
-        window_controls::titlebar_interaction(bar_frame(height, cx).id("top-bar"))
+        window_controls::top_bar_interaction(bar_frame(height, cx).id("top-bar"))
             .child(
                 content_frame(window)
                     .gap(scale::S6)
@@ -134,21 +133,19 @@ impl gpui::Render for TopBar {
                             .justify_center()
                             .child(self.quick_access.clone()),
                     )
-                    .child(div().min_w_0().overflow_x_hidden().flex().child(cluster(
-                        trailing_slots(self.update_control.as_ref(), self.workspace.clone(), cx),
-                    ))),
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_x_hidden()
+                            .flex()
+                            .child(cluster(trailing_slots(self.update_control.as_ref(), cx))),
+                    ),
             )
             .when_some(window_controls::trailing(window, cx), |bar, controls| {
                 bar.child(controls)
             })
             .child(bar_bottom_border(cx))
     }
-}
-
-fn bar_height(window: &Window, cx: &App) -> gpui::Pixels {
-    typography::ui_line_at(window.rem_size(), cx)
-        + scale::to_pixels(scale::S12, window)
-        + scale::to_pixels(scale::S8, window)
 }
 
 fn content_frame(window: &Window) -> Div {
@@ -208,11 +205,7 @@ fn leading_slots(top_bar: &TopBar, cx: &App) -> Vec<AnyElement> {
     out
 }
 
-fn trailing_slots(
-    update_control: Option<&AnyView>,
-    workspace: WeakEntity<Workspace>,
-    cx: &App,
-) -> Vec<AnyElement> {
+fn trailing_slots(update_control: Option<&AnyView>, cx: &App) -> Vec<AnyElement> {
     let mut out = Vec::new();
     if let Some(update_control) = update_control {
         out.push(update_control.clone().into_any_element());
@@ -222,9 +215,7 @@ fn trailing_slots(
             .label("设置")
             .shortcut(zcv_keymap::display_shortcut(&OpenSettings, cx))
             .on_click(move |_, window, cx| {
-                workspace
-                    .update(cx, |workspace, cx| workspace.open_settings(window, cx))
-                    .ok();
+                window.dispatch_action(Box::new(OpenSettings), cx);
             })
             .into_any_element(),
     );

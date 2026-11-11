@@ -14,7 +14,7 @@ impl gpui::Render for TopBarLayout {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let frame_bounds = self.frame_bounds.clone();
         let search_bounds = self.search_bounds.clone();
-        bar_frame(bar_height(window, cx), cx)
+        bar_frame(window_controls::top_bar_height(window, cx), cx)
             .child(
                 canvas(
                     move |bounds, _, _| *frame_bounds.borrow_mut() = Some(bounds),
@@ -63,10 +63,12 @@ struct NativeControlsInsetLayout {
 impl gpui::Render for NativeControlsInsetLayout {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let content_bounds = self.content_bounds.clone();
-        bar_frame(bar_height(window, cx), cx).child(content_frame(window).child(canvas(
-            move |bounds, _, _| *content_bounds.borrow_mut() = Some(bounds),
-            |_, _, _, _| {},
-        )))
+        bar_frame(window_controls::top_bar_height(window, cx), cx).child(
+            content_frame(window).child(canvas(
+                move |bounds, _, _| *content_bounds.borrow_mut() = Some(bounds),
+                |_, _, _, _| {},
+            )),
+        )
     }
 }
 

@@ -15,9 +15,9 @@ mod macos;
 mod windows;
 
 #[cfg(target_os = "macos")]
-pub(in crate::top_bar) use macos::{WindowControls, leading_inset};
+pub use macos::{WindowControls, leading_inset};
 
-pub(in crate::top_bar) fn titlebar_interaction(bar: Stateful<Div>) -> Stateful<Div> {
+pub fn top_bar_interaction(bar: Stateful<Div>) -> Stateful<Div> {
     #[cfg(target_os = "macos")]
     {
         bar.on_click(|event, window, _| {
@@ -34,28 +34,28 @@ pub(in crate::top_bar) fn titlebar_interaction(bar: Stateful<Div>) -> Stateful<D
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(in crate::top_bar) struct WindowControls;
+pub struct WindowControls;
 
 #[cfg(not(target_os = "macos"))]
 impl WindowControls {
-    pub(in crate::top_bar) fn new() -> Self {
+    pub fn new() -> Self {
         Self
     }
 
-    pub(in crate::top_bar) fn align(&mut self, _: &Window, _: gpui::Pixels) {}
+    pub fn align(&mut self, _: &Window, _: gpui::Pixels) {}
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(in crate::top_bar) fn leading_inset(window: &Window) -> gpui::Pixels {
+pub fn leading_inset(window: &Window) -> gpui::Pixels {
     scale::to_pixels(scale::S6, window)
 }
 
 #[cfg(target_os = "windows")]
-pub(in crate::top_bar) fn trailing(window: &Window, cx: &App) -> Option<AnyElement> {
+pub fn trailing(window: &Window, cx: &App) -> Option<AnyElement> {
     Some(windows::render(window, cx))
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(in crate::top_bar) fn trailing(_: &Window, _: &App) -> Option<AnyElement> {
+pub fn trailing(_: &Window, _: &App) -> Option<AnyElement> {
     None
 }

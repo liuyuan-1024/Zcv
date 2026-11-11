@@ -18,8 +18,8 @@ use gpui::{
     SharedString, Stateful, Subscription, Task, WeakEntity, Window, div, prelude::*,
 };
 use zcv_actions::{
-    FocusOrHidePanel, MinimizeWindow, OpenSettings, QuitWindow, Save, ToggleBottomDock,
-    ToggleLeftDock, ToggleMaximizeWindow,
+    FocusOrHidePanel, MinimizeWindow, QuitWindow, Save, ToggleBottomDock, ToggleLeftDock,
+    ToggleMaximizeWindow,
 };
 use zcv_path::AbsolutePathBuf;
 use zcv_project::{FileSaveConflictPolicy, Project};
@@ -42,10 +42,6 @@ use crate::{
 const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 const WINDOW_BOUNDS_SAVE_THROTTLE: Duration = Duration::from_millis(100);
 
-/// 打开设置文件的路径提供者：宿主注入，依次返回参考文件和用户文件。
-pub(crate) type SettingsFilesProvider =
-    Box<dyn Fn(&mut App) -> anyhow::Result<(PathBuf, PathBuf)> + Send + Sync>;
-
 type WorkspaceAction = Box<dyn Fn(Stateful<Div>, &mut Context<Workspace>) -> Stateful<Div>>;
 
 enum ItemNavigation {
@@ -64,9 +60,7 @@ pub struct Workspace {
     right_dock: Entity<Dock>,
     bottom_dock: Entity<Dock>,
     /// 顶栏视图，由宿主注入。
-    titlebar: Option<AnyView>,
-    /// 设置文件由宿主配置模块持有，工作区只消费打开时的路径。
-    settings_files_provider: Option<SettingsFilesProvider>,
+    top_bar: Option<AnyView>,
     /// 宿主装配的订阅（git/settings/面板等）。
     _subscriptions: Vec<Subscription>,
     /// 经 register_action 注册的 action handler（render 时挂到根节点，焦点链全局可达）。
@@ -226,8 +220,7 @@ impl Workspace {
             left_dock,
             right_dock,
             bottom_dock,
-            titlebar: None,
-            settings_files_provider: None,
+            top_bar: None,
             _subscriptions: iter::once(layout_subscription)
                 .chain(dock_layout_subscriptions)
                 .chain(iter::once(focus_lost_subscription))
@@ -453,16 +446,12 @@ impl Workspace {
     }
 
     /// 注入顶栏视图。
-    pub fn set_titlebar(&mut self, view: AnyView, cx: &mut Context<Self>) {
-        self.titlebar = Some(view);
+    pub fn set_top_bar(&mut self, view: AnyView, cx: &mut Context<Self>) {
+        self.top_bar = Some(view);
         cx.notify();
     }
 
     /// 注入配置参考与用户配置的路径提供者。
-    pub fn set_settings_files_provider(&mut self, provider: SettingsFilesProvider) {
-        self.settings_files_provider = Some(provider);
-    }
-
     /// 注册 action handler 到 Workspace 根节点（焦点链顶端，快捷键全局可达）。
     ///
     /// 不在主焦点链上的组件（如顶栏选择器）创建时把命令 handler 注册到工作区，由工作区统一派发。
@@ -1189,35 +1178,6 @@ impl Workspace {
         })
         .detach();
     }
-
-    pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(provider) = &self.settings_files_provider else {
-            return;
-        };
-        match provider(cx) {
-            Ok((reference, user)) => {
-                self.open_paths_now(vec![reference, user], true, None, window, cx)
-            }
-            Err(error) => {
-                self.show_toast(
-                    ToastKind::Error,
-                    format!("打开设置失败：{error:#}"),
-                    vec![],
-                    Some(Duration::from_secs(8)),
-                    cx,
-                );
-            }
-        }
-    }
-
-    fn handle_open_settings(
-        &mut self,
-        _: &OpenSettings,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_settings(window, cx);
-    }
 }
 
 // ═══ 渲染 ═════════════════════════════════════════════════════════
@@ -1234,7 +1194,7 @@ impl Render for Workspace {
         let right_dock_entity = self.right_dock.clone();
         let bottom_dock_entity = self.bottom_dock.clone();
 
-        let titlebar = self.titlebar.as_ref();
+        let top_bar = self.top_bar.as_ref();
         let typography = self.typography;
 
         let mut root = div()
@@ -1254,7 +1214,7 @@ impl Render for Workspace {
             root = action(root, cx);
         }
         root.child(render_frame(
-            titlebar,
+            top_bar,
             &self.status_bar,
             render_body(&pane, left_dock, right_dock, bottom_dock),
             &self.toast_layer,
@@ -1263,7 +1223,6 @@ impl Render for Workspace {
         .on_action(cx.listener(Self::handle_quit))
         .on_action(|_: &MinimizeWindow, window, _| window.minimize_window())
         .on_action(cx.listener(Self::handle_toggle_maximize))
-        .on_action(cx.listener(Self::handle_open_settings))
         .on_action(cx.listener(Self::handle_save))
         .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {
             this.toggle_dock(DockPosition::Left, window, cx)
@@ -1289,7 +1248,7 @@ impl Render for Workspace {
 
 /// 工作台顶层框架组装。
 fn render_frame(
-    titlebar: Option<&AnyView>,
+    top_bar: Option<&AnyView>,
     status_bar: &Entity<StatusBar>,
     body: Div,
     toast_layer: &Entity<ToastLayer>,
@@ -1304,7 +1263,7 @@ fn render_frame(
         .bg(color::current(cx).surface_background)
         .text_color(color::current(cx).text)
         .child(
-            titlebar
+            top_bar
                 .map(|view| view.clone().into_any_element())
                 .unwrap_or_else(|| div().into_any_element()),
         )

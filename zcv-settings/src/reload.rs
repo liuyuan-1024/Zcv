@@ -17,9 +17,9 @@ use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 
 use super::{
     config_dir,
-    file::{ensure_settings_files, settings_file},
+    file::{ensure_user_settings_file, settings_file},
     merge::UserSettings,
-    schema::parse_user_settings,
+    schema::{UserSettingsContent, parse_user_settings},
     store::{GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore},
 };
 
@@ -37,7 +37,7 @@ pub fn init(cx: &mut App) {
     let error_reporter = cx.new(|_| SettingsErrorReporter::default());
     cx.set_global(GlobalSettingsErrorReporter(error_reporter.clone()));
     let settings_path = settings_file();
-    if let Err(error) = ensure_settings_files() {
+    if let Err(error) = ensure_user_settings_file() {
         error_reporter.update(cx, |reporter, cx| {
             reporter.report(format!("初始化设置文件失败：{error:#}"), cx)
         });
@@ -55,12 +55,14 @@ pub fn init(cx: &mut App) {
         }
     };
     let mut settings = UserSettings::default();
+    let mut user_content = UserSettingsContent::default();
     let mut last_user_settings_content = None;
     if !content.is_empty() {
         last_user_settings_content = Some(content.clone());
         match parse_user_settings(&content) {
             Ok(parsed) => {
-                settings = UserSettings::merge(parsed);
+                settings = UserSettings::merge(parsed.clone());
+                user_content = parsed;
             }
             Err(error) => {
                 error_reporter.update(cx, |reporter, cx| {
@@ -129,6 +131,7 @@ pub fn init(cx: &mut App) {
     });
 
     let mut store = SettingsStore::new(settings);
+    store.user_content = user_content;
     store.last_user_settings_content = last_user_settings_content;
     cx.set_global(store);
     cx.set_global(SettingsReload {

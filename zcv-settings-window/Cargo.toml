@@ -1,0 +1,24 @@
+[package]
+name = "zcv-settings-window"
+version.workspace = true
+edition.workspace = true
+description = "独立设置窗口：设置页面与内嵌设置文件编辑器"
+
+[lib]
+path = "src/settings_window.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+zcv-actions.workspace = true
+zcv-editor.workspace = true
+zcv-language.workspace = true
+zcv-multi-buffer.workspace = true
+zcv-settings.workspace = true
+zcv-text.workspace = true
+zcv-theme.workspace = true
+zcv-ui.workspace = true
+zcv-workspace.workspace = true
+
+[lints]
+workspace = true

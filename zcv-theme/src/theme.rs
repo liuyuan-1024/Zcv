@@ -13,7 +13,7 @@ mod theme_data;
 pub mod typography;
 
 use gpui::{App, Window};
-use serde::{Deserialize, Deserializer, de::Error as _};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use theme_data::{ThemeData, theme_by_id, themes};
 
@@ -27,6 +27,19 @@ pub enum ThemeChoice {
 }
 
 impl ThemeChoice {
+    /// 设置与面板可选的完整主题列表：跟随系统在前，其后是注册表中的内置主题。
+    pub fn available() -> impl Iterator<Item = Self> {
+        std::iter::once(Self::System).chain(themes().iter().map(|theme| Self::Named(theme.id)))
+    }
+
+    /// 写回设置文件时使用的稳定名称。
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Named(id) => id,
+        }
+    }
+
     /// 从设置字符串解析；未知 id 是配置错误。
     pub fn from_config(s: &str) -> Result<Self, String> {
         match s {
@@ -62,6 +75,15 @@ impl<'de> Deserialize<'de> for ThemeChoice {
     {
         let name = String::deserialize(deserializer)?;
         Self::from_config(&name).map_err(D::Error::custom)
+    }
+}
+
+impl Serialize for ThemeChoice {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.id())
     }
 }
 

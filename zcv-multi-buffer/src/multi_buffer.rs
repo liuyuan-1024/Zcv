@@ -33,7 +33,7 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet, hash_map::Entry},
     iter, mem,
-    ops::Range,
+    ops::{Add, AddAssign, Deref, Range, Sub, SubAssign},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
 };
@@ -554,7 +554,7 @@ struct ExcerptCoordinates {
     adds_newline: bool,
 }
 
-impl std::ops::Deref for ExcerptMapping {
+impl Deref for ExcerptMapping {
     type Target = OutputRegion;
 
     fn deref(&self) -> &OutputRegion {
@@ -760,7 +760,7 @@ impl MBTextSummary {
     }
 }
 
-impl std::ops::AddAssign for MBTextSummary {
+impl AddAssign for MBTextSummary {
     /// 并接两个摘要；语义与 zcv_text::TextSummary 的 join 完全一致。
     ///
     /// 拼接点两侧的行会合并成候选最长行；行宽维度不可通过减法得到，只能由两端摘要派生。
@@ -1036,30 +1036,30 @@ impl From<Range<MultiBufferOffset>> for MultiBufferRange {
 /// 组合坐标的算术：与裸长度运算只在明确坐标维度内进行。
 macro_rules! impl_offset_ops {
     ($name:ident) => {
-        impl std::ops::Add<usize> for $name {
+        impl Add<usize> for $name {
             type Output = Self;
             fn add(self, rhs: usize) -> Self {
                 Self(self.0 + rhs)
             }
         }
-        impl std::ops::Sub<usize> for $name {
+        impl Sub<usize> for $name {
             type Output = Self;
             fn sub(self, rhs: usize) -> Self {
                 Self(self.0 - rhs)
             }
         }
-        impl std::ops::Sub for $name {
+        impl Sub for $name {
             type Output = usize;
             fn sub(self, rhs: Self) -> usize {
                 self.0 - rhs.0
             }
         }
-        impl std::ops::AddAssign<usize> for $name {
+        impl AddAssign<usize> for $name {
             fn add_assign(&mut self, rhs: usize) {
                 self.0 += rhs;
             }
         }
-        impl std::ops::SubAssign<usize> for $name {
+        impl SubAssign<usize> for $name {
             fn sub_assign(&mut self, rhs: usize) {
                 self.0 -= rhs;
             }

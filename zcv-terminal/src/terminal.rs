@@ -36,7 +36,7 @@ use gpui::{
 };
 pub use panel::TerminalPanel;
 pub(crate) use view::TerminalView;
-use zcv_settings::{SettingsStore, UserSettings};
+use zcv_settings::{SettingsStore, TerminalCursorShape, UserSettings};
 
 use crate::{
     alacritty::{AlacrittyTermLock, PtySender},
@@ -472,11 +472,11 @@ impl TerminalSettings {
             font_size: font_size_override.unwrap_or(settings.terminal_font_size),
             line_height: settings.terminal_line_height,
             max_scroll_history_lines: settings.terminal_max_scroll_history_lines,
-            cursor_shape: match settings.terminal_cursor_shape.as_str() {
-                "underline" => CursorShape::Underline,
-                "bar" => CursorShape::Beam,
-                "hollow" => CursorShape::HollowBlock,
-                _ => CursorShape::Block,
+            cursor_shape: match settings.terminal_cursor_shape {
+                TerminalCursorShape::Block => CursorShape::Block,
+                TerminalCursorShape::Underline => CursorShape::Underline,
+                TerminalCursorShape::Bar => CursorShape::Beam,
+                TerminalCursorShape::Hollow => CursorShape::HollowBlock,
             },
             alternate_scroll: settings.terminal_alternate_scroll,
             option_as_meta: settings.terminal_option_as_meta,

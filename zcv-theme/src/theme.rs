@@ -13,6 +13,7 @@ mod theme_data;
 pub mod typography;
 
 use gpui::{App, Window};
+use serde::{Deserialize, Deserializer, de::Error as _};
 
 use theme_data::{ThemeData, theme_by_id, themes};
 
@@ -26,18 +27,20 @@ pub enum ThemeChoice {
 }
 
 impl ThemeChoice {
-    /// 从设置字符串解析；未知 id 回退到 `System`。
-    pub fn from_config(s: &str) -> Self {
+    /// 从设置字符串解析；未知 id 是配置错误。
+    pub fn from_config(s: &str) -> Result<Self, String> {
         match s {
-            "system" => Self::System,
-            _ => theme_by_id(s).map_or(Self::System, |theme| Self::Named(theme.id)),
+            "system" => Ok(Self::System),
+            _ => theme_by_id(s)
+                .map(|theme| Self::Named(theme.id))
+                .ok_or_else(|| format!("未知主题：{s}")),
         }
     }
 
     /// 解析为具体主题：`System` 按窗口外观选择匹配的主题，无窗口时默认深色。
     pub(crate) fn effective(self, window: Option<&Window>) -> &'static ThemeData {
         match self {
-            Self::Named(id) => theme_by_id(id).unwrap_or_else(|| first_theme()),
+            Self::Named(id) => theme_by_id(id).expect("具名主题必须来自注册表"),
             Self::System => window
                 .map(|w| w.appearance())
                 .and_then(|appearance| themes().iter().find(|theme| theme.appearance == appearance))
@@ -49,6 +52,16 @@ impl ThemeChoice {
         let theme = self.effective(window);
         color::set_theme(theme, cx);
         syntax::set_theme(theme, cx);
+    }
+}
+
+impl<'de> Deserialize<'de> for ThemeChoice {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+        Self::from_config(&name).map_err(D::Error::custom)
     }
 }
 

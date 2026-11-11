@@ -1,4 +1,5 @@
 use std::fs;
+use zcv_theme::ThemeChoice;
 
 use super::*;
 use crate::{
@@ -24,23 +25,23 @@ fn missing_user_settings_file_contains_only_overrides() {
 fn existing_user_settings_file_is_not_overwritten() {
     let directory = tempfile::tempdir().expect("应创建临时设置目录");
     let path = directory.path().join("settings.json");
-    fs::write(&path, r#"{"theme":"one-dark"}"#).expect("应创建用户设置文件");
+    fs::write(&path, r#"{"theme":"dark"}"#).expect("应创建用户设置文件");
 
     ensure_settings_file(&path, "{}\n").expect("已有设置文件应可重复初始化");
 
     assert_eq!(
         fs::read_to_string(path).expect("应读取用户设置文件"),
-        r#"{"theme":"one-dark"}"#
+        r#"{"theme":"dark"}"#
     );
 }
 
 #[test]
 fn missing_fields_use_defaults() {
-    let content = parse_user_settings(r#"{"theme":"one-light"}"#).unwrap();
+    let content = parse_user_settings(r#"{"theme":"light"}"#).unwrap();
     let settings = UserSettings::merge(content);
     let mut expected = UserSettings::default();
-    assert_ne!(expected.theme, "one-light");
-    expected.theme = "one-light".to_string();
+    assert_ne!(expected.theme, ThemeChoice::Named("light"));
+    expected.theme = ThemeChoice::Named("light");
     assert_eq!(settings, expected);
 }
 
@@ -189,7 +190,7 @@ fn comments_and_trailing_commas_are_supported() {
     let content = parse_user_settings(
         r#"{
             // settings.json 使用 JSONC 语义。
-            "theme": "one-dark",
+            "theme": "dark",
             "soft_wrap": "editor-width",
         }"#,
     )
@@ -201,38 +202,55 @@ fn comments_and_trailing_commas_are_supported() {
 }
 
 #[test]
-fn invalid_field_value_falls_back_to_default() {
-    // 非法值字段回退为未配置，由 merge 层用内置默认补齐。
-    let settings = UserSettings::merge(parse_user_settings(r#"{"soft_wrap": true}"#).unwrap());
-    assert_eq!(settings.soft_wrap, SoftWrapMode::EditorWidth);
-
-    let settings = UserSettings::merge(parse_user_settings(r#"{"theme":"unknown"}"#).unwrap());
-    assert_eq!(settings.theme, "unknown");
-
-    let settings = UserSettings::merge(
-        parse_user_settings(r#"{"file_scan_exclusions":"not-a-list"}"#).unwrap(),
-    );
-    assert!(
-        settings
-            .file_scan_exclusions
-            .iter()
-            .any(|glob| glob == "**/.git"),
-        "非数组名单应回退到内置默认名单"
-    );
+fn invalid_user_field_fails_instead_of_using_default() {
+    for content in [
+        r#"{"soft_wrap":true}"#,
+        r#"{"theme":"unknown"}"#,
+        r#"{"file_scan_exclusions":"not-a-list"}"#,
+        r#"{"file_scan_exclusions":["["]}"#,
+        r#"{"languages":{"Rust":{"insert_spaces":"yes"}}}"#,
+        r#"{"cursor_animation":{"enabled":"yes"}}"#,
+        r#"{"terminal_cursor_shape":"unknown"}"#,
+        r#"{"tab_size":0}"#,
+        r#"{"languages":{"Rust":{"tab_size":0}}}"#,
+        r#"{"indent_guides":{"line_width":0}}"#,
+        r#"{"indent_guides":{"line_width":11}}"#,
+        r#"{"languages":{"Rust":{"indent_guides":{"line_width":11}}}}"#,
+        r#"{"preferred_line_length":0}"#,
+        r#"{"content_font_size":0}"#,
+        r#"{"terminal_line_height":-1}"#,
+        r#"{"terminal_shell":""}"#,
+        r#"{"terminal_shell":true}"#,
+        r#"{"soft_warp":"bounded"}"#,
+        r#"{"languages":{"Rust":{"tab_szie":4}}}"#,
+        r#"{"indent_guides":{"line_wdith":2}}"#,
+        r#"{"cursor_animation":{"enabeld":true}}"#,
+        r#"{"theme":null}"#,
+        r#"{"tab_size":null}"#,
+        r#"{"indent_guides":null}"#,
+        r#"{"indent_guides":{"line_width":null}}"#,
+        r#"{"languages":{"Rust":{"tab_size":null}}}"#,
+        r#"{"cursor_animation":{"enabled":null}}"#,
+    ] {
+        assert!(parse_user_settings(content).is_err(), "应拒绝 {content}");
+    }
 }
 
 #[test]
-fn invalid_field_does_not_affect_other_fields() {
-    // 坏字段单独回退默认，好字段照常生效。
-    let settings = UserSettings::merge(
-        parse_user_settings(
-            r#"{"soft_wrap":"bogus","theme":"one-dark","file_scan_exclusions":["**/target"]}"#,
-        )
-        .unwrap(),
+fn invalid_user_settings_keep_the_last_valid_snapshot() {
+    let mut store = SettingsStore::new(UserSettings::default());
+    assert!(
+        store
+            .set_user_settings(r#"{"soft_wrap":"bounded"}"#)
+            .unwrap()
     );
-    assert_eq!(settings.soft_wrap, SoftWrapMode::EditorWidth);
-    assert_eq!(settings.theme, "one-dark");
-    assert_eq!(settings.file_scan_exclusions, vec!["**/target".to_string()]);
+    let before = store.settings.clone();
+    assert!(
+        store
+            .set_user_settings(r#"{"soft_wrap":true,"theme":"light"}"#)
+            .is_err()
+    );
+    assert_eq!(store.settings, before);
 }
 
 #[test]
@@ -358,9 +376,21 @@ fn builtin_settings_require_every_field_including_nested_and_nullable_fields() {
 fn invalid_builtin_values_fail_instead_of_falling_back() {
     let mut value: serde_json_lenient::Value =
         serde_json_lenient::from_str(&INITIAL_USER_SETTINGS).unwrap();
-    value["tab_size"] = 0.into();
-    assert!(parse_builtin_settings(&serde_json_lenient::to_string(&value).unwrap()).is_err());
-    value["tab_size"] = 4.into();
+    for (field, invalid) in [
+        ("tab_size", serde_json_lenient::json!(0)),
+        ("content_font_size", serde_json_lenient::json!(0)),
+        ("terminal_line_height", serde_json_lenient::json!(-1)),
+        ("preferred_line_length", serde_json_lenient::json!(0)),
+        ("terminal_shell", serde_json_lenient::json!("")),
+        ("file_scan_exclusions", serde_json_lenient::json!(["["])),
+    ] {
+        value[field] = invalid;
+        assert!(
+            parse_builtin_settings(&serde_json_lenient::to_string(&value).unwrap()).is_err(),
+            "应拒绝 {field}"
+        );
+        value = serde_json_lenient::from_str(&INITIAL_USER_SETTINGS).unwrap();
+    }
     value["indent_guides"]["line_width"] = 11.into();
     assert!(parse_builtin_settings(&serde_json_lenient::to_string(&value).unwrap()).is_err());
 }
@@ -387,4 +417,12 @@ fn invalid_json_reports_location() {
     let error = parse_user_settings(r#"{"theme":}"#).unwrap_err();
     let detailed = format!("{error:#}");
     assert!(detailed.contains("line 1 column"));
+}
+
+#[test]
+fn explicit_null_reports_location() {
+    let error = parse_user_settings("{\n  \"theme\": null\n}").unwrap_err();
+    let detailed = format!("{error:#}");
+    assert!(detailed.contains("配置项不能为 null"), "{detailed}");
+    assert!(detailed.contains("line 3 column 1"), "{detailed}");
 }

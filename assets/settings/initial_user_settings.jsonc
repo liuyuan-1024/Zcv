@@ -3,16 +3,16 @@
 // 参考文件会随应用版本更新，请勿在其中保存个人配置。
 
 {
-  // 可用值："system"（跟随系统）、"dark"、"light"；未知主题名会回退到 "system"。
+  // 可用值："system"（跟随系统）、"dark"、"light"；未知主题名会报错。
   "theme": "system",
 
-  // 数字，单位为像素；字号应大于 0（当前只校验数字类型）。
+  // 大于 0 的数字，单位为像素。
   "content_font_size": 16,
 
-  // 数字，单位为像素；字号应大于 0（当前只校验数字类型）。
+  // 大于 0 的数字，单位为像素。
   "ui_font_size": 14,
 
-  // 数字，表示内容字号的行高倍数；应大于 0（当前只校验数字类型）。
+  // 大于 0 的数字，表示内容字号的行高倍数。
   "content_line_height": 1.618,
 
   // 大于 0 的整数：Tab 的视觉列宽，也是一级缩进宽度。
@@ -35,7 +35,7 @@
     "Go": { "insert_spaces": false }
   },
 
-  // 缩进引导线设置对象；必须包含 enabled 和 line_width。
+  // 缩进引导线设置对象；用户设置可只填写需要覆盖的字段，未填写字段沿用内置值。
   "indent_guides": {
     // true 显示缩进引导线；false 隐藏。
     "enabled": true,
@@ -61,7 +61,7 @@
     "enabled": true
   },
 
-  // 非负整数，单位为列；仅在 soft_wrap 为 "bounded" 时生效，0 会使目标换行宽度为 0。
+  // 大于 0 的整数，单位为列；仅在 soft_wrap 为 "bounded" 时生效。
   "preferred_line_length": 80,
 
   // true 自动补全配对的闭合字符；false 不自动补全。
@@ -85,7 +85,7 @@
   // 保存时把非空文件末尾的 ASCII 空白收成一个换行；可在 languages 中按语言覆盖。
   "ensure_final_newline_on_save": true,
 
-  // 字符串数组；每项须为 globset 可解析的 glob，[] 表示不排除。无法解析的 glob 当前会被忽略。
+  // 字符串数组；每项须为 globset 可解析的 glob，[] 表示不排除。无效规则会报错。
   "file_scan_exclusions": [
     "**/.git",
     "**/.svn",
@@ -100,16 +100,16 @@
     "**/.settings"
   ],
 
-  // 数字，单位为像素；字号应大于 0（当前只校验数字类型）。
+  // 大于 0 的数字，单位为像素。
   "terminal_font_size": 16,
 
-  // 数字，表示终端字号的行高倍数；应大于 0（当前只校验数字类型）。
+  // 大于 0 的数字，表示终端字号的行高倍数。
   "terminal_line_height": 1.618,
 
   // 非负整数，表示终端滚动回看最多保留的行数；0 不保留历史行。
   "terminal_max_scroll_history_lines": 10000,
 
-  // 可用值："block"（方块）、"underline"（下划线）、"bar"（竖线）、"hollow"（空心方块）；其他字符串会显示为 "block"。
+  // 可用值："block"（方块）、"underline"（下划线）、"bar"（竖线）、"hollow"（空心方块）；其他字符串会报错。
   "terminal_cursor_shape": "block",
 
   // true 在备用屏幕下将滚轮转为方向键；false 不转换。

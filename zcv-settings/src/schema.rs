@@ -1,14 +1,18 @@
-//! 设置文件的内容 schema 与字段级容错解析。
+//! 设置文件的内容 schema 与值校验。
 //!
 //! 只描述 JSON 层可表达的内容与解析规则；默认值合并与运行时表示由 `merge` 层负责。
 
 use std::{
     collections::HashMap,
+    fmt,
+    marker::PhantomData,
     num::{NonZeroU32, NonZeroUsize},
 };
 
 use anyhow::{Context as _, Result, ensure};
-use serde::Deserialize;
+use globset::Glob;
+use serde::{Deserialize, Deserializer, de::Visitor};
+use zcv_theme::ThemeChoice;
 
 /// 软换行模式的设置值。
 ///
@@ -44,10 +48,20 @@ pub enum CursorShape {
     Hollow,
 }
 
+/// 终端光标形状由设置解析层确定，消费方不再处理未知字符串。
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TerminalCursorShape {
+    Block,
+    Underline,
+    Bar,
+    Hollow,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct CursorAnimationSettingsContent {
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) enabled: Option<bool>,
 }
 
@@ -55,7 +69,7 @@ pub(crate) struct CursorAnimationSettingsContent {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BuiltinSettingsContent {
-    pub(crate) theme: String,
+    pub(crate) theme: ThemeChoice,
     pub(crate) content_font_size: f32,
     pub(crate) ui_font_size: f32,
     pub(crate) content_line_height: f32,
@@ -81,7 +95,7 @@ pub(crate) struct BuiltinSettingsContent {
     pub(crate) terminal_font_size: f32,
     pub(crate) terminal_line_height: f32,
     pub(crate) terminal_max_scroll_history_lines: usize,
-    pub(crate) terminal_cursor_shape: String,
+    pub(crate) terminal_cursor_shape: TerminalCursorShape,
     pub(crate) terminal_alternate_scroll: bool,
     pub(crate) terminal_option_as_meta: bool,
     pub(crate) terminal_shell: TerminalShellSetting,
@@ -134,17 +148,17 @@ impl TabConfig {
 
 /// 按语言覆盖的 Tab / 缩进策略；字段为 `None` 时沿用全局默认。
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct LanguageOverrideContent {
-    #[serde(deserialize_with = "fallible")]
-    pub(crate) tab_size: Option<usize>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
+    pub(crate) tab_size: Option<NonZeroUsize>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) insert_spaces: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) indent_guides: Option<IndentGuideSettingsContent>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) remove_trailing_whitespace_on_save: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) ensure_final_newline_on_save: Option<bool>,
 }
 
@@ -166,12 +180,12 @@ pub struct IndentGuideSettings {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct IndentGuideSettingsContent {
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) enabled: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
-    pub(crate) line_width: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
+    pub(crate) line_width: Option<NonZeroU32>,
 }
 
 impl IndentGuideSettingsContent {
@@ -180,86 +194,159 @@ impl IndentGuideSettingsContent {
             settings.enabled = value;
         }
         if let Some(value) = self.line_width {
-            settings.line_width = value.clamp(1, 10);
+            settings.line_width = value.get();
         }
     }
 }
 
-/// 字段级容错：该字段值非法时解析为「未配置」（`None`），由 merge 层用内置默认补齐，不影响其他字段。
-/// JSON 语法错误仍整体失败。
-///
-/// 先解析成 `Value` 再转换：serde_json_lenient 对 enum 字段的非法值走 `peek_error` 路径且不消费 token，直接 `T::deserialize(...).ok()`会让后续字段错位；
-/// `Value` 解析总是消费完整 token。
-fn fallible<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
-{
-    let value = serde_json_lenient::Value::deserialize(deserializer)?;
-    Ok(serde_json_lenient::from_value(value).ok())
-}
-
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct UserSettingsContent {
-    #[serde(deserialize_with = "fallible")]
-    pub(crate) theme: Option<String>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
+    pub(crate) theme: Option<ThemeChoice>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) content_font_size: Option<f32>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) ui_font_size: Option<f32>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) content_line_height: Option<f32>,
-    #[serde(deserialize_with = "fallible")]
-    pub(crate) tab_size: Option<usize>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
+    pub(crate) tab_size: Option<NonZeroUsize>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) insert_spaces: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) indent_guides: Option<IndentGuideSettingsContent>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) soft_wrap: Option<SoftWrapMode>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) minimum_contrast_for_highlights: Option<f32>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) cursor_shape: Option<CursorShape>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) cursor_blink: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) cursor_animation: Option<CursorAnimationSettingsContent>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) preferred_line_length: Option<usize>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) file_scan_exclusions: Option<Vec<String>>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) use_autoclose: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) use_auto_surround: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) auto_indent: Option<AutoIndentMode>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) extend_comment_on_newline: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) extend_list_on_newline: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) remove_trailing_whitespace_on_save: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) ensure_final_newline_on_save: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) terminal_font_size: Option<f32>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) terminal_line_height: Option<f32>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) terminal_max_scroll_history_lines: Option<usize>,
-    #[serde(deserialize_with = "fallible")]
-    pub(crate) terminal_cursor_shape: Option<String>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
+    pub(crate) terminal_cursor_shape: Option<TerminalCursorShape>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) terminal_alternate_scroll: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) terminal_option_as_meta: Option<bool>,
-    #[serde(deserialize_with = "fallible")]
+    /// 缺失与显式 null 分别表示“不覆盖内置值”和“使用系统 shell”。
+    #[serde(default, deserialize_with = "deserialize_terminal_shell")]
     pub(crate) terminal_shell: Option<TerminalShellSetting>,
     /// 按语言覆盖的 Tab / 缩进策略；键为语言展示名。
-    #[serde(deserialize_with = "fallible")]
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) languages: Option<HashMap<String, LanguageOverrideContent>>,
+}
+
+/// 缺失字段由 `#[serde(default)]` 处理；字段一旦出现，显式 null 必须报错而不是被当作未填写。
+fn deserialize_non_null_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct NonNullOption<T>(PhantomData<T>);
+
+    impl<'de, T> Visitor<'de> for NonNullOption<T>
+    where
+        T: Deserialize<'de>,
+    {
+        type Value = Option<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("非 null 的配置值")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Err(E::custom("配置项不能为 null；删除该字段表示使用内置默认值"))
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Err(E::custom("配置项不能为 null；删除该字段表示使用内置默认值"))
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            T::deserialize(deserializer).map(Some)
+        }
+    }
+
+    deserializer.deserialize_option(NonNullOption(PhantomData))
+}
+
+/// 缺失与显式 null 分别表示“不覆盖内置值”和“使用系统 shell”。
+fn deserialize_terminal_shell<'de, D>(
+    deserializer: D,
+) -> Result<Option<TerminalShellSetting>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct TerminalShellVisitor;
+
+    impl<'de> Visitor<'de> for TerminalShellVisitor {
+        type Value = Option<TerminalShellSetting>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("null 或 shell 程序字符串")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(Some(TerminalShellSetting::System))
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(Some(TerminalShellSetting::System))
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            String::deserialize(deserializer)
+                .map(|shell| Some(TerminalShellSetting::Program(shell)))
+        }
+    }
+
+    deserializer.deserialize_option(TerminalShellVisitor)
 }
 
 pub(crate) fn parse_user_settings(content: &str) -> Result<UserSettingsContent> {
@@ -268,33 +355,102 @@ pub(crate) fn parse_user_settings(content: &str) -> Result<UserSettingsContent> 
     }
     let settings: UserSettingsContent =
         serde_json_lenient::from_str(content).context("不是合法的 settings JSONC")?;
+    validate_user_settings(&settings)?;
+    Ok(settings)
+}
+
+/// 用户设置的值校验；解析只负责 JSON 结构与类型。
+pub(crate) fn validate_user_settings(settings: &UserSettingsContent) -> Result<()> {
+    validate_positive_numbers(&[
+        ("content_font_size", settings.content_font_size),
+        ("ui_font_size", settings.ui_font_size),
+        ("content_line_height", settings.content_line_height),
+        ("terminal_font_size", settings.terminal_font_size),
+        ("terminal_line_height", settings.terminal_line_height),
+    ])?;
+    if let Some(length) = settings.preferred_line_length {
+        ensure!(length > 0, "preferred_line_length 必须大于 0");
+    }
+    if let Some(guides) = &settings.indent_guides {
+        validate_indent_guide_width(guides.line_width, "indent_guides")?;
+    }
+    if let Some(languages) = &settings.languages {
+        for (name, overrides) in languages {
+            if let Some(guides) = overrides.indent_guides {
+                validate_indent_guide_width(guides.line_width, name)?;
+            }
+        }
+    }
+    if let Some(TerminalShellSetting::Program(shell)) = &settings.terminal_shell {
+        ensure!(!shell.is_empty(), "terminal_shell 不能是空字符串");
+    }
+    if let Some(exclusions) = &settings.file_scan_exclusions {
+        validate_exclusions(exclusions)?;
+    }
     if let Some(value) = settings.minimum_contrast_for_highlights {
         ensure!(
             valid_minimum_contrast(value),
             "高亮文字最低对比度必须在 0 到 106 之间"
         );
     }
-    Ok(settings)
+    Ok(())
 }
 
 pub(crate) fn parse_builtin_settings(content: &str) -> Result<BuiltinSettingsContent> {
     let settings: BuiltinSettingsContent =
         serde_json_lenient::from_str(content).context("内置初始设置不是合法的 settings JSONC")?;
+    validate_positive_numbers(&[
+        ("content_font_size", Some(settings.content_font_size)),
+        ("ui_font_size", Some(settings.ui_font_size)),
+        ("content_line_height", Some(settings.content_line_height)),
+        ("terminal_font_size", Some(settings.terminal_font_size)),
+        ("terminal_line_height", Some(settings.terminal_line_height)),
+    ])?;
+    ensure!(
+        settings.preferred_line_length > 0,
+        "preferred_line_length 必须大于 0"
+    );
+    if let TerminalShellSetting::Program(shell) = &settings.terminal_shell {
+        ensure!(!shell.is_empty(), "terminal_shell 不能是空字符串");
+    }
     ensure!(
         settings.indent_guides.line_width.get() <= 10,
         "内置引导线宽度必须在 1 到 10 之间"
     );
     for (language, overrides) in &settings.languages {
-        ensure!(
-            overrides.tab_size != Some(0),
-            "内置语言 {language} 的 tab_size 必须大于 0"
-        );
+        if let Some(guides) = overrides.indent_guides {
+            validate_indent_guide_width(guides.line_width, language)?;
+        }
     }
     ensure!(
         valid_minimum_contrast(settings.minimum_contrast_for_highlights),
         "内置高亮文字最低对比度必须在 0 到 106 之间"
     );
+    validate_exclusions(&settings.file_scan_exclusions)?;
     Ok(settings)
+}
+
+fn validate_positive_numbers(values: &[(&str, Option<f32>)]) -> Result<()> {
+    for (name, value) in values {
+        if let Some(value) = value {
+            ensure!(value.is_finite() && *value > 0.0, "{name} 必须大于 0");
+        }
+    }
+    Ok(())
+}
+
+fn validate_indent_guide_width(value: Option<NonZeroU32>, name: &str) -> Result<()> {
+    if let Some(value) = value {
+        ensure!(value.get() <= 10, "{name} 的引导线宽度必须在 1 到 10 之间");
+    }
+    Ok(())
+}
+
+fn validate_exclusions(exclusions: &[String]) -> Result<()> {
+    for exclusion in exclusions {
+        Glob::new(exclusion).with_context(|| format!("无效的文件扫描排除规则：{exclusion}"))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn valid_minimum_contrast(value: f32) -> bool {

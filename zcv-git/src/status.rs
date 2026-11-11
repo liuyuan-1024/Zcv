@@ -277,7 +277,7 @@ impl GitStatus {
             // `-b` 分支头行：`## ` 会通过下方 `entry[2] == b' '` 守卫后按状态码解析而报错，
             // 必须在守卫前特判；首个头行优先（多仓库嵌套时外层先行）。
             if let Some(header) = entry.strip_prefix(b"## ") {
-                branch = branch.or(parse_branch_header(header));
+                branch = branch.or_else(|| parse_branch_header(header));
                 continue;
             }
             anyhow::ensure!(

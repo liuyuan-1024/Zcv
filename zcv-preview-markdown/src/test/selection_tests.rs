@@ -197,7 +197,7 @@ fn reset_clears_selection_and_anchor() {
 fn placeholder_mapping_maps_selection_to_render_ranges() {
     // 渲染文本 "a ⎵⎵⎵ b"（NBSP 占位），选择文本 "a x^2 b"。
     let mut layout = SelectionLayout::default();
-    layout.begin_frame(&[0..7]);
+    layout.begin_frame(std::slice::from_ref(&(0..7)));
     let run = layout.register_next_run(
         10,
         vec![PlaceholderMap {
@@ -342,7 +342,7 @@ fn hit_testing_maps_math_placeholder_to_source_bounds(cx: &mut TestAppContext) {
     });
     let bounds = text_layout.bounds();
     let mut layout = SelectionLayout::default();
-    layout.begin_frame(&[0..7]);
+    layout.begin_frame(std::slice::from_ref(&(0..7)));
     let run = layout.register_next_run(
         rendered.len(),
         vec![PlaceholderMap {

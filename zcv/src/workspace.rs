@@ -31,7 +31,7 @@ use zcv_project::{
     Project, ProjectEvent,
 };
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
-use zcv_theme::{ThemeChoice, typography};
+use zcv_theme::typography;
 use zcv_workspace::{
     ActivityIndicator, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
     PaneEvent, PanelButtons, PreviewToolbar, ToastAction, ToastKind, TopBar, Workspace,
@@ -560,7 +560,7 @@ fn finish_build_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Workspace {
-    apply_theme(&SettingsStore::get(cx).theme, cx, Some(window));
+    SettingsStore::get(cx).theme.apply(cx, Some(window));
     // UI 字号是当前工作区的窗口基准；临时缩放不会影响其他窗口。
     window.set_rem_size(workspace.typography().ui_size());
     // 装配不区分空/项目工作区：面板无条件注册，空态由各面板自行渲染。
@@ -1194,7 +1194,7 @@ fn initialize_workspace(
             );
             workspace.apply_typography_settings(&settings, cx);
             window.set_rem_size(workspace.typography().ui_size());
-            apply_theme(&settings.theme, cx, Some(window));
+            settings.theme.apply(cx, Some(window));
             project_tree_for_settings.update(cx, |tree, cx| tree.settings_changed(cx));
             cx.notify();
         });
@@ -1221,7 +1221,7 @@ fn initialize_workspace(
 
     let appearance_subscription = window.observe_window_appearance(|window, cx| {
         let settings = SettingsStore::get(cx);
-        apply_theme(&settings.theme, cx, Some(window));
+        settings.theme.apply(cx, Some(window));
         window.refresh();
     });
 
@@ -1257,11 +1257,6 @@ fn initialize_workspace(
         subscribe_to_editor_events(&mut *workspace, editor, cx);
     }
     refresh_pane_git_projection(&pane, workspace.project(), cx);
-}
-
-/// 将设置层的文本主题 id 解析并应用为主题运行时状态。
-fn apply_theme(theme: &str, cx: &mut App, window: Option<&Window>) {
-    ThemeChoice::from_config(theme).apply(cx, window);
 }
 
 /// 普通编辑器的文本变化只同步工作区文本上的冲突标记；

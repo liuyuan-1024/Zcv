@@ -15,6 +15,7 @@
 ## 所有权
 
 - `theme_data` 是主题数据的唯一解析与持有者。
+- `ThemeChoice` 从主题注册表验证配置值；未知主题名属于配置错误，设置层保存已验证的选择。
 - 当前语义色、语法表与基础排版分别存放在 **App 级 global** 中，随主题/设置整体替换；不保留任何进程级可变主题静态。
 - `color::current(cx)`、`syntax::style_table(names, cx)`、`typography::current(cx)` 是各自的读取入口。
 - 工作区的临时排版覆盖属于 `zcv-workspace::Workspace`，不回写基础 global；渲染经窗口级入口读取生效快照。

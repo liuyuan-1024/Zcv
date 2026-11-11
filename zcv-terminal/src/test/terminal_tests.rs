@@ -160,6 +160,23 @@ fn terminal_typography_override_is_isolated_per_session() {
     assert_eq!(second.font_size, settings.terminal_font_size);
 }
 
+#[test]
+fn terminal_cursor_shape_uses_parsed_setting() {
+    let mut settings = UserSettings::default();
+    for (setting, expected) in [
+        (TerminalCursorShape::Block, CursorShape::Block),
+        (TerminalCursorShape::Underline, CursorShape::Underline),
+        (TerminalCursorShape::Bar, CursorShape::Beam),
+        (TerminalCursorShape::Hollow, CursorShape::HollowBlock),
+    ] {
+        settings.terminal_cursor_shape = setting;
+        assert_eq!(
+            TerminalSettings::from_user_settings(&settings, None).cursor_shape,
+            expected
+        );
+    }
+}
+
 /// 选择范围包含判断。
 #[test]
 fn selection_range_contains() {

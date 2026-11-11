@@ -59,12 +59,6 @@ fn atomic_swap_exchanges_complete_directories() {
 
     atomic_swap(&first, &second).unwrap();
 
-    assert_eq!(
-        std::fs::read_to_string(first.join("version")).unwrap(),
-        "new"
-    );
-    assert_eq!(
-        std::fs::read_to_string(second.join("version")).unwrap(),
-        "old"
-    );
+    assert_eq!(fs::read_to_string(first.join("version")).unwrap(), "new");
+    assert_eq!(fs::read_to_string(second.join("version")).unwrap(), "old");
 }

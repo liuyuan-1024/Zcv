@@ -1,12 +1,24 @@
+use gpui::{AppContext, Empty, TestAppContext, TextSystem, WindowTextSystem, rgba};
+use std::{
+    iter,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+use zcv_buffer_diff::DiffHunkStaging;
+use zcv_language::{LanguageBuffer, LanguageRegistry};
+use zcv_multi_buffer::{
+    DisplayHunk, ExcerptRange, MultiBuffer, MultiBufferSnapshot, ResolvedDiffHunk, WordDiffs,
+};
+use zcv_settings::{SettingsStore, UserSettings};
+use zcv_text::{Affinity, Buffer, BufferConfig, ByteOffset, Line, TextRange};
+use zcv_theme::{ThemeChoice, typography};
+
+use super::*;
 use crate::display_map::{
     DiffDecorationSnapshot, DisplayMap, DisplaySnapshot, FoldBias, FoldPlaceholder,
     SearchDecorationInput,
     test_support::{WrapRowKind, projected_line_text},
 };
-
-use super::*;
-use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_settings::{SettingsStore, UserSettings};
 
 #[path = "ligature_text_system.rs"]
 mod ligature_text_system;
@@ -305,19 +317,6 @@ fn layout_visible_lines(
         cx,
     )
 }
-
-use gpui::{AppContext, Empty, TestAppContext, TextSystem, WindowTextSystem, rgba};
-
-use std::{
-    iter,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-};
-use zcv_buffer_diff::DiffHunkStaging;
-use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::{DisplayHunk, ExcerptRange, MultiBuffer, ResolvedDiffHunk, WordDiffs};
-use zcv_text::{Affinity, Buffer, BufferConfig, ByteOffset, Line, TextRange};
-use zcv_theme::{ThemeChoice, typography};
 
 fn expanded_diff_snapshot(old: &str, new: &str, cx: &mut TestAppContext) -> MultiBufferSnapshot {
     use zcv_buffer_diff::{BufferDiff, BufferDiffInput};

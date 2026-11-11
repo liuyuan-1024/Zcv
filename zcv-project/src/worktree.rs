@@ -215,12 +215,10 @@ impl TreeFilter {
     fn new(exclusions: &[String]) -> Self {
         let mut builder = GlobSetBuilder::new();
         for glob in exclusions {
-            if let Ok(glob) = Glob::new(glob) {
-                builder.add(glob);
-            }
+            builder.add(Glob::new(glob).expect("设置层已校验文件扫描排除规则"));
         }
         Self {
-            exclusions: builder.build().unwrap_or_default(),
+            exclusions: builder.build().expect("有效的排除规则必须能构建 GlobSet"),
         }
     }
 

@@ -70,11 +70,11 @@ fn updating_fold_widths_rewrites_renderer_and_skips_unchanged() {
 
     let (snapshot, edits) = map.write().update_fold_widths([(id, px(40.))]);
     assert!(!edits.is_empty(), "宽度变化必须产生显示编辑");
-    assert_eq!(snapshot.fold_width(id), Some(gpui::px(40.)));
+    assert_eq!(snapshot.fold_width(id), Some(px(40.)));
 
     let (snapshot, edits) = map.write().update_fold_widths([(id, px(40.))]);
     assert!(edits.is_empty(), "相同宽度不应产生显示编辑");
-    assert_eq!(snapshot.fold_width(id), Some(gpui::px(40.)));
+    assert_eq!(snapshot.fold_width(id), Some(px(40.)));
 }
 
 #[test]

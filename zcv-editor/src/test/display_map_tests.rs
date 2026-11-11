@@ -1150,7 +1150,6 @@ fn assert_offset_roundtrip(map: &DisplayMap) {
             .next()
             .map_or(1, char::len_utf8);
     }
-    let _ = len;
 }
 
 #[gpui::test]

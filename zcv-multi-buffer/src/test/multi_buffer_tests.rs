@@ -3546,7 +3546,7 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
         buffer.snapshot(cx);
     });
     cx.run_until_parked();
-    let hunks_after_edit = cx.update_entity(&combined, |buffer, cx| diff_hunks(buffer, cx));
+    let hunks_after_edit = cx.update_entity(&combined, diff_hunks);
     assert_eq!(
         hunks_after_edit.len(),
         2,
@@ -4638,7 +4638,7 @@ fn diff_hunks_survive_geometry_preserving_edits(cx: &mut TestAppContext) {
         "hunk 几何不变的编辑后 diff 高亮必须保留"
     );
     assert_eq!(
-        cx.update_entity(&combined, |buffer, cx| diff_hunk_expanded(buffer, cx)),
+        cx.update_entity(&combined, diff_hunk_expanded),
         vec![false],
         "展开状态同样受该门控影响，必须保持可用"
     );
@@ -5031,18 +5031,12 @@ fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) 
         1
     );
     // 普通文档默认折叠：不整行着色。
-    assert_eq!(
-        cx.update_entity(&combined, |buffer, cx| diff_hunk_expanded(buffer, cx)),
-        vec![false]
-    );
+    assert_eq!(cx.update_entity(&combined, diff_hunk_expanded), vec![false]);
     // 差异审阅视图默认展开：显示整行背景。
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_diff_hunks_expanded_by_default(true, cx)
     });
-    assert_eq!(
-        cx.update_entity(&combined, |buffer, cx| diff_hunk_expanded(buffer, cx)),
-        vec![true]
-    );
+    assert_eq!(cx.update_entity(&combined, diff_hunk_expanded), vec![true]);
 }
 
 /// 展开的修改块词级范围必须落在组合文档坐标：旧侧指针指向 base 文本，新侧指针指向 working 文本。

@@ -1,16 +1,19 @@
 use super::*;
 use gpui::{Context, IntoElement, Render, TestAppContext, div, px};
 
-/// 设置字符串解析：system 与主题文件名 id 各归其位，未知回退 System。
+/// 设置字符串解析：system 与主题文件名 id 各归其位，未知主题报错。
 #[test]
 fn theme_choice_from_config() {
-    assert_eq!(ThemeChoice::from_config("system"), ThemeChoice::System);
-    assert_eq!(ThemeChoice::from_config("dark"), ThemeChoice::Named("dark"));
+    assert_eq!(ThemeChoice::from_config("system"), Ok(ThemeChoice::System));
+    assert_eq!(
+        ThemeChoice::from_config("dark"),
+        Ok(ThemeChoice::Named("dark"))
+    );
     assert_eq!(
         ThemeChoice::from_config("light"),
-        ThemeChoice::Named("light")
+        Ok(ThemeChoice::Named("light"))
     );
-    assert_eq!(ThemeChoice::from_config("unknown"), ThemeChoice::System);
+    assert!(ThemeChoice::from_config("unknown").is_err());
 }
 
 /// 供窗口测试挂载的最小 Render 视图（无内容，只为拿到 window）。

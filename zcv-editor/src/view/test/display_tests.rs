@@ -1,15 +1,13 @@
-use zcv_multi_buffer::{
-    DiffExcerptRanges, DiffFile, DisplayHunk, ExcerptRange, MultiBuffer, MultiBufferOffset,
-    MultiBufferRange, ResolvedDiffHunk,
-};
-
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::{iter, path::PathBuf, rc::Rc, sync::Arc};
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging, PendingHunk};
 use zcv_language::LanguageRegistry;
+use zcv_multi_buffer::{
+    DiffExcerptRanges, DiffFile, DisplayHunk, ExcerptRange, MultiBuffer, MultiBufferOffset,
+    MultiBufferRange, ResolvedDiffHunk, WordDiffs,
+};
+use zcv_settings::{SettingsStore, SoftWrapMode, UserSettings};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
-
-use zcv_multi_buffer::WordDiffs;
 
 use super::common::{
     buffer_text, diff_hunk_expanded, diff_hunk_old_ranges, diff_hunk_word_diffs, diff_hunks,
@@ -20,8 +18,6 @@ use crate::display_map::{
     DisplayColumn, DisplayPoint, DisplayRow, DisplayRowEvent, HighlightStyles, hunk_rendering,
     test_support::{WrapRowKind, projected_line_text},
 };
-use zcv_settings::{SettingsStore, SoftWrapMode, UserSettings};
-
 /// 由绝对坐标切片构造按段解析输入，供渲染单元测试调用。
 fn resolved_hunks(
     hunks: Vec<DisplayHunk>,
@@ -3282,7 +3278,7 @@ fn diff_expansion_preserves_selection_source_anchor(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     assert_eq!(
-        cx.read_entity(&editor, |editor, cx| diff_hunk_expanded(editor, cx)),
+        cx.read_entity(&editor, diff_hunk_expanded),
         vec![true],
         "切换后 hunk 应处于展开态"
     );

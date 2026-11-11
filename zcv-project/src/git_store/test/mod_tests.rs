@@ -4,6 +4,11 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::time::{Duration, Instant};
 use std::{fs, slice};
 
+use gpui::{AppContext, TestAppContext};
+use zcv_buffer_diff::BufferDiffInput;
+use zcv_git::{FileStatus, RealGitRepository, StatusCode};
+use zcv_settings::{SettingsStore, UserSettings};
+
 use super::*;
 use crate::test_support::{rev_parse, run_git, test_git_repo};
 
@@ -11,11 +16,6 @@ use crate::test_support::{rev_parse, run_git, test_git_repo};
 fn test_registry() -> Arc<LanguageRegistry> {
     Arc::new(LanguageRegistry::new())
 }
-
-use gpui::AppContext;
-use zcv_buffer_diff::BufferDiffInput;
-use zcv_git::{FileStatus, RealGitRepository, StatusCode};
-use zcv_settings::{SettingsStore, UserSettings};
 
 fn absolute(path: PathBuf) -> AbsolutePathBuf {
     AbsolutePathBuf::canonicalize(&path)
@@ -56,7 +56,7 @@ impl GitStore {
 }
 
 #[gpui::test]
-fn scan_discovers_repository_and_reports_status(cx: &mut gpui::TestAppContext) {
+fn scan_discovers_repository_and_reports_status(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "已修改\n").expect("应修改文件");
 
@@ -81,7 +81,7 @@ fn scan_discovers_repository_and_reports_status(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn failed_git_status_scan_keeps_last_valid_snapshot(cx: &mut gpui::TestAppContext) {
+fn failed_git_status_scan_keeps_last_valid_snapshot(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "已修改\n").expect("应修改文件");
     let git_store =
@@ -127,7 +127,7 @@ fn failed_git_status_scan_keeps_last_valid_snapshot(cx: &mut gpui::TestAppContex
 /// 丢弃会让在途扫描装回事件之前的旧快照（已删除文件永久留在变更树），
 /// 因此同 key 合并必须是「跳过旧任务、补跑最新请求」。
 #[gpui::test]
-fn scan_request_during_running_scan_is_never_dropped(cx: &mut gpui::TestAppContext) {
+fn scan_request_during_running_scan_is_never_dropped(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     fs::write(root.join("scratch.txt"), "临时\n").expect("应写入未跟踪文件");
     let git_store =
@@ -176,7 +176,7 @@ fn scan_request_during_running_scan_is_never_dropped(cx: &mut gpui::TestAppConte
 /// 回归：增量刷新执行期间到达的新请求不得被丢弃，执行期间累积的路径
 /// 由补跑的刷新任务在 prepare 阶段统一消费（取代原「任务结束后补发」机制）。
 #[gpui::test]
-fn refresh_request_during_running_refresh_is_never_dropped(cx: &mut gpui::TestAppContext) {
+fn refresh_request_during_running_refresh_is_never_dropped(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     let git_store =
         cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
@@ -223,7 +223,7 @@ fn refresh_request_during_running_refresh_is_never_dropped(cx: &mut gpui::TestAp
 }
 
 #[gpui::test]
-fn diff_stat_for_repository_merges_staged_and_unstaged(cx: &mut gpui::TestAppContext) {
+fn diff_stat_for_repository_merges_staged_and_unstaged(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     // 先做一次未暂存修改（1 增 1 删：改写第二行内容）。
     fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n").expect("应写入文件");
@@ -253,7 +253,7 @@ fn diff_stat_for_repository_merges_staged_and_unstaged(cx: &mut gpui::TestAppCon
 }
 
 #[gpui::test]
-fn empty_repository_reports_no_branch(cx: &mut gpui::TestAppContext) {
+fn empty_repository_reports_no_branch(cx: &mut TestAppContext) {
     let temp_dir = tempfile::tempdir().expect("应创建临时目录");
     run_git(temp_dir.path(), &["init", "-q", "-b", "master"]);
 
@@ -270,7 +270,7 @@ fn empty_repository_reports_no_branch(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn incremental_refresh_updates_statuses(cx: &mut gpui::TestAppContext) {
+fn incremental_refresh_updates_statuses(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     let git_store =
         cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
@@ -308,7 +308,7 @@ fn incremental_refresh_updates_statuses(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn index_metadata_event_refreshes_the_repository(cx: &mut gpui::TestAppContext) {
+fn index_metadata_event_refreshes_the_repository(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
     fs::write(&path, "暂存内容\n").expect("应修改文件");
@@ -332,7 +332,7 @@ fn index_metadata_event_refreshes_the_repository(cx: &mut gpui::TestAppContext) 
 }
 
 #[gpui::test]
-fn external_checkout_updates_head(cx: &mut gpui::TestAppContext) {
+fn external_checkout_updates_head(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     // 第二个分支。
     run_git(&root, &["checkout", "-q", "-b", "feature"]);
@@ -359,7 +359,7 @@ fn external_checkout_updates_head(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn load_revision_text_returns_head_content(cx: &mut gpui::TestAppContext) {
+fn load_revision_text_returns_head_content(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let git_store =
@@ -384,7 +384,7 @@ fn load_revision_text_returns_head_content(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn load_revision_text_returns_index_content(cx: &mut gpui::TestAppContext) {
+fn load_revision_text_returns_index_content(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let unchanged_path = root.join("unchanged.txt");
@@ -456,7 +456,7 @@ fn load_revision_text_returns_index_content(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn status_for_directory_aggregates_children(cx: &mut gpui::TestAppContext) {
+fn status_for_directory_aggregates_children(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     fs::create_dir_all(root.join("src")).expect("应创建目录");
     fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("应创建文件");
@@ -514,7 +514,7 @@ fn status_for_directory_aggregates_children(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn revision_refresh_covers_git_metadata_and_same_status_rescan(cx: &mut gpui::TestAppContext) {
+fn revision_refresh_covers_git_metadata_and_same_status_rescan(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
@@ -571,9 +571,7 @@ fn revision_refresh_covers_git_metadata_and_same_status_rescan(cx: &mut gpui::Te
 }
 
 #[gpui::test]
-fn refreshing_one_revision_path_does_not_discard_another_initial_load(
-    cx: &mut gpui::TestAppContext,
-) {
+fn refreshing_one_revision_path_does_not_discard_another_initial_load(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
@@ -613,7 +611,7 @@ fn refreshing_one_revision_path_does_not_discard_another_initial_load(
 }
 
 #[gpui::test]
-fn superseded_initial_revision_load_waits_for_the_current_read(cx: &mut gpui::TestAppContext) {
+fn superseded_initial_revision_load_waits_for_the_current_read(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
@@ -649,9 +647,7 @@ fn superseded_initial_revision_load_waits_for_the_current_read(cx: &mut gpui::Te
 }
 
 #[gpui::test]
-fn failed_revision_read_preserves_cached_text_and_does_not_cache_missing(
-    cx: &mut gpui::TestAppContext,
-) {
+fn failed_revision_read_preserves_cached_text_and_does_not_cache_missing(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
@@ -708,7 +704,7 @@ fn failed_revision_read_preserves_cached_text_and_does_not_cache_missing(
 }
 
 #[gpui::test]
-fn revision_diff_source_survives_missing_and_present_transitions(cx: &mut gpui::TestAppContext) {
+fn revision_diff_source_survives_missing_and_present_transitions(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
@@ -762,9 +758,7 @@ fn revision_diff_source_survives_missing_and_present_transitions(cx: &mut gpui::
 }
 
 #[gpui::test]
-fn binary_revision_is_not_installed_as_text_and_recovers_after_restage(
-    cx: &mut gpui::TestAppContext,
-) {
+fn binary_revision_is_not_installed_as_text_and_recovers_after_restage(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     let path = root.join("tracked.txt");
@@ -808,7 +802,7 @@ fn binary_revision_is_not_installed_as_text_and_recovers_after_restage(
 }
 
 #[gpui::test]
-fn status_for_directory_returns_ignored_for_ignored_directory(cx: &mut gpui::TestAppContext) {
+fn status_for_directory_returns_ignored_for_ignored_directory(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     fs::create_dir_all(root.join("node_modules/pkg")).expect("应创建目录");
     fs::write(root.join("node_modules/pkg/index.js"), "x\n").expect("应创建文件");
@@ -826,7 +820,7 @@ fn status_for_directory_returns_ignored_for_ignored_directory(cx: &mut gpui::Tes
 }
 
 #[gpui::test]
-fn ignored_children_do_not_taint_directory_status(cx: &mut gpui::TestAppContext) {
+fn ignored_children_do_not_taint_directory_status(cx: &mut TestAppContext) {
     // 回归：目录内的忽略文件（如 .DS_Store）不应让目录本身淡显。
     let (root, _temp) = test_git_repo();
     fs::write(root.join(".gitignore"), ".DS_Store\n").expect("应写入 .gitignore");
@@ -863,7 +857,7 @@ fn ignored_children_do_not_taint_directory_status(cx: &mut gpui::TestAppContext)
 }
 
 #[gpui::test]
-fn ignored_directory_status_propagates_to_descendants(cx: &mut gpui::TestAppContext) {
+fn ignored_directory_status_propagates_to_descendants(cx: &mut TestAppContext) {
     // `--ignored=matching` 对整棵被忽略子树只报告目录级条目（如 `!! tmp/`），子树内的文件与目录无条目；
     // 查询时应沿祖先链继承忽略状态。
     let (root, _temp) = test_git_repo();
@@ -916,7 +910,7 @@ fn ignored_directory_status_propagates_to_descendants(cx: &mut gpui::TestAppCont
 }
 
 #[gpui::test]
-fn run_operation_pushes_to_remote(cx: &mut gpui::TestAppContext) {
+fn run_operation_pushes_to_remote(cx: &mut TestAppContext) {
     // 工作仓库与裸远程共用 temp_dir，保证测试期间目录存活。
     let temp_dir = tempfile::tempdir().expect("应创建临时目录");
     let remote = temp_dir.path().join("remote.git");
@@ -965,9 +959,7 @@ fn run_operation_pushes_to_remote(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn cancelling_queued_remote_operation_keeps_gate_closed_until_finished(
-    cx: &mut gpui::TestAppContext,
-) {
+fn cancelling_queued_remote_operation_keeps_gate_closed_until_finished(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     let git_store = cx.new(|cx| GitStore::new(vec![root], test_registry(), cx));
     git_store.update(cx, |store, cx| store.schedule_scan(cx));
@@ -1012,7 +1004,7 @@ fn cancelling_queued_remote_operation_keeps_gate_closed_until_finished(
 }
 
 #[gpui::test]
-fn stale_job_completion_does_not_remove_newer_same_key(cx: &mut gpui::TestAppContext) {
+fn stale_job_completion_does_not_remove_newer_same_key(cx: &mut TestAppContext) {
     let git_store = cx.new(|cx| GitStore::new(Vec::new(), test_registry(), cx));
     git_store.update(cx, |store, cx| {
         let key = GitJobKey::GitOperation(GitOperationKind::Push);
@@ -1047,7 +1039,7 @@ fn stale_job_completion_does_not_remove_newer_same_key(cx: &mut gpui::TestAppCon
 
 #[cfg(unix)]
 #[gpui::test]
-fn cancelling_running_push_allows_clean_retry_after_process_exit(cx: &mut gpui::TestAppContext) {
+fn cancelling_running_push_allows_clean_retry_after_process_exit(cx: &mut TestAppContext) {
     let temp_dir = tempfile::tempdir().expect("应创建临时目录");
     let remote = temp_dir.path().join("remote.git");
     run_git(
@@ -1126,7 +1118,7 @@ fn cancelling_running_push_allows_clean_retry_after_process_exit(cx: &mut gpui::
 }
 
 #[gpui::test]
-fn git_init_then_scan_discovers_repository(cx: &mut gpui::TestAppContext) {
+fn git_init_then_scan_discovers_repository(cx: &mut TestAppContext) {
     let temp_dir = tempfile::tempdir().expect("应创建临时目录");
     let root = temp_dir.path().to_path_buf();
 
@@ -1149,7 +1141,7 @@ fn git_init_then_scan_discovers_repository(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn stage_paths_moves_file_between_sections(cx: &mut gpui::TestAppContext) {
+fn stage_paths_moves_file_between_sections(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "修改后的内容\n").expect("应修改文件");
 
@@ -1239,7 +1231,7 @@ fn stage_paths_moves_file_between_sections(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn commit_and_uncommit_target_active_repository(cx: &mut gpui::TestAppContext) {
+fn commit_and_uncommit_target_active_repository(cx: &mut TestAppContext) {
     let (root_a, _temp_a) = test_git_repo();
     let (root_b, _temp_b) = test_git_repo();
     fs::write(root_a.join("tracked.txt"), "仓库 A 的修改\n").expect("应修改仓库 A");
@@ -1270,7 +1262,7 @@ fn commit_and_uncommit_target_active_repository(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn commit_graph_loads_active_repository(cx: &mut gpui::TestAppContext) {
+fn commit_graph_loads_active_repository(cx: &mut TestAppContext) {
     let (root_a, _temp_a) = test_git_repo();
     let (root_b, _temp_b) = test_git_repo();
     run_git(&root_a, &["commit", "--amend", "-m", "仓库 A 的初始提交"]);
@@ -1295,7 +1287,7 @@ fn commit_graph_loads_active_repository(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn stage_paths_expands_directory_to_matching_files(cx: &mut gpui::TestAppContext) {
+fn stage_paths_expands_directory_to_matching_files(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     // src 下的已跟踪修改 + 未跟踪新文件 + 子目录文件。
     fs::create_dir_all(root.join("src/sub")).expect("应创建目录");
@@ -1344,7 +1336,7 @@ fn stage_paths_expands_directory_to_matching_files(cx: &mut gpui::TestAppContext
 
 /// 同一 (working, base, index) 的 diff 实体在 GitStore 中按路径共享，缓存失效后才重建。
 #[gpui::test]
-fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) {
+fn file_diff_is_shared_by_working_base_and_index(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
@@ -1428,7 +1420,7 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
 /// 变更块操作：界面线程从 diff 快照生成确定编辑并立即写入 optimistic pending，后台只应用该编辑写入 index。
 #[gpui::test]
 fn diff_operations_stage_hunk_suppresses_source_and_marks_uncommitted_diff_pending(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut TestAppContext,
 ) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
@@ -1591,7 +1583,7 @@ fn diff_operations_stage_hunk_suppresses_source_and_marks_uncommitted_diff_pendi
 /// 工作区版本在 diff 快照之后前进时，操作锚点必须在当前快照上重新解析，
 /// 而不是因版本不相等丢弃并提示用户刷新。
 #[gpui::test]
-fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut gpui::TestAppContext) {
+fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
@@ -1685,7 +1677,7 @@ fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut gpui::
 /// 同文件连续暂存两个 hunk：不等待后台写入完成，编辑必须合并进同一乐观批次，
 /// 而不是被在途互斥拒绝。
 #[gpui::test]
-fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut gpui::TestAppContext) {
+fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let (root, _temp) = test_git_repo();
     fs::write(root.join("two.txt"), "a0\na1\na2\na3\na4\na5\n").expect("应写入初始文件");
@@ -1776,7 +1768,7 @@ fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut gpui::TestApp
 }
 
 #[gpui::test]
-fn status_entries_are_scoped_to_their_owning_repository(cx: &mut gpui::TestAppContext) {
+fn status_entries_are_scoped_to_their_owning_repository(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     let nested = root.join("nested");
     fs::create_dir(&nested).expect("应创建嵌套仓库目录");
@@ -1818,7 +1810,7 @@ fn status_entries_are_scoped_to_their_owning_repository(cx: &mut gpui::TestAppCo
 }
 
 #[gpui::test]
-fn active_repository_is_explicit_and_falls_back_when_missing(cx: &mut gpui::TestAppContext) {
+fn active_repository_is_explicit_and_falls_back_when_missing(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     let nested = root.join("nested");
     fs::create_dir(&nested).expect("应创建嵌套目录");
@@ -1834,14 +1826,14 @@ fn active_repository_is_explicit_and_falls_back_when_missing(cx: &mut gpui::Test
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
-    let active_workdir = |cx: &mut gpui::TestAppContext, store: &gpui::Entity<GitStore>| {
+    let active_workdir = |cx: &mut TestAppContext, store: &gpui::Entity<GitStore>| {
         cx.read_entity(store, |store, _| {
             store
                 .active_repository_workdir()
                 .map(|workdir| workdir.to_path_buf())
         })
     };
-    let branch = |cx: &mut gpui::TestAppContext, store: &gpui::Entity<GitStore>| {
+    let branch = |cx: &mut TestAppContext, store: &gpui::Entity<GitStore>| {
         cx.read_entity(store, |store, _| store.current_branch().map(str::to_string))
     };
     assert_eq!(
@@ -1883,7 +1875,7 @@ fn active_repository_is_explicit_and_falls_back_when_missing(cx: &mut gpui::Test
 }
 
 #[gpui::test]
-fn git_operation_targets_active_repository(cx: &mut gpui::TestAppContext) {
+fn git_operation_targets_active_repository(cx: &mut TestAppContext) {
     // 根仓库无 remote；嵌套仓库有 remote。active 切到嵌套后 push 应作用于嵌套。
     let (root, _temp) = test_git_repo();
     let temp_dir = tempfile::tempdir().expect("应创建临时目录");
@@ -1935,7 +1927,7 @@ fn git_operation_targets_active_repository(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn initial_scan_sets_active_to_first_repository(cx: &mut gpui::TestAppContext) {
+fn initial_scan_sets_active_to_first_repository(cx: &mut TestAppContext) {
     // root 位于外层仓库内且包含嵌套仓库：祖先前置 → 初始 active = 外层仓库。
     let (outer, _temp) = test_git_repo();
     let root = outer.join("proj");
@@ -1965,7 +1957,7 @@ fn initial_scan_sets_active_to_first_repository(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn remote_operation_state_reflects_push(cx: &mut gpui::TestAppContext) {
+fn remote_operation_state_reflects_push(cx: &mut TestAppContext) {
     // 工作仓库与裸远程共用 temp_dir，保证测试期间目录存活。
     let temp_dir = tempfile::tempdir().expect("应创建临时目录");
     let remote = temp_dir.path().join("remote.git");
@@ -2033,7 +2025,7 @@ fn remote_operation_state_reflects_push(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn remote_operation_state_defaults_without_remote(cx: &mut gpui::TestAppContext) {
+fn remote_operation_state_defaults_without_remote(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     let git_store =
         cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
@@ -2045,7 +2037,7 @@ fn remote_operation_state_defaults_without_remote(cx: &mut gpui::TestAppContext)
 }
 
 #[gpui::test]
-fn scan_reports_branch_list(cx: &mut gpui::TestAppContext) {
+fn scan_reports_branch_list(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
@@ -2067,7 +2059,7 @@ fn scan_reports_branch_list(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn checkout_branch_switches_and_refreshes(cx: &mut gpui::TestAppContext) {
+fn checkout_branch_switches_and_refreshes(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
@@ -2098,7 +2090,7 @@ fn checkout_branch_switches_and_refreshes(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn create_branch_creates_and_refreshes(cx: &mut gpui::TestAppContext) {
+fn create_branch_creates_and_refreshes(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     let git_store =
         cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
@@ -2124,7 +2116,7 @@ fn create_branch_creates_and_refreshes(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn external_checkout_updates_branch_list(cx: &mut gpui::TestAppContext) {
+fn external_checkout_updates_branch_list(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
@@ -2152,7 +2144,7 @@ fn external_checkout_updates_branch_list(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn branch_ops_skip_when_no_repository(cx: &mut gpui::TestAppContext) {
+fn branch_ops_skip_when_no_repository(cx: &mut TestAppContext) {
     // 非 git 目录：checkout/create 入口不 panic，仅触发扫描后返回。
     let temp_dir = tempfile::tempdir().expect("应创建临时目录");
     let git_store = cx.update(|cx| {

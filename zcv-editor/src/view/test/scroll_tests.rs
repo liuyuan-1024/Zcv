@@ -1,10 +1,25 @@
-use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer, MultiBufferOffset};
-
 use gpui::{
     Context, Entity, IntoElement, Modifiers, MouseButton, Pixels, Render, ScrollDelta, ScrollEvent,
     TestAppContext, TouchPhase, Window, point, px, size,
 };
+use std::{cell::Cell, rc::Rc};
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
+use zcv_multi_buffer::{
+    DiffExcerptRanges, DiffFile, DisplayHunk, ExcerptRange, MultiBuffer, MultiBufferOffset,
+};
 use zcv_settings::{SettingsStore, SoftWrapMode, UserSettings};
+use zcv_text::{Line, LogicalColumn, Position};
+
+use super::common::{
+    diff_hunks, focus_editor, inject_editor_diff, scrollbar_geometry, scrolling_text, test_buffer,
+};
+use super::*;
+use crate::{
+    display_map::EditorHunkMarkerKind,
+    scroll::ScrollbarThumbState,
+    scrollbar::{ScrollbarMarkerKind, marker_geometry},
+    selection::SelectionSet,
+};
 
 /// 测试包装：把预先创建的 Editor 实体作为窗口视图（布局由窗口首帧触发）。
 struct EditorInWindow(Entity<Editor>);
@@ -14,23 +29,6 @@ impl Render for EditorInWindow {
         self.0.clone()
     }
 }
-use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
-use zcv_text::{Line, LogicalColumn, Position};
-
-use zcv_multi_buffer::DisplayHunk;
-
-use super::common::{
-    diff_hunks, focus_editor, inject_editor_diff, scrollbar_geometry, scrolling_text, test_buffer,
-};
-
-use super::*;
-use crate::{
-    display_map::EditorHunkMarkerKind,
-    scroll::ScrollbarThumbState,
-    scrollbar::{ScrollbarMarkerKind, marker_geometry},
-    selection::SelectionSet,
-};
-use std::{cell::Cell, rc::Rc};
 
 #[gpui::test]
 fn composite_document_refreshes_scrollbar_markers(cx: &mut TestAppContext) {

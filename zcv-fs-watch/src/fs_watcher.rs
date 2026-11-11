@@ -798,7 +798,7 @@ impl Watcher for FsWatcher {
         }
 
         let reg = register_existing_path(
-            path.clone(),
+            path,
             semantics,
             self.signal_tx.clone(),
             self.pending_path_events.clone(),

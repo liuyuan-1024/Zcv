@@ -303,7 +303,6 @@ fn multi_excerpt_idle_frame(c: &mut Criterion) {
                 })
             })
             .collect::<Vec<_>>();
-        let source = sources[0].clone();
         let multi_buffer = cx.new(MultiBuffer::empty);
         cx.update_entity(&multi_buffer, |buffer, cx| {
             for source in sources {
@@ -318,7 +317,6 @@ fn multi_excerpt_idle_frame(c: &mut Criterion) {
             cx.add_window_view(move |_, cx| Editor::for_multi_buffer(multi_buffer, cx));
         cx.run_until_parked();
         cx.refresh().expect("组合文档窗口应可刷新");
-        let _ = &source;
         group.bench_function(format!("{excerpt_count}"), |b| {
             b.iter(|| {
                 cx.refresh().expect("组合文档空闲帧应可刷新");

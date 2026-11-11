@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, slice};
 
 use super::*;
 
@@ -73,12 +73,12 @@ fn moving_directory_into_own_subtree_is_rejected() {
     let sub = abs(src.join("sub"));
     // 目标是源的后代：拒绝。
     assert_eq!(
-        filter_movable_sources(std::slice::from_ref(&src), &sub),
+        filter_movable_sources(slice::from_ref(&src), &sub),
         Vec::<AbsolutePathBuf>::new()
     );
     // 目标是源本身（目录拖回自己身上）：拒绝。
     assert_eq!(
-        filter_movable_sources(std::slice::from_ref(&src), &src),
+        filter_movable_sources(slice::from_ref(&src), &src),
         Vec::<AbsolutePathBuf>::new()
     );
 }
@@ -91,13 +91,13 @@ fn moving_into_own_ancestor_directory_is_rejected() {
     let source = abs(root.join("a").join("b").join("a").join("c").join("a"));
     let ancestor_target = abs(root.join("a").join("b"));
     assert_eq!(
-        filter_movable_sources(std::slice::from_ref(&source), &ancestor_target),
+        filter_movable_sources(slice::from_ref(&source), &ancestor_target),
         Vec::<AbsolutePathBuf>::new()
     );
     // 落点是无关的兄弟目录时照常放行。
     let sibling = abs(root.join("other"));
     assert_eq!(
-        filter_movable_sources(std::slice::from_ref(&source), &sibling),
+        filter_movable_sources(slice::from_ref(&source), &sibling),
         vec![source]
     );
 }
@@ -108,7 +108,7 @@ fn moving_into_same_directory_is_filtered_as_noop() {
     let file = abs(root.join("a.txt"));
     // 落回源所在目录：目标与源相同，剔除。
     assert_eq!(
-        filter_movable_sources(std::slice::from_ref(&file), &root),
+        filter_movable_sources(slice::from_ref(&file), &root),
         Vec::<AbsolutePathBuf>::new()
     );
 }
@@ -119,7 +119,7 @@ fn moving_into_sibling_directory_is_allowed() {
     let file = abs(root.join("a.txt"));
     let dst = abs(root.join("dst"));
     assert_eq!(
-        filter_movable_sources(std::slice::from_ref(&file), &dst),
+        filter_movable_sources(slice::from_ref(&file), &dst),
         vec![file]
     );
 }
@@ -145,10 +145,10 @@ fn dropping_on_any_dragged_row_has_no_target() {
         marked_selections: vec![directory.clone(), file.clone()].into(),
         preview_name: "dst".into(),
     };
-    assert!(resolve_internal_drop(&drag, &directory, true, std::slice::from_ref(&root)).is_none());
-    assert!(resolve_internal_drop(&drag, &file, false, std::slice::from_ref(&root)).is_none());
+    assert!(resolve_internal_drop(&drag, &directory, true, slice::from_ref(&root)).is_none());
+    assert!(resolve_internal_drop(&drag, &file, false, slice::from_ref(&root)).is_none());
     // 根目录也不是有效目标：两项都已位于根目录。
-    assert!(resolve_internal_drop(&drag, &root, true, std::slice::from_ref(&root)).is_none());
+    assert!(resolve_internal_drop(&drag, &root, true, slice::from_ref(&root)).is_none());
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn project_root_row_is_not_movable() {
     let root = abs("/proj");
     // 根路径无文件名，视为不可移动。
     assert_eq!(
-        filter_movable_sources(std::slice::from_ref(&root), &abs(root.join("dst"))),
+        filter_movable_sources(slice::from_ref(&root), &abs(root.join("dst"))),
         Vec::<AbsolutePathBuf>::new()
     );
 }

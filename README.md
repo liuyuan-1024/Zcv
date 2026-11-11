@@ -30,7 +30,7 @@ Windows 版启动时自动把当前 Zcv.exe 注册为本地文件的候选打开
 
 平台构建与打包配置见 [发布流程](.github/workflows/release.yml)、[macOS 打包脚本](scripts/bundle-mac) 与 [Windows 打包脚本](scripts/bundle-windows.ps1)。
 
-应用图标以 [`assets/branding/Zcv.svg`](assets/branding/Zcv.svg) 为原稿。修改原稿后，在 macOS 上运行 `scripts/generate-app-icons`，重新生成提交到仓库的 `Zcv.icns` 和 `Zcv.ico`。该脚本需要 `rsvg-convert`、`iconutil` 和 `python3`。macOS 打包时将 `Zcv.icns` 放入 `.app`；Windows 构建时将 `Zcv.ico` 嵌入 `Zcv.exe` 的图标资源 ID 1，打包脚本直接收集该 exe。
+应用图标以 [`assets/branding/Zcv.svg`](assets/branding/Zcv.svg) 为原稿。修改原稿后，在 macOS 上运行 `scripts/generate-app-icons`，重新生成提交到仓库的 `Zcv.icns` 和 `Zcv.ico`。该脚本需要 `rsvg-convert`、`iconutil`、`sips` 和 `python3`。两个平台使用相同的紧凑取景范围；16～64 像素的图片先以四倍尺寸渲染再缩小，减少细节在小尺寸下的失真。macOS 打包时将 `Zcv.icns` 放入 `.app`；Windows 构建时将 `Zcv.ico` 嵌入 `Zcv.exe` 的图标资源 ID 1，打包脚本直接收集该 exe。
 
 ### 启动应用
 

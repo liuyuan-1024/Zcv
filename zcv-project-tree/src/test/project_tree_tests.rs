@@ -1558,7 +1558,7 @@ fn pasting_external_file_uses_selected_directory(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     assert_eq!(
-        std::fs::read_to_string(target.join("外部.txt")).expect("应复制到选中目录"),
+        fs::read_to_string(target.join("外部.txt")).expect("应复制到选中目录"),
         "导入内容"
     );
     assert!(source.exists(), "外部源文件应保留");
@@ -1600,7 +1600,7 @@ fn external_paste_conflict_uses_existing_confirmation(cx: &mut TestAppContext) {
         ));
     });
     assert_eq!(
-        std::fs::read_to_string(target.join("a.txt")).expect("应读取目标文件"),
+        fs::read_to_string(target.join("a.txt")).expect("应读取目标文件"),
         "旧内容",
         "确认前不应覆盖"
     );
@@ -1610,7 +1610,7 @@ fn external_paste_conflict_uses_existing_confirmation(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert_eq!(
-        std::fs::read_to_string(target.join("a.txt")).expect("应读取覆盖后的文件"),
+        fs::read_to_string(target.join("a.txt")).expect("应读取覆盖后的文件"),
         "新内容"
     );
     assert!(source.exists(), "覆盖后外部源文件应保留");
@@ -1676,11 +1676,11 @@ fn copy_paste_duplicates_files_into_selected_directory(cx: &mut TestAppContext) 
 
     // Copy 语义：目标出现副本、源文件仍在。
     assert_eq!(
-        std::fs::read_to_string(target.join("a.txt")).expect("应读取复制出的文件"),
+        fs::read_to_string(target.join("a.txt")).expect("应读取复制出的文件"),
         "a"
     );
     assert_eq!(
-        std::fs::read_to_string(target.join("b.txt")).expect("应读取复制出的文件"),
+        fs::read_to_string(target.join("b.txt")).expect("应读取复制出的文件"),
         "b"
     );
     assert!(file_a.is_file(), "复制不删除源文件");
@@ -1814,7 +1814,7 @@ fn copy_paste_recurses_into_directories_with_chinese_names(cx: &mut TestAppConte
     cx.run_until_parked();
 
     assert_eq!(
-        std::fs::read_to_string(target.join("源码").join("嵌套").join("中文文件.txt"))
+        fs::read_to_string(target.join("源码").join("嵌套").join("中文文件.txt"))
             .expect("应递归复制出嵌套中文文件"),
         "内容"
     );
@@ -1857,7 +1857,7 @@ fn cut_paste_moves_file_and_degrades_clipboard(cx: &mut TestAppContext) {
     // Move 语义：原路径消失、新路径存在。
     assert!(!file_a.exists(), "剪切粘贴后原路径应消失");
     assert_eq!(
-        std::fs::read_to_string(target.join("a.txt")).expect("应读取移动后的文件"),
+        fs::read_to_string(target.join("a.txt")).expect("应读取移动后的文件"),
         "a"
     );
     cx.read_entity(&tree, |tree, _| {
@@ -1935,7 +1935,7 @@ fn paste_conflict_confirm_overwrites_target_item_by_item(cx: &mut TestAppContext
         assert_eq!(conflict.len(), 2);
     });
     assert_eq!(
-        std::fs::read_to_string(target.join("a.txt")).expect("应读取目标文件"),
+        fs::read_to_string(target.join("a.txt")).expect("应读取目标文件"),
         "旧 a",
         "决策前不应写入"
     );
@@ -1958,12 +1958,12 @@ fn paste_conflict_confirm_overwrites_target_item_by_item(cx: &mut TestAppContext
         assert!(tree.conflict.is_none(), "全部决策完成后会话应结束");
     });
     assert_eq!(
-        std::fs::read_to_string(target.join("a.txt")).expect("应读取覆盖后的目标"),
+        fs::read_to_string(target.join("a.txt")).expect("应读取覆盖后的目标"),
         "a",
         "确认后目标应被覆盖"
     );
     assert_eq!(
-        std::fs::read_to_string(target.join("b.txt")).expect("应读取覆盖后的目标"),
+        fs::read_to_string(target.join("b.txt")).expect("应读取覆盖后的目标"),
         "b"
     );
     assert!(file_a.is_file() && file_b.is_file(), "Copy 语义源不动");
@@ -2011,7 +2011,7 @@ fn conflict_session_defers_clean_items_until_resolved(cx: &mut TestAppContext) {
 
     assert!(target.join("a.txt").is_file(), "非冲突项应在决策后执行");
     assert_eq!(
-        std::fs::read_to_string(target.join("b.txt")).expect("应读取覆盖后的目标"),
+        fs::read_to_string(target.join("b.txt")).expect("应读取覆盖后的目标"),
         "b",
         "冲突项应按覆盖决策执行"
     );
@@ -2044,12 +2044,12 @@ fn paste_conflict_skip_keeps_both_sides(cx: &mut TestAppContext) {
 
     assert!(cx.read_entity(&tree, |tree, _| tree.conflict.is_none()));
     assert_eq!(
-        std::fs::read_to_string(target.join("a.txt")).expect("应读取目标文件"),
+        fs::read_to_string(target.join("a.txt")).expect("应读取目标文件"),
         "旧 a",
         "跳过项目标不应变化"
     );
     assert_eq!(
-        std::fs::read_to_string(&file_a).expect("应读取源文件"),
+        fs::read_to_string(&file_a).expect("应读取源文件"),
         "a",
         "跳过项源不应变化"
     );
@@ -2088,7 +2088,7 @@ fn paste_conflict_cancel_changes_nothing(cx: &mut TestAppContext) {
     assert!(cx.read_entity(&tree, |tree, _| tree.conflict.is_none()));
     assert!(!target.join("a.txt").exists(), "取消后非冲突项不应执行");
     assert_eq!(
-        std::fs::read_to_string(target.join("b.txt")).expect("应读取目标文件"),
+        fs::read_to_string(target.join("b.txt")).expect("应读取目标文件"),
         "旧 b",
         "取消后目标不应变化"
     );
@@ -2160,7 +2160,7 @@ fn escape_keystroke_cancels_conflict_session(cx: &mut TestAppContext) {
         assert!(tree.conflict.is_none(), "escape 应取消冲突会话");
     });
     assert_eq!(
-        std::fs::read_to_string(target.join("a.txt")).expect("应读取目标文件"),
+        fs::read_to_string(target.join("a.txt")).expect("应读取目标文件"),
         "旧 a",
         "escape 取消后目标不应变化"
     );
@@ -2494,7 +2494,7 @@ fn dragging_external_file_into_directory_copies_it(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     assert_eq!(
-        std::fs::read_to_string(target.join("拖入.txt")).expect("应复制到放下目录"),
+        fs::read_to_string(target.join("拖入.txt")).expect("应复制到放下目录"),
         "拖入内容"
     );
     assert!(source.exists(), "外部源文件应保留");
@@ -2656,7 +2656,7 @@ fn drag_file_into_directory_moves_it_via_move_pipeline(cx: &mut TestAppContext) 
 
     assert!(!file_a.exists(), "拖拽移动后源文件应消失");
     assert_eq!(
-        std::fs::read_to_string(target.join("a.txt")).expect("应读取移动后的文件"),
+        fs::read_to_string(target.join("a.txt")).expect("应读取移动后的文件"),
         "a",
         "拖拽放下应把文件移入目标目录"
     );
@@ -3791,7 +3791,7 @@ fn context_menu_redeploy_switches_face_in_session(cx: &mut TestAppContext) {
 #[gpui::test]
 fn context_menu_confirm_runs_action_on_panel(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
-    let (_temp, project, _root, file_a, _file_b, _file_c, _target) = drag_project(cx);
+    let (_temp, project, _root, _file_a, _file_b, _file_c, _target) = drag_project(cx);
     let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
     focus_tree(&tree, cx);
@@ -3833,7 +3833,6 @@ fn context_menu_confirm_runs_action_on_panel(cx: &mut TestAppContext) {
     cx.update(|window, cx| {
         let focus = cx.read_entity(&tree, |tree, _| tree.focus.clone());
         assert!(focus.is_focused(window), "确认后焦点应回到面板");
-        let _ = file_a;
     });
 }
 

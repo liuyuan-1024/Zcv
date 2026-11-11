@@ -1,3 +1,5 @@
+use gpui::rgba;
+
 use super::*;
 
 #[test]
@@ -17,125 +19,122 @@ fn theme_registry_has_expected_entries() {
 fn dark_theme_colors_match_migrated_values() {
     let theme = theme_by_id("dark").expect("内置深色主题应存在");
     let colors = theme.colors;
-    assert_eq!(colors.background, gpui::rgba(0x3b414dff));
-    assert_eq!(colors.status_bar_background, gpui::rgba(0x3b414dff));
-    assert_eq!(colors.panel_background, gpui::rgba(0x2f343eff));
-    assert_eq!(colors.editor_background, gpui::rgba(0x282c33ff));
-    assert_eq!(colors.editor_subheader_background, gpui::rgba(0x2f343eff));
-    assert_eq!(colors.editor_indent_guide, gpui::rgba(0x4e5a5f80));
-    assert_eq!(colors.editor_indent_guide_active, gpui::rgba(0xa9afbcaa));
-    assert_eq!(colors.text, gpui::rgba(0xdce0e5ff));
-    assert_eq!(colors.editor_selection_background, gpui::rgba(0x74ade83d));
-    assert_eq!(colors.editor_invisible, gpui::rgba(0x4e5a5fff));
+    assert_eq!(colors.background, rgba(0x3b414dff));
+    assert_eq!(colors.status_bar_background, rgba(0x3b414dff));
+    assert_eq!(colors.panel_background, rgba(0x2f343eff));
+    assert_eq!(colors.editor_background, rgba(0x282c33ff));
+    assert_eq!(colors.editor_subheader_background, rgba(0x2f343eff));
+    assert_eq!(colors.editor_indent_guide, rgba(0x4e5a5f80));
+    assert_eq!(colors.editor_indent_guide_active, rgba(0xa9afbcaa));
+    assert_eq!(colors.text, rgba(0xdce0e5ff));
+    assert_eq!(colors.editor_selection_background, rgba(0x74ade83d));
+    assert_eq!(colors.editor_invisible, rgba(0x4e5a5fff));
     assert_eq!(
         colors.editor_document_highlight_bracket_background,
-        gpui::rgba(0x74ade81a)
+        rgba(0x74ade81a)
     );
     assert_ne!(
         colors.editor_document_highlight_bracket_background,
         colors.editor_selection_background
     );
-    assert_eq!(
-        colors.scrollbar_thumb_active_background,
-        gpui::rgba(0x363c46ff)
-    );
-    assert_eq!(colors.version_control_word_added, gpui::rgba(0x2EA04859));
-    assert_eq!(colors.version_control_word_deleted, gpui::rgba(0x78081bcc));
-    assert_eq!(colors.version_control_added, gpui::rgba(0x27a657ff));
-    assert_eq!(colors.version_control_modified, gpui::rgba(0xd3b020ff));
-    assert_eq!(colors.version_control_deleted, gpui::rgba(0xe06c76ff));
-    assert_eq!(colors.status_conflict, gpui::rgba(0xdec184ff));
+    assert_eq!(colors.scrollbar_thumb_active_background, rgba(0x363c46ff));
+    assert_eq!(colors.version_control_word_added, rgba(0x2EA04859));
+    assert_eq!(colors.version_control_word_deleted, rgba(0x78081bcc));
+    assert_eq!(colors.version_control_added, rgba(0x27a657ff));
+    assert_eq!(colors.version_control_modified, rgba(0xd3b020ff));
+    assert_eq!(colors.version_control_deleted, rgba(0xe06c76ff));
+    assert_eq!(colors.status_conflict, rgba(0xdec184ff));
     assert_eq!(
         colors.editor_diff_added_background,
-        gpui::rgba(0x27a657ff).opacity(0.12)
+        rgba(0x27a657ff).opacity(0.12)
     );
     assert_eq!(
         colors.editor_diff_added_hollow_background,
-        gpui::rgba(0x27a657ff).opacity(0.06)
+        rgba(0x27a657ff).opacity(0.06)
     );
     assert_eq!(
         colors.editor_diff_added_hollow_border,
-        gpui::rgba(0x27a657ff).opacity(0.36)
+        rgba(0x27a657ff).opacity(0.36)
     );
     assert_eq!(
         colors.editor_diff_deleted_background,
-        gpui::rgba(0xe06c76ff).opacity(0.12)
+        rgba(0xe06c76ff).opacity(0.12)
     );
     assert_eq!(
         colors.editor_diff_deleted_hollow_background,
-        gpui::rgba(0xe06c76ff).opacity(0.06)
+        rgba(0xe06c76ff).opacity(0.06)
     );
     assert_eq!(
         colors.editor_diff_deleted_hollow_border,
-        gpui::rgba(0xe06c76ff).opacity(0.36)
+        rgba(0xe06c76ff).opacity(0.36)
     );
     assert_ne!(
         colors.version_control_word_added,
         colors.editor_diff_added_background
     );
-    assert_eq!(colors.terminal_ansi_red, gpui::rgba(0xe06c75ff));
-    assert_eq!(colors.terminal_ansi_yellow, gpui::rgba(0xe5c07bff));
-    assert_eq!(colors.terminal_ansi_dim_blue, gpui::rgba(0x457cadff));
+    assert_eq!(colors.terminal_ansi_red, rgba(0xe06c75ff));
+    assert_eq!(colors.terminal_ansi_yellow, rgba(0xe5c07bff));
+    assert_eq!(colors.terminal_ansi_dim_blue, rgba(0x457cadff));
 }
 
 #[test]
 fn light_theme_colors_match_migrated_values() {
     let theme = theme_by_id("light").expect("内置浅色主题应存在");
     let colors = theme.colors;
-    assert_eq!(colors.background, gpui::rgba(0xdcdcddff));
-    assert_eq!(colors.status_bar_background, gpui::rgba(0xdcdcddff));
-    assert_eq!(colors.editor_background, gpui::rgba(0xfafafaff));
-    assert_eq!(colors.editor_subheader_background, gpui::rgba(0xebebecff));
-    assert_eq!(colors.editor_indent_guide, gpui::rgba(0xb4b4bb80));
-    assert_eq!(colors.editor_indent_guide_active, gpui::rgba(0x58585aaa));
-    assert_eq!(colors.text, gpui::rgba(0x242529ff));
-    assert_eq!(colors.editor_selection_background, gpui::rgba(0x5c78e23d));
-    assert_eq!(colors.editor_invisible, gpui::rgba(0xb4b4bbff));
+    assert_eq!(colors.background, rgba(0xdcdcddff));
+    assert_eq!(colors.status_bar_background, rgba(0xdcdcddff));
+    assert_eq!(colors.editor_background, rgba(0xfafafaff));
+    assert_eq!(colors.editor_subheader_background, rgba(0xebebecff));
+    assert_eq!(colors.editor_indent_guide, rgba(0xb4b4bb80));
+    assert_eq!(colors.editor_indent_guide_active, rgba(0x58585aaa));
+    assert_eq!(colors.text, rgba(0x242529ff));
+    assert_eq!(colors.editor_selection_background, rgba(0x5c78e23d));
+    assert_eq!(colors.editor_invisible, rgba(0xb4b4bbff));
     assert_eq!(
         colors.editor_document_highlight_bracket_background,
-        gpui::rgba(0x5c78e225)
+        rgba(0x5c78e225)
     );
     assert_ne!(
         colors.editor_document_highlight_bracket_background,
         colors.editor_selection_background
     );
-    assert_eq!(colors.ghost_element_hover, gpui::rgba(0xc9c9caff));
-    assert_eq!(colors.version_control_word_added, gpui::rgba(0x2EA04859));
-    assert_eq!(colors.version_control_word_deleted, gpui::rgba(0xf85149cc));
-    assert_eq!(colors.version_control_added, gpui::rgba(0x27a657ff));
-    assert_eq!(colors.version_control_modified, gpui::rgba(0xd3b020ff));
-    assert_eq!(colors.version_control_deleted, gpui::rgba(0xe06c76ff));
-    assert_eq!(colors.status_conflict, gpui::rgba(0xa48819ff));
+    assert_eq!(colors.ghost_element_hover, rgba(0xc9c9caff));
+    assert_eq!(colors.version_control_word_added, rgba(0x2EA04859));
+    assert_eq!(colors.version_control_word_deleted, rgba(0xf85149cc));
+    assert_eq!(colors.version_control_added, rgba(0x27a657ff));
+    assert_eq!(colors.version_control_modified, rgba(0xd3b020ff));
+    assert_eq!(colors.version_control_deleted, rgba(0xe06c76ff));
+    assert_eq!(colors.status_conflict, rgba(0xa48819ff));
     assert_eq!(
         colors.editor_diff_added_background,
-        gpui::rgba(0x27a657ff).opacity(0.16)
+        rgba(0x27a657ff).opacity(0.16)
     );
     assert_eq!(
         colors.editor_diff_added_hollow_background,
-        gpui::rgba(0x27a657ff).opacity(0.08)
+        rgba(0x27a657ff).opacity(0.08)
     );
     assert_eq!(
         colors.editor_diff_added_hollow_border,
-        gpui::rgba(0x27a657ff).opacity(0.48)
+        rgba(0x27a657ff).opacity(0.48)
     );
     assert_eq!(
         colors.editor_diff_deleted_background,
-        gpui::rgba(0xe06c76ff).opacity(0.16)
+        rgba(0xe06c76ff).opacity(0.16)
     );
     assert_eq!(
         colors.editor_diff_deleted_hollow_background,
-        gpui::rgba(0xe06c76ff).opacity(0.08)
+        rgba(0xe06c76ff).opacity(0.08)
     );
     assert_eq!(
         colors.editor_diff_deleted_hollow_border,
-        gpui::rgba(0xe06c76ff).opacity(0.48)
+        rgba(0xe06c76ff).opacity(0.48)
     );
     assert_ne!(
         colors.version_control_word_added,
         colors.editor_diff_added_background
     );
-    assert_eq!(colors.terminal_ansi_yellow, gpui::rgba(0xd2b67cff));
-    assert_eq!(colors.terminal_ansi_blue, gpui::rgba(0x2f5af3ff));
+    assert_eq!(colors.terminal_ansi_yellow, rgba(0xd2b67cff));
+    assert_eq!(colors.terminal_ansi_blue, rgba(0x2f5af3ff));
 }
 
 #[test]
@@ -150,14 +149,14 @@ fn git_diff_syntax_colors_match_one_themes() {
                 .syntax_table
                 .get("diff.plus")
                 .and_then(|style| style.color),
-            Some(gpui::rgba(added).into())
+            Some(rgba(added).into())
         );
         assert_eq!(
             theme
                 .syntax_table
                 .get("diff.minus")
                 .and_then(|style| style.color),
-            Some(gpui::rgba(deleted).into())
+            Some(rgba(deleted).into())
         );
         assert!(!theme.syntax_table.contains_key("diff.delta"));
     }

@@ -2,21 +2,22 @@
 //!
 //! 默认层的唯一数据源是内置 `initial_user_settings.jsonc`。
 
-use std::{collections::HashMap, num::NonZeroUsize, sync::LazyLock};
+use std::{collections::HashMap, sync::LazyLock};
+use zcv_theme::ThemeChoice;
 
 use super::{
     INITIAL_USER_SETTINGS,
     schema::{
         AutoIndentMode, BuiltinSettingsContent, CursorShape, IndentGuideSettings, LanguageOverride,
-        LanguageOverrideContent, SoftWrapMode, TabConfig, UserSettingsContent,
+        LanguageOverrideContent, SoftWrapMode, TabConfig, TerminalCursorShape, UserSettingsContent,
         parse_builtin_settings,
     },
 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UserSettings {
-    /// 主题配置 id；由主题模块解析为运行时主题。
-    pub theme: String,
+    /// 已验证的主题选择。
+    pub theme: ThemeChoice,
     /// 文档内容字号（像素）。编辑器与预览共用。
     pub content_font_size: f32,
     /// UI 字号（像素）。
@@ -62,7 +63,7 @@ pub struct UserSettings {
     /// 终端滚动回看上限行数。
     pub terminal_max_scroll_history_lines: usize,
     /// 终端光标形状："block" | "underline" | "bar"。
-    pub terminal_cursor_shape: String,
+    pub terminal_cursor_shape: TerminalCursorShape,
     /// 备用屏幕下滚轮是否转发为方向键。
     pub terminal_alternate_scroll: bool,
     /// Option 键是否作为 Meta 键使用。
@@ -81,7 +82,7 @@ fn default_content() -> &'static BuiltinSettingsContent {
 
 fn language_override(content: LanguageOverrideContent) -> LanguageOverride {
     LanguageOverride {
-        tab_size: content.tab_size.and_then(NonZeroUsize::new),
+        tab_size: content.tab_size,
         insert_spaces: content.insert_spaces,
         indent_guides: content.indent_guides,
         remove_trailing_whitespace_on_save: content.remove_trailing_whitespace_on_save,
@@ -163,7 +164,7 @@ impl UserSettings {
     pub(crate) fn merge(content: UserSettingsContent) -> Self {
         let defaults = default_content();
         Self {
-            theme: content.theme.unwrap_or_else(|| defaults.theme.clone()),
+            theme: content.theme.unwrap_or(defaults.theme),
             content_font_size: content
                 .content_font_size
                 .unwrap_or(defaults.content_font_size),
@@ -172,10 +173,7 @@ impl UserSettings {
                 .content_line_height
                 .unwrap_or(defaults.content_line_height),
             tab: TabConfig {
-                tab_size: content
-                    .tab_size
-                    .and_then(NonZeroUsize::new)
-                    .unwrap_or(defaults.tab_size),
+                tab_size: content.tab_size.unwrap_or(defaults.tab_size),
                 insert_spaces: content.insert_spaces.unwrap_or(defaults.insert_spaces),
             },
             languages: {
@@ -188,7 +186,7 @@ impl UserSettings {
                 for (name, content) in content.languages.unwrap_or_default() {
                     let entry = languages.entry(name).or_default();
                     if let Some(value) = content.tab_size {
-                        entry.tab_size = NonZeroUsize::new(value);
+                        entry.tab_size = Some(value);
                     }
                     if let Some(value) = content.insert_spaces {
                         entry.insert_spaces = Some(value);
@@ -259,7 +257,7 @@ impl UserSettings {
                 .unwrap_or(defaults.terminal_max_scroll_history_lines),
             terminal_cursor_shape: content
                 .terminal_cursor_shape
-                .unwrap_or_else(|| defaults.terminal_cursor_shape.clone()),
+                .unwrap_or(defaults.terminal_cursor_shape),
             terminal_alternate_scroll: content
                 .terminal_alternate_scroll
                 .unwrap_or(defaults.terminal_alternate_scroll),

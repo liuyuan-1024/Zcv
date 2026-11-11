@@ -310,7 +310,7 @@ fn navigation_and_confirm_work_while_search_editor_is_focused(cx: &mut TestAppCo
 fn picker_list_has_visible_height(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
-    let (view, cx) = cx.add_window_view(|window, cx| {
+    let (_view, cx) = cx.add_window_view(|window, cx| {
         Picker::new(
             ConfirmDelegate {
                 confirmed: Rc::new(Cell::new(false)),
@@ -321,7 +321,6 @@ fn picker_list_has_visible_height(cx: &mut TestAppContext) {
             cx,
         )
     });
-    let _ = view;
     let list_bounds = cx.debug_bounds("picker-list").expect("列表容器应参与布局");
     assert!(
         list_bounds.size.height > px(0.0),
@@ -668,7 +667,7 @@ fn picker_list_scrolls_inside_host_overlay(cx: &mut TestAppContext) {
 fn picker_overlay_shrinks_in_narrow_window(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
-    let (wrapper, cx) = cx.add_window_view(|window, cx| {
+    let (_wrapper, cx) = cx.add_window_view(|window, cx| {
         let picker = cx.new(|cx| {
             Picker::new(
                 ScrollDelegate {
@@ -693,7 +692,6 @@ fn picker_overlay_shrinks_in_narrow_window(cx: &mut TestAppContext) {
         panel.size.width <= px(300.0),
         "窄窗口中选择器浮层不应超出窗口：{panel:?}"
     );
-    let _ = wrapper;
 }
 
 #[gpui::test]

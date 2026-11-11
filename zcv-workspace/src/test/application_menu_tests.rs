@@ -105,10 +105,9 @@ fn application_menu_switches_on_hover(cx: &mut TestAppContext) {
     });
     visual.run_until_parked();
 
-    menu.update_in(visual, |menu, _, cx| {
+    menu.update_in(visual, |menu, _, _| {
         assert_eq!(menu.active_menu, 1, "悬停应切换到第二个顶层菜单");
         assert!(menu.host.is_open(), "悬停切换不应关闭浮层会话");
-        let _ = cx;
     });
     let second_panel = expanded_panel(&menu, visual);
     assert_ne!(

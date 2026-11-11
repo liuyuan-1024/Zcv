@@ -1,4 +1,8 @@
-use std::{fs, path::Path, sync::Arc};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use gpui::{Context, Entity, TestAppContext, VisualTestContext, Window};
 use zcv_actions::DeployProjectSearch;
@@ -8,10 +12,10 @@ use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::ExcerptRange;
 use zcv_path::AbsolutePathBuf;
 use zcv_project::Project;
+use zcv_settings::{SettingsStore, UserSettings};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, TextRange};
 
 use super::*;
-use zcv_settings::{SettingsStore, UserSettings};
 
 struct PassiveWatcher {
     watcher: FsWatcher,
@@ -39,16 +43,12 @@ impl Watcher for PassiveWatcher {
     }
 }
 
-fn test_workspace(
-    root: std::path::PathBuf,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) -> Workspace {
+fn test_workspace(root: PathBuf, window: &mut Window, cx: &mut Context<Workspace>) -> Workspace {
     test_workspace_with_roots(vec![root], window, cx)
 }
 
 fn test_workspace_with_roots(
-    roots: Vec<std::path::PathBuf>,
+    roots: Vec<PathBuf>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Workspace {
@@ -209,8 +209,8 @@ async fn project_search_orders_roots_by_root_id_not_absolute_path(cx: &mut TestA
     assert_eq!(
         display_paths,
         vec![
-            std::path::PathBuf::from("z-root/same.txt"),
-            std::path::PathBuf::from("a-root/same.txt"),
+            PathBuf::from("z-root/same.txt"),
+            PathBuf::from("a-root/same.txt"),
         ],
         "跨根结果必须按根 id 顺序装配，不能按绝对路径重排"
     );
@@ -260,7 +260,7 @@ async fn nested_root_file_is_searched_exactly_once_by_inner_root(cx: &mut TestAp
     });
     assert_eq!(
         display_paths,
-        vec![std::path::PathBuf::from("app/same.txt")],
+        vec![PathBuf::from("app/same.txt")],
         "嵌套根内的文件只能由最内层根产出一次"
     );
 }
@@ -304,7 +304,7 @@ async fn project_search_installs_background_loaded_results(cx: &mut TestAppConte
     });
     assert_eq!(
         display_paths,
-        vec![std::path::PathBuf::from("result.txt")],
+        vec![PathBuf::from("result.txt")],
         "单根项目搜索结果应省略根标签"
     );
 }

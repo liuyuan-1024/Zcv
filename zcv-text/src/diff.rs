@@ -27,8 +27,8 @@ pub fn diff_edits(old: &str, new: &str) -> Vec<Edit> {
             let old_offset = old_range.start;
             let new_offset = new_range.start;
             hunk_input.clear();
-            hunk_input.update_before(tokenize(&old[old_range.clone()]));
-            hunk_input.update_after(tokenize(&new[new_range.clone()]));
+            hunk_input.update_before(tokenize(&old[old_range]));
+            hunk_input.update_after(tokenize(&new[new_range]));
             for_each_token_change(&hunk_input, &mut |inline_old, inline_new, _, _| {
                 push_edit(
                     &mut edits,

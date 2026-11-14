@@ -47,6 +47,8 @@ use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, Snapshot, TextRange};
 
 use crate::text_file::{BufferLoadError, decode_to_string};
 
+const UNCOMMITTED_DIFF_KEY: u64 = u64::MAX;
+
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
 
@@ -675,6 +677,75 @@ impl GitStore {
         set
     }
 
+    /// 为项目文件的工作区文档打开完整 HEAD 差异。
+    ///
+    /// HEAD 和 index 都必须完成读取。确认缺失可以参与差异计算；
+    /// 不支持文本或不属于差异范围时返回 None，读取失败则保留错误。
+    pub fn open_uncommitted_diff(
+        &mut self,
+        working: Entity<LanguageBuffer>,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<Option<Entity<BufferDiff>>>> {
+        let Some(path) = working.read(cx).file_path() else {
+            return Task::ready(Ok(None));
+        };
+        if !self.has_diff_context_for_path(&path) {
+            return Task::ready(Ok(None));
+        }
+        let head = self.load_diff_revision(GitRevision::Head, &path, cx);
+        let index = self.load_diff_revision(GitRevision::Index, &path, cx);
+        cx.spawn(async move |this, cx| {
+            let (head, index) = futures::join!(head, index);
+            head.map_err(|error| anyhow::anyhow!("{error:#}"))?;
+            index.map_err(|error| anyhow::anyhow!("{error:#}"))?;
+            this.update(cx, |store, cx| {
+                if working.read(cx).file_path().as_deref() != Some(path.as_path())
+                    || !store.has_diff_context_for_path(&path)
+                    || [GitRevision::Head, GitRevision::Index]
+                        .into_iter()
+                        .any(|revision| store.revision_document_unsupported(revision, &path))
+                {
+                    return None;
+                }
+                let canonical_path = canonicalize_path(&path).ok()?;
+                if let Some(diff) = store.uncommitted_diff_for(&canonical_path, working.entity_id())
+                {
+                    return Some(diff);
+                }
+                let input = BufferDiffInput {
+                    working,
+                    base_text: store
+                        .revision_text(GitRevision::Head, &path, cx)
+                        .map(Arc::from),
+                    index_text: store.index_reference_text(&path, cx),
+                    path,
+                    language_registry: Arc::clone(&store.language_registry),
+                    key: UNCOMMITTED_DIFF_KEY,
+                    operations: None,
+                };
+                Some(store.file_diff(&input, GitRevision::Head, cx))
+            })
+        })
+    }
+
+    fn load_diff_revision(
+        &mut self,
+        revision: GitRevision,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<RevisionLoadResult> {
+        let path_key = canonicalize_path(path).expect("已确认 Git 仓库归属的路径应可规范化");
+        if let Some(state) = self.revision_documents.get(&(revision, path_key)) {
+            if let Some(load) = state.loading.active() {
+                return cx.spawn(async move |_, _| load.await);
+            }
+            if matches!(state.loading, RevisionLoading::Idle) && state.document.is_some() {
+                return Task::ready(Ok(None));
+            }
+        }
+        self.load_revision_document(revision, path, cx)
+    }
+
     /// 按 (路径, working 实体, 调用方键) 共享单个文件的 diff 实体。
     ///
     /// 同一份 diff 跨编辑器与面板视图复用；
@@ -747,14 +818,8 @@ impl GitStore {
         working_id: EntityId,
     ) -> Option<Entity<BufferDiff>> {
         self.shared_diffs
-            .iter()
-            .find_map(|((diff_path, diff_working, _), shared)| {
-                (diff_path == path
-                    && *diff_working == working_id
-                    && shared.base_revision == GitRevision::Head)
-                    .then(|| shared.entity.upgrade())
-                    .flatten()
-            })
+            .get(&(path.clone(), working_id, UNCOMMITTED_DIFF_KEY))
+            .and_then(|diff| diff.entity.upgrade())
     }
 
     /// 按当前 diff 快照中精确匹配的 hunk 源范围生成确定编辑并交后台执行。

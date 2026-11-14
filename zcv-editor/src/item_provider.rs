@@ -32,8 +32,13 @@ impl ItemProvider for TextFileProvider {
         };
         // 普通编辑器统一经 `singleton` 构建独立组合文档（整文件可编辑 excerpt）：
         // 项目共享 LanguageBuffer 只作为工作区源，展开 diff hunk 时的 set_excerpts 只影响本组合文档，不污染项目共享文档（DiffView 等仍引用同一 LanguageBuffer）。
-        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
-        let editor = cx.new(|cx| Editor::for_multi_buffer(multi_buffer, cx));
+        let store = project.read(cx).git_store();
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer.clone(), cx));
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::for_multi_buffer(multi_buffer, cx);
+            editor.bind_file_git_diff(language_buffer, store, cx);
+            editor
+        });
         Task::ready(Ok(Box::new(editor) as Box<dyn ItemHandle>))
     }
 }

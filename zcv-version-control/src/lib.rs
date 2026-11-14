@@ -1,7 +1,6 @@
 //! 版本控制 UI crate —— 变更树面板、项目差异视图与提交历史图。
 
 mod branch_picker;
-mod editor_diff;
 mod git_graph;
 mod graph;
 mod project_diff;
@@ -20,10 +19,6 @@ pub use git_graph::deploy_at as deploy_git_graph;
 use project_diff::ProjectDiffSerializedItemProvider;
 pub use project_diff::{ProjectDiffKind, deploy_at as deploy_project_diff};
 pub use version_control::{OnGitOperation, OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel};
-
-pub use editor_diff::{
-    inject_editor_diff, refresh_pane_git_projection, sync_editor_conflict_hunks,
-};
 
 /// 注册版本控制能力域的进程级 provider；在 `main` 初始化阶段调用一次。
 pub fn init(cx: &mut App) {

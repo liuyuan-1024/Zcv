@@ -10,8 +10,8 @@ use std::{
 
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Font,
-    IntoElement, KeyContext, Pixels, Point, Render, Styled, Task, TextRun, TouchPhase, Window, div,
-    point, prelude::*, px,
+    IntoElement, KeyContext, Pixels, Point, Render, Styled, Subscription, Task, TextRun,
+    TouchPhase, Window, div, point, prelude::*, px,
 };
 use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
@@ -52,6 +52,7 @@ use super::{
     },
 };
 
+mod git_diff;
 mod indent_guides;
 mod jsx_tag_auto_close;
 mod presentation;
@@ -316,6 +317,8 @@ pub struct Editor {
     soft_wrap: SoftWrap,
     cursor_shape: CursorShape,
     preferred_line_length: usize,
+    file_diff_task: Option<Task<()>>,
+    file_git_subscriptions: Option<[Subscription; 2]>,
     diff_hunk_delegate: Option<Arc<dyn DiffHunkDelegate>>,
     hovered_diff_hunk: Option<usize>,
     /// 鼠标是否位于 gutter 内；只有进入或离开时需要刷新折叠指示。
@@ -1862,6 +1865,8 @@ impl Editor {
             structured_selection_history: Vec::new(),
             bracket_pair_cache: None,
             scroll_manager: ScrollManager::default(),
+            file_diff_task: None,
+            file_git_subscriptions: None,
             diff_hunk_delegate: None,
             drag_autoscroll: DragAutoscroll::default(),
             drag_autoscroll_task: None,

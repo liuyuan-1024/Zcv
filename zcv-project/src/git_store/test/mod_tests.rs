@@ -1461,26 +1461,14 @@ fn diff_operations_stage_hunk_suppresses_source_and_marks_uncommitted_diff_pendi
             )
         })
     });
-    let (uncommitted_diff, diff) = git_store.update(cx, |store, cx| {
+    let uncommitted = git_store.update(cx, |store, cx| {
+        store.open_uncommitted_diff(working.clone(), cx)
+    });
+    cx.run_until_parked();
+    let uncommitted_diff = uncommitted.now_or_never().unwrap().unwrap().unwrap();
+    let diff = git_store.update(cx, |store, cx| {
         let language_registry = store.language_registry();
-        let uncommitted = store.file_diff(
-            &BufferDiffInput {
-                working: working.clone(),
-                path: native_path.clone(),
-                base_text: store
-                    .revision_text(GitRevision::Head, &path, cx)
-                    .map(Arc::from),
-                index_text: store
-                    .revision_text(GitRevision::Index, &path, cx)
-                    .map(Arc::from),
-                language_registry: Arc::clone(&language_registry),
-                key: 0,
-                operations: None,
-            },
-            GitRevision::Head,
-            cx,
-        );
-        let staged = store.file_diff(
+        store.file_diff(
             &BufferDiffInput {
                 working: working.clone(),
                 path: native_path.clone(),
@@ -1496,8 +1484,7 @@ fn diff_operations_stage_hunk_suppresses_source_and_marks_uncommitted_diff_pendi
             },
             GitRevision::Index,
             cx,
-        );
-        (uncommitted, staged)
+        )
     });
     cx.run_until_parked();
 

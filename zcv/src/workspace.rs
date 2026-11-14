@@ -23,7 +23,6 @@ use zcv_actions::{
     IncreaseUiFontSize, NewTerminal, OpenLocalDirectory, OpenLocalFile, ResetContentFontSize,
     ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleRecentProjects,
 };
-use zcv_editor::{Editor, EditorEvent};
 use zcv_fs_watch::{FsWatcher, Watcher};
 use zcv_language::LanguageRegistry;
 use zcv_project::{
@@ -48,7 +47,6 @@ use zcv_terminal::TerminalPanel;
 use zcv_version_control::{
     GitBranchAction, OnBranchSelected, OnGitOperation, OnOpenGitDiff, OnOpenGitGraph,
     VersionControlPanel, deploy_git_graph, deploy_project_diff, install as install_version_control,
-    refresh_pane_git_projection,
 };
 
 /// 新建工作区所需的文件监听后端工厂。
@@ -1096,17 +1094,6 @@ fn initialize_workspace(
                 cx,
             );
         }
-        // 任务事件只更新任务界面，不能反向触发差异业务；其余状态事件同步当前结果。
-        // 展开状态按工作区文本跟踪区间跨刷新迁移（HEAD 变化不重置，见 diff_projection 模块说明）。
-        if matches!(
-            event,
-            GitStoreEvent::Repositories
-                | GitStoreEvent::Statuses
-                | GitStoreEvent::Head
-                | GitStoreEvent::RevisionSupportChanged
-        ) {
-            refresh_pane_git_projection(workspace.pane(), workspace.project(), cx);
-        }
     });
 
     let project_tree_for_pane = project_tree.clone();
@@ -1131,18 +1118,6 @@ fn initialize_workspace(
                 tree.reveal_active_path(active_path, cx);
             });
         }
-        if let PaneEvent::AddItem { item_id } = event
-            && let Some(editor) = pane
-                .read(cx)
-                .tabs()
-                .iter()
-                .find(|item| item.item_id() == *item_id)
-                .and_then(|item| source_editor_for_item(item.as_ref(), cx))
-        {
-            subscribe_to_editor_events(workspace, editor, cx);
-        }
-        // 打开/激活编辑器时推送 git diff hunks（打开即有快照里的现成数据）。
-        refresh_pane_git_projection(workspace.pane(), workspace.project(), cx);
     });
 
     // 项目事件订阅：根集合变化同步项目树与最近项目；条目快照由面板自行订阅。
@@ -1243,49 +1218,6 @@ fn initialize_workspace(
     ] {
         workspace.add_subscription(subscription);
     }
-    let pane = workspace.pane().clone();
-    let editors = pane
-        .read(cx)
-        .tabs()
-        .iter()
-        .filter_map(|item| source_editor_for_item(item.as_ref(), cx))
-        .collect::<Vec<_>>();
-    for editor in editors {
-        subscribe_to_editor_events(&mut *workspace, editor, cx);
-    }
-    refresh_pane_git_projection(&pane, workspace.project(), cx);
-}
-
-/// 普通编辑器的文本变化只同步工作区文本上的冲突标记；
-/// 其余 Git diff 投影由 zcv-version-control 的拥有域能力承载。
-fn source_editor_for_item(
-    item: &dyn zcv_workspace::ItemHandle,
-    cx: &App,
-) -> Option<Entity<Editor>> {
-    item.act_as::<Editor>(cx).or_else(|| {
-        item.as_preview_item(cx)
-            .and_then(|preview| preview.source_item(cx))
-            .and_then(|source| source.act_as::<Editor>(cx))
-    })
-}
-
-fn subscribe_to_editor_events(
-    workspace: &mut Workspace,
-    editor: Entity<Editor>,
-    cx: &mut Context<Workspace>,
-) {
-    let project = workspace.project().clone();
-    workspace.add_subscription(cx.subscribe(
-        &editor,
-        move |_workspace, editor, event: &EditorEvent, cx| {
-            if matches!(event, EditorEvent::Edited { .. }) {
-                let path = editor.read(cx).file_path(cx);
-                if let Some(path) = path {
-                    zcv_version_control::sync_editor_conflict_hunks(&editor, &path, &project, cx);
-                }
-            }
-        },
-    ));
 }
 
 // ── 内部类型 ────────────────────────────────────────────────────────

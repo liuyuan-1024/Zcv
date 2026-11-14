@@ -8,7 +8,6 @@
 
 use std::{
     cell::RefCell,
-    collections::HashSet,
     path::{Path, PathBuf},
     rc::Rc,
     time::Duration,
@@ -158,24 +157,6 @@ pub struct ProjectTreePanel {
 }
 
 impl ProjectTreePanel {
-    fn visible_expanded(&self) -> HashSet<AbsolutePathBuf> {
-        let mut expanded = self.state.borrow().expanded().clone();
-        if let Some(session) = &self.drag_session {
-            expanded.extend(session.temporary_expanded.iter().cloned());
-        }
-        expanded
-    }
-
-    fn finish_drag_session(&mut self, cx: &mut Context<Self>) {
-        self.stop_drag_scroll();
-        if let Some(mut session) = self.drag_session.take() {
-            session.clear_hover();
-            if !session.temporary_expanded.is_empty() {
-                self.rebuild_rows(cx);
-            }
-        }
-    }
-
     pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let menu_host = PopoverHost::new(focus.clone(), PopoverLayer::default());

@@ -3,7 +3,7 @@
 //! 拖拽会话持有临时导航状态；落点解析为渲染、高亮和执行提供同一结果。
 //! 文件移动与剪切粘贴共用传输管线，文件状态不由拖拽会话持有。
 
-use std::{collections::HashSet, path::Path, rc::Rc};
+use std::{collections::HashSet, path::Path, rc::Rc, time::Duration};
 
 use gpui::{App, Context, Div, FontWeight, Task, Window, div, prelude::*, px};
 use zcv_path::AbsolutePathBuf;
@@ -11,7 +11,13 @@ use zcv_theme::{FileIcons, color, scale, typography};
 use zcv_ui::SvgIcon;
 use zcv_workspace::typography_for_window;
 
-use super::transfer::{filter_movable_sources, paste_target_dir, sanitize_selection};
+use super::{
+    ProjectTreePanel,
+    transfer::{filter_movable_sources, paste_target_dir, sanitize_selection},
+};
+
+/// 拖拽悬停自动展开延迟：拖拽中悬停折叠目录行约 500ms 后展开。
+pub(super) const HOVER_EXPAND_DELAY: Duration = Duration::from_millis(500);
 
 /// 树内拖拽载荷：被拖行与渲染期冻结的多选标记快照，跟随预览显示的名称。
 ///
@@ -55,9 +61,72 @@ impl DragSession {
         }
     }
 
-    pub(crate) fn clear_hover(&mut self) {
+    fn clear_hover(&mut self) {
         self.hovered_directory = None;
         self.hover_expand_task = None;
+    }
+}
+
+impl ProjectTreePanel {
+    pub(super) fn visible_expanded(&self) -> HashSet<AbsolutePathBuf> {
+        let mut expanded = self.state.borrow().expanded().clone();
+        if let Some(session) = &self.drag_session {
+            expanded.extend(session.temporary_expanded.iter().cloned());
+        }
+        expanded
+    }
+
+    pub(super) fn finish_drag_session(&mut self, cx: &mut Context<Self>) {
+        self.stop_drag_scroll();
+        let had_temporary_expansion = self
+            .drag_session
+            .take()
+            .is_some_and(|session| !session.temporary_expanded.is_empty());
+        if had_temporary_expansion {
+            self.rebuild_rows(cx);
+        }
+    }
+
+    pub(super) fn handle_drag_hover(
+        &mut self,
+        path: AbsolutePathBuf,
+        is_dir: bool,
+        expanded: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.drag_session.as_mut() else {
+            return;
+        };
+        let droppable =
+            resolve_internal_drop(&session.dragged, &path, is_dir, &self.roots).is_some();
+        if is_dir && !expanded && droppable {
+            if session.hovered_directory.as_ref() == Some(&path) {
+                return;
+            }
+            session.clear_hover();
+            session.hovered_directory = Some(path.clone());
+            let timer = cx.background_executor().timer(HOVER_EXPAND_DELAY);
+            session.hover_expand_task = Some(cx.spawn(async move |this, cx| {
+                timer.await;
+                let _ = this.update(cx, |tree, cx| {
+                    if let Some(session) = tree.drag_session.as_mut()
+                        && session.hovered_directory.as_ref() == Some(&path)
+                    {
+                        session.clear_hover();
+                        session.temporary_expanded.insert(path.clone());
+                        tree.rebuild_rows(cx);
+                    }
+                });
+            }));
+        } else {
+            self.reset_drag_hover();
+        }
+    }
+
+    pub(super) fn reset_drag_hover(&mut self) {
+        if let Some(session) = self.drag_session.as_mut() {
+            session.clear_hover();
+        }
     }
 }
 

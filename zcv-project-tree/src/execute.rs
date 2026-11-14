@@ -1,6 +1,6 @@
 //! 剪贴板与传输执行：复制/剪切/粘贴、拖拽放置、冲突确认会话与批量移动/复制。
 
-use std::{collections::HashSet, time::Duration};
+use std::collections::HashSet;
 
 use gpui::{ClipboardEntry, ClipboardItem, Context, ExternalPaths, Window};
 
@@ -19,9 +19,6 @@ use super::{
         TreeClipboard, paste_target_dir, sanitize_selection,
     },
 };
-
-/// 拖拽悬停自动展开延迟：拖拽中悬停折叠目录行约 500ms 后展开。
-pub(super) const HOVER_EXPAND_DELAY: Duration = Duration::from_millis(500);
 
 impl ProjectTreePanel {
     pub(super) fn handle_tree_copy(
@@ -283,48 +280,6 @@ impl ProjectTreePanel {
             },
             cx,
         );
-    }
-
-    pub(super) fn handle_drag_hover(
-        &mut self,
-        path: AbsolutePathBuf,
-        is_dir: bool,
-        expanded: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.drag_session.as_mut() else {
-            return;
-        };
-        let droppable =
-            resolve_internal_drop(&session.dragged, &path, is_dir, &self.roots).is_some();
-        if is_dir && !expanded && droppable {
-            if session.hovered_directory.as_ref() == Some(&path) {
-                return;
-            }
-            session.clear_hover();
-            session.hovered_directory = Some(path.clone());
-            let timer = cx.background_executor().timer(HOVER_EXPAND_DELAY);
-            session.hover_expand_task = Some(cx.spawn(async move |this, cx| {
-                timer.await;
-                let _ = this.update(cx, |tree, cx| {
-                    if let Some(session) = tree.drag_session.as_mut()
-                        && session.hovered_directory.as_ref() == Some(&path)
-                    {
-                        session.clear_hover();
-                        session.temporary_expanded.insert(path.clone());
-                        tree.rebuild_rows(cx);
-                    }
-                });
-            }));
-        } else {
-            self.reset_drag_hover();
-        }
-    }
-
-    pub(super) fn reset_drag_hover(&mut self) {
-        if let Some(session) = self.drag_session.as_mut() {
-            session.clear_hover();
-        }
     }
 
     pub(super) fn handle_tree_cancel_conflict(

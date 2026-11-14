@@ -28,8 +28,8 @@ use zcv_settings::{SettingsStore, UserSettings};
 use zcv_ui::{ConfirmAnswer, tree_row_height};
 
 use super::{
+    drag::HOVER_EXPAND_DELAY,
     editing::EditOperation,
-    execute::HOVER_EXPAND_DELAY,
     transfer::{TransferMode, TransferOrigin, TreeClipboard},
 };
 

@@ -308,6 +308,7 @@ impl Render for BranchPicker {
         .label("分支")
         .shortcut(display_shortcut(&SelectGitBranch, cx))
         .color(color_value)
+        .wrap_text()
         .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 
         let mut root = div()

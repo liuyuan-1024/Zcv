@@ -88,6 +88,7 @@ pub struct Button {
     tooltip: TooltipSpec,
     on_click: Option<ClickHandler>,
     disabled: bool,
+    wrap_text: bool,
     /// 是否遮蔽下层元素的非滚动交互；滚轮始终交给所在的滚动容器。
     occlude: bool,
 }
@@ -125,6 +126,7 @@ impl Button {
             tooltip: TooltipSpec::default(),
             on_click: None,
             disabled: false,
+            wrap_text: false,
             occlude: true,
         }
     }
@@ -132,6 +134,12 @@ impl Button {
     /// 关闭 hitbox 遮蔽：按钮位于浮层内时避免遮蔽外层元素的 hover 命中。
     pub fn no_occlude(mut self) -> Self {
         self.occlude = false;
+        self
+    }
+
+    /// 在可用宽度内换行，并随文字增加按钮高度。
+    pub fn wrap_text(mut self) -> Self {
+        self.wrap_text = true;
         self
     }
 
@@ -208,7 +216,11 @@ impl RenderOnce for Button {
         let mut element = self.size.shell(
             div()
                 .id(self.id)
-                .h(height)
+                .when_else(
+                    self.wrap_text && !icon_only,
+                    |element| element.min_h(height).max_w_full().whitespace_normal(),
+                    |element| element.h(height),
+                )
                 .when(icon_only, |element| element.w(height))
                 .flex_none()
                 .flex()
@@ -259,12 +271,18 @@ impl RenderOnce for Button {
                 .into_any_element(),
             ButtonContent::Text(text) => div().text_color(color).child(text).into_any_element(),
             ButtonContent::IconText { icon: path, text } => div()
+                .when(self.wrap_text, |element| element.min_w_0())
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap(scale::S2)
                 .child(SvgIcon::new(path).size(ui_size).color(color))
-                .child(div().text_color(color).child(text))
+                .child(
+                    div()
+                        .when(self.wrap_text, |element| element.min_w_0())
+                        .text_color(color)
+                        .child(text),
+                )
                 .into_any_element(),
         })
     }

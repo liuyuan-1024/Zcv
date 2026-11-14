@@ -274,6 +274,7 @@ impl Render for RepositoryPicker {
         )
         .label("选择活动仓库")
         .color(color_value)
+        .wrap_text()
         .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 
         let mut root = div()

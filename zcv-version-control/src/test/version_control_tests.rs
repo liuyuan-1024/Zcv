@@ -134,7 +134,7 @@ fn entry_keys(rows: &[GitRow]) -> Vec<(GitSection, String)> {
     rows.iter()
         .filter_map(|row| match row {
             GitRow::Entry(entry) => Some((entry.section, entry.name.clone())),
-            GitRow::Header(..) | GitRow::Empty(_) => None,
+            GitRow::Header { .. } | GitRow::Empty(_) => None,
         })
         .collect()
 }
@@ -152,7 +152,7 @@ fn headers_always_appear_and_partially_staged_entries_duplicate_across_sections(
     let headers: Vec<_> = rows
         .iter()
         .filter_map(|row| match row {
-            GitRow::Header(section) => Some(section.label()),
+            GitRow::Header { section, .. } => Some(section.label()),
             GitRow::Empty(_) | GitRow::Entry(_) => None,
         })
         .collect();
@@ -200,22 +200,97 @@ fn expanded_empty_sections_show_unselectable_prompt_rows() {
     assert_eq!(GitSection::Staged.empty_message(), "没有已暂存的更改");
     assert_eq!(GitSection::Unstaged.empty_message(), "没有未暂存的更改");
     assert_eq!(rows.len(), 6);
-    assert!(matches!(rows[0], GitRow::Header(GitSection::Conflict)));
+    assert!(matches!(
+        rows[0],
+        GitRow::Header {
+            section: GitSection::Conflict,
+            file_count: 0
+        }
+    ));
     assert!(matches!(rows[1], GitRow::Empty(GitSection::Conflict)));
-    assert!(matches!(rows[2], GitRow::Header(GitSection::Staged)));
+    assert!(matches!(
+        rows[2],
+        GitRow::Header {
+            section: GitSection::Staged,
+            file_count: 0
+        }
+    ));
     assert!(matches!(rows[3], GitRow::Empty(GitSection::Staged)));
-    assert!(matches!(rows[4], GitRow::Header(GitSection::Unstaged)));
+    assert!(matches!(
+        rows[4],
+        GitRow::Header {
+            section: GitSection::Unstaged,
+            file_count: 0
+        }
+    ));
     assert!(matches!(rows[5], GitRow::Empty(GitSection::Unstaged)));
     assert!(rows.iter().all(|row| row_entry_key(row).is_none()));
 
     let collapsed = HashSet::from([GitSection::Staged]);
     let rows = flatten_rows(&trees, &HashSet::new(), &collapsed);
     assert_eq!(rows.len(), 5);
-    assert!(matches!(rows[0], GitRow::Header(GitSection::Conflict)));
+    assert!(matches!(
+        rows[0],
+        GitRow::Header {
+            section: GitSection::Conflict,
+            file_count: 0
+        }
+    ));
     assert!(matches!(rows[1], GitRow::Empty(GitSection::Conflict)));
-    assert!(matches!(rows[2], GitRow::Header(GitSection::Staged)));
-    assert!(matches!(rows[3], GitRow::Header(GitSection::Unstaged)));
+    assert!(matches!(
+        rows[2],
+        GitRow::Header {
+            section: GitSection::Staged,
+            file_count: 0
+        }
+    ));
+    assert!(matches!(
+        rows[3],
+        GitRow::Header {
+            section: GitSection::Unstaged,
+            file_count: 0
+        }
+    ));
     assert!(matches!(rows[4], GitRow::Empty(GitSection::Unstaged)));
+}
+
+#[test]
+fn section_header_counts_files_inside_collapsed_directories_and_sections() {
+    let root = absolute(PathBuf::from("/project"));
+    let snapshot = snapshot(&[
+        (
+            "src/a.rs",
+            FileStatus::Tracked {
+                index_status: StatusCode::Modified,
+                worktree_status: StatusCode::Modified,
+            },
+        ),
+        ("src/nested/b.rs", FileStatus::Untracked),
+    ]);
+    let trees = build_section_trees(
+        Some(root.as_path()),
+        [(root.as_path(), &snapshot)].into_iter(),
+    );
+    let rows = flatten_rows(
+        &trees,
+        &HashSet::new(),
+        &HashSet::from([GitSection::Unstaged]),
+    );
+
+    assert!(rows.iter().any(|row| matches!(
+        row,
+        GitRow::Header {
+            section: GitSection::Staged,
+            file_count: 1
+        }
+    )));
+    assert!(rows.iter().any(|row| matches!(
+        row,
+        GitRow::Header {
+            section: GitSection::Unstaged,
+            file_count: 2
+        }
+    )));
 }
 
 #[test]
@@ -376,7 +451,7 @@ fn consecutive_single_change_directories_are_display_compressed() {
         .iter()
         .filter_map(|row| match row {
             GitRow::Entry(entry) => Some((entry.name.as_str(), entry.path.as_path(), entry.depth)),
-            GitRow::Header(..) | GitRow::Empty(_) => None,
+            GitRow::Header { .. } | GitRow::Empty(_) => None,
         })
         .collect();
     assert_eq!(entries.len(), 2);
@@ -651,6 +726,84 @@ fn repository_switch_preserves_drafts_and_removal_falls_back_to_remaining_reposi
 }
 
 #[gpui::test]
+fn stats_row_wraps_and_keeps_graph_button_right_aligned(cx: &mut TestAppContext) {
+    init_test_context(cx);
+    let (root, _temp) = test_repo();
+    let project = test_project(root, cx);
+    let (_, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
+
+    let bounds = |cx: &mut VisualTestContext, width| {
+        cx.simulate_resize(size(width, px(740.)));
+        cx.run_until_parked();
+        let _ = cx.refresh();
+        cx.update(|_, _| {});
+        (
+            cx.debug_bounds("version-control-diff-counts")
+                .expect("应显示变更行数统计"),
+            cx.debug_bounds("version-control-git-graph-button")
+                .expect("应显示版本控制图按钮"),
+        )
+    };
+
+    let (wide_counts, wide_graph) = bounds(cx, px(420.));
+    assert!(wide_graph.left() >= wide_counts.right());
+    let (counts, graph) = bounds(cx, px(75.));
+    assert!(graph.top() >= counts.bottom(), "版本控制图按钮应换行");
+    assert_eq!(px(75.) - graph.right(), px(420.) - wide_graph.right());
+}
+
+#[gpui::test]
+fn repository_header_wraps_long_names_and_keeps_remote_buttons_right_aligned(
+    cx: &mut TestAppContext,
+) {
+    init_test_context(cx);
+    let (root, _temp) = test_repo();
+    let parent = tempfile::tempdir().expect("应创建仓库父目录");
+    let long_root = parent.path().join("repository".repeat(7));
+    fs::rename(root, &long_root).expect("应设置长仓库名");
+    let branch_name = "feature".repeat(10);
+    run_in(&long_root, &["git", "branch", "-m", &branch_name]);
+    run_in(&long_root, &["git", "remote", "add", "origin", "."]);
+    let project = test_project(long_root, cx);
+    let (_, cx) =
+        cx.add_window_view(move |window, cx| VersionControlPanel::new(project, window, cx));
+
+    let bounds = |cx: &mut VisualTestContext, width| {
+        cx.simulate_resize(size(width, px(740.)));
+        cx.run_until_parked();
+        let _ = cx.refresh();
+        cx.update(|_, _| {});
+        (
+            cx.debug_bounds("version-control-repository-button")
+                .expect("应显示仓库名"),
+            cx.debug_bounds("version-control-branch-button")
+                .expect("应显示分支名"),
+            cx.debug_bounds("version-control-remote-operations")
+                .expect("应显示远程操作"),
+        )
+    };
+
+    let (wide_repo, wide_branch, wide_operations) = bounds(cx, px(1600.));
+    assert!(wide_branch.left() >= wide_repo.right());
+    assert!(wide_operations.left() >= wide_branch.right());
+
+    let (repo, branch, operations) = bounds(cx, px(240.));
+    assert!(repo.right() <= px(240.) && branch.right() <= px(240.));
+    assert!(repo.size.height > wide_repo.size.height, "仓库名应多行显示");
+    assert!(
+        branch.size.height > wide_branch.size.height,
+        "分支名应多行显示"
+    );
+    assert!(branch.top() >= repo.bottom(), "分支应移至下一行");
+    assert!(operations.top() >= branch.bottom(), "远程操作应移至下一行");
+    assert_eq!(
+        px(240.) - operations.right(),
+        px(1600.) - wide_operations.right()
+    );
+}
+
+#[gpui::test]
 fn panel_branch_picker_switches_active_repository_branch(cx: &mut TestAppContext) {
     init_test_context(cx);
     let (root, _temp) = test_repo();
@@ -742,7 +895,7 @@ fn empty_state_initializes_repository_and_builds_section_tree(cx: &mut TestAppCo
         let headers: Vec<_> = rows
             .iter()
             .filter_map(|row| match row {
-                GitRow::Header(section) => Some(section.label()),
+                GitRow::Header { section, .. } => Some(section.label()),
                 GitRow::Empty(_) | GitRow::Entry(_) => None,
             })
             .collect();
@@ -895,7 +1048,7 @@ fn section_entries(panel: &VersionControlPanel) -> Vec<(GitSection, String)> {
         .iter()
         .filter_map(|row| match row {
             GitRow::Entry(entry) => Some((entry.section, entry.name.clone())),
-            GitRow::Header(..) | GitRow::Empty(_) => None,
+            GitRow::Header { .. } | GitRow::Empty(_) => None,
         })
         .collect()
 }
@@ -1097,7 +1250,15 @@ fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppCon
             .borrow()
             .rows
             .iter()
-            .position(|row| matches!(row, GitRow::Header(GitSection::Unstaged)))
+            .position(|row| {
+                matches!(
+                    row,
+                    GitRow::Header {
+                        section: GitSection::Unstaged,
+                        ..
+                    }
+                )
+            })
             .expect("未暂存分区标题应存在")
     });
     let row_height = cx.update(|window, cx| tree_row_height(window, cx));

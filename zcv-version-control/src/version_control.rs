@@ -31,7 +31,7 @@ use zcv_path::{AbsolutePathBuf, RelativePathBuf, compare_tree_entries};
 use zcv_project::{
     GitJobPhase, GitOperationKind, GitStoreEvent, Project, RemoteOperationState, RepositorySnapshot,
 };
-use zcv_theme::{color, scale};
+use zcv_theme::{color, scale, typography};
 use zcv_ui::{
     AutoFoldDir, Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, RowClickAction, Scrollbar,
     SvgIcon, TooltipSpec, TreeDisclosure, TreeNodeRow, TreeRow, TreeRowFrame, TreeState,
@@ -252,6 +252,19 @@ fn finalize_node(node: &mut GitTreeNode) {
     });
 }
 
+fn count_files(nodes: &[GitTreeNode]) -> usize {
+    nodes
+        .iter()
+        .map(|node| {
+            if node.is_dir {
+                count_files(&node.children)
+            } else {
+                1
+            }
+        })
+        .sum()
+}
+
 /// 树 → 有序行列表：分组头前置，展开的空组显示一行提示，非空组按 DFS 先序展开；折叠的分区只留标题行。
 fn flatten_rows(
     trees: &GitSections<Vec<GitTreeNode>>,
@@ -260,7 +273,10 @@ fn flatten_rows(
 ) -> Vec<GitRow> {
     let mut rows = Vec::new();
     for (section, tree) in trees.iter() {
-        rows.push(GitRow::Header(section));
+        rows.push(GitRow::Header {
+            section,
+            file_count: count_files(tree),
+        });
         if !collapsed.contains(&section) {
             if tree.is_empty() {
                 rows.push(GitRow::Empty(section));
@@ -871,12 +887,6 @@ impl Render for VersionControlPanel {
             let rows = self.state.borrow().rows.clone();
             let render_context = GitPanelRenderContext {
                 state: Rc::clone(&self.state),
-                non_empty_sections: self
-                    .section_paths
-                    .iter()
-                    .filter(|(_, paths)| !paths.is_empty())
-                    .map(|(section, _)| section)
-                    .collect(),
                 rows: rows.into(),
                 focus: self.focus.clone(),
                 collapsed: Rc::clone(&self.collapsed_sections),
@@ -929,10 +939,9 @@ impl Render for VersionControlPanel {
                     has_branch,
                     remote_operation_state,
                     cx.weak_entity(),
-                    window,
                     cx,
                 ))
-                .child(render_stats_row(diff_stat, cx.weak_entity(), window, cx));
+                .child(render_stats_row(diff_stat, cx.weak_entity(), cx));
         }
         body = body.child(content);
         if let Some(footer) = footer {
@@ -966,7 +975,6 @@ fn render_repository_header(
     has_branch: bool,
     remote_state: RemoteOperationState,
     weak: WeakEntity<VersionControlPanel>,
-    window: &Window,
     cx: &App,
 ) -> impl IntoElement {
     let colors = color::current(cx);
@@ -982,18 +990,43 @@ fn render_repository_header(
             .color(colors.text_muted)
             .into_any_element()
     };
-    TreeRowFrame::default()
-        .content(
+    div()
+        .id(ElementId::Name("version-control-repository-header".into()))
+        .w_full()
+        .flex()
+        .flex_none()
+        .flex_wrap()
+        .items_center()
+        .gap_x(scale::S6)
+        .gap_y(scale::S2)
+        .px(scale::S6)
+        .py(scale::S2)
+        .text_color(colors.text)
+        .child(
             div()
                 .debug_selector(|| "version-control-repository-button".into())
+                .flex_none()
+                .max_w_full()
                 .child(repository_picker),
         )
-        .content(div().text_color(colors.text_muted).child("/"))
-        .content(branch)
-        .trailing(render_remote_operations(remote_state, weak))
-        .render(window, cx)
-        .id(ElementId::Name("version-control-repository-header".into()))
-        .text_color(colors.text)
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .max_w_full()
+                .items_center()
+                .gap(scale::S6)
+                .child(div().flex_none().text_color(colors.text_muted).child("/"))
+                .child(div().min_w_0().child(branch)),
+        )
+        .when(remote_state.has_remote, |header| {
+            header.child(
+                render_remote_operations(remote_state, weak)
+                    .debug_selector(|| "version-control-remote-operations".into())
+                    .flex_none()
+                    .ml_auto(),
+            )
+        })
 }
 
 /// 拉取、推送、同步按钮：只对活动仓库的远程状态生效。
@@ -1002,9 +1035,6 @@ fn render_remote_operations(
     weak: WeakEntity<VersionControlPanel>,
 ) -> Div {
     let mut buttons = div().flex().items_center().gap(scale::S2);
-    if !state.has_remote {
-        return buttons;
-    }
     let busy = state.operation.is_some();
     let operation_label = remote_operation_label(&state);
     if state.behind > 0 {
@@ -1079,32 +1109,8 @@ fn remote_operation_label(state: &RemoteOperationState) -> Option<&'static str> 
 }
 
 /// 面板统计行：活动仓库的新增/删除行数，右侧是版本控制图入口。
-fn render_stats_row(
-    total: DiffStat,
-    weak: WeakEntity<VersionControlPanel>,
-    window: &Window,
-    cx: &App,
-) -> Div {
+fn render_stats_row(total: DiffStat, weak: WeakEntity<VersionControlPanel>, cx: &App) -> Div {
     let colors = color::current(cx);
-    let mut frame = TreeRowFrame::default().leading(
-        SvgIcon::new("icons/diff.svg")
-            .id(ElementId::Name("version-control-total-diff".into()))
-            .label("变更行数统计")
-            .color(colors.icon_muted),
-    );
-    if total.added > 0 || total.deleted > 0 {
-        frame = frame
-            .content(
-                div()
-                    .text_color(colors.version_control_added)
-                    .child(format!("+{}", total.added)),
-            )
-            .content(
-                div()
-                    .text_color(colors.version_control_deleted)
-                    .child(format!("−{}", total.deleted)),
-            );
-    }
     let graph_button = Button::icon("version-control-git-graph", "icons/git_graph.svg")
         .label("版本控制图")
         .on_click(move |_, window, cx| {
@@ -1112,14 +1118,52 @@ fn render_stats_row(
                 panel.update(cx, |panel, cx| panel.open_git_graph(window, cx));
             }
         });
-    frame
-        .trailing(
+
+    let counts = div()
+        .flex()
+        .flex_none()
+        .flex_wrap()
+        .max_w_full()
+        .items_center()
+        .gap_x(scale::S6)
+        .gap_y(scale::S2)
+        .child(
+            SvgIcon::new("icons/diff.svg")
+                .id(ElementId::Name("version-control-total-diff".into()))
+                .label("变更行数统计")
+                .color(colors.icon_muted),
+        )
+        .when(total.added > 0 || total.deleted > 0, |counts| {
+            counts
+                .child(
+                    div()
+                        .text_color(colors.version_control_added)
+                        .child(format!("+{}", total.added)),
+                )
+                .child(
+                    div()
+                        .text_color(colors.version_control_deleted)
+                        .child(format!("−{}", total.deleted)),
+                )
+        });
+
+    div()
+        .w_full()
+        .flex()
+        .flex_none()
+        .flex_wrap()
+        .items_center()
+        .gap_x(scale::S6)
+        .gap_y(scale::S2)
+        .px(scale::S6)
+        .child(counts.debug_selector(|| "version-control-diff-counts".into()))
+        .child(
             div()
                 .debug_selector(|| "version-control-git-graph-button".into())
+                .ml_auto()
+                .flex_none()
                 .child(graph_button),
         )
-        .render(window, cx)
-        .text_color(colors.text_muted)
 }
 
 fn render_list(
@@ -1169,14 +1213,16 @@ fn render_row(
     match row {
         // 分组头：不可选择；
         // 行首 chevron 折叠/展开分区，行尾复选框全选/取消全选（空分区不显示复选框）。
-        GitRow::Header(section) => {
+        GitRow::Header {
+            section,
+            file_count,
+        } => {
             let is_collapsed = render_context.collapsed.borrow().contains(section);
             let weak = render_context.weak.clone();
             let section = *section;
             let checkbox_weak = weak.clone();
             let disclosure_weak = weak.clone();
-            let section_has_entries = section != GitSection::Conflict
-                && render_context.non_empty_sections.contains(&section);
+            let show_checkbox = section != GitSection::Conflict && *file_count > 0;
             let mut frame = TreeRowFrame::default()
                 .leading(TreeDisclosure::new(
                     ElementId::Name(format!("version-control-section-{section:?}").into()),
@@ -1190,9 +1236,22 @@ fn render_row(
                     },
                 ))
                 .content(section.label());
-            if section_has_entries {
+            if show_checkbox {
                 // 已暂存组显示勾选（点击 = 全部取消暂存）、未暂存组显示未勾选（点击 = 全部暂存）。
-                frame = frame.trailing(
+                let colors = color::current(cx);
+                let count_size = window.rem_size() * 0.75;
+                let count_label = div()
+                    .flex_none()
+                    .px(scale::S4)
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.surface_background)
+                    .text_color(colors.text_muted)
+                    .text_size(count_size)
+                    .line_height(typography::ui_line_at(count_size, cx))
+                    .child(file_count.to_string());
+                frame = frame.trailing(count_label).trailing(
                     Checkbox::new(
                         ElementId::Name(
                             format!("version-control-header-checkbox-{section:?}").into(),
@@ -1556,7 +1615,10 @@ impl From<GitSection> for ProjectDiffKind {
 /// 统一行模型：分组头和空分组提示不可选择，只有条目行参与树交互。
 #[derive(Clone, Debug)]
 enum GitRow {
-    Header(GitSection),
+    Header {
+        section: GitSection,
+        file_count: usize,
+    },
     Empty(GitSection),
     Entry(GitTreeRow),
 }
@@ -1607,7 +1669,7 @@ impl TreeRow for GitRow {
     fn depth(&self) -> usize {
         match self {
             GitRow::Entry(entry) => entry.depth,
-            GitRow::Header(_) | GitRow::Empty(_) => 0,
+            GitRow::Header { .. } | GitRow::Empty(_) => 0,
         }
     }
     fn expanded(&self) -> bool {
@@ -1619,7 +1681,7 @@ impl TreeRow for GitRow {
 fn row_entry_key(row: &GitRow) -> Option<(GitSection, AbsolutePathBuf)> {
     match row {
         GitRow::Entry(entry) => Some((entry.section, entry.path.clone())),
-        GitRow::Header(_) | GitRow::Empty(_) => None,
+        GitRow::Header { .. } | GitRow::Empty(_) => None,
     }
 }
 
@@ -1630,8 +1692,6 @@ struct GitPanelRenderContext {
     focus: FocusHandle,
     /// 折叠的分区（标题行 chevron 渲染与点击共享）。
     collapsed: Rc<RefCell<HashSet<GitSection>>>,
-    /// 有条目的分区（由分组树派生，与折叠无关；空分区标题行不显示全选复选框）。
-    non_empty_sections: HashSet<GitSection>,
     /// 条目点击直接调用 Entity 方法。
     weak: WeakEntity<VersionControlPanel>,
 }

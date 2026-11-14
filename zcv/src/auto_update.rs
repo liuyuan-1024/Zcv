@@ -25,13 +25,14 @@ use smol::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use zcv_actions::RestartToUpdate;
 use zcv_settings::config_dir;
 use zcv_ui::Button;
+use zcv_ui::ToastKind;
 use zcv_update::{
     SelectedRelease, UpdateInstallation, UpdateResult, UpdateResultStatus, UpdateTransaction,
     atomic_write_json, extract_verified_archive, prepare_helper, take_update_result,
     update_result_path, verify_and_parse_manifest, verify_app, verify_downloaded,
     verify_downloaded_asset, write_acknowledgement,
 };
-use zcv_workspace::{ToastKind, Workspace};
+use zcv_workspace::Workspace;
 
 const MANIFEST_URL: &str =
     "https://github.com/liuyuan-1024/Zcv/releases/latest/download/latest.json";

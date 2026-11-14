@@ -23,6 +23,7 @@ zcv-path.workspace = true
 zcv-project.workspace = true
 zcv-settings.workspace = true
 zcv-theme.workspace = true
+zcv-title-bar.workspace = true
 zcv-ui.workspace = true
 
 [dev-dependencies]

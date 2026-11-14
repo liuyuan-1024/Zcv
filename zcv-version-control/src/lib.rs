@@ -1,5 +1,6 @@
 //! 版本控制 UI crate —— 变更树面板、项目差异视图与提交历史图。
 
+mod branch_picker;
 mod editor_diff;
 mod git_graph;
 mod graph;
@@ -13,6 +14,7 @@ mod test;
 use gpui::{App, AppContext as _, Context, Window};
 use zcv_workspace::Workspace;
 
+pub use branch_picker::{GitBranchAction, OnBranchSelected};
 use git_graph::GitGraphSerializedItemProvider;
 pub use git_graph::deploy_at as deploy_git_graph;
 use project_diff::ProjectDiffSerializedItemProvider;

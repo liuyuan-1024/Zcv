@@ -25,6 +25,7 @@ use zcv_path::AbsolutePathBuf;
 use zcv_project::{FileSaveConflictPolicy, Project};
 use zcv_settings::SettingsStore;
 use zcv_theme::{color, typography, typography::Typography};
+use zcv_ui::{ToastAction, ToastId, ToastKind, ToastLayer};
 
 use crate::{
     ItemHandle, OpenPathCallback,
@@ -35,7 +36,6 @@ use crate::{
     panel::{Panel, PanelEvent, PanelHandle},
     preview::{PreviewDocument, standalone_provider_for},
     status_bar::StatusBar,
-    toast::{ToastAction, ToastId, ToastKind, ToastLayer},
     window_bounds,
 };
 

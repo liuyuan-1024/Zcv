@@ -12,8 +12,8 @@ use zcv_settings::{
     UserSettingsContent, update_user_settings,
 };
 use zcv_theme::{ThemeChoice, color, scale, typography};
-use zcv_ui::{Button, ButtonStyle, Checkbox, SvgIcon};
-use zcv_workspace::{TitleBar, ToastKind, ToastLayer};
+use zcv_title_bar::TitleBar;
+use zcv_ui::{Button, ButtonStyle, Checkbox, SvgIcon, ToastKind, ToastLayer};
 
 type WindowAction = Box<dyn Fn(&mut SettingsWindow, &mut Context<SettingsWindow>)>;
 

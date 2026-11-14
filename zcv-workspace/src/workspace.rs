@@ -8,7 +8,6 @@ use gpui::{App, Window};
 use zcv_theme::typography::Typography;
 
 mod activity_indicator;
-mod branch_picker;
 mod breadcrumbs;
 mod dock;
 mod item;
@@ -25,9 +24,6 @@ mod recent_projects;
 mod searchable;
 mod status_bar;
 mod status_color;
-mod tab_bar;
-mod title_bar;
-mod toast;
 mod toolbar;
 mod top_bar;
 mod window_bounds;
@@ -38,7 +34,6 @@ mod workspace_state;
 pub(crate) mod test_support;
 
 pub use activity_indicator::ActivityIndicator;
-pub use branch_picker::{BranchPicker, GitBranchAction, OnBranchSelected};
 pub use breadcrumbs::Breadcrumbs;
 pub use dock::{Dock, DockPosition};
 pub use item::{Item, ItemEvent, ItemHandle};
@@ -62,8 +57,6 @@ pub use searchable::{
 };
 pub use status_bar::StatusItemView;
 pub use status_color::git_status_color;
-pub use title_bar::TitleBar;
-pub use toast::{ToastAction, ToastId, ToastKind, ToastLayer};
 pub use toolbar::{Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 pub use top_bar::TopBar;
 pub use window_bounds::{load_window_bounds, save_window_bounds};

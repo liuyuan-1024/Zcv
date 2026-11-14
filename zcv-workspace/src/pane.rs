@@ -15,13 +15,12 @@ use gpui::{
 };
 use zcv_actions::{CloseTab, NextTab, PrevTab, TogglePreview};
 use zcv_theme::{FileIcons, color};
-use zcv_ui::{Button, SvgIcon, Tab};
+use zcv_ui::{Button, SvgIcon, Tab, TabBar};
 
 use crate::{
     ItemEvent, ItemHandle, Toolbar,
     layout_state::{SerializedPane, SerializedPaneItem},
     preview::{OpenPathCallback, PreviewDocument, source_provider_for},
-    tab_bar::{TabBar, TabBarTrailing},
 };
 
 // ═══ Pane 事件 ════════════════════════════════════════════════════════
@@ -95,6 +94,8 @@ impl Render for DraggedTab {
 
 // ═══ Pane 实体 ══════════════════════════════════════════════════
 
+type TabBarTrailing = Rc<dyn Fn(&App) -> AnyElement>;
+
 /// 单个编辑区 Pane。
 pub struct Pane {
     focus: FocusHandle,
@@ -104,7 +105,7 @@ pub struct Pane {
     transient_source_item_id: Option<EntityId>,
     transient_preview_item_id: Option<EntityId>,
     scroll_handle: ScrollHandle,
-    /// 面板注入的标签栏右侧插槽构建器；渲染时原样转发给 TabBar（插槽本体在 TabBar 组件内）。
+    /// 面板注入的标签栏右侧插槽构建器；每次渲染时构建元素并交给 TabBar。
     tab_bar_trailing: Option<TabBarTrailing>,
     /// 工作区注入的文件打开能力；独立测试 Pane 可以不提供该能力。
     open_path: Option<OpenPathCallback>,
@@ -848,21 +849,10 @@ fn render_tab_bar(params: TabBarRenderParams<'_>, window: &Window, cx: &App) -> 
     let handle = params.scroll_handle.clone();
     let mut tab_bar = TabBar::new().track_scroll(params.scroll_handle);
     if let Some(trailing) = params.trailing {
-        tab_bar = tab_bar.with_trailing(trailing);
+        tab_bar = tab_bar.with_trailing(trailing(cx));
     }
 
-    let tab_bar = tab_bar.with_bar(
-        cx,
-        window,
-        |bar| {
-            bar.flex()
-                .flex_row()
-                .items_center()
-                .flex_shrink_0()
-                .bg(color::current(cx).tab_bar_background)
-        },
-        children,
-    );
+    let tab_bar = tab_bar.render(cx, window, children);
 
     // 外层包裹 on_drag_move 实现拖拽到边缘自动滚动 event.bounds 就是本 div 的边界，无需 Y 坐标判断
     div()

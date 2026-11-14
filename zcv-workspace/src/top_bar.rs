@@ -6,11 +6,11 @@ use gpui::{
 };
 use zcv_actions::OpenSettings;
 use zcv_project::{GitStoreEvent, Project, ProjectEvent};
+use zcv_title_bar::TitleBar;
 use zcv_ui::{Button, PopoverLayer};
 
 use crate::{
-    OnProjectSelected, TitleBar, Workspace, quick_access::QuickAccess,
-    recent_projects::RecentProjects,
+    OnProjectSelected, Workspace, quick_access::QuickAccess, recent_projects::RecentProjects,
 };
 
 mod application_menu;

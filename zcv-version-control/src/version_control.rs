@@ -37,9 +37,12 @@ use zcv_ui::{
     SvgIcon, TooltipSpec, TreeDisclosure, TreeNodeRow, TreeRow, TreeRowFrame, TreeState,
     auto_fold_dirs, row_click_action, selection_border, tree_row_label,
 };
-use zcv_workspace::{BranchPicker, OnBranchSelected, Panel, PanelEvent, git_status_color};
+use zcv_workspace::{Panel, PanelEvent, git_status_color};
 
-use crate::{project_diff::ProjectDiffKind, repository_picker::RepositoryPicker};
+use crate::{
+    OnBranchSelected, branch_picker::BranchPicker, project_diff::ProjectDiffKind,
+    repository_picker::RepositoryPicker,
+};
 
 /// 打开 Git 项目差异并定位文件的回调（弱 Workspace 引用由装配层捕获）。
 pub type OnOpenGitDiff = Rc<dyn Fn(ProjectDiffKind, PathBuf, bool, &mut Window, &mut App)>;

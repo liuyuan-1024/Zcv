@@ -3,25 +3,18 @@
 //! 负责渲染横向滚动标签区，接受 [`ScrollHandle`] 实现程序化滚动。
 //! 标签区右侧提供固定功能插槽（不随标签滚动），插槽内容由构建器在每次渲染时生成。
 
-use std::rc::Rc;
-
-use gpui::{AnyElement, App, Div, ScrollHandle, Window, div, prelude::*};
+use crate::Tab;
+use gpui::{AnyElement, App, ScrollHandle, Window, div, prelude::*};
 use zcv_theme::{color, scale};
-use zcv_ui::Tab;
-
-/// 标签栏右侧功能插槽的构建器：每次渲染时调用生成插槽元素。
-/// 元素不可复制（ArenaBox 独占所有权），无法缓存实例，只能以构建器形式保存。
-pub(crate) type TabBarTrailing = Rc<dyn Fn(&App) -> AnyElement>;
 
 /// 标签栏容器，标签渲染由调用方提供子元素。
-pub(crate) struct TabBar {
+pub struct TabBar {
     scroll_handle: Option<ScrollHandle>,
-    /// 右侧功能插槽的构建器。
-    trailing: Option<TabBarTrailing>,
+    trailing: Option<AnyElement>,
 }
 
 impl TabBar {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             scroll_handle: None,
             trailing: None,
@@ -29,28 +22,31 @@ impl TabBar {
     }
 
     /// 关联 ScrollHandle，使标签栏可程序化滚动。
-    pub(crate) fn track_scroll(mut self, handle: &ScrollHandle) -> Self {
+    pub fn track_scroll(mut self, handle: &ScrollHandle) -> Self {
         self.scroll_handle = Some(handle.clone());
         self
     }
 
     /// 设置右侧功能插槽的构建器（不随标签滚动）。
-    pub(crate) fn with_trailing(mut self, build: TabBarTrailing) -> Self {
-        self.trailing = Some(build);
+    pub fn with_trailing(mut self, element: impl IntoElement) -> Self {
+        self.trailing = Some(element.into_any_element());
         self
     }
 
-    /// 设置外层容器样式并填入子元素，然后渲染。
-    pub(crate) fn with_bar(
+    /// 渲染标签及固定尾部插槽。
+    pub fn render(
         self,
         cx: &App,
         window: &Window,
-        f: impl FnOnce(Div) -> Div,
         children: impl IntoIterator<Item = AnyElement>,
     ) -> impl gpui::IntoElement {
-        let border_color = color::current(cx).border;
+        let colors = color::current(cx);
         let trailing = self.trailing;
-        let outer = f(div())
+        let outer = div()
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .bg(colors.tab_bar_background)
             .relative()
             .h(Tab::container_height(window, cx))
             .child(
@@ -59,7 +55,7 @@ impl TabBar {
                     .absolute()
                     .inset_0()
                     .border_b_1()
-                    .border_color(border_color),
+                    .border_color(colors.border),
             );
 
         let mut bar = outer.child(
@@ -81,14 +77,14 @@ impl TabBar {
                     scroll_area.children(children)
                 }),
         );
-        if let Some(build) = trailing {
+        if let Some(trailing) = trailing {
             bar = bar.child(
                 div()
                     .flex_shrink_0()
                     .flex()
                     .items_center()
                     .px(scale::S6)
-                    .child(build(cx)),
+                    .child(trailing),
             );
         }
         bar

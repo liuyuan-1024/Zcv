@@ -31,10 +31,10 @@ use zcv_project::{
     Project, ProjectEvent,
 };
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
+use zcv_ui::{ToastAction, ToastKind};
 use zcv_workspace::{
-    ActivityIndicator, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
-    PaneEvent, PanelButtons, PreviewToolbar, ToastAction, ToastKind, TopBar, Workspace,
-    add_to_recent, load_window_bounds, remove_from_recent, save_window_bounds,
+    ActivityIndicator, DockPosition, OnProjectSelected, PaneEvent, PanelButtons, PreviewToolbar,
+    TopBar, Workspace, add_to_recent, load_window_bounds, remove_from_recent, save_window_bounds,
 };
 
 use crate::{
@@ -46,8 +46,9 @@ use zcv_path::AbsolutePathBuf;
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
 use zcv_terminal::TerminalPanel;
 use zcv_version_control::{
-    OnGitOperation, OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel, deploy_git_graph,
-    deploy_project_diff, install as install_version_control, refresh_pane_git_projection,
+    GitBranchAction, OnBranchSelected, OnGitOperation, OnOpenGitDiff, OnOpenGitGraph,
+    VersionControlPanel, deploy_git_graph, deploy_project_diff, install as install_version_control,
+    refresh_pane_git_projection,
 };
 
 /// 新建工作区所需的文件监听后端工厂。

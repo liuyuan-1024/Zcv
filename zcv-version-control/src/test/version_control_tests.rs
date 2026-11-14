@@ -10,9 +10,11 @@ use zcv_language::LanguageRegistry;
 use zcv_project::StatusEntry;
 use zcv_settings::{SettingsStore, UserSettings};
 use zcv_ui::tree_row_height;
-use zcv_workspace::GitBranchAction;
 
-use crate::test::{test_project, test_project_roots};
+use crate::{
+    GitBranchAction,
+    test::{test_project, test_project_roots},
+};
 
 /// 构造快照：路径 → 状态；diff 统计取固定样例值（staged/unstaged 可区分）。
 fn snapshot(entries: &[(&str, FileStatus)]) -> RepositorySnapshot {

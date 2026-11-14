@@ -13,7 +13,7 @@ zcv-actions.workspace = true
 zcv-settings.workspace = true
 zcv-theme.workspace = true
 zcv-ui.workspace = true
-zcv-workspace.workspace = true
+zcv-title-bar.workspace = true
 
 [lints]
 workspace = true

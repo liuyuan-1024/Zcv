@@ -11,8 +11,8 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 use zcv_actions::NewTerminal;
 use zcv_project::Project;
-use zcv_ui::Button;
-use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent, ToastKind, Workspace};
+use zcv_ui::{Button, ToastKind};
+use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent, Workspace};
 
 /// 终端会话快照：重建 PTY 所需的最小信息。
 #[derive(Debug, Serialize, Deserialize)]

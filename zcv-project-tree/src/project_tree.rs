@@ -25,11 +25,12 @@ use zcv_git::FileStatus;
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_project::{GitStoreEvent, Project, ProjectEvent, WorktreeEntry, translate_path};
 use zcv_theme::{color, fixed, scale};
+use zcv_ui::ToastKind;
 use zcv_ui::{
     ConfirmOverlay, ContextMenu, OverlayAnchor, OverlayOutside, PopoverHost, PopoverLayer,
     RowClickAction, Scrollbar, TreeState, overlay,
 };
-use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace, typography_for_window};
+use zcv_workspace::{Panel, PanelEvent, Workspace, typography_for_window};
 
 use zcv_settings::SettingsStore;
 

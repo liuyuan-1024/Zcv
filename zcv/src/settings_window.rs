@@ -9,7 +9,7 @@ use gpui::{
 use zcv_actions::{OpenSettings, OpenSettingsFile};
 use zcv_language::LanguageRegistry;
 use zcv_settings_window::SettingsWindow;
-use zcv_workspace::ToastKind;
+use zcv_ui::ToastKind;
 
 use crate::workspace::{self, FileWatcherFactory};
 

@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::{Button, ButtonStyle, SvgIcon};
 use gpui::{
     AlignItems, AnyElement, App, AsyncApp, Bounds, ClipboardItem, Context, Display, Element,
     ElementId, EntityId, FlexDirection, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
@@ -16,9 +17,6 @@ use gpui::{
     prelude::*, px, relative, size,
 };
 use zcv_theme::{color, scale};
-use zcv_ui::{Button, ButtonStyle, SvgIcon};
-
-use crate::typography_for_window;
 
 /// 复制反馈的展示时长。
 const COPIED_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
@@ -331,7 +329,7 @@ impl ToastLayer {
     }
 
     /// 关闭指定提示；其计时和复制反馈任务随提示一起结束。
-    pub(crate) fn hide(&mut self, id: ToastId, cx: &mut Context<Self>) {
+    pub fn hide(&mut self, id: ToastId, cx: &mut Context<Self>) {
         if let Some(index) = self.toasts.iter().position(|toast| toast.id == id) {
             self.toasts.remove(index);
             if self.entering_toast == Some(id) {
@@ -341,7 +339,7 @@ impl ToastLayer {
         }
     }
 
-    pub(crate) fn contains(&self, id: ToastId) -> bool {
+    pub fn contains(&self, id: ToastId) -> bool {
         self.toasts.iter().any(|toast| toast.id == id)
     }
 
@@ -377,7 +375,7 @@ impl ToastLayer {
 
 impl Render for ToastLayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let typography = typography_for_window(window, cx);
+        let ui_size = window.rem_size();
         let mut stack = div()
             .id("toast-stack")
             .flex()
@@ -462,11 +460,7 @@ impl Render for ToastLayer {
                         .flex_row()
                         .items_center()
                         .justify_between()
-                        .child(
-                            SvgIcon::new(icon)
-                                .color(icon_color)
-                                .size(typography.ui_size()),
-                        )
+                        .child(SvgIcon::new(icon).color(icon_color).size(ui_size))
                         .child(
                             div()
                                 .flex()

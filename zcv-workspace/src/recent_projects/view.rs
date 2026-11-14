@@ -24,10 +24,12 @@ use zcv_keymap::{KeyBindings, display_shortcut};
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, picker_divider, toggle_picker};
 use zcv_project::{GitStoreEvent, Project, ProjectEvent};
 use zcv_theme::{color, scale, typography};
-use zcv_ui::{Button, ButtonLike, ListItem, PopoverHost, PopoverLayer, SvgIcon, TooltipSpec};
+use zcv_ui::{
+    Button, ButtonLike, ListItem, PopoverHost, PopoverLayer, SvgIcon, ToastKind, TooltipSpec,
+};
 
 use crate::{
-    ToastKind, Workspace,
+    Workspace,
     recent_projects::{self, ProjectEntry},
     typography_for_window,
 };

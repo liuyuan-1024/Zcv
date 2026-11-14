@@ -1,0 +1,18 @@
+[package]
+name = "zcv-title-bar"
+version.workspace = true
+edition.workspace = true
+description = "窗口标题栏布局与原生窗口控制"
+
+[lib]
+path = "src/title_bar.rs"
+
+[dependencies]
+gpui.workspace = true
+zcv-theme.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

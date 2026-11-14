@@ -197,7 +197,7 @@ impl PickerDelegate for BranchPickerDelegate {
 ///
 /// 按钮显示当前分支名；空仓库没有分支或 HEAD，由宿主不渲染该按钮。
 /// detached HEAD 显示 8 位短 SHA。
-pub struct BranchPicker {
+pub(crate) struct BranchPicker {
     host: PopoverHost,
     picker: Entity<Picker<BranchPickerDelegate>>,
     git_store: Entity<GitStore>,
@@ -212,7 +212,7 @@ fn branch_display_name(current_branch: Option<&str>, head_commit: Option<&str>) 
 }
 
 impl BranchPicker {
-    pub fn new(
+    pub(crate) fn new(
         git_store: Entity<GitStore>,
         on_select: OnBranchSelected,
         picker_layer: PopoverLayer,
@@ -258,7 +258,7 @@ impl BranchPicker {
     }
 
     /// 外部切换（快捷键/点击等）。
-    pub fn toggle(&mut self, window: &mut Window, cx: &mut App) {
+    pub(crate) fn toggle(&mut self, window: &mut Window, cx: &mut App) {
         if !self.host.is_open() {
             // 打开时用 GitStore 最新快照重建列表，清空搜索框。
             let branches = self

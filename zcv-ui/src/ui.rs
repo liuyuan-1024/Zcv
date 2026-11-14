@@ -20,6 +20,8 @@ mod scrollbar;
 mod search_input;
 mod selection_shape;
 mod tab;
+mod tab_bar;
+mod toast;
 mod tooltip;
 mod tree;
 mod tree_disclosure;
@@ -46,6 +48,8 @@ pub use selection_shape::{
     selection_line_end_overshoot, selection_segment_shapes,
 };
 pub use tab::Tab;
+pub use tab_bar::TabBar;
+pub use toast::{ToastAction, ToastId, ToastKind, ToastLayer};
 pub use tooltip::{ShortcutResolver, TooltipSpec};
 pub use tree::{
     AutoFoldDir, RowClickAction, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, auto_fold_dirs,

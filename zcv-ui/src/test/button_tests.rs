@@ -4,27 +4,6 @@ use std::{cell::Cell, rc::Rc};
 use super::*;
 use zcv_theme::scale;
 
-#[test]
-fn disabled_state_uses_not_allowed_cursor() {
-    assert_eq!(
-        cursor_for_state(true, true),
-        Some(CursorStyle::OperationNotAllowed)
-    );
-    assert_eq!(
-        cursor_for_state(true, false),
-        Some(CursorStyle::OperationNotAllowed)
-    );
-}
-
-#[test]
-fn enabled_state_preserves_existing_interaction() {
-    assert_eq!(
-        cursor_for_state(false, true),
-        Some(CursorStyle::PointingHand)
-    );
-    assert_eq!(cursor_for_state(false, false), None);
-}
-
 fn expected_height(ui_line: Pixels, size: ButtonSize, window: &Window) -> Pixels {
     ui_line + scale::to_pixels(size.padding(), window) * 2.0
 }

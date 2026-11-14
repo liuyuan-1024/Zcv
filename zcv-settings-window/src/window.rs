@@ -4,7 +4,7 @@ use std::{num::NonZeroUsize, time::Duration};
 
 use gpui::{
     AnyElement, App, Context, Div, ElementId, Entity, FocusHandle, Focusable, IntoElement, Render,
-    ScrollHandle, Subscription, Window, WindowControlArea, div, prelude::*, px,
+    ScrollHandle, Subscription, Window, div, prelude::*, px,
 };
 use zcv_actions::OpenSettingsFile;
 use zcv_settings::{
@@ -13,10 +13,7 @@ use zcv_settings::{
 };
 use zcv_theme::{ThemeChoice, color, scale, typography};
 use zcv_ui::{Button, ButtonStyle, Checkbox, SvgIcon};
-use zcv_workspace::{
-    ToastKind, ToastLayer,
-    window_controls::{self, WindowControls},
-};
+use zcv_workspace::{TitleBar, ToastKind, ToastLayer};
 
 type WindowAction = Box<dyn Fn(&mut SettingsWindow, &mut Context<SettingsWindow>)>;
 
@@ -61,7 +58,7 @@ pub struct SettingsWindow {
     scroll_handle: ScrollHandle,
     active_page: SettingsPage,
     toast_layer: Entity<ToastLayer>,
-    window_controls: WindowControls,
+    title_bar: TitleBar,
     /// 手工编辑 settings.jsonc 后由设置 global 通知窗口重新渲染。
     _settings_subscription: Subscription,
     _typography_subscription: Subscription,
@@ -80,7 +77,7 @@ impl SettingsWindow {
             scroll_handle: ScrollHandle::new(),
             active_page: SettingsPage::Appearance,
             toast_layer: cx.new(|_| ToastLayer::default()),
-            window_controls: WindowControls::new(),
+            title_bar: TitleBar::default(),
             _settings_subscription: settings_subscription,
             _typography_subscription: typography_subscription,
         }
@@ -115,54 +112,19 @@ impl SettingsWindow {
     }
 
     fn render_top_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let height = window_controls::top_bar_height(window, cx);
-        self.window_controls.align(window, height);
-        let colors = *color::current(cx);
         let open_file = Button::icon("settings-open-file", "icons/file_text_outlined.svg")
             .label("打开设置文件")
             .on_click(|_, window, cx| {
                 window.dispatch_action(Box::new(OpenSettingsFile), cx);
             });
 
-        window_controls::top_bar_interaction(
-            div()
-                .id("settings-top_bar")
-                .window_control_area(WindowControlArea::Drag)
-                .relative()
-                .flex()
-                .flex_row()
-                .items_center()
-                .w_full()
-                .h(height)
-                .bg(colors.title_bar_background)
-                .text_color(colors.text),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .flex_1()
-                .min_w_0()
-                .py(scale::S6)
-                .pr(scale::S6)
-                .pl(window_controls::leading_inset(window))
-                .gap(scale::S6)
-                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("设置"))
-                .child(div().flex_1())
-                .child(open_file),
-        )
-        .when_some(window_controls::trailing(window, cx), |bar, controls| {
-            bar.child(controls)
-        })
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .border_b_1()
-                .border_color(colors.border),
-        )
-        .into_any_element()
+        let content = div()
+            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("设置"))
+            .child(div().flex_1())
+            .child(open_file);
+        self.title_bar
+            .render("settings-top_bar", content, window, cx)
+            .into_any_element()
     }
 
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -649,8 +611,6 @@ fn render_setting_row(
         .gap(scale::S4)
         .px(scale::S6)
         .py(scale::S4)
-        .rounded_sm()
-        .hover(|style| style.bg(colors.element_hover))
         .child(
             div()
                 .flex()

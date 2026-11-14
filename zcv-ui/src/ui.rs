@@ -26,8 +26,8 @@ mod tree_disclosure;
 
 pub use autoscroll::{AUTOSCROLL_INTERVAL, DragAutoscroll};
 pub use blink::BlinkManager;
-pub use button::{Button, ButtonSize, ButtonStyle};
-pub use button_like::ButtonLike;
+pub use button::{Button, ButtonSize};
+pub use button_like::{ButtonLike, ButtonStyle};
 pub use checkbox::Checkbox;
 pub use confirm::{ConfirmAnswer, ConfirmOverlay};
 pub use context_menu::{ContextMenu, ContextMenuEntry};

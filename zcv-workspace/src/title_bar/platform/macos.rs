@@ -9,16 +9,12 @@ const TRAFFIC_LIGHT_GROUP_WIDTH: Pixels = px(60.0);
 const TRAFFIC_LIGHT_MARGIN: DefiniteLength = scale::S8;
 
 #[derive(Default)]
-pub struct WindowControls {
+pub(in crate::title_bar) struct WindowControls {
     traffic_light_position: Option<Point<Pixels>>,
 }
 
 impl WindowControls {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn align(&mut self, window: &Window, bar_height: Pixels) {
+    pub(in crate::title_bar) fn align(&mut self, window: &Window, bar_height: Pixels) {
         let x = traffic_light_x(window);
         let y = (bar_height - TRAFFIC_LIGHT_HEIGHT) / 2.0;
         let position = point(x, y);
@@ -33,7 +29,7 @@ fn traffic_light_x(window: &Window) -> Pixels {
     scale::to_pixels(TRAFFIC_LIGHT_MARGIN, window)
 }
 
-pub fn leading_inset(window: &Window) -> Pixels {
+pub(in crate::title_bar) fn leading_inset(window: &Window) -> Pixels {
     if !window.is_fullscreen() && !window.is_simple_fullscreen() {
         // 原生按钮保持固定尺寸，两侧留白随 UI 字号缩放。
         traffic_light_x(window)

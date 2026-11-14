@@ -26,11 +26,11 @@ mod searchable;
 mod status_bar;
 mod status_color;
 mod tab_bar;
+mod title_bar;
 mod toast;
 mod toolbar;
 mod top_bar;
 mod window_bounds;
-pub mod window_controls;
 mod workspace_state;
 
 #[cfg(test)]
@@ -62,6 +62,7 @@ pub use searchable::{
 };
 pub use status_bar::StatusItemView;
 pub use status_color::git_status_color;
+pub use title_bar::TitleBar;
 pub use toast::{ToastAction, ToastId, ToastKind, ToastLayer};
 pub use toolbar::{Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 pub use top_bar::TopBar;

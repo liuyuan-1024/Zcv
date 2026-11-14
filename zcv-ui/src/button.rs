@@ -1,38 +1,15 @@
 //! `Button` —— 通用交互原语：图标 / 文字 / 图标+文字按钮。
 //!
-//! 统一承载点击交互（on_click / disabled / hover / tooltip）与两种视觉样式：Ghost（幽灵，默认）与 Solid（实心）。
+//! 按钮交互和背景由 ButtonLike 提供。
 //! 图标部分委托 `SvgIcon` 渲染。
 
-use std::rc::Rc;
-
 use gpui::{
-    App, ClickEvent, CursorStyle, DefiniteLength, ElementId, IntoElement, MouseButton, Pixels,
-    RenderOnce, Rgba, ViewElement, Window, div, prelude::*,
+    App, ClickEvent, DefiniteLength, ElementId, IntoElement, Pixels, RenderOnce, Rgba, ViewElement,
+    Window, div, prelude::*,
 };
 use zcv_theme::{color, scale, typography};
 
-use crate::{SvgIcon, TooltipSpec};
-
-type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
-
-fn cursor_for_state(disabled: bool, has_click_handler: bool) -> Option<CursorStyle> {
-    if disabled {
-        Some(CursorStyle::OperationNotAllowed)
-    } else if has_click_handler {
-        Some(CursorStyle::PointingHand)
-    } else {
-        None
-    }
-}
-
-/// 按钮视觉样式。
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ButtonStyle {
-    /// 幽灵样式：悬停才显示背景，用于工具栏/状态栏等高频轻量操作。
-    Ghost,
-    /// 实心样式：常驻边框与背景，用于突出主操作。
-    Solid,
-}
+use crate::{ButtonLike, ButtonStyle, SvgIcon, TooltipSpec};
 
 /// 按钮尺寸：内边距与圆角随尺寸档位缩放，高度 = UI 字号 + 上下内边距。
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -61,12 +38,11 @@ impl ButtonSize {
         ui_line + scale::to_pixels(self.padding(), window) * 2.0
     }
 
-    /// 按档位施加内边距与圆角（紧凑小圆角，宽松大圆角）。
-    fn shell<D: Styled>(self, element: D) -> D {
+    /// 按尺寸档位设置圆角。
+    fn round<D: Styled>(self, element: D) -> D {
         match self {
-            ButtonSize::Compact => element.rounded_sm().p(self.padding()),
-            ButtonSize::Medium => element.rounded_sm().p(self.padding()),
-            ButtonSize::Loose => element.rounded_md().p(self.padding()),
+            ButtonSize::Compact | ButtonSize::Medium => element.rounded_sm(),
+            ButtonSize::Loose => element.rounded_md(),
         }
     }
 }
@@ -80,17 +56,11 @@ enum ButtonContent {
 
 /// 可交互的 UI 原语。
 pub struct Button {
-    id: ElementId,
+    base: ButtonLike,
     content: ButtonContent,
-    style: ButtonStyle,
     size: ButtonSize,
     color: Option<Rgba>,
-    tooltip: TooltipSpec,
-    on_click: Option<ClickHandler>,
-    disabled: bool,
     wrap_text: bool,
-    /// 是否遮蔽下层元素的非滚动交互；滚轮始终交给所在的滚动容器。
-    occlude: bool,
 }
 
 impl Button {
@@ -118,22 +88,17 @@ impl Button {
 
     fn new(id: impl Into<ElementId>, content: ButtonContent) -> Self {
         Self {
-            id: id.into(),
+            base: ButtonLike::new(id).occlude(true),
             content,
-            style: ButtonStyle::Ghost,
             size: ButtonSize::Compact,
             color: None,
-            tooltip: TooltipSpec::default(),
-            on_click: None,
-            disabled: false,
             wrap_text: false,
-            occlude: true,
         }
     }
 
     /// 关闭 hitbox 遮蔽：按钮位于浮层内时避免遮蔽外层元素的 hover 命中。
     pub fn no_occlude(mut self) -> Self {
-        self.occlude = false;
+        self.base = self.base.occlude(false);
         self
     }
 
@@ -145,7 +110,7 @@ impl Button {
 
     /// 设置视觉样式。
     pub fn style(mut self, style: ButtonStyle) -> Self {
-        self.style = style;
+        self.base = self.base.style(style);
         self
     }
 
@@ -157,13 +122,13 @@ impl Button {
 
     /// 设置 tooltip 标签文字。
     pub fn label(mut self, label: impl Into<String>) -> Self {
-        self.tooltip = TooltipSpec::from_lines([label]);
+        self.base = self.base.tooltip(TooltipSpec::from_lines([label]));
         self
     }
 
     /// 设置调用方已解析的快捷键文本；`None` 表示该 action 无绑定。
     pub fn shortcut(mut self, shortcut: Option<impl Into<String>>) -> Self {
-        self.tooltip = self.tooltip.with_shortcut(shortcut);
+        self.base = self.base.shortcut(shortcut);
         self
     }
 
@@ -178,13 +143,13 @@ impl Button {
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_click = Some(Rc::new(handler));
+        self.base = self.base.on_click(handler);
         self
     }
 
     /// 禁用交互，但保留图形作为可见的操作反馈。
     pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
+        self.base = self.base.disabled(disabled);
         self
     }
 }
@@ -202,9 +167,7 @@ impl RenderOnce for Button {
         let ui_size = window.rem_size();
         let ui_line = typography::ui_line_at(ui_size, cx);
         let colors = *color::current(cx);
-        let disabled = self.disabled;
-        let has_click = self.on_click.is_some();
-        let color = if disabled {
+        let color = if self.base.is_disabled() {
             colors.text_disabled
         } else {
             self.color.unwrap_or(colors.text)
@@ -213,56 +176,23 @@ impl RenderOnce for Button {
 
         // 基础容器：尺寸档位决定高度、内边距与圆角。
         let height = self.size.height_at(ui_line, window);
-        let mut element = self.size.shell(
-            div()
-                .id(self.id)
+        let element = self.size.round(
+            self.base
+                .padding(self.size.padding())
+                .render_root(cx)
                 .when_else(
                     self.wrap_text && !icon_only,
                     |element| element.min_h(height).max_w_full().whitespace_normal(),
                     |element| element.h(height),
                 )
                 .when(icon_only, |element| element.w(height))
-                .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
                 .font(typography::ui_font())
                 .text_size(ui_size)
-                .line_height(ui_line)
-                .when(self.occlude, |element| element.block_mouse_except_scroll()),
+                .line_height(ui_line),
         );
-        if self.style == ButtonStyle::Solid {
-            element = element
-                .border_1()
-                .border_color(colors.border)
-                .bg(colors.panel_background);
-        }
-
-        // 交互：禁用优先；有点击回调时拦截冒泡，避免触发外层点击。
-        if let Some(cursor) = cursor_for_state(disabled, has_click) {
-            element = element.cursor(cursor);
-        }
-        if !disabled {
-            let hover_background = match self.style {
-                ButtonStyle::Ghost => colors.ghost_element_hover,
-                ButtonStyle::Solid => colors.element_hover,
-            };
-            element = element.hover(move |style| style.bg(hover_background));
-        }
-        if !disabled && let Some(handler) = self.on_click {
-            element = element
-                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                    cx.stop_propagation()
-                })
-                .on_click(move |event, window, cx| {
-                    handler(event, window, cx);
-                    cx.stop_propagation();
-                });
-        }
-        if let Some(build) = self.tooltip.build() {
-            element = element.tooltip(build);
-        }
-
         // 内容形态；图标统一经 SvgIcon 渲染。
         element.child(match self.content {
             ButtonContent::Icon(path) => SvgIcon::new(path)

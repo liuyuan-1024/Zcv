@@ -6,6 +6,7 @@ use super::*;
 use zcv_settings::{SettingsStore, UserSettings};
 
 struct TopBarLayout {
+    title_bar: TitleBar,
     frame_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
     search_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
 }
@@ -14,7 +15,20 @@ impl gpui::Render for TopBarLayout {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let frame_bounds = self.frame_bounds.clone();
         let search_bounds = self.search_bounds.clone();
-        bar_frame(window_controls::top_bar_height(window, cx), cx)
+        self.title_bar
+            .render(
+                "test-title-bar",
+                div().child(div().w(px(12.0)).h(px(40.0))).child(
+                    canvas(
+                        move |bounds, _, _| *search_bounds.borrow_mut() = Some(bounds),
+                        |_, _, _, _| {},
+                    )
+                    .w(px(120.0))
+                    .h(px(20.0)),
+                ),
+                window,
+                cx,
+            )
             .child(
                 canvas(
                     move |bounds, _, _| *frame_bounds.borrow_mut() = Some(bounds),
@@ -23,16 +37,6 @@ impl gpui::Render for TopBarLayout {
                 .absolute()
                 .inset_0(),
             )
-            .child(div().w(px(12.0)).h(px(40.0)))
-            .child(
-                canvas(
-                    move |bounds, _, _| *search_bounds.borrow_mut() = Some(bounds),
-                    |_, _, _, _| {},
-                )
-                .w(px(120.0))
-                .h(px(20.0)),
-            )
-            .child(bar_bottom_border(cx))
     }
 }
 
@@ -42,6 +46,7 @@ fn top_bar_centers_search_with_a_bottom_border(cx: &mut TestAppContext) {
     let frame_bounds = Rc::new(RefCell::new(None));
     let search_bounds = Rc::new(RefCell::new(None));
     let _window = cx.add_window(|_, _| TopBarLayout {
+        title_bar: TitleBar::default(),
         frame_bounds: frame_bounds.clone(),
         search_bounds: search_bounds.clone(),
     });
@@ -56,6 +61,7 @@ fn top_bar_centers_search_with_a_bottom_border(cx: &mut TestAppContext) {
 
 #[cfg(target_os = "macos")]
 struct NativeControlsInsetLayout {
+    title_bar: TitleBar,
     content_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
 }
 
@@ -63,11 +69,14 @@ struct NativeControlsInsetLayout {
 impl gpui::Render for NativeControlsInsetLayout {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let content_bounds = self.content_bounds.clone();
-        bar_frame(window_controls::top_bar_height(window, cx), cx).child(
-            content_frame(window).child(canvas(
+        self.title_bar.render(
+            "test-native-title-bar",
+            div().child(canvas(
                 move |bounds, _, _| *content_bounds.borrow_mut() = Some(bounds),
                 |_, _, _, _| {},
             )),
+            window,
+            cx,
         )
     }
 }
@@ -80,6 +89,7 @@ fn top_bar_content_starts_after_native_window_controls(cx: &mut TestAppContext) 
     let (_, cx) = cx.add_window_view(|window, _| {
         window.set_rem_size(px(scale::DEFAULT_UI_SIZE));
         NativeControlsInsetLayout {
+            title_bar: TitleBar::default(),
             content_bounds: content_bounds.clone(),
         }
     });

@@ -893,7 +893,7 @@ fn empty_state_initializes_repository_and_builds_section_tree(cx: &mut TestAppCo
                 .has_repositories(),
             "焦点不在面板时点击初始化仓库按钮仍应创建仓库"
         );
-        let rows = panel.state.borrow().rows.clone();
+        let rows = panel.state.borrow().row_snapshot();
         let headers: Vec<_> = rows
             .iter()
             .filter_map(|row| match row {
@@ -930,7 +930,7 @@ fn first_click_on_unfocused_panel_focuses_and_opens(cx: &mut TestAppContext) {
     cx.run_until_parked(); // 扫描完成，行模型就绪。
 
     // 行布局：三组标题/空提示，加上未暂存组中的一个文件行。
-    let row_count = cx.read_entity(&panel, |panel, _| panel.state.borrow().rows.len());
+    let row_count = cx.read_entity(&panel, |panel, _| panel.state.borrow().rows().len());
     assert_eq!(row_count, 6);
 
     // 扫描完成后强制重绘：首帧是空态，点击命中测试需要最新帧的行布局。
@@ -1046,7 +1046,7 @@ fn section_entries(panel: &VersionControlPanel) -> Vec<(GitSection, String)> {
     panel
         .state
         .borrow()
-        .rows
+        .rows()
         .iter()
         .filter_map(|row| match row {
             GitRow::Entry(entry) => Some((entry.section, entry.name.clone())),
@@ -1104,7 +1104,7 @@ fn new_directories_expand_by_default_while_manually_collapsed_stay(cx: &mut Test
         .into_path_buf();
     cx.update_entity(&panel, |panel, cx| {
         let key = (GitSection::Unstaged, absolute(canonical_root.join("src")));
-        panel.state.borrow_mut().expanded.remove(&key);
+        panel.state.borrow_mut().collapse(&key);
         panel.rebuild_rows(cx);
     });
     let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
@@ -1153,7 +1153,7 @@ fn staging_a_collapsed_directory_opens_new_section_by_default(cx: &mut TestAppCo
     let directory = absolute(root.join("src"));
     cx.update_entity(&panel, |panel, cx| {
         let key = (GitSection::Unstaged, directory.clone());
-        panel.state.borrow_mut().expanded.remove(&key);
+        panel.state.borrow_mut().collapse(&key);
         panel.rebuild_rows(cx);
         panel.toggle_staged_for(GitSection::Unstaged, &directory, cx);
     });
@@ -1250,7 +1250,7 @@ fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppCon
         panel
             .state
             .borrow()
-            .rows
+            .rows()
             .iter()
             .position(|row| {
                 matches!(
@@ -1495,7 +1495,7 @@ fn selection_border_only_shows_when_changes_tree_is_focused(cx: &mut TestAppCont
         "提交信息编辑器聚焦时不应显示变更树选中框"
     );
     assert!(
-        cx.read_entity(&panel, |panel, _| panel.state.borrow().selected.is_some()),
+        cx.read_entity(&panel, |panel, _| panel.state.borrow().selected().is_some()),
         "切换焦点只隐藏选中框，不应清除变更树选中状态"
     );
 }

@@ -25,6 +25,7 @@ mod toast;
 mod tooltip;
 mod tree;
 mod tree_disclosure;
+mod tree_state;
 
 pub use autoscroll::{AUTOSCROLL_INTERVAL, DragAutoscroll};
 pub use blink::BlinkManager;
@@ -52,7 +53,9 @@ pub use tab_bar::TabBar;
 pub use toast::{ToastAction, ToastId, ToastKind, ToastLayer};
 pub use tooltip::{ShortcutResolver, TooltipSpec};
 pub use tree::{
-    AutoFoldDir, RowClickAction, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, auto_fold_dirs,
-    row_click_action, selection_border, tree_row_height, tree_row_label,
+    AutoFoldDir, RowClickAction, TreeNodeRow, TreeRowFrame, auto_fold_dirs, row_click_action,
+    selection_border, tree_row_height, tree_row_label,
 };
 pub use tree_disclosure::TreeDisclosure;
+
+pub use tree_state::{TreeRow, TreeState};

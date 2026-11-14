@@ -162,9 +162,9 @@ impl ProjectTreePanel {
             let state = self.state.borrow();
             let is_dir = state
                 .selected_idx()
-                .map(|index| state.rows[index].is_dir)
+                .map(|index| state.rows()[index].is_dir)
                 .unwrap_or(false);
-            (state.selected.clone(), is_dir)
+            (state.selected().cloned(), is_dir)
         };
         // 无选中时回退到主根（首个根）。
         let Some(target_dir) = paste_target_dir(selected.as_ref(), selected_is_dir)
@@ -174,7 +174,7 @@ impl ProjectTreePanel {
         };
         if external.is_some() || self.clipboard.is_some() {
             // 粘贴主动展示结果；拖拽与传输层不修改用户的目录展开意图。
-            if self.state.borrow_mut().expanded.insert(target_dir.clone()) {
+            if self.state.borrow_mut().expand(target_dir.clone()) {
                 self.rebuild_rows(cx);
             }
         }
@@ -463,8 +463,7 @@ impl ProjectTreePanel {
         let mut state = self.state.borrow_mut();
         let selected = if origin == TransferOrigin::InternalDrag {
             state
-                .selected
-                .as_ref()
+                .selected()
                 .filter(|selected| {
                     destinations
                         .iter()
@@ -479,7 +478,7 @@ impl ProjectTreePanel {
             AbsolutePathBuf::new(parent.to_path_buf()).expect("目标目录必须为绝对路径")
         });
         let selected = match target {
-            Some(parent) if !state.expanded.contains(&parent) => parent,
+            Some(parent) if !state.expanded().contains(&parent) => parent,
             _ => selected,
         };
         state.select(selected);

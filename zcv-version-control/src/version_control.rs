@@ -420,11 +420,7 @@ impl VersionControlPanel {
                 }
                 GitStoreEvent::ActiveRepositoryChanged => {
                     // 切换活动仓库后旧行身份全部失效；清空选中，避免跨仓库沿用选择。
-                    let mut state = panel.state.borrow_mut();
-                    state.selected = None;
-                    state.anchor = None;
-                    state.clear_selected_set();
-                    drop(state);
+                    panel.state.borrow_mut().clear_selection();
                     panel.rebuild_rows(cx);
                 }
                 GitStoreEvent::Head => cx.notify(),
@@ -623,12 +619,9 @@ impl VersionControlPanel {
         };
         let mut state = self.state.borrow_mut();
         let directories = collect_directory_keys(&trees);
-        state.expanded.retain(|key| directories.contains(key));
-        state
-            .expanded
-            .extend(directories.difference(&self.directory_keys).cloned());
+        state.reconcile_expansion(&self.directory_keys, &directories);
         self.directory_keys = directories;
-        let rows = flatten_rows(&trees, &state.expanded, &self.collapsed_sections.borrow());
+        let rows = flatten_rows(&trees, state.expanded(), &self.collapsed_sections.borrow());
         state.replace_rows(rows);
         state.ensure_selected();
         self.section_paths = section_paths;
@@ -674,7 +667,7 @@ impl VersionControlPanel {
     ) {
         let row = {
             let state = self.state.borrow();
-            state.selected_idx().map(|idx| state.rows[idx].clone())
+            state.selected_idx().map(|idx| state.rows()[idx].clone())
         };
         let Some(GitRow::Entry(entry)) = row else {
             return;
@@ -786,7 +779,7 @@ impl VersionControlPanel {
     ) {
         let row = {
             let state = self.state.borrow();
-            state.selected_idx().map(|idx| state.rows[idx].clone())
+            state.selected_idx().map(|idx| state.rows()[idx].clone())
         };
         let Some(GitRow::Entry(entry)) = row else {
             return;
@@ -887,10 +880,10 @@ impl Render for VersionControlPanel {
         };
         let changes_tree_focused = self.changes_tree_is_focused(window);
         let content = if active.is_some() {
-            let rows = self.state.borrow().rows.clone();
+            let rows = self.state.borrow().row_snapshot();
             let render_context = GitPanelRenderContext {
                 state: Rc::clone(&self.state),
-                rows: rows.into(),
+                rows,
                 focus: self.focus.clone(),
                 collapsed: Rc::clone(&self.collapsed_sections),
                 weak: cx.weak_entity(),
@@ -1180,7 +1173,7 @@ fn render_list(
     uniform_list("version-control-list", len, move |range, window, cx| {
         let state = render_context.state.borrow();
         let rows = &render_context.rows;
-        let selected = state.selected.clone();
+        let selected = state.selected().cloned();
         range
             .filter_map(|index| {
                 rows.get(index).map(|row| {
@@ -1393,7 +1386,10 @@ fn render_row(
                         window.focus(&focus, cx);
                         if let Some(panel) = weak.upgrade() {
                             panel.update(cx, |panel, cx| {
-                                panel.state.borrow_mut().selected = Some((section, path.clone()));
+                                panel
+                                    .state
+                                    .borrow_mut()
+                                    .move_cursor((section, path.clone()));
                                 match row_click_action(is_dir, event.click_count) {
                                     RowClickAction::Toggle => {
                                         panel.activate_selected(true, window, cx)

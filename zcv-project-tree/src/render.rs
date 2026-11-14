@@ -27,8 +27,8 @@ impl ProjectTreePanel {
         let state = self.state.borrow();
         let generation = state.selection_generation();
         if self.drag_marked_generation != Some(generation) {
-            self.drag_marked = self
-                .row_snapshot
+            self.drag_marked = state
+                .rows()
                 .iter()
                 .filter(|row| state.is_in_selection_set(&row.path))
                 .map(|row| row.path.clone())
@@ -40,23 +40,23 @@ impl ProjectTreePanel {
     }
 
     pub(super) fn display_rows(&self, cx: &App) -> Rc<[ProjectTreeRow]> {
+        let snapshot = self.state.borrow().row_snapshot();
         let Some(EditState {
             operation: EditOperation::Create { parent },
             ..
         }) = &self.edit_state
         else {
-            return Rc::clone(&self.row_snapshot);
+            return snapshot;
         };
-        let Some((index, depth)) = self
-            .row_snapshot
+        let Some((index, depth)) = snapshot
             .iter()
             .enumerate()
             .find(|(_, row)| !row.is_new && &row.path == parent)
             .map(|(index, row)| (index, row.depth + 1))
         else {
-            return Rc::clone(&self.row_snapshot);
+            return snapshot;
         };
-        let mut rows = self.row_snapshot.to_vec();
+        let mut rows = snapshot.to_vec();
         rows.insert(
             index + 1,
             ProjectTreeRow {
@@ -100,7 +100,7 @@ pub(super) fn render_list(
         range
             .filter_map(|i| rows.get(i))
             .map(|row| {
-                let sel = row.is_new || state.selected.as_ref() == Some(&row.path);
+                let sel = row.is_new || state.selected() == Some(&row.path);
                 let marked = !row.is_new && render_context.active_path.as_ref() == Some(&row.path);
                 let in_set = !row.is_new && state.is_in_selection_set(&row.path);
                 render_row(

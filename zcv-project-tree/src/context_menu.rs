@@ -55,7 +55,7 @@ impl ProjectTreePanel {
         {
             let mut state = self.state.borrow_mut();
             if state.is_in_selection_set(path) {
-                state.selected = Some(path.clone());
+                state.move_cursor(path.clone());
             } else {
                 state.select(path.clone());
             }
@@ -97,7 +97,7 @@ impl ProjectTreePanel {
             state
                 .selected_idx()
                 .map(|index| {
-                    let row = &state.rows[index];
+                    let row = &state.rows()[index];
                     (self.roots.contains(&row.path), row.is_dir)
                 })
                 .unwrap_or((true, true))

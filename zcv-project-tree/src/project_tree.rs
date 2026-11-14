@@ -146,8 +146,6 @@ pub struct ProjectTreePanel {
     pending_status_refresh: Option<Task<()>>,
     /// 待定 reveal：目标进入显示行后滚动到可见；异步重建期间保留意图。
     pending_reveal: Option<RevealTarget>,
-    /// 行快照缓存：replace_rows / 行内容变更时重建，渲染每帧只做 Rc 克隆（不深拷贝）。
-    row_snapshot: Rc<[ProjectTreeRow]>,
     /// 拖拽多选载荷是选中集按可见行序派生的快照；行模型替换或选中集变化时重建。
     drag_marked: Rc<[AbsolutePathBuf]>,
     drag_marked_generation: Option<u64>,
@@ -161,7 +159,7 @@ pub struct ProjectTreePanel {
 
 impl ProjectTreePanel {
     fn visible_expanded(&self) -> HashSet<AbsolutePathBuf> {
-        let mut expanded = self.state.borrow().expanded.clone();
+        let mut expanded = self.state.borrow().expanded().clone();
         if let Some(session) = &self.drag_session {
             expanded.extend(session.temporary_expanded.iter().cloned());
         }
@@ -196,7 +194,7 @@ impl ProjectTreePanel {
             .map(|root| AbsolutePathBuf::new(root.to_path_buf()).expect("项目根必须是绝对路径"))
             .collect();
         for root in &roots {
-            state.expanded.insert(root.clone());
+            state.expand(root.clone());
         }
         // 仅状态/仓库集合变化才影响行颜色；
         // Head、JobsUpdated、ActiveRepositoryChanged 等事件与树颜色无关，订阅它们会在 job 频繁启停时制造无意义重绘。
@@ -244,7 +242,6 @@ impl ProjectTreePanel {
             status_refresh_generation: 0,
             pending_status_refresh: None,
             pending_reveal: None,
-            row_snapshot: Vec::new().into(),
             drag_marked: Vec::new().into(),
             drag_marked_generation: None,
             drag_session: None,
@@ -264,7 +261,6 @@ impl ProjectTreePanel {
             self.pending_rebuild = None;
             self.awaiting_scan = false;
             self.state.borrow_mut().replace_rows(Vec::new());
-            self.row_snapshot = Vec::new().into();
             return;
         }
         let expanded = self.visible_expanded();
@@ -327,8 +323,6 @@ impl ProjectTreePanel {
             })
             .collect();
         self.state.borrow_mut().replace_rows(rows);
-        // 行集已全量替换：同步重建行快照，此后每帧渲染只做 Rc 克隆。
-        self.row_snapshot = self.state.borrow().rows.clone().into();
         self.try_scroll_pending_reveal(cx);
         // 行集与状态在同一次后台任务内派生，本次落地即完整快照，不会先渲染无状态行。
         // 再触发一次状态刷新，吸收扫描期间到达的最新 Git 事件（只更新既有行，不产生空帧）。
@@ -359,7 +353,7 @@ impl ProjectTreePanel {
         let entries: Vec<(AbsolutePathBuf, bool)> = self
             .state
             .borrow()
-            .rows
+            .rows()
             .iter()
             .map(|row| (row.path.clone(), row.is_dir))
             .collect();
@@ -374,25 +368,20 @@ impl ProjectTreePanel {
                 }
                 // 只有真实变化才重建行快照并重绘；
                 // 无变化的 Git 事件不应造成整树重绘（视觉抖动）。
-                let changed = {
-                    let mut state = tree.state.borrow_mut();
-                    let mut changed = false;
-                    for row in &mut state.rows {
-                        let status = statuses.get(&row.path).copied();
-                        let is_ignored = status.is_some_and(FileStatus::is_ignored);
-                        let git_status = status.filter(|status| !status.is_ignored());
-                        if row.is_ignored != is_ignored || row.git_status != git_status {
-                            row.is_ignored = is_ignored;
-                            row.git_status = git_status;
-                            changed = true;
+                let changed = tree.state.borrow_mut().update_row_details(|row| {
+                    let status = statuses.get(&row.path).copied();
+                    let is_ignored = status.is_some_and(FileStatus::is_ignored);
+                    let git_status = status.filter(|status| !status.is_ignored());
+                    (row.is_ignored != is_ignored || row.git_status != git_status).then(|| {
+                        ProjectTreeRow {
+                            is_ignored,
+                            git_status,
+                            ..row.clone()
                         }
-                    }
-                    changed
-                };
+                    })
+                });
                 tree.pending_status_refresh = None;
                 if changed {
-                    // 行内容已变更：行快照必须同步重建，否则颜色更新不进渲染。
-                    tree.row_snapshot = tree.state.borrow().rows.clone().into();
                     cx.notify();
                 }
             });
@@ -410,37 +399,14 @@ impl ProjectTreePanel {
                     .expect("重命名后的项目根必须是绝对路径")
             })
             .collect();
-        let mut state = self.state.borrow_mut();
-        state.expanded = state
-            .expanded
-            .drain()
-            .map(|path| {
-                absolute_for_comparison(&translate_path(&path, from, to))
-                    .expect("重命名后的展开路径必须是绝对路径")
-            })
-            .collect();
-        state.selected = state.selected.take().map(|path| {
-            absolute_for_comparison(&translate_path(&path, from, to))
-                .expect("重命名后的选中路径必须是绝对路径")
-        });
-        let selected_set = state
-            .selected_set()
-            .iter()
-            .map(|path| {
-                absolute_for_comparison(&translate_path(path, from, to))
-                    .expect("重命名后的选区路径必须是绝对路径")
-            })
-            .collect();
-        state.set_selected_set(selected_set);
-        state.anchor = state.anchor.take().map(|path| {
-            absolute_for_comparison(&translate_path(&path, from, to))
-                .expect("重命名后的锚点路径必须是绝对路径")
+        self.state.borrow_mut().remap_keys(|path| {
+            absolute_for_comparison(&translate_path(path, from, to))
+                .expect("重命名后的树状态路径必须是绝对路径")
         });
         self.active_path = self.active_path.take().map(|path| {
             absolute_for_comparison(&translate_path(&path, from, to))
                 .expect("重命名后的活动路径必须是绝对路径")
         });
-        drop(state);
     }
 
     /// 重命名后迁移树状态并重建行模型。
@@ -520,12 +486,11 @@ impl ProjectTreePanel {
             // 新增根默认展开。
             for root in &roots {
                 if !self.roots.contains(root) {
-                    state.expanded.insert(root.clone());
+                    state.expand(root.clone());
                 }
             }
             state
-                .selected
-                .as_ref()
+                .selected()
                 .is_some_and(|selected| !roots.iter().any(|root| selected.starts_with(root)))
         };
         if selected_left {
@@ -573,7 +538,7 @@ impl ProjectTreePanel {
             let mut state = self.state.borrow_mut();
             let mut ancestor = path.parent();
             while let Some(directory) = ancestor.filter(|directory| directory.starts_with(&root)) {
-                state.expanded.insert(
+                state.expand(
                     absolute_for_comparison(directory).expect("展开祖先路径必须是绝对路径"),
                 );
                 if directory == root.as_path() {
@@ -592,7 +557,7 @@ impl ProjectTreePanel {
 
     /// 保持键盘选中项可见；仍在视口内时不改变当前滚动位置。
     fn scroll_to_selection(&self, cx: &App) {
-        let selected = self.state.borrow().selected.clone();
+        let selected = self.state.borrow().selected().cloned();
         if let Some(index) = selected.and_then(|path| {
             self.display_rows(cx)
                 .iter()
@@ -637,7 +602,7 @@ impl ProjectTreePanel {
         let is_dir = {
             let state = self.state.borrow();
             state
-                .rows
+                .rows()
                 .iter()
                 .find(|row| &row.path == path)
                 .map(|row| row.is_dir)
@@ -661,7 +626,7 @@ impl ProjectTreePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let path = self.state.borrow().selected.clone();
+        let path = self.state.borrow().selected().cloned();
         if let Some(path) = path {
             self.activate_entry(&path, true, window, cx);
         }
@@ -677,10 +642,7 @@ impl ProjectTreePanel {
     /// 清空后选中可停留为空：键盘导航从空选中恢复（首/末行），新建与粘贴回退到主根。
     fn clear_selection(&mut self, cx: &mut Context<Self>) {
         self.pending_click_intent = None;
-        let mut state = self.state.borrow_mut();
-        state.selected = None;
-        state.clear_selected_set();
-        state.anchor = None;
+        self.state.borrow_mut().clear_selection();
         cx.notify();
     }
 

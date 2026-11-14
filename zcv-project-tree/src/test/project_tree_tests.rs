@@ -140,12 +140,10 @@ fn project_tree_visible_render_cost(cx: &mut TestAppContext) {
             .collect::<Vec<_>>();
         let mut state = tree.state.borrow_mut();
         state.replace_rows(rows);
-        let selected = (0..8_192)
-            .step_by(1_024)
-            .map(|index| state.rows[index].path.clone())
-            .collect();
-        state.set_selected_set(selected);
-        tree.row_snapshot = state.rows.clone().into();
+        for index in (0..8_192).step_by(1_024) {
+            let key = state.rows()[index].path.clone();
+            state.toggle_selection(&key);
+        }
         cx.notify();
     });
     let mut render = || {
@@ -248,28 +246,33 @@ fn revealing_active_file_expands_ancestors_and_keeps_mark_separate_from_selectio
     cx.read_entity(&tree, |tree, _| {
         assert_eq!(tree.active_path.as_deref(), Some(abs(&file).as_path()));
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(abs(&file).as_path())
         );
         assert!(
             tree.state
                 .borrow()
-                .rows
+                .rows()
                 .iter()
                 .any(|row| row.path.as_path() == file)
         );
         assert!(
             tree.state
                 .borrow()
-                .expanded
+                .expanded()
                 .contains(&abs(root.join("src")))
         );
-        assert!(tree.state.borrow().expanded.contains(&abs(nested.clone())));
+        assert!(
+            tree.state
+                .borrow()
+                .expanded()
+                .contains(&abs(nested.clone()))
+        );
 
         // 键盘游标移动不应改变活动文件标记。
         tree.state.borrow_mut().select_up();
         assert_ne!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(abs(&file).as_path())
         );
         assert_eq!(tree.active_path.as_deref(), Some(file.as_path()));
@@ -305,6 +308,8 @@ fn applying_directory_rename_migrates_tree_paths(cx: &mut TestAppContext) {
     let old_file = old_directory.join("mod.rs");
     fs::create_dir(&old_directory).expect("应创建待重命名目录");
     fs::write(&old_file, "content").expect("应创建测试文件");
+    let other = old_directory.join("other.rs");
+    fs::write(&other, "content").expect("应写入第二个测试文件");
     let project = test_project(root.clone(), cx);
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
 
@@ -313,10 +318,21 @@ fn applying_directory_rename_migrates_tree_paths(cx: &mut TestAppContext) {
         tree.reveal_active_path(Some(old_file.clone()), cx)
     });
 
+    cx.run_until_parked();
+    tree.update(cx, |tree, _| {
+        tree.state.borrow_mut().toggle_selection(&abs(&other))
+    });
+
     let new_directory = root.join("new");
-    fs::rename(&old_directory, &new_directory).expect("应重命名测试目录");
-    tree.update(cx, |tree, cx| {
-        tree.apply_rename(&old_directory, &new_directory, cx)
+    cx.update(|cx| {
+        project.update(cx, |project, cx| {
+            project
+                .rename_path(&old_directory, &new_directory, cx)
+                .expect("应通过项目重命名目录");
+        });
+        tree.update(cx, |tree, cx| {
+            tree.apply_rename(&old_directory, &new_directory, cx)
+        });
     });
     // 行重建异步进行：跑完事件循环后新路径行才出现。
     cx.run_until_parked();
@@ -326,21 +342,34 @@ fn applying_directory_rename_migrates_tree_paths(cx: &mut TestAppContext) {
         assert!(
             tree.state
                 .borrow()
-                .expanded
+                .expanded()
                 .contains(&abs(new_directory.clone()))
         );
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
-            Some(abs(&new_file).as_path())
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
+            Some(abs(new_directory.join("other.rs")).as_path())
         );
         assert_eq!(tree.active_path.as_deref(), Some(abs(&new_file).as_path()));
         assert!(
             tree.state
                 .borrow()
-                .rows
+                .rows()
                 .iter()
                 .any(|row| row.path.as_path() == new_file)
         );
+    });
+    tree.update(cx, |tree, _| {
+        let mut state = tree.state.borrow_mut();
+        assert_eq!(
+            state.effective_selection(),
+            vec![abs(&new_file), abs(new_directory.join("other.rs"))]
+        );
+        state.extend_to(&abs(new_directory.join("other.rs")));
+        assert_eq!(state.effective_selection().len(), 2);
+        state.extend_to(&abs(&new_file));
+        assert_eq!(state.effective_selection(), vec![abs(&new_file)]);
+        state.extend_to(&abs(new_directory.join("other.rs")));
+        assert_eq!(state.effective_selection().len(), 2);
     });
 }
 
@@ -411,7 +440,7 @@ fn first_click_on_unfocused_tree_focuses_and_opens(cx: &mut TestAppContext) {
         }));
         // 展开根目录使文件行可见；不聚焦项目树（模拟焦点在别处）。
         let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
-        tree.state.borrow_mut().expanded.insert(root);
+        tree.state.borrow_mut().expand(root);
         tree.rebuild_rows(cx);
         tree
     });
@@ -432,7 +461,7 @@ fn first_click_on_unfocused_tree_focuses_and_opens(cx: &mut TestAppContext) {
     assert_eq!(open_count.get(), 1, "未聚焦首击也应打开文件");
     let tree_focused = cx.update(|window, cx| tree.read(cx).focus.contains_focused(window, cx));
     assert!(tree_focused, "首击应聚焦项目树");
-    let selected = cx.read_entity(&tree, |tree, _| tree.state.borrow().selected.clone());
+    let selected = cx.read_entity(&tree, |tree, _| tree.state.borrow().selected().cloned());
     assert_eq!(
         selected.as_deref(),
         Some(file.as_path()),
@@ -480,7 +509,7 @@ fn rename_actions_edit_and_confirm_the_selected_row(cx: &mut TestAppContext) {
     cx.read_entity(&tree, |tree, _| {
         assert!(tree.edit_state.is_none());
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(abs(&new_path).as_path())
         );
     });
@@ -619,7 +648,7 @@ fn one_create_action_infers_nested_files_and_directories_from_the_path(cx: &mut 
     cx.read_entity(&tree, |tree, _| {
         assert!(tree.edit_state.is_none());
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(abs(&folder).as_path())
         );
     });
@@ -738,7 +767,7 @@ fn trash_action_moves_the_selected_row_to_trash_and_selects_the_next_row(cx: &mu
     assert!(kept_file.exists());
     cx.read_entity(&tree, |tree, _| {
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(kept_file.as_path()),
             "删除后应选中原位置的下一个条目"
         );
@@ -800,7 +829,7 @@ fn trash_action_selects_the_last_row_after_deleting_the_final_entry(cx: &mut Tes
 
     cx.read_entity(&tree, |tree, _| {
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(root.as_path()),
             "删除最后一项后应选中新的最后一行（根目录）"
         );
@@ -828,7 +857,7 @@ fn git_status_events_update_row_colors(cx: &mut TestAppContext) {
     let status = cx.read_entity(&tree, |tree, _| {
         tree.state
             .borrow()
-            .rows
+            .rows()
             .iter()
             .find(|row| row.path.as_path() == file)
             .and_then(|row| row.git_status)
@@ -856,11 +885,11 @@ fn unchanged_git_status_refresh_keeps_row_snapshot(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    let before = cx.read_entity(&tree, |tree, _| tree.row_snapshot.clone());
+    let before = cx.read_entity(&tree, |tree, _| tree.state.borrow().row_snapshot());
     // 状态未变化时再次刷新：不得重建行快照，否则会触发无意义整树重绘（视觉抖动）。
     tree.update(cx, |tree, cx| tree.refresh_git_statuses(cx));
     cx.run_until_parked();
-    let after = cx.read_entity(&tree, |tree, _| tree.row_snapshot.clone());
+    let after = cx.read_entity(&tree, |tree, _| tree.state.borrow().row_snapshot());
     assert!(
         Rc::ptr_eq(&before, &after),
         "Git 状态无变化时不应重建行快照"
@@ -884,11 +913,11 @@ fn irrelevant_git_events_do_not_rebuild_tree_snapshot(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    let before = cx.read_entity(&tree, |tree, _| tree.row_snapshot.clone());
+    let before = cx.read_entity(&tree, |tree, _| tree.state.borrow().row_snapshot());
     let status_before = cx.read_entity(&tree, |tree, _| {
         tree.state
             .borrow()
-            .rows
+            .rows()
             .iter()
             .find(|row| row.path.as_path() == file)
             .and_then(|row| row.git_status)
@@ -906,7 +935,7 @@ fn irrelevant_git_events_do_not_rebuild_tree_snapshot(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    let after = cx.read_entity(&tree, |tree, _| tree.row_snapshot.clone());
+    let after = cx.read_entity(&tree, |tree, _| tree.state.borrow().row_snapshot());
     assert!(
         Rc::ptr_eq(&before, &after),
         "无关或状态未变化的 Git 事件不应重建行快照"
@@ -914,7 +943,7 @@ fn irrelevant_git_events_do_not_rebuild_tree_snapshot(cx: &mut TestAppContext) {
     let status_after = cx.read_entity(&tree, |tree, _| {
         tree.state
             .borrow()
-            .rows
+            .rows()
             .iter()
             .find(|row| row.path.as_path() == file)
             .and_then(|row| row.git_status)
@@ -958,7 +987,7 @@ fn git_status_events_color_directories_with_changed_children(cx: &mut TestAppCon
     let status = cx.read_entity(&tree, |tree, _| {
         tree.state
             .borrow()
-            .rows
+            .rows()
             .iter()
             .find(|row| row.path.as_path() == src)
             .and_then(|row| row.git_status)
@@ -986,7 +1015,7 @@ fn expanding_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
     // 展开 sub 目录（模拟 handle_tree_expand 的行重建路径）。
     // 行重建本身应携带 Git 状态，无需再补一次状态刷新。
     tree.update(cx, |tree, cx| {
-        tree.state.borrow_mut().expanded.insert(abs(sub.clone()));
+        tree.state.borrow_mut().expand(abs(sub.clone()));
         tree.rebuild_rows(cx);
     });
     cx.run_until_parked();
@@ -994,7 +1023,7 @@ fn expanding_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
     let status = cx.read_entity(&tree, |tree, _| {
         tree.state
             .borrow()
-            .rows
+            .rows()
             .iter()
             .find(|row| row.path.as_path() == sub_file)
             .and_then(|row| row.git_status)
@@ -1033,7 +1062,7 @@ fn activating_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
     let status = cx.read_entity(&tree, |tree, _| {
         tree.state
             .borrow()
-            .rows
+            .rows()
             .iter()
             .find(|row| row.path.as_path() == sub_file)
             .and_then(|row| row.git_status)
@@ -1090,8 +1119,8 @@ fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
     // 模拟鼠标/键盘逐级展开 tmp 与子目录。
     // 行重建本身应携带状态，被忽略项在首帧即可淡显，无需补状态刷新。
     tree.update(cx, |tree, cx| {
-        tree.state.borrow_mut().expanded.insert(abs(tmp.clone()));
-        tree.state.borrow_mut().expanded.insert(abs(child.clone()));
+        tree.state.borrow_mut().expand(abs(tmp.clone()));
+        tree.state.borrow_mut().expand(abs(child.clone()));
         tree.rebuild_rows(cx);
     });
     cx.run_until_parked();
@@ -1099,7 +1128,7 @@ fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
     let rows = cx.read_entity(&tree, |tree, _| {
         tree.state
             .borrow()
-            .rows
+            .rows()
             .iter()
             .map(|row| (row.path.clone(), row.is_ignored))
             .collect::<Vec<_>>()
@@ -1129,7 +1158,7 @@ fn empty_project_has_no_root_and_empty_rows(cx: &mut TestAppContext) {
 
     cx.read_entity(&tree, |tree, _| {
         assert!(tree.roots.is_empty());
-        assert!(tree.state.borrow().rows.is_empty());
+        assert!(tree.state.borrow().rows().is_empty());
     });
 }
 
@@ -1165,14 +1194,14 @@ fn rapid_clicks_toggle_directory_each_click(cx: &mut TestAppContext) {
     click(&tree, cx);
     cx.read_entity(&tree, |tree, _| {
         assert!(
-            !tree.state.borrow().expanded.contains(&abs(sub.clone())),
+            !tree.state.borrow().expanded().contains(&abs(sub.clone())),
             "连点两次后应回到折叠"
         );
     });
     click(&tree, cx);
     cx.read_entity(&tree, |tree, _| {
         assert!(
-            tree.state.borrow().expanded.contains(&abs(sub.clone())),
+            tree.state.borrow().expanded().contains(&abs(sub.clone())),
             "连点三次后应保持展开"
         );
     });
@@ -1224,7 +1253,7 @@ fn clicking_marked_file_activates_clicked_row_and_collapses_selection(cx: &mut T
     cx.simulate_click(point(px(10.), row_y(2)), secondary);
     cx.read_entity(&tree, |tree, _| {
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(abs(file_b.clone()).as_path())
         );
         assert_eq!(tree.state.borrow().selected_set().len(), 2);
@@ -1234,7 +1263,10 @@ fn clicking_marked_file_activates_clicked_row_and_collapses_selection(cx: &mut T
     assert_eq!(opened.borrow().last(), Some(&(file_a.clone(), false)));
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert_eq!(state.selected.as_deref(), Some(abs(file_a).as_path()));
+        assert_eq!(
+            state.selected().map(AbsolutePathBuf::as_path),
+            Some(abs(file_a).as_path())
+        );
         assert!(state.selected_set().is_empty());
     });
 }
@@ -1260,17 +1292,20 @@ fn clicking_marked_directory_toggles_clicked_row(cx: &mut TestAppContext) {
     cx.simulate_click(point(px(10.), row_y(2)), secondary);
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert!(state.expanded.contains(&abs(dir_a.clone())));
-        assert!(!state.expanded.contains(&abs(dir_b.clone())));
+        assert!(state.expanded().contains(&abs(dir_a.clone())));
+        assert!(!state.expanded().contains(&abs(dir_b.clone())));
         assert_eq!(state.selected_set().len(), 2);
     });
 
     cx.simulate_click(point(px(10.), row_y(1)), Modifiers::default());
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert!(!state.expanded.contains(&abs(dir_a.clone())));
-        assert!(!state.expanded.contains(&abs(dir_b)));
-        assert_eq!(state.selected.as_deref(), Some(abs(dir_a).as_path()));
+        assert!(!state.expanded().contains(&abs(dir_a.clone())));
+        assert!(!state.expanded().contains(&abs(dir_b)));
+        assert_eq!(
+            state.selected().map(AbsolutePathBuf::as_path),
+            Some(abs(dir_a).as_path())
+        );
         assert!(state.selected_set().is_empty());
     });
 }
@@ -1285,7 +1320,7 @@ fn shift_click_extends_selection_range(cx: &mut TestAppContext) {
         move |_, cx| {
             let mut tree = ProjectTreePanel::new(project, cx);
             let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
-            tree.state.borrow_mut().expanded.insert(root);
+            tree.state.borrow_mut().expand(root);
             tree.rebuild_rows(cx);
             tree
         }
@@ -1313,7 +1348,10 @@ fn shift_click_extends_selection_range(cx: &mut TestAppContext) {
 
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert_eq!(state.selected.as_deref(), Some(file_c.as_path()));
+        assert_eq!(
+            state.selected().map(AbsolutePathBuf::as_path),
+            Some(file_c.as_path())
+        );
         assert_eq!(
             state.selected_set(),
             &HashSet::from([
@@ -1337,7 +1375,7 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
         move |_, cx| {
             let mut tree = ProjectTreePanel::new(project, cx);
             let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
-            tree.state.borrow_mut().expanded.insert(root);
+            tree.state.borrow_mut().expand(root);
             tree.rebuild_rows(cx);
             tree
         }
@@ -1364,7 +1402,10 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
 
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert_eq!(state.selected.as_deref(), Some(file_c.as_path()));
+        assert_eq!(
+            state.selected().map(AbsolutePathBuf::as_path),
+            Some(file_c.as_path())
+        );
         assert_eq!(
             state.selected_set(),
             &HashSet::from([
@@ -1373,11 +1414,6 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
                 abs(file_c.clone())
             ]),
             "首次标记并入普通点击的首项，后续逐项加入多选集合"
-        );
-        assert_eq!(
-            state.anchor.as_deref(),
-            Some(file_a.as_path()),
-            "toggle 不应移动锚点"
         );
     });
 
@@ -1393,7 +1429,10 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
             state.selected_set(),
             &HashSet::from([abs(file_a.clone()), abs(file_b.clone())])
         );
-        assert_eq!(state.selected.as_deref(), Some(file_c.as_path()));
+        assert_eq!(
+            state.selected().map(AbsolutePathBuf::as_path),
+            Some(file_c.as_path())
+        );
     });
 }
 
@@ -1413,7 +1452,7 @@ fn shift_down_keystroke_extends_selection_to_next_row(cx: &mut TestAppContext) {
             )]);
             let mut tree = ProjectTreePanel::new(project, cx);
             let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
-            tree.state.borrow_mut().expanded.insert(root);
+            tree.state.borrow_mut().expand(root);
             tree.rebuild_rows(cx);
             tree.state.borrow_mut().select(abs(selected));
             tree
@@ -1426,13 +1465,15 @@ fn shift_down_keystroke_extends_selection_to_next_row(cx: &mut TestAppContext) {
 
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert_eq!(state.selected.as_deref(), Some(file_b.as_path()));
+        assert_eq!(
+            state.selected().map(AbsolutePathBuf::as_path),
+            Some(file_b.as_path())
+        );
         assert_eq!(
             state.selected_set(),
             &HashSet::from([abs(file_a.clone()), abs(file_b.clone())]),
             "shift-down 应把锚点到新游标的区间收入集合"
         );
-        assert_eq!(state.anchor.as_deref(), Some(file_a.as_path()));
     });
 }
 
@@ -1472,7 +1513,7 @@ fn trash_action_deletes_multiple_selected_rows(cx: &mut TestAppContext) {
     assert!(file_c.exists(), "未选中文件不应被删除");
     cx.read_entity(&tree, |tree, _| {
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(file_c.as_path()),
             "批量删除后游标应收拢到原位置邻居"
         );
@@ -1497,7 +1538,7 @@ fn project_tree_updates_when_worktree_snapshot_changes(cx: &mut TestAppContext) 
         cx.read_entity(&tree, |tree, _| {
             tree.state
                 .borrow()
-                .rows
+                .rows()
                 .iter()
                 .any(|row| row.path.as_path() == file)
         })
@@ -1688,7 +1729,7 @@ fn copy_paste_duplicates_files_into_selected_directory(cx: &mut TestAppContext) 
     // 完成后回到单选态：选中首个成功目标、进度清零。
     cx.read_entity(&tree, |tree, _| {
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(target.join("a.txt").as_path()),
             "粘贴完成后应选中首个成功目标"
         );
@@ -1711,7 +1752,7 @@ fn copy_paste_reports_progress_middle_state_and_clears_on_completion(cx: &mut Te
     // 此刻读取可稳定卡住复制进行中的 Some((n, total)) 中间态。
     tree.update(cx, |tree, cx| {
         // 粘贴入口负责展开目标；直接驱动执行入口时先建立相同的可见状态。
-        tree.state.borrow_mut().expanded.insert(abs(target.clone()));
+        tree.state.borrow_mut().expand(abs(target.clone()));
         tree.execute_copy(
             TransferMode::Copy,
             TransferOrigin::Paste,
@@ -1737,7 +1778,7 @@ fn copy_paste_reports_progress_middle_state_and_clears_on_completion(cx: &mut Te
     cx.read_entity(&tree, |tree, _| {
         assert!(tree.active_transfer.is_none(), "复制完成后进度应清零");
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(target.join("a.txt").as_path()),
             "完成后应选中首个成功目标"
         );
@@ -1868,7 +1909,7 @@ fn cut_paste_moves_file_and_degrades_clipboard(cx: &mut TestAppContext) {
         );
         // 游标收拢到成功目标（selected 未指向成功项时选中首个目标）。
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(target.join("a.txt").as_path())
         );
     });
@@ -2300,7 +2341,7 @@ fn escape_without_clipboard_is_noop(cx: &mut TestAppContext) {
         assert!(tree.clipboard.is_none());
         assert!(tree.conflict.is_none());
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(file_a.as_path())
         );
     });
@@ -2439,7 +2480,13 @@ fn dropping_multi_selection_on_its_own_directory_cancels_entire_move(cx: &mut Te
     cx.simulate_mouse_up(directory_row, MouseButton::Left, Modifiers::default());
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
-        assert!(!tree.state.borrow().expanded.contains(&abs(target.clone())));
+        assert!(
+            !tree
+                .state
+                .borrow()
+                .expanded()
+                .contains(&abs(target.clone()))
+        );
     });
     simulate_drag(cx, 1, 1);
     simulate_drag(cx, 2, 2);
@@ -2664,11 +2711,15 @@ fn drag_file_into_directory_moves_it_via_move_pipeline(cx: &mut TestAppContext) 
         assert!(tree.conflict.is_none(), "无冲突放下不应进入会话");
         assert!(tree.drag_session.is_none(), "放下后拖拽会话应清理");
         assert!(
-            !tree.state.borrow().expanded.contains(&abs(target.clone())),
+            !tree
+                .state
+                .borrow()
+                .expanded()
+                .contains(&abs(target.clone())),
             "放下不会改变目标目录的展开意图"
         );
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(target.as_path()),
             "目标仍折叠时游标应停在可见目录"
         );
@@ -2791,7 +2842,7 @@ fn drag_directory_row_does_not_toggle_expansion(cx: &mut TestAppContext) {
 
     cx.read_entity(&tree, |tree, _| {
         assert!(
-            !tree.state.borrow().expanded.contains(&abs(src.clone())),
+            !tree.state.borrow().expanded().contains(&abs(src.clone())),
             "拖动目录行不应触发展开"
         );
     });
@@ -3143,7 +3194,7 @@ fn drag_directory_into_its_own_subtree_is_rejected(cx: &mut TestAppContext) {
             }));
             // 展开 src 使 inner.txt 行可见；
             // 目录切换延迟到 click，拖拽不会触发，因而拖拽全程行序稳定。
-            tree.state.borrow_mut().expanded.insert(abs(src));
+            tree.state.borrow_mut().expand(abs(src));
             tree.rebuild_rows(cx);
             tree
         }
@@ -3210,7 +3261,11 @@ fn drag_hover_expansion_is_temporary_after_cancel_and_drop(cx: &mut TestAppConte
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
         assert!(
-            !tree.state.borrow().expanded.contains(&abs(target.clone())),
+            !tree
+                .state
+                .borrow()
+                .expanded()
+                .contains(&abs(target.clone())),
             "未到延迟时不应展开"
         );
     });
@@ -3225,7 +3280,13 @@ fn drag_hover_expansion_is_temporary_after_cancel_and_drop(cx: &mut TestAppConte
                 .is_some_and(|session| session.temporary_expanded.contains(&abs(target.clone()))),
             "悬停约 500ms 后目录应在会话中临时展开"
         );
-        assert!(!tree.state.borrow().expanded.contains(&abs(target.clone())));
+        assert!(
+            !tree
+                .state
+                .borrow()
+                .expanded()
+                .contains(&abs(target.clone()))
+        );
         assert!(
             tree.drag_session
                 .as_ref()
@@ -3250,11 +3311,17 @@ fn drag_hover_expansion_is_temporary_after_cancel_and_drop(cx: &mut TestAppConte
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
         assert!(tree.drag_session.is_none());
-        assert!(!tree.state.borrow().expanded.contains(&abs(target.clone())));
+        assert!(
+            !tree
+                .state
+                .borrow()
+                .expanded()
+                .contains(&abs(target.clone()))
+        );
         assert!(
             tree.state
                 .borrow()
-                .rows
+                .rows()
                 .iter()
                 .any(|row| row.path == abs(target.clone()) && !row.expanded)
         );
@@ -3287,11 +3354,17 @@ fn drag_hover_expansion_is_temporary_after_cancel_and_drop(cx: &mut TestAppConte
     assert!(target.join("a.txt").is_file());
     cx.read_entity(&tree, |tree, _| {
         assert!(tree.drag_session.is_none());
-        assert!(!tree.state.borrow().expanded.contains(&abs(target.clone())));
+        assert!(
+            !tree
+                .state
+                .borrow()
+                .expanded()
+                .contains(&abs(target.clone()))
+        );
         assert!(
             tree.state
                 .borrow()
-                .rows
+                .rows()
                 .iter()
                 .any(|row| row.path == abs(target.clone()) && !row.expanded)
         );
@@ -3318,7 +3391,7 @@ fn clicking_blank_area_clears_selection_and_focuses_panel(cx: &mut TestAppContex
             let mut tree = ProjectTreePanel::new(project, cx);
             // 展开根目录使文件行可见：仅 [根, a.txt] 两行，填不满面板。
             let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
-            tree.state.borrow_mut().expanded.insert(root);
+            tree.state.borrow_mut().expand(root);
             tree.rebuild_rows(cx);
             tree
         }
@@ -3334,7 +3407,7 @@ fn clicking_blank_area_clears_selection_and_focuses_panel(cx: &mut TestAppContex
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(file.as_path()),
             "预置：点击行应选中该行"
         );
@@ -3355,9 +3428,8 @@ fn clicking_blank_area_clears_selection_and_focuses_panel(cx: &mut TestAppContex
     assert!(focused_after, "空白点击应聚焦面板根容器");
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert!(state.selected.is_none(), "空白点击应清空选中游标");
+        assert!(state.selected().is_none(), "空白点击应清空选中游标");
         assert!(state.selected_set().is_empty(), "空白点击应清空多选集合");
-        assert!(state.anchor.is_none(), "空白点击应清空区间锚点");
     });
 }
 
@@ -3406,7 +3478,7 @@ fn blank_click_clears_multi_selection_before_drag(cx: &mut TestAppContext) {
             !state.is_in_selection_set(&abs(file_b.clone())),
             "空白点击应清空多选集合（b 项）"
         );
-        assert!(state.selected.is_none(), "空白点击应清空选中游标");
+        assert!(state.selected().is_none(), "空白点击应清空选中游标");
     });
 
     // 空白点击后从 a（行 2）拖起放到 dst（行 1）：集合已清空，退化为单项移动。
@@ -3430,7 +3502,7 @@ fn panel_starts_unselected_and_blank_click_keeps_selection_empty(cx: &mut TestAp
         move |_, cx| {
             let mut tree = ProjectTreePanel::new(project, cx);
             let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
-            tree.state.borrow_mut().expanded.insert(root);
+            tree.state.borrow_mut().expand(root);
             tree.rebuild_rows(cx);
             tree
         }
@@ -3440,7 +3512,7 @@ fn panel_starts_unselected_and_blank_click_keeps_selection_empty(cx: &mut TestAp
     // 无点击历史：选中为空，不再有渲染期兜底。
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert!(state.selected.is_none(), "无点击历史时不应有选中");
+        assert!(state.selected().is_none(), "无点击历史时不应有选中");
         assert!(state.selected_set().is_empty(), "多选集合应为空");
     });
 
@@ -3452,7 +3524,7 @@ fn panel_starts_unselected_and_blank_click_keeps_selection_empty(cx: &mut TestAp
 
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        assert!(state.selected.is_none(), "空白点击后选中应保持为空");
+        assert!(state.selected().is_none(), "空白点击后选中应保持为空");
         assert!(state.selected_set().is_empty(), "空白点击后多选集合应为空");
     });
 }
@@ -3481,7 +3553,7 @@ fn context_menu_opens_at_blank_area_as_root(cx: &mut TestAppContext) {
     let menu = cx.read_entity(&tree, |tree, _| {
         let deployed = tree.context_menu.as_ref().expect("右键空白应部署菜单");
         assert_eq!(
-            tree.state.borrow().selected.as_deref(),
+            tree.state.borrow().selected().map(AbsolutePathBuf::as_path),
             Some(abs(root.clone()).as_path()),
             "右键空白应把选中收拢为项目根"
         );
@@ -3519,7 +3591,7 @@ fn dropping_on_blank_area_moves_entry_to_root(cx: &mut TestAppContext) {
                 },
             ));
             // 展开 dst 使 a.txt 可见：行序 [根, dst, a.txt]。
-            tree.state.borrow_mut().expanded.insert(abs(target.clone()));
+            tree.state.borrow_mut().expand(abs(target.clone()));
             tree.rebuild_rows(cx);
             tree
         }
@@ -3615,7 +3687,11 @@ fn drag_moving_to_blank_area_cancels_hover_expand(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
         assert!(
-            !tree.state.borrow().expanded.contains(&abs(target.clone())),
+            !tree
+                .state
+                .borrow()
+                .expanded()
+                .contains(&abs(target.clone())),
             "移到空白后到期不应展开旧行"
         );
     });
@@ -3635,7 +3711,7 @@ fn new_entry_after_blank_click_creates_in_root(cx: &mut TestAppContext) {
         move |_, cx| {
             let mut tree = ProjectTreePanel::new(project, cx);
             let root = tree.roots.first().cloned().expect("测试项目应包含根目录");
-            tree.state.borrow_mut().expanded.insert(root);
+            tree.state.borrow_mut().expand(root);
             tree.rebuild_rows(cx);
             tree
         }
@@ -3649,7 +3725,7 @@ fn new_entry_after_blank_click_creates_in_root(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
         assert!(
-            tree.state.borrow().selected.is_none(),
+            tree.state.borrow().selected().is_none(),
             "预置：空白点击后选中应为空"
         );
     });
@@ -3705,7 +3781,7 @@ fn context_menu_opens_at_right_clicked_row(cx: &mut TestAppContext) {
     let menu = cx.read_entity(&tree, |tree, _| {
         let deployed = tree.context_menu.as_ref().expect("右键应部署菜单");
         assert_eq!(
-            tree.state.borrow().selected,
+            tree.state.borrow().selected().cloned(),
             Some(abs(file_b.clone())),
             "右键行不在选中集时应收拢为单选"
         );

@@ -94,7 +94,7 @@ impl ProjectTreePanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(root) = self.state.borrow().selected.clone() else {
+        let Some(root) = self.state.borrow().selected().cloned() else {
             return;
         };
         if !self.roots.contains(&root) {
@@ -125,12 +125,12 @@ impl ProjectTreePanel {
             let state = self.state.borrow();
             let target_set: HashSet<_> = targets.iter().collect();
             let first_index = state
-                .rows
+                .rows()
                 .iter()
                 .position(|row| target_set.contains(&row.path));
             first_index.and_then(|index| {
                 let survivors: Vec<&ProjectTreeRow> = state
-                    .rows
+                    .rows()
                     .iter()
                     .filter(|row| !target_set.contains(&row.path))
                     .collect();
@@ -150,7 +150,7 @@ impl ProjectTreePanel {
             on_trash(path.clone().into_path_buf(), window, cx);
         }
         if let Some(neighbor) = neighbor_path {
-            self.state.borrow_mut().selected = Some(neighbor);
+            self.state.borrow_mut().move_cursor(neighbor);
         }
         self.rebuild_rows(cx);
     }

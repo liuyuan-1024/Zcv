@@ -50,7 +50,9 @@ impl ProjectTreePanel {
         }
         let row = {
             let state = self.state.borrow();
-            state.selected_idx().map(|index| state.rows[index].clone())
+            state
+                .selected_idx()
+                .map(|index| state.rows()[index].clone())
         };
         let Some(row) = row else {
             return;
@@ -93,9 +95,12 @@ impl ProjectTreePanel {
         // 无选中回退项目根（空白点击清空后新建仍可用，根行始终可见且已展开）。
         let (parent, needs_expand) = {
             let state = self.state.borrow();
-            match state.selected_idx().map(|index| state.rows[index].clone()) {
+            match state
+                .selected_idx()
+                .map(|index| state.rows()[index].clone())
+            {
                 Some(row) if row.is_dir => {
-                    let needs_expand = !state.expanded.contains(&row.path);
+                    let needs_expand = !state.expanded().contains(&row.path);
                     (row.path, needs_expand)
                 }
                 Some(row) => {
@@ -114,7 +119,7 @@ impl ProjectTreePanel {
             }
         };
         if needs_expand {
-            self.state.borrow_mut().expanded.insert(parent.clone());
+            self.state.borrow_mut().expand(parent.clone());
         }
         self.begin_edit(EditOperation::Create { parent }, "", 0..0, window, cx);
         if needs_expand {
@@ -208,7 +213,7 @@ impl ProjectTreePanel {
                 let mut state = self.state.borrow_mut();
                 let mut ancestor = new_entry.path.parent();
                 while let Some(directory) = ancestor.filter(|path| path.starts_with(&parent)) {
-                    state.expanded.insert(
+                    state.expand(
                         AbsolutePathBuf::new(directory.to_path_buf())
                             .expect("新建条目祖先目录必须是绝对路径"),
                     );
@@ -219,7 +224,7 @@ impl ProjectTreePanel {
                 }
                 drop(state);
                 self.rebuild_rows(cx);
-                self.state.borrow_mut().selected = Some(
+                self.state.borrow_mut().move_cursor(
                     AbsolutePathBuf::new(new_entry.path.clone())
                         .expect("新建条目路径必须是绝对路径"),
                 );

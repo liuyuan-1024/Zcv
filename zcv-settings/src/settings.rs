@@ -8,16 +8,14 @@
 use std::{borrow::Cow, path::Path, sync::LazyLock};
 
 mod file;
+mod jsonc;
 mod merge;
 mod paths;
 mod reload;
 mod schema;
 mod store;
 
-pub use file::{
-    ensure_user_settings_file, read_user_settings_text, settings_file_path,
-    write_user_settings_text,
-};
+pub use file::ensure_user_settings_file;
 pub use merge::UserSettings;
 pub use reload::init;
 pub use schema::{

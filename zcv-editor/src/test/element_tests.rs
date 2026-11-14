@@ -2723,7 +2723,7 @@ fn ellipsis_render_reads_theme_at_call_time(cx: &mut TestAppContext) {
                 (ThemeChoice::Named("dark"), &mut dark_color),
                 (ThemeChoice::Named("light"), &mut light_color),
             ] {
-                choice.apply(cx, Some(window));
+                choice.apply_for_appearance(cx, window.appearance());
                 *slot = Some(zcv_theme::color::current(cx).text_placeholder);
                 let mut element = (renderer.render)(cx);
                 assert!(

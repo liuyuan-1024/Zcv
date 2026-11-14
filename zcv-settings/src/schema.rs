@@ -233,7 +233,7 @@ impl IndentGuideSettingsContent {
 
 /// 用户设置文件的完整覆盖内容；字段为 `None` 表示未在用户文件中填写。
 ///
-/// 该类型是面板与手写 `settings.json` 共用的可编辑表示：两者都先经过
+/// 该类型是面板与手写 `settings.jsonc` 共用的可编辑表示：两者都先经过
 /// `parse_user_settings` / `validate_user_settings`，再由 `merge` 生成运行时值。
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]

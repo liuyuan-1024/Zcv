@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Context, IntoElement, Render, TestAppContext, div, px};
+use gpui::{Context, IntoElement, Render, TestAppContext, Window, div, px};
 
 /// 设置字符串解析：system 与主题文件名 id 各归其位，未知主题报错。
 #[test]
@@ -31,7 +31,7 @@ impl Render for EmptyView {
 fn system_theme_matches_window_appearance(cx: &mut TestAppContext) {
     let (_, cx) = cx.add_window_view(|_window, _cx| EmptyView);
     let (appearance, theme_appearance) = cx.update(|window, _| {
-        let theme = ThemeChoice::System.effective(Some(window));
+        let theme = ThemeChoice::System.effective(window.appearance());
         (window.appearance(), theme.appearance)
     });
     assert_eq!(

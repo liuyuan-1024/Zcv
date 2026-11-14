@@ -64,7 +64,7 @@ fn set_wrap_width(
 }
 
 fn apply_test_theme(cx: &mut TestAppContext, id: &'static str) {
-    cx.update(|cx| ThemeChoice::Named(id).apply(cx, None));
+    cx.update(|cx| ThemeChoice::Named(id).apply_for_appearance(cx, cx.window_appearance()));
 }
 
 #[gpui::test]

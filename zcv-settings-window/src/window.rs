@@ -1,36 +1,24 @@
-//! 独立设置窗口：设置页面与内嵌 settings.json 编辑器。
-//!
-//! 状态所有权：窗口不保存可写设置副本。
-//! 显示值来自 `SettingsStore` 的运行时快照，每个控件把一次字段修改交给 `zcv_settings::update_user_settings`；
-//! 设置层负责读取 settings.json、解析、校验、序列化、落盘并更新 `SettingsStore`。
-//! 手工编辑文件时由设置监听走同一 `SettingsStore::set_user_settings` 入口，窗口通过全局观察刷新，因此两条路径共享同一权威状态。
+//! 可视化设置页与窗口导航。
 
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{num::NonZeroUsize, time::Duration};
 
 use gpui::{
     AnyElement, App, Context, Div, ElementId, Entity, FocusHandle, Focusable, IntoElement, Render,
-    ScrollHandle, SharedString, Subscription, Window, WindowControlArea, div, prelude::*, px,
+    ScrollHandle, Subscription, Window, WindowControlArea, div, prelude::*, px,
 };
-use zcv_actions::Save;
-use zcv_editor::{Editor, EditorEvent};
-use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::MultiBuffer;
+use zcv_actions::OpenSettingsFile;
 use zcv_settings::{
     CursorShape, IndentGuideSettingsContent, SettingsStore, SoftWrapMode, TerminalCursorShape,
     UserSettingsContent, update_user_settings,
 };
-use zcv_text::{Buffer, BufferConfig};
 use zcv_theme::{ThemeChoice, color, scale, typography};
 use zcv_ui::{Button, ButtonStyle, Checkbox, SvgIcon};
-use zcv_workspace::window_controls::{self, WindowControls};
+use zcv_workspace::{
+    ToastKind, ToastLayer,
+    window_controls::{self, WindowControls},
+};
 
 type WindowAction = Box<dyn Fn(&mut SettingsWindow, &mut Context<SettingsWindow>)>;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SettingsView {
-    Page,
-    File,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsPage {
@@ -70,78 +58,31 @@ impl SettingsPage {
 /// 独立设置窗口；设置值由 `SettingsStore` 持有，窗口只负责呈现与提交修改。
 pub struct SettingsWindow {
     focus: FocusHandle,
-    languages: Arc<LanguageRegistry>,
     scroll_handle: ScrollHandle,
-    settings_editor: Option<Entity<Editor>>,
-    active_view: SettingsView,
     active_page: SettingsPage,
-    error: Option<SharedString>,
+    toast_layer: Entity<ToastLayer>,
     window_controls: WindowControls,
-    /// 手工编辑 settings.json 后由设置 global 通知窗口重新渲染。
+    /// 手工编辑 settings.jsonc 后由设置 global 通知窗口重新渲染。
     _settings_subscription: Subscription,
-    _appearance_subscription: Subscription,
-    _editor_subscription: Option<Subscription>,
+    _typography_subscription: Subscription,
 }
 
 impl SettingsWindow {
-    pub fn new(
-        languages: Arc<LanguageRegistry>,
-        show_file: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let settings = SettingsStore::get(cx);
-        typography::set_base_typography(
-            cx,
-            Some(settings.content_font_size),
-            Some(settings.ui_font_size),
-            Some(settings.content_line_height),
-        );
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_rem_size(typography::current(cx).ui_size());
-        settings.theme.apply(cx, Some(window));
-
-        let settings_subscription =
-            cx.observe_global_in::<SettingsStore>(window, |_, window, cx| {
-                let settings = SettingsStore::get(cx);
-                typography::set_base_typography(
-                    cx,
-                    Some(settings.content_font_size),
-                    Some(settings.ui_font_size),
-                    Some(settings.content_line_height),
-                );
-                window.set_rem_size(typography::current(cx).ui_size());
-                settings.theme.apply(cx, Some(window));
-                cx.notify();
-            });
-        let appearance_subscription = window.observe_window_appearance(|window, cx| {
-            SettingsStore::get(cx).theme.apply(cx, Some(window));
-            window.refresh();
+        let settings_subscription = cx.observe_global::<SettingsStore>(|_, cx| cx.notify());
+        let typography_subscription = typography::observe_in(window, cx, |_, window, cx| {
+            window.set_rem_size(typography::current(cx).ui_size());
+            cx.notify();
         });
-
-        let mut settings_window = Self {
+        Self {
             focus: cx.focus_handle(),
-            languages,
             scroll_handle: ScrollHandle::new(),
-            settings_editor: None,
-            active_view: SettingsView::Page,
             active_page: SettingsPage::Appearance,
-            error: None,
+            toast_layer: cx.new(|_| ToastLayer::default()),
             window_controls: WindowControls::new(),
             _settings_subscription: settings_subscription,
-            _appearance_subscription: appearance_subscription,
-            _editor_subscription: None,
-        };
-        if show_file {
-            settings_window.open_settings_file(window, cx);
-        }
-        settings_window
-    }
-
-    pub fn show_view(&mut self, show_file: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if show_file {
-            self.open_settings_file(window, cx);
-        } else {
-            self.show_settings_page(window, cx);
+            _typography_subscription: typography_subscription,
         }
     }
 
@@ -151,172 +92,37 @@ impl SettingsWindow {
         title: &'static str,
         change: impl FnOnce(&mut UserSettingsContent),
     ) {
-        match update_user_settings(cx, change) {
-            Ok(_) => {
-                self.error = None;
-                cx.notify();
-            }
-            Err(error) => {
-                self.error = Some(format!("保存设置失败（{title}）：{error:#}").into());
-                cx.notify();
-            }
+        if let Err(error) = update_user_settings(cx, change) {
+            self.show_error(format!("保存设置失败（{title}）：{error:#}"), cx);
         }
     }
 
-    fn open_settings_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = &self.settings_editor {
-            self.active_view = SettingsView::File;
-            let focus = editor.read(cx).focus_handle();
-            window.focus(&focus, cx);
-            cx.notify();
-            return;
-        }
-
-        match self.create_settings_editor(window, cx) {
-            Ok(editor) => {
-                self._editor_subscription =
-                    Some(
-                        cx.subscribe_in(&editor, window, |_, _, event: &EditorEvent, _, cx| {
-                            if matches!(event, EditorEvent::Edited { .. }) {
-                                cx.notify();
-                            }
-                        }),
-                    );
-                self.settings_editor = Some(editor);
-                self.active_view = SettingsView::File;
-                self.error = None;
-                cx.notify();
-            }
-            Err(error) => {
-                self.error = Some(format!("打开设置文件失败：{error:#}").into());
-                cx.notify();
-            }
-        }
-    }
-
-    fn create_settings_editor(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> anyhow::Result<Entity<Editor>> {
-        zcv_settings::ensure_user_settings_file()?;
-        let path = zcv_settings::settings_file_path().to_path_buf();
-        let text = zcv_settings::read_user_settings_text()?;
-        let buffer = Buffer::from_text(text, BufferConfig::default())?;
-        let languages = Arc::clone(&self.languages);
-        let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(path), languages, cx));
-        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
-        let editor = cx.new(|cx| Editor::for_multi_buffer(multi_buffer, cx));
-        let focus = editor.read(cx).focus_handle();
-        window.focus(&focus, cx);
-        Ok(editor)
-    }
-
-    fn show_settings_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.active_view = SettingsView::Page;
-        window.focus(&self.focus, cx);
-        cx.notify();
+    pub fn show_error(&self, message: String, cx: &mut Context<Self>) {
+        self.toast_layer.update(cx, |layer, cx| {
+            layer.show(
+                ToastKind::Error,
+                message,
+                vec![],
+                Some(Duration::from_secs(8)),
+                cx,
+            );
+        });
     }
 
     fn set_active_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
         self.active_page = page;
-        self.active_view = SettingsView::Page;
         cx.notify();
-    }
-
-    fn save_settings_file(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editor) = self.settings_editor.clone() else {
-            return;
-        };
-        let text = editor.read(cx).text(cx);
-        match zcv_settings::write_user_settings_text(&text) {
-            Ok(()) => {
-                let multi_buffer = editor.read(cx).multi_buffer();
-                if let Some(source) = multi_buffer.read(cx).singleton_source() {
-                    let version = source.read(cx).version();
-                    source.update(cx, |source, cx| source.did_save(version, cx));
-                }
-                self.error = None;
-                cx.notify();
-            }
-            Err(error) => {
-                self.error = Some(format!("保存设置文件失败：{error:#}").into());
-                cx.notify();
-            }
-        }
-    }
-
-    fn handle_save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_view == SettingsView::File {
-            self.save_settings_file(window, cx);
-        }
     }
 
     fn render_top_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let height = window_controls::top_bar_height(window, cx);
         self.window_controls.align(window, height);
         let colors = *color::current(cx);
-        let settings_window = cx.entity();
-        let mut actions: Vec<AnyElement> = Vec::new();
-
-        match self.active_view {
-            SettingsView::Page => {
-                let settings_window = settings_window.clone();
-                actions.push(
-                    Button::icon(
-                        ElementId::Name("settings-open-file".into()),
-                        "icons/file_text_outlined.svg",
-                    )
-                    .label("打开设置文件")
-                    .on_click(move |_, window, cx| {
-                        settings_window.update(cx, |settings_window, cx| {
-                            settings_window.open_settings_file(window, cx)
-                        });
-                    })
-                    .into_any_element(),
-                );
-            }
-            SettingsView::File => {
-                let dirty = self
-                    .settings_editor
-                    .as_ref()
-                    .is_some_and(|editor| editor.read(cx).is_dirty(cx));
-                let save_button =
-                    Button::icon(ElementId::Name("settings-save".into()), "icons/check.svg")
-                        .label(if dirty {
-                            "保存设置文件（有未保存修改）"
-                        } else {
-                            "保存设置文件"
-                        })
-                        .color(if dirty {
-                            colors.icon_accent
-                        } else {
-                            colors.text_muted
-                        })
-                        .on_click(move |_, window, cx| {
-                            settings_window.update(cx, |settings_window, cx| {
-                                settings_window.save_settings_file(window, cx)
-                            });
-                        });
-                actions.push(
-                    div()
-                        .relative()
-                        .child(save_button)
-                        .when(dirty, |element| {
-                            element.child(
-                                div()
-                                    .absolute()
-                                    .top(px(1.0))
-                                    .right(px(1.0))
-                                    .size(px(6.0))
-                                    .rounded_full()
-                                    .bg(colors.icon_accent),
-                            )
-                        })
-                        .into_any_element(),
-                );
-            }
-        }
+        let open_file = Button::icon("settings-open-file", "icons/file_text_outlined.svg")
+            .label("打开设置文件")
+            .on_click(|_, window, cx| {
+                window.dispatch_action(Box::new(OpenSettingsFile), cx);
+            });
 
         window_controls::top_bar_interaction(
             div()
@@ -344,7 +150,7 @@ impl SettingsWindow {
                 .gap(scale::S6)
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("设置"))
                 .child(div().flex_1())
-                .children(actions),
+                .child(open_file),
         )
         .when_some(window_controls::trailing(window, cx), |bar, controls| {
             bar.child(controls)
@@ -359,26 +165,13 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let content = if self.active_view == SettingsView::File {
-            match &self.settings_editor {
-                Some(editor) => div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(editor.clone())
-                    .into_any_element(),
-                None => div().flex_1().into_any_element(),
-            }
-        } else {
-            self.render_settings_page(window, cx)
-        };
-
+    fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
             .flex_1()
             .min_h_0()
             .child(self.render_sidebar(cx))
-            .child(content)
+            .child(self.render_settings_page(cx))
             .into_any_element()
     }
 
@@ -388,7 +181,7 @@ impl SettingsWindow {
         let mut nav = div().flex().flex_col().gap(scale::S2).p(scale::S6);
 
         for page in SettingsPage::ALL {
-            let selected = self.active_page == page && self.active_view == SettingsView::Page;
+            let selected = self.active_page == page;
             let settings_window = settings_window.clone();
             nav = nav.child(
                 div()
@@ -437,7 +230,7 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    fn render_settings_page(&self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_settings_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let settings = SettingsStore::get(cx);
         let overrides = SettingsStore::user_settings_content(cx);
         let colors = *color::current(cx);
@@ -458,318 +251,320 @@ impl SettingsWindow {
         let terminal_line_height = settings.terminal_line_height;
         let terminal_cursor_shape = settings.terminal_cursor_shape;
 
-        let appearance = render_section(
-            "外观",
-            vec![
-                render_setting_row(
-                    "theme",
-                    "主题",
-                    "跟随系统外观，或固定使用深色、浅色主题。",
-                    render_theme_segments(theme, cx),
-                    ui_size,
-                    cx,
-                ),
-                render_number_row(
-                    "ui-font-size",
-                    "界面字号",
-                    "窗口、标签与菜单等界面文字的字号（像素）。",
-                    Stepper {
-                        value: format!("{:.0}", ui_font_size_setting),
-                        can_decrease: ui_font_size_setting > 11.0,
-                        can_increase: ui_font_size_setting < 24.0,
-                        decrease: Box::new(move |settings_window, cx| {
-                            let value = stepped(ui_font_size_setting, -1.0, 11.0, 24.0);
-                            settings_window.update_setting(cx, "界面字号", |content| {
-                                content.ui_font_size = Some(value);
-                            });
-                        }),
-                        increase: Box::new(move |settings_window, cx| {
-                            let value = stepped(ui_font_size_setting, 1.0, 11.0, 24.0);
-                            settings_window.update_setting(cx, "界面字号", |content| {
-                                content.ui_font_size = Some(value);
-                            });
-                        }),
-                    },
-                    ui_size,
-                    cx,
-                ),
-                render_number_row(
-                    "content-font-size",
-                    "内容字号",
-                    "编辑器与预览共用的正文字号（像素）。",
-                    Stepper {
-                        value: format!("{:.0}", content_font_size),
-                        can_decrease: content_font_size > 10.0,
-                        can_increase: content_font_size < 32.0,
-                        decrease: Box::new(move |settings_window, cx| {
-                            let value = stepped(content_font_size, -1.0, 10.0, 32.0);
-                            settings_window.update_setting(cx, "内容字号", |content| {
-                                content.content_font_size = Some(value);
-                            });
-                        }),
-                        increase: Box::new(move |settings_window, cx| {
-                            let value = stepped(content_font_size, 1.0, 10.0, 32.0);
-                            settings_window.update_setting(cx, "内容字号", |content| {
-                                content.content_font_size = Some(value);
-                            });
-                        }),
-                    },
-                    ui_size,
-                    cx,
-                ),
-                render_number_row(
-                    "content-line-height",
-                    "内容行高",
-                    "正文行高相对字号的倍数。",
-                    Stepper {
-                        value: format!("{:.1}", content_line_height),
-                        can_decrease: content_line_height > 1.0,
-                        can_increase: content_line_height < 3.0,
-                        decrease: Box::new(move |settings_window, cx| {
-                            let value = stepped(content_line_height, -0.1, 1.0, 3.0);
-                            settings_window.update_setting(cx, "内容行高", |content| {
-                                content.content_line_height = Some(value);
-                            });
-                        }),
-                        increase: Box::new(move |settings_window, cx| {
-                            let value = stepped(content_line_height, 0.1, 1.0, 3.0);
-                            settings_window.update_setting(cx, "内容行高", |content| {
-                                content.content_line_height = Some(value);
-                            });
-                        }),
-                    },
-                    ui_size,
-                    cx,
-                ),
-            ],
-            ui_size,
-            cx,
-        );
+        let page = match self.active_page {
+            SettingsPage::Appearance => render_section(
+                "外观",
+                vec![
+                    render_setting_row(
+                        "theme",
+                        "主题",
+                        "跟随系统外观，或固定使用深色、浅色主题。",
+                        render_theme_segments(theme, cx),
+                        ui_size,
+                        cx,
+                    ),
+                    render_number_row(
+                        "ui-font-size",
+                        "界面字号",
+                        "窗口、标签与菜单等界面文字的字号（像素）。",
+                        Stepper {
+                            value: format!("{:.0}", ui_font_size_setting),
+                            can_decrease: ui_font_size_setting > 11.0,
+                            can_increase: ui_font_size_setting < 24.0,
+                            decrease: Box::new(move |settings_window, cx| {
+                                let value = stepped(ui_font_size_setting, -1.0, 11.0, 24.0);
+                                settings_window.update_setting(cx, "界面字号", |content| {
+                                    content.ui_font_size = Some(value);
+                                });
+                            }),
+                            increase: Box::new(move |settings_window, cx| {
+                                let value = stepped(ui_font_size_setting, 1.0, 11.0, 24.0);
+                                settings_window.update_setting(cx, "界面字号", |content| {
+                                    content.ui_font_size = Some(value);
+                                });
+                            }),
+                        },
+                        ui_size,
+                        cx,
+                    ),
+                    render_number_row(
+                        "content-font-size",
+                        "内容字号",
+                        "编辑器与预览共用的正文字号（像素）。",
+                        Stepper {
+                            value: format!("{:.0}", content_font_size),
+                            can_decrease: content_font_size > 10.0,
+                            can_increase: content_font_size < 32.0,
+                            decrease: Box::new(move |settings_window, cx| {
+                                let value = stepped(content_font_size, -1.0, 10.0, 32.0);
+                                settings_window.update_setting(cx, "内容字号", |content| {
+                                    content.content_font_size = Some(value);
+                                });
+                            }),
+                            increase: Box::new(move |settings_window, cx| {
+                                let value = stepped(content_font_size, 1.0, 10.0, 32.0);
+                                settings_window.update_setting(cx, "内容字号", |content| {
+                                    content.content_font_size = Some(value);
+                                });
+                            }),
+                        },
+                        ui_size,
+                        cx,
+                    ),
+                    render_number_row(
+                        "content-line-height",
+                        "内容行高",
+                        "正文行高相对字号的倍数。",
+                        Stepper {
+                            value: format!("{:.1}", content_line_height),
+                            can_decrease: content_line_height > 1.0,
+                            can_increase: content_line_height < 3.0,
+                            decrease: Box::new(move |settings_window, cx| {
+                                let value = stepped(content_line_height, -0.1, 1.0, 3.0);
+                                settings_window.update_setting(cx, "内容行高", |content| {
+                                    content.content_line_height = Some(value);
+                                });
+                            }),
+                            increase: Box::new(move |settings_window, cx| {
+                                let value = stepped(content_line_height, 0.1, 1.0, 3.0);
+                                settings_window.update_setting(cx, "内容行高", |content| {
+                                    content.content_line_height = Some(value);
+                                });
+                            }),
+                        },
+                        ui_size,
+                        cx,
+                    ),
+                ],
+                ui_size,
+                cx,
+            ),
 
-        let editor = render_section(
-            "编辑器",
-            vec![
-                render_setting_row(
-                    "soft-wrap",
-                    "软换行",
-                    "超长行是水平滚动，还是按编辑器宽度或目标行宽换行。",
-                    render_soft_wrap_segments(soft_wrap, cx),
-                    ui_size,
-                    cx,
-                ),
-                render_number_row(
-                    "preferred-line-length",
-                    "目标行宽",
-                    "soft_wrap 为“固定行宽”时使用的目标列数。",
-                    Stepper {
-                        value: preferred_line_length.to_string(),
-                        can_decrease: preferred_line_length > 20,
-                        can_increase: preferred_line_length < 300,
-                        decrease: Box::new(move |settings_window, cx| {
-                            let value = preferred_line_length.saturating_sub(10).max(20);
-                            settings_window.update_setting(cx, "目标行宽", |content| {
-                                content.preferred_line_length = Some(value);
-                            });
-                        }),
-                        increase: Box::new(move |settings_window, cx| {
-                            let value = preferred_line_length.saturating_add(10).min(300);
-                            settings_window.update_setting(cx, "目标行宽", |content| {
-                                content.preferred_line_length = Some(value);
-                            });
-                        }),
-                    },
-                    ui_size,
-                    cx,
-                ),
-                render_number_row(
-                    "tab-size",
-                    "Tab 宽度",
-                    "制表符的视觉列宽，也是一级缩进宽度。",
-                    Stepper {
-                        value: tab_size.to_string(),
-                        can_decrease: tab_size > 1,
-                        can_increase: tab_size < 8,
-                        decrease: Box::new(move |settings_window, cx| {
-                            let value = tab_size.saturating_sub(1).max(1);
-                            settings_window.update_setting(cx, "Tab 宽度", |content| {
-                                content.tab_size = NonZeroUsize::new(value);
-                            });
-                        }),
-                        increase: Box::new(move |settings_window, cx| {
-                            let value = tab_size.saturating_add(1).min(8);
-                            settings_window.update_setting(cx, "Tab 宽度", |content| {
-                                content.tab_size = NonZeroUsize::new(value);
-                            });
-                        }),
-                    },
-                    ui_size,
-                    cx,
-                ),
-                render_setting_row(
-                    "insert-spaces",
-                    "空格缩进",
-                    "使用空格代替真实的 Tab 字符进行缩进。",
-                    render_checkbox(
+            SettingsPage::Editor => render_section(
+                "编辑器",
+                vec![
+                    render_setting_row(
+                        "soft-wrap",
+                        "软换行",
+                        "超长行是水平滚动，还是按编辑器宽度或目标行宽换行。",
+                        render_soft_wrap_segments(soft_wrap, cx),
+                        ui_size,
+                        cx,
+                    ),
+                    render_number_row(
+                        "preferred-line-length",
+                        "目标行宽",
+                        "soft_wrap 为“固定行宽”时使用的目标列数。",
+                        Stepper {
+                            value: preferred_line_length.to_string(),
+                            can_decrease: preferred_line_length > 20,
+                            can_increase: preferred_line_length < 300,
+                            decrease: Box::new(move |settings_window, cx| {
+                                let value = preferred_line_length.saturating_sub(10).max(20);
+                                settings_window.update_setting(cx, "目标行宽", |content| {
+                                    content.preferred_line_length = Some(value);
+                                });
+                            }),
+                            increase: Box::new(move |settings_window, cx| {
+                                let value = preferred_line_length.saturating_add(10).min(300);
+                                settings_window.update_setting(cx, "目标行宽", |content| {
+                                    content.preferred_line_length = Some(value);
+                                });
+                            }),
+                        },
+                        ui_size,
+                        cx,
+                    ),
+                    render_number_row(
+                        "tab-size",
+                        "Tab 宽度",
+                        "制表符的视觉列宽，也是一级缩进宽度。",
+                        Stepper {
+                            value: tab_size.to_string(),
+                            can_decrease: tab_size > 1,
+                            can_increase: tab_size < 8,
+                            decrease: Box::new(move |settings_window, cx| {
+                                let value = tab_size.saturating_sub(1).max(1);
+                                settings_window.update_setting(cx, "Tab 宽度", |content| {
+                                    content.tab_size = NonZeroUsize::new(value);
+                                });
+                            }),
+                            increase: Box::new(move |settings_window, cx| {
+                                let value = tab_size.saturating_add(1).min(8);
+                                settings_window.update_setting(cx, "Tab 宽度", |content| {
+                                    content.tab_size = NonZeroUsize::new(value);
+                                });
+                            }),
+                        },
+                        ui_size,
+                        cx,
+                    ),
+                    render_setting_row(
                         "insert-spaces",
-                        insert_spaces,
+                        "空格缩进",
+                        "使用空格代替真实的 Tab 字符进行缩进。",
+                        render_checkbox(
+                            "insert-spaces",
+                            insert_spaces,
+                            cx,
+                            move |settings_window, cx| {
+                                let value = !insert_spaces;
+                                settings_window.update_setting(cx, "空格缩进", |content| {
+                                    content.insert_spaces = Some(value);
+                                });
+                            },
+                        ),
+                        ui_size,
                         cx,
-                        move |settings_window, cx| {
-                            let value = !insert_spaces;
-                            settings_window.update_setting(cx, "空格缩进", |content| {
-                                content.insert_spaces = Some(value);
-                            });
-                        },
                     ),
-                    ui_size,
-                    cx,
-                ),
-                render_setting_row(
-                    "indent-guides",
-                    "缩进参考线",
-                    "显示编辑器中的缩进层级参考线。",
-                    render_checkbox(
+                    render_setting_row(
                         "indent-guides",
-                        indent_guides_enabled,
+                        "缩进参考线",
+                        "显示编辑器中的缩进层级参考线。",
+                        render_checkbox(
+                            "indent-guides",
+                            indent_guides_enabled,
+                            cx,
+                            move |settings_window, cx| {
+                                let enabled = !indent_guides_enabled;
+                                settings_window.update_setting(cx, "缩进参考线", |content| {
+                                    update_indent_guides(content, Some(enabled), None);
+                                });
+                            },
+                        ),
+                        ui_size,
                         cx,
-                        move |settings_window, cx| {
-                            let enabled = !indent_guides_enabled;
-                            settings_window.update_setting(cx, "缩进参考线", |content| {
-                                update_indent_guides(content, Some(enabled), None);
-                            });
-                        },
                     ),
-                    ui_size,
-                    cx,
-                ),
-                render_number_row(
-                    "indent-guide-width",
-                    "参考线宽度",
-                    "缩进参考线的像素宽度（1 到 10）。",
-                    Stepper {
-                        value: indent_guide_width.to_string(),
-                        can_decrease: indent_guide_width > 1,
-                        can_increase: indent_guide_width < 10,
-                        decrease: Box::new(move |settings_window, cx| {
-                            let value = indent_guide_width.saturating_sub(1).max(1);
-                            settings_window.update_setting(cx, "参考线宽度", |content| {
-                                update_indent_guides(content, None, Some(value));
-                            });
-                        }),
-                        increase: Box::new(move |settings_window, cx| {
-                            let value = indent_guide_width.saturating_add(1).min(10);
-                            settings_window.update_setting(cx, "参考线宽度", |content| {
-                                update_indent_guides(content, None, Some(value));
-                            });
-                        }),
-                    },
-                    ui_size,
-                    cx,
-                ),
-                render_setting_row(
-                    "cursor-shape",
-                    "光标形状",
-                    "编辑器中文本光标的形状。",
-                    render_cursor_segments(cursor_shape, cx),
-                    ui_size,
-                    cx,
-                ),
-                render_setting_row(
-                    "cursor-blink",
-                    "光标闪烁",
-                    "编辑器聚焦时是否闪烁光标。",
-                    render_checkbox(
+                    render_number_row(
+                        "indent-guide-width",
+                        "参考线宽度",
+                        "缩进参考线的像素宽度（1 到 10）。",
+                        Stepper {
+                            value: indent_guide_width.to_string(),
+                            can_decrease: indent_guide_width > 1,
+                            can_increase: indent_guide_width < 10,
+                            decrease: Box::new(move |settings_window, cx| {
+                                let value = indent_guide_width.saturating_sub(1).max(1);
+                                settings_window.update_setting(cx, "参考线宽度", |content| {
+                                    update_indent_guides(content, None, Some(value));
+                                });
+                            }),
+                            increase: Box::new(move |settings_window, cx| {
+                                let value = indent_guide_width.saturating_add(1).min(10);
+                                settings_window.update_setting(cx, "参考线宽度", |content| {
+                                    update_indent_guides(content, None, Some(value));
+                                });
+                            }),
+                        },
+                        ui_size,
+                        cx,
+                    ),
+                    render_setting_row(
+                        "cursor-shape",
+                        "光标形状",
+                        "编辑器中文本光标的形状。",
+                        render_cursor_segments(cursor_shape, cx),
+                        ui_size,
+                        cx,
+                    ),
+                    render_setting_row(
                         "cursor-blink",
-                        cursor_blink,
+                        "光标闪烁",
+                        "编辑器聚焦时是否闪烁光标。",
+                        render_checkbox(
+                            "cursor-blink",
+                            cursor_blink,
+                            cx,
+                            move |settings_window, cx| {
+                                let value = !cursor_blink;
+                                settings_window.update_setting(cx, "光标闪烁", |content| {
+                                    content.cursor_blink = Some(value);
+                                });
+                            },
+                        ),
+                        ui_size,
                         cx,
-                        move |settings_window, cx| {
-                            let value = !cursor_blink;
-                            settings_window.update_setting(cx, "光标闪烁", |content| {
-                                content.cursor_blink = Some(value);
-                            });
-                        },
                     ),
-                    ui_size,
-                    cx,
-                ),
-            ],
-            ui_size,
-            cx,
-        );
+                ],
+                ui_size,
+                cx,
+            ),
 
-        let terminal = render_section(
-            "终端",
-            vec![
-                render_number_row(
-                    "terminal-font-size",
-                    "终端字号",
-                    "终端正文的字号（像素）。",
-                    Stepper {
-                        value: format!("{:.0}", terminal_font_size),
-                        can_decrease: terminal_font_size > 10.0,
-                        can_increase: terminal_font_size < 32.0,
-                        decrease: Box::new(move |settings_window, cx| {
-                            let value = stepped(terminal_font_size, -1.0, 10.0, 32.0);
-                            settings_window.update_setting(cx, "终端字号", |content| {
-                                content.terminal_font_size = Some(value);
-                            });
-                        }),
-                        increase: Box::new(move |settings_window, cx| {
-                            let value = stepped(terminal_font_size, 1.0, 10.0, 32.0);
-                            settings_window.update_setting(cx, "终端字号", |content| {
-                                content.terminal_font_size = Some(value);
-                            });
-                        }),
-                    },
-                    ui_size,
-                    cx,
-                ),
-                render_number_row(
-                    "terminal-line-height",
-                    "终端行高",
-                    "终端行高相对字号的倍数。",
-                    Stepper {
-                        value: format!("{:.1}", terminal_line_height),
-                        can_decrease: terminal_line_height > 1.0,
-                        can_increase: terminal_line_height < 3.0,
-                        decrease: Box::new(move |settings_window, cx| {
-                            let value = stepped(terminal_line_height, -0.1, 1.0, 3.0);
-                            settings_window.update_setting(cx, "终端行高", |content| {
-                                content.terminal_line_height = Some(value);
-                            });
-                        }),
-                        increase: Box::new(move |settings_window, cx| {
-                            let value = stepped(terminal_line_height, 0.1, 1.0, 3.0);
-                            settings_window.update_setting(cx, "终端行高", |content| {
-                                content.terminal_line_height = Some(value);
-                            });
-                        }),
-                    },
-                    ui_size,
-                    cx,
-                ),
-                render_setting_row(
-                    "terminal-cursor-shape",
-                    "终端光标形状",
-                    "终端光标使用的形状。",
-                    render_terminal_cursor_segments(terminal_cursor_shape, cx),
-                    ui_size,
-                    cx,
-                ),
-            ],
-            ui_size,
-            cx,
-        );
+            SettingsPage::Terminal => render_section(
+                "终端",
+                vec![
+                    render_number_row(
+                        "terminal-font-size",
+                        "终端字号",
+                        "终端正文的字号（像素）。",
+                        Stepper {
+                            value: format!("{:.0}", terminal_font_size),
+                            can_decrease: terminal_font_size > 10.0,
+                            can_increase: terminal_font_size < 32.0,
+                            decrease: Box::new(move |settings_window, cx| {
+                                let value = stepped(terminal_font_size, -1.0, 10.0, 32.0);
+                                settings_window.update_setting(cx, "终端字号", |content| {
+                                    content.terminal_font_size = Some(value);
+                                });
+                            }),
+                            increase: Box::new(move |settings_window, cx| {
+                                let value = stepped(terminal_font_size, 1.0, 10.0, 32.0);
+                                settings_window.update_setting(cx, "终端字号", |content| {
+                                    content.terminal_font_size = Some(value);
+                                });
+                            }),
+                        },
+                        ui_size,
+                        cx,
+                    ),
+                    render_number_row(
+                        "terminal-line-height",
+                        "终端行高",
+                        "终端行高相对字号的倍数。",
+                        Stepper {
+                            value: format!("{:.1}", terminal_line_height),
+                            can_decrease: terminal_line_height > 1.0,
+                            can_increase: terminal_line_height < 3.0,
+                            decrease: Box::new(move |settings_window, cx| {
+                                let value = stepped(terminal_line_height, -0.1, 1.0, 3.0);
+                                settings_window.update_setting(cx, "终端行高", |content| {
+                                    content.terminal_line_height = Some(value);
+                                });
+                            }),
+                            increase: Box::new(move |settings_window, cx| {
+                                let value = stepped(terminal_line_height, 0.1, 1.0, 3.0);
+                                settings_window.update_setting(cx, "终端行高", |content| {
+                                    content.terminal_line_height = Some(value);
+                                });
+                            }),
+                        },
+                        ui_size,
+                        cx,
+                    ),
+                    render_setting_row(
+                        "terminal-cursor-shape",
+                        "终端光标形状",
+                        "终端光标使用的形状。",
+                        render_terminal_cursor_segments(terminal_cursor_shape, cx),
+                        ui_size,
+                        cx,
+                    ),
+                ],
+                ui_size,
+                cx,
+            ),
+        };
 
         let override_note = div()
             .px(scale::S6)
             .text_size(ui_size * 0.85)
             .text_color(colors.text_muted)
             .child(format!(
-                "settings.json 已显式覆盖 {} 项；未覆盖的字段使用内置默认值。",
+                "settings.jsonc 已显式覆盖 {} 项；未覆盖的字段使用内置默认值。",
                 explicit_override_count(&overrides)
             ));
 
-        let mut body = div()
+        let body = div()
             .id("settings-scroll")
             .flex_1()
             .min_h_0()
@@ -780,24 +575,6 @@ impl SettingsWindow {
             .flex_col()
             .gap(scale::S16)
             .child(override_note);
-        if let Some(error) = &self.error {
-            body = body.child(
-                div()
-                    .px(scale::S8)
-                    .py(scale::S6)
-                    .rounded_sm()
-                    .bg(colors.surface_background)
-                    .border_1()
-                    .border_color(colors.status_error)
-                    .text_color(colors.status_error)
-                    .child(error.clone()),
-            );
-        }
-        let page = match self.active_page {
-            SettingsPage::Appearance => appearance,
-            SettingsPage::Editor => editor,
-            SettingsPage::Terminal => terminal,
-        };
         body.child(page).into_any_element()
     }
 }
@@ -820,10 +597,17 @@ impl Render for SettingsWindow {
             .line_height(typography.ui_line())
             .text_size(typography.ui_size())
             .track_focus(&self.focus)
-            .on_action(cx.listener(Self::handle_save))
             .bg(colors.panel_background)
             .child(self.render_top_bar(window, cx))
-            .child(self.render_body(window, cx))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(self.render_body(cx))
+                    .child(self.toast_layer.clone()),
+            )
     }
 }
 
@@ -1282,60 +1066,5 @@ fn update_indent_guides(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stepped_values_stay_on_the_advertised_precision() {
-        assert_eq!(stepped(1.5, 0.1, 1.0, 3.0), 1.6);
-        assert_eq!(stepped(1.0, -0.1, 1.0, 3.0), 1.0);
-        assert_eq!(stepped(32.0, 1.0, 10.0, 32.0), 32.0);
-    }
-
-    #[test]
-    fn indent_guide_updates_preserve_other_explicit_fields() {
-        let mut content = UserSettingsContent {
-            indent_guides: Some(IndentGuideSettingsContent {
-                enabled: Some(true),
-                line_width: std::num::NonZeroU32::new(3),
-            }),
-            ..UserSettingsContent::default()
-        };
-
-        update_indent_guides(&mut content, None, Some(5));
-        assert_eq!(
-            content.indent_guides,
-            Some(IndentGuideSettingsContent {
-                enabled: Some(true),
-                line_width: std::num::NonZeroU32::new(5),
-            })
-        );
-
-        update_indent_guides(&mut content, Some(false), None);
-        assert_eq!(
-            content.indent_guides,
-            Some(IndentGuideSettingsContent {
-                enabled: Some(false),
-                line_width: std::num::NonZeroU32::new(5),
-            })
-        );
-    }
-
-    #[test]
-    fn override_count_counts_top_level_explicit_fields() {
-        let content = UserSettingsContent {
-            theme: Some(ThemeChoice::Named("dark")),
-            content_font_size: Some(18.0),
-            indent_guides: Some(IndentGuideSettingsContent::default()),
-            ..UserSettingsContent::default()
-        };
-        assert_eq!(explicit_override_count(&content), 3);
-        assert_eq!(explicit_override_count(&UserSettingsContent::default()), 0);
-    }
-
-    #[test]
-    fn every_registered_theme_has_a_stable_window_label() {
-        let labels: Vec<_> = ThemeChoice::available().map(theme_label).collect();
-        assert_eq!(labels, ["跟随系统", "深色", "浅色"]);
-    }
-}
+#[path = "test/window_tests.rs"]
+mod tests;

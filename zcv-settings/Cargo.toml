@@ -13,14 +13,17 @@ futures.workspace = true
 globset.workspace = true
 gpui.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 serde_json_lenient.workspace = true
+tempfile.workspace = true
+tree-sitter.workspace = true
+tree-sitter-json.workspace = true
 zcv-assets.workspace = true
 zcv-fs-watch.workspace = true
 zcv-theme.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-tempfile.workspace = true
 
 [lints]
 workspace = true

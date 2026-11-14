@@ -15,7 +15,7 @@ use anyhow::Context as _;
 use futures::channel::oneshot;
 use gpui::{
     App, AsyncApp, Context, Entity, PathPromptOptions, PromptLevel, TitlebarOptions, WeakEntity,
-    Window, WindowBounds, WindowOptions, prelude::*, px, size,
+    Window, WindowBounds, WindowHandle, WindowOptions, prelude::*, px, size,
 };
 use zcv_actions::{
     About, AddDirectoryToProject, CheckForUpdates, DecreaseContentFontSize, DecreaseUiFontSize,
@@ -31,7 +31,6 @@ use zcv_project::{
     Project, ProjectEvent,
 };
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
-use zcv_theme::typography;
 use zcv_workspace::{
     ActivityIndicator, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
     PaneEvent, PanelButtons, PreviewToolbar, ToastAction, ToastKind, TopBar, Workspace,
@@ -366,46 +365,59 @@ pub(crate) fn handle_open_paths(
     watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) {
+    if let Err(error) = open_paths_in_workspace(paths, errors, languages, watcher_factory, cx) {
+        eprintln!("打开文件失败：{error:#}");
+    }
+}
+
+/// 选择可接收文件的工作区。独立工具窗口也可以发起此请求。
+pub(crate) fn open_paths_in_workspace(
+    paths: Vec<PathBuf>,
+    errors: Vec<String>,
+    languages: Arc<LanguageRegistry>,
+    watcher_factory: FileWatcherFactory,
+    cx: &mut App,
+) -> anyhow::Result<()> {
     if paths.is_empty() && errors.is_empty() {
-        return;
+        return Ok(());
     }
 
-    if cx.windows().is_empty() {
-        open_empty_workspace(languages, watcher_factory, cx).expect("空工作区窗口应能创建");
-    }
-    let window = cx
-        .active_window()
-        .or_else(|| cx.window_stack().and_then(|stack| stack.first().copied()))
-        .or_else(|| cx.windows().into_iter().next())
-        .expect("打开文件时应存在工作区窗口");
-    window
-        .update(cx, |_, window, cx| {
-            let workspace = window
-                .root::<Workspace>()
-                .flatten()
-                .expect("窗口应持有工作区");
-            // 工作区在首帧后恢复持久化标签；
-            // 打开请求必须排在其后，否则新打开的文件会被刚恢复的旧标签重新覆盖。
-            window.defer(cx, move |window, cx| {
-                workspace.update(cx, |workspace, cx| {
-                    if !paths.is_empty() {
-                        workspace.open_paths(paths, window, cx);
-                    }
-                    for error in errors {
-                        workspace.show_toast(
-                            ToastKind::Error,
-                            error,
-                            vec![],
-                            Some(Duration::from_secs(5)),
-                            cx,
-                        );
-                    }
-                });
-                window.activate_window();
+    let window = match active_workspace_window(cx) {
+        Some(window) => window,
+        None => open_workspace_window(Vec::new(), languages, None, watcher_factory, cx)?,
+    };
+    window.update(cx, |_, window, cx| {
+        let workspace = cx.entity();
+        // 工作区在首帧后恢复持久化标签；
+        // 打开请求必须排在其后，否则新打开的文件会被刚恢复的旧标签重新覆盖。
+        window.defer(cx, move |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                if !paths.is_empty() {
+                    workspace.open_paths(paths, window, cx);
+                }
+                for error in errors {
+                    workspace.show_toast(
+                        ToastKind::Error,
+                        error,
+                        vec![],
+                        Some(Duration::from_secs(5)),
+                        cx,
+                    );
+                }
             });
-        })
-        .expect("打开文件时工作区窗口应有效");
+            window.activate_window();
+        });
+    })?;
     cx.activate(true);
+    Ok(())
+}
+
+pub(crate) fn active_workspace_window(cx: &App) -> Option<WindowHandle<Workspace>> {
+    cx.active_window()
+        .into_iter()
+        .chain(cx.window_stack().into_iter().flatten())
+        .chain(cx.windows())
+        .find_map(|window| window.downcast::<Workspace>())
 }
 
 /// 规范化项目路径：相对路径（如 `zcv .`）归一为绝对路径，无效路径返回错误。
@@ -438,7 +450,7 @@ pub(crate) fn open_project_window(
     let startup_error = add_to_recent(&recent_paths)
         .err()
         .map(|error| format!("更新最近项目列表失败：{error:#}"));
-    open_workspace_window(roots, languages, startup_error, watcher_factory, cx)
+    open_workspace_window(roots, languages, startup_error, watcher_factory, cx).map(|_| ())
 }
 
 /// 打开不绑定任何目录的空工作区。
@@ -447,7 +459,7 @@ pub(crate) fn open_empty_workspace(
     watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    open_workspace_window(Vec::new(), languages, None, watcher_factory, cx)
+    open_workspace_window(Vec::new(), languages, None, watcher_factory, cx).map(|_| ())
 }
 
 pub(crate) fn open_empty_workspace_with_error(
@@ -456,7 +468,7 @@ pub(crate) fn open_empty_workspace_with_error(
     watcher_factory: FileWatcherFactory,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    open_workspace_window(Vec::new(), languages, Some(message), watcher_factory, cx)
+    open_workspace_window(Vec::new(), languages, Some(message), watcher_factory, cx).map(|_| ())
 }
 
 /// 项目与空工作区共用同一条窗口创建路径；差异只在 Project 是否含 worktree。
@@ -466,7 +478,7 @@ fn open_workspace_window(
     startup_error: Option<String>,
     watcher_factory: FileWatcherFactory,
     cx: &mut App,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<WindowHandle<Workspace>> {
     // 窗口边界恢复：工作区记录 → 全局默认 → 初始居中。
     let identity_paths: Vec<PathBuf> = roots
         .iter()
@@ -492,6 +504,7 @@ fn open_workspace_window(
             ..Default::default()
         },
         |window, cx| {
+            crate::appearance::observe_window(window);
             let watcher = watcher_factory();
             let workspace = cx.new(|cx| {
                 let workspace = build_workspace(&roots, languages, watcher, window, cx);
@@ -522,8 +535,7 @@ fn open_workspace_window(
             });
             workspace
         },
-    )?;
-    Ok(())
+    )
 }
 
 /// 在给定窗口内创建并装配工作区；窗口创建与「切换项目」的根替换共用（须在 cx.new 闭包内调用）。
@@ -560,7 +572,6 @@ fn finish_build_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Workspace {
-    SettingsStore::get(cx).theme.apply(cx, Some(window));
     // UI 字号是当前工作区的窗口基准；临时缩放不会影响其他窗口。
     window.set_rem_size(workspace.typography().ui_size());
     // 装配不区分空/项目工作区：面板无条件注册，空态由各面板自行渲染。
@@ -1185,15 +1196,8 @@ fn initialize_workspace(
     let settings_subscription =
         cx.observe_global_in::<SettingsStore>(window, move |workspace, window, cx| {
             let settings = SettingsStore::get(cx);
-            typography::set_base_typography(
-                cx,
-                Some(settings.content_font_size),
-                Some(settings.ui_font_size),
-                Some(settings.content_line_height),
-            );
             workspace.apply_typography_settings(&settings, cx);
             window.set_rem_size(workspace.typography().ui_size());
-            settings.theme.apply(cx, Some(window));
             project_tree_for_settings.update(cx, |tree, cx| tree.settings_changed(cx));
             cx.notify();
         });
@@ -1218,12 +1222,6 @@ fn initialize_workspace(
         );
     }
 
-    let appearance_subscription = window.observe_window_appearance(|window, cx| {
-        let settings = SettingsStore::get(cx);
-        settings.theme.apply(cx, Some(window));
-        window.refresh();
-    });
-
     // git 操作（fetch/pull/push）：编排与文案在装配层。
     workspace.register_action(move |workspace, _: &GitFetch, _window, cx| {
         run_git_operation(workspace, GitOperationKind::Fetch, cx);
@@ -1241,7 +1239,6 @@ fn initialize_workspace(
         project_subscription,
         settings_subscription,
         error_subscription,
-        appearance_subscription,
     ] {
         workspace.add_subscription(subscription);
     }

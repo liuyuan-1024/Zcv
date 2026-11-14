@@ -1,7 +1,7 @@
 //! 设置初始化与文件监听重载。
 //!
 //! 事件流在 SETTINGS_RELOAD_DEBOUNCE 窗口内合并 notify 事件；
-//! 批次命中 settings.json 或配置目录 Rescan 时读取文件并写入 SettingsStore global。
+//! 批次命中 settings.jsonc 或配置目录 Rescan 时读取文件并写入 SettingsStore global。
 //! 订阅与读取都使用规范化路径，避免 macOS 等后端返回的规范化事件路径无法与前缀匹配。
 
 use std::{
@@ -19,7 +19,6 @@ use super::{
     config_dir,
     file::{ensure_user_settings_file, settings_file},
     merge::UserSettings,
-    schema::{UserSettingsContent, parse_user_settings},
     store::{GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore},
 };
 
@@ -36,44 +35,22 @@ impl Global for SettingsReload {}
 pub fn init(cx: &mut App) {
     let error_reporter = cx.new(|_| SettingsErrorReporter::default());
     cx.set_global(GlobalSettingsErrorReporter(error_reporter.clone()));
-    let settings_path = settings_file();
-    if let Err(error) = ensure_user_settings_file() {
+    let mut store = SettingsStore::new(UserSettings::default());
+    let load_result = ensure_user_settings_file()
+        .and_then(|path| fs::read_to_string(path).map_err(Into::into))
+        .and_then(|content| store.set_user_settings(&content));
+    if let Err(error) = load_result {
         error_reporter.update(cx, |reporter, cx| {
-            reporter.report(format!("初始化设置文件失败：{error:#}"), cx)
+            reporter.report(
+                format!(
+                    "加载设置文件失败（{}）：{error:#}",
+                    settings_file().display()
+                ),
+                cx,
+            );
         });
     }
-    let content = match fs::read_to_string(settings_path) {
-        Ok(content) => content,
-        Err(error) => {
-            error_reporter.update(cx, |reporter, cx| {
-                reporter.report(
-                    format!("读取设置文件失败（{}）：{error:#}", settings_path.display()),
-                    cx,
-                )
-            });
-            String::new()
-        }
-    };
-    let mut settings = UserSettings::default();
-    let mut user_content = UserSettingsContent::default();
-    let mut last_user_settings_content = None;
-    if !content.is_empty() {
-        last_user_settings_content = Some(content.clone());
-        match parse_user_settings(&content) {
-            Ok(parsed) => {
-                settings = UserSettings::merge(parsed.clone());
-                user_content = parsed;
-            }
-            Err(error) => {
-                error_reporter.update(cx, |reporter, cx| {
-                    reporter.report(
-                        format!("加载设置文件失败（{}）：{error:#}", settings_path.display()),
-                        cx,
-                    )
-                });
-            }
-        }
-    }
+    cx.set_global(store);
 
     let watcher: Arc<dyn Watcher> = Arc::new(FsWatcher::new());
     if let Err(error) = watcher.add(config_dir()) {
@@ -130,10 +107,6 @@ pub fn init(cx: &mut App) {
         }
     });
 
-    let mut store = SettingsStore::new(settings);
-    store.user_content = user_content;
-    store.last_user_settings_content = last_user_settings_content;
-    cx.set_global(store);
     cx.set_global(SettingsReload {
         _watcher: watcher,
         _watch_task: watch_task,

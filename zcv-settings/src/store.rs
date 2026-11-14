@@ -8,10 +8,8 @@ use anyhow::Result;
 use gpui::{App, BorrowAppContext as _, Context, Entity, EventEmitter, Global};
 
 use super::{
-    file::{
-        read_user_settings_file_at, serialize_user_settings, settings_file,
-        write_user_settings_file_at,
-    },
+    file::{read_user_settings_file_at, replace_user_settings_file, settings_file},
+    jsonc,
     merge::UserSettings,
     schema::{UserSettingsContent, parse_user_settings, validate_user_settings},
 };
@@ -42,10 +40,10 @@ impl SettingsErrorReporter {
 }
 
 pub struct SettingsStore {
-    pub(crate) settings: UserSettings,
+    settings: UserSettings,
     /// 最近一次成功加载的用户覆盖值；面板读取它判断哪些字段被显式填写。
-    pub(crate) user_content: UserSettingsContent,
-    pub(crate) last_user_settings_content: Option<String>,
+    user_content: UserSettingsContent,
+    last_user_settings_content: Option<String>,
 }
 
 impl Global for SettingsStore {}
@@ -102,8 +100,8 @@ impl SettingsStore {
 
 /// 更新用户设置文件并立即应用：面板与手工编辑共用同一解析、校验和生效流程。
 ///
-/// 先读取并解析当前文件，修改覆盖内容后再校验与序列化；写入成功后才替换
-/// `SettingsStore` 快照。写入失败时文件与运行时设置都保持原状。
+/// 先读取并解析当前文件，校验修改后的覆盖内容并更新对应 JSONC 字段；
+/// 写入成功后才替换 `SettingsStore` 快照。写入失败时文件与运行时设置都保持原状。
 pub fn update_user_settings(
     cx: &mut App,
     update: impl FnOnce(&mut UserSettingsContent),
@@ -117,17 +115,17 @@ pub(crate) fn update_user_settings_at(
     update: impl FnOnce(&mut UserSettingsContent),
 ) -> Result<bool> {
     let old_text = read_user_settings_file_at(path)?;
-    let mut content = parse_user_settings(&old_text)?;
+    let previous = parse_user_settings(&old_text)?;
+    let mut content = previous.clone();
     update(&mut content);
     validate_user_settings(&content)?;
-    let new_text = serialize_user_settings(&content)?;
+    let new_text = jsonc::update_text(&old_text, &previous, &content)?;
     if new_text == old_text {
         return Ok(false);
     }
-    write_user_settings_file_at(path, &new_text)?;
-    let mut changed = false;
-    cx.update_global::<SettingsStore, _>(|store, _| {
-        changed = store.apply_user_settings(content, &new_text);
-    });
-    Ok(changed)
+    let parsed = parse_user_settings(&new_text)?;
+    anyhow::ensure!(parsed == content, "设置原文编辑结果与请求的设置不一致");
+    replace_user_settings_file(path, &new_text)?;
+    Ok(cx
+        .update_global::<SettingsStore, _>(|store, _| store.apply_user_settings(parsed, &new_text)))
 }

@@ -13,8 +13,8 @@
 use std::sync::OnceLock;
 
 use gpui::{
-    App, Font, FontFallbacks, Global, Pixels, SharedString, TextRun, WindowTextSystem, black, font,
-    px,
+    App, Context, Font, FontFallbacks, Global, Pixels, SharedString, Subscription, TextRun, Window,
+    WindowTextSystem, black, font, px,
 };
 use serde::Deserialize;
 
@@ -203,6 +203,15 @@ fn measure_ink_line(cx: &App, font: Font, font_size: Pixels) -> f32 {
 }
 
 // ── 设置入口 ───────────────────────────────────────────────────────
+
+/// 观察应用基础排版，供窗口更新本地布局单位。
+pub fn observe_in<T: 'static>(
+    window: &Window,
+    cx: &mut Context<T>,
+    callback: impl FnMut(&mut T, &mut Window, &mut Context<T>) + 'static,
+) -> Subscription {
+    cx.observe_global_in::<TypographyGlobal>(window, callback)
+}
 
 /// 更新基础排版快照（内容/UI 字号与内容行高倍数）；
 /// 启动与设置变更时调用，未配置的维度保持当前值不变。

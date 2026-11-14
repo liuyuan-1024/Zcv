@@ -1,6 +1,7 @@
 #![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
 
 mod app_menus;
+mod appearance;
 mod auto_update;
 mod harness;
 mod open_with;
@@ -19,8 +20,6 @@ use workspace::{
 };
 use zcv_assets::Assets;
 use zcv_language::LanguageRegistry;
-use zcv_settings::SettingsStore;
-use zcv_theme::typography;
 use zcv_workspace::most_recent_valid_project;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -142,16 +141,7 @@ fn main() {
         Assets.load_fonts(cx).expect("内置字体应能注册");
 
         zcv_settings::init(cx);
-        // 排版设置落地：SettingsStore 已就绪，按配置覆盖主题默认字号。
-        {
-            let settings = SettingsStore::get(cx);
-            typography::set_base_typography(
-                cx,
-                Some(settings.content_font_size),
-                Some(settings.ui_font_size),
-                Some(settings.content_line_height),
-            );
-        }
+        appearance::init(cx);
         // 应用级唯一语言注册表：预览 Provider 与工作区内的 Project 共享同一份。
         zcv_preview_markdown::init(Arc::clone(&languages), cx);
         zcv_preview_svg::init(cx);
@@ -164,7 +154,7 @@ fn main() {
         workspace::install_open_local_directory_action(Arc::clone(&languages), cx);
         workspace::install_add_directory_to_project_action(cx);
         app_menus::install(cx);
-        settings_window::install(cx, Arc::clone(&languages));
+        settings_window::install(cx, Arc::clone(&languages), Arc::clone(&watcher_factory));
         auto_update::init(cx, update_error);
 
         // 更新 helper 需要在有限时间内确认新版本已经启动；

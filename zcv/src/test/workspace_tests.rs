@@ -1,21 +1,19 @@
 use std::{fs, sync::Arc};
 
 use futures::channel::oneshot;
-use gpui::{AppContext, TestAppContext};
+use gpui::{AppContext, BorrowAppContext as _, TestAppContext};
 use url::Url;
 
 use crate::app_menus;
 use zcv_actions::{About, AddDirectoryToProject, OpenLocalFile, OpenSettings};
 use zcv_language::LanguageRegistry;
-use zcv_settings::{
-    GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore, UserSettings,
-};
+use zcv_settings::SettingsStore;
 
 use super::{
     DockPosition, Workspace, build_workspace, file_path_from_url, handle_open_urls,
     retain_prompt_until_answer,
 };
-use crate::test_support::{quiet_watcher, quiet_watcher_factory};
+use crate::test_support::{init_test_settings, quiet_watcher, quiet_watcher_factory};
 
 #[gpui::test]
 fn prompt_remains_answerable_until_dismissed(cx: &mut TestAppContext) {
@@ -28,12 +26,10 @@ fn prompt_remains_answerable_until_dismissed(cx: &mut TestAppContext) {
 #[gpui::test]
 fn open_settings_opens_a_single_settings_window(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, test_languages());
         app_menus::install(cx);
-        crate::settings_window::install(cx, test_languages());
+        crate::settings_window::install(cx, test_languages(), quiet_watcher_factory());
     });
     let (_workspace, visual) = cx.add_window_view(|window, cx| {
         build_workspace(&[], test_languages(), quiet_watcher(), window, cx)
@@ -70,11 +66,71 @@ fn open_settings_opens_a_single_settings_window(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn opening_files_from_settings_window_uses_the_workspaces_pane(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let path = directory.path().join("settings.jsonc");
+    fs::write(&path, "{}").expect("应写入临时设置文件");
+    let path = zcv_path::AbsolutePathBuf::canonicalize(&path)
+        .expect("应解析设置文件路径")
+        .into_path_buf();
+    let languages = test_languages();
+    cx.update(|cx| {
+        init_test_settings(cx);
+        zcv_editor::init(cx, languages.clone());
+    });
+    let (workspace, _) = cx.add_window_view(|window, cx| {
+        build_workspace(&[], languages.clone(), quiet_watcher(), window, cx)
+    });
+    let (_, settings_visual) = cx.add_window_view(zcv_settings_window::SettingsWindow::new);
+    settings_visual.update(|window, cx| {
+        window.activate_window();
+        cx.defer({
+            let path = path.clone();
+            let languages = languages.clone();
+            move |cx| {
+                super::open_paths_in_workspace(
+                    vec![path],
+                    vec![],
+                    languages,
+                    quiet_watcher_factory(),
+                    cx,
+                )
+                .expect("应从独立窗口委托工作区打开文件");
+            }
+        });
+    });
+    cx.run_until_parked();
+    cx.read_entity(&workspace, |workspace, cx| {
+        let pane = workspace.pane().read(cx);
+        assert_eq!(
+            pane.active_item().and_then(|item| item.item_path(cx)),
+            Some(path)
+        );
+    });
+}
+
+#[gpui::test]
+fn settings_window_tracks_application_typography(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        init_test_settings(cx);
+    });
+    let (_, visual) = cx.add_window_view(zcv_settings_window::SettingsWindow::new);
+    visual.update(|_, cx| {
+        cx.update_global::<SettingsStore, _>(|store, _| {
+            store.set_user_settings(r#"{"ui_font_size": 19}"#).unwrap();
+        });
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        assert_eq!(zcv_theme::typography::ui_size(cx), gpui::px(19.0));
+        assert_eq!(window.rem_size(), gpui::px(19.0));
+    });
+}
+
+#[gpui::test]
 fn about_action_displays_current_version(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, test_languages());
         crate::app_menus::install(cx);
     });
@@ -107,9 +163,7 @@ fn add_directory_action_prompts_for_directories_and_ignores_empty_selection(
     let project_dir = tempfile::tempdir().expect("应创建项目目录");
     let languages = test_languages();
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, languages.clone());
         app_menus::install(cx);
         super::install_add_directory_to_project_action(cx);
@@ -152,9 +206,7 @@ fn add_directory_action_skips_unaddable_paths_without_changing_roots(cx: &mut Te
     let project_dir = tempfile::tempdir().expect("应创建项目目录");
     let languages = test_languages();
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, languages.clone());
         app_menus::install(cx);
         super::install_add_directory_to_project_action(cx);
@@ -199,9 +251,7 @@ fn open_local_file_action_opens_file_outside_current_project(cx: &mut TestAppCon
         .to_path_buf();
     let languages = test_languages();
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, languages.clone());
         app_menus::install(cx);
         super::install_open_local_file_action(cx);
@@ -257,9 +307,7 @@ fn finder_open_event_opens_html_in_active_workspace(cx: &mut TestAppContext) {
         .to_path_buf();
     let languages = test_languages();
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, languages.clone());
         app_menus::install(cx);
     });
@@ -305,9 +353,7 @@ fn finder_open_event_creates_workspace_when_no_window_exists(cx: &mut TestAppCon
         .to_path_buf();
     let languages = test_languages();
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, languages.clone());
         app_menus::install(cx);
     });
@@ -350,9 +396,7 @@ fn finder_open_event_creates_workspace_when_no_window_exists(cx: &mut TestAppCon
 #[gpui::test]
 fn empty_workspace_installs_all_panels(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, test_languages());
         app_menus::install(cx);
     });
@@ -378,9 +422,7 @@ fn empty_workspace_installs_all_panels(cx: &mut TestAppContext) {
 #[gpui::test]
 fn switching_replaces_root_in_same_window(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, test_languages());
         app_menus::install(cx);
     });

@@ -4,7 +4,7 @@ use zcv_theme::ThemeChoice;
 
 use super::*;
 use crate::{
-    file::ensure_settings_file,
+    file::{ensure_settings_file, prepare_user_settings_file},
     schema::{TerminalShellSetting, parse_builtin_settings, parse_user_settings},
     store::update_user_settings_at,
 };
@@ -12,7 +12,7 @@ use crate::{
 #[test]
 fn missing_user_settings_file_contains_only_overrides() {
     let directory = tempfile::tempdir().expect("应创建临时设置目录");
-    let path = directory.path().join("settings.json");
+    let path = directory.path().join("settings.jsonc");
 
     let template = "// 设置可在 Zcv 设置窗口中修改；此文件只保存显式覆盖值。\n{}\n";
     ensure_settings_file(&path, template).expect("应创建用户设置文件");
@@ -24,9 +24,27 @@ fn missing_user_settings_file_contains_only_overrides() {
 }
 
 #[test]
+fn legacy_user_settings_are_migrated_byte_for_byte() {
+    let directory = tempfile::tempdir().expect("应创建临时设置目录");
+    let legacy = directory.path().join("settings.json");
+    let path = directory.path().join("settings.jsonc");
+    let content = "// 用户注释\r\n{\"theme\": \"dark\",}\r\n";
+    fs::write(&legacy, content).unwrap();
+
+    prepare_user_settings_file(&path).expect("应迁移用户设置");
+    assert!(!legacy.exists());
+    assert_eq!(fs::read_to_string(&path).unwrap(), content);
+
+    fs::write(&legacy, "{}").unwrap();
+    prepare_user_settings_file(&path).expect("应优先使用现有 JSONC 设置");
+    assert_eq!(fs::read_to_string(&path).unwrap(), content);
+    assert_eq!(fs::read_to_string(&legacy).unwrap(), "{}");
+}
+
+#[test]
 fn existing_user_settings_file_is_not_overwritten() {
     let directory = tempfile::tempdir().expect("应创建临时设置目录");
-    let path = directory.path().join("settings.json");
+    let path = directory.path().join("settings.jsonc");
     fs::write(&path, r#"{"theme":"dark"}"#).expect("应创建用户设置文件");
 
     ensure_settings_file(&path, "{}\n").expect("已有设置文件应可重复初始化");
@@ -191,7 +209,7 @@ fn explicit_empty_exclusions_do_not_fall_back_to_defaults() {
 fn comments_and_trailing_commas_are_supported() {
     let content = parse_user_settings(
         r#"{
-            // settings.json 使用 JSONC 语义。
+            // settings.jsonc 使用 JSONC 语义。
             "theme": "dark",
             "soft_wrap": "editor-width",
         }"#,
@@ -238,21 +256,27 @@ fn invalid_user_field_fails_instead_of_using_default() {
     }
 }
 
-#[test]
-fn invalid_user_settings_keep_the_last_valid_snapshot() {
-    let mut store = SettingsStore::new(UserSettings::default());
-    assert!(
-        store
-            .set_user_settings(r#"{"soft_wrap":"bounded"}"#)
-            .unwrap()
-    );
-    let before = store.settings.clone();
-    assert!(
-        store
-            .set_user_settings(r#"{"soft_wrap":true,"theme":"light"}"#)
-            .is_err()
-    );
-    assert_eq!(store.settings, before);
+#[gpui::test]
+fn invalid_user_settings_keep_the_last_valid_snapshot(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(SettingsStore::new(UserSettings::default()));
+        cx.update_global::<SettingsStore, _>(|store, _| {
+            assert!(
+                store
+                    .set_user_settings(r#"{"soft_wrap":"bounded"}"#)
+                    .unwrap()
+            );
+        });
+        let before = SettingsStore::get(cx);
+        cx.update_global::<SettingsStore, _>(|store, _| {
+            assert!(
+                store
+                    .set_user_settings(r#"{"soft_wrap":true,"theme":"light"}"#)
+                    .is_err()
+            );
+        });
+        assert_eq!(SettingsStore::get(cx), before);
+    });
 }
 
 #[test]
@@ -442,9 +466,52 @@ fn serialized_overrides_round_trip_including_explicit_null_shell() {
         ..UserSettingsContent::default()
     };
 
-    let text = crate::file::serialize_user_settings(&content).unwrap();
+    let text = crate::jsonc::update_text("{}", &UserSettingsContent::default(), &content).unwrap();
     assert!(text.contains("\"terminal_shell\": null"));
     assert_eq!(parse_user_settings(&text).unwrap(), content);
+}
+
+#[gpui::test]
+fn settings_window_updates_nested_fields_without_reformatting_jsonc(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.set_global(SettingsStore::new(UserSettings::default())));
+    let directory = tempfile::tempdir().expect("应创建临时设置目录");
+    let path = directory.path().join("settings.jsonc");
+    let original = concat!(
+        "// 我的设置\r\n",
+        "{\r\n",
+        "  \"theme\" : \"dark\", // 外观\r\n",
+        "  \"indent_guides\": { /* 参考线 */ \"enabled\": true, },\r\n",
+        "  \"terminal_shell\": null,\r\n",
+        "}\r\n",
+    );
+    fs::write(&path, original).unwrap();
+
+    cx.update(|cx| {
+        update_user_settings_at(&path, cx, |content| {
+            content.indent_guides.as_mut().unwrap().enabled = Some(false);
+        })
+        .expect("应更新参考线设置");
+        assert!(!SettingsStore::get(cx).indent_guides.enabled);
+    });
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        original.replace("true", "false")
+    );
+
+    cx.update(|cx| {
+        update_user_settings_at(&path, cx, |content| {
+            content.terminal_shell = None;
+            content.indent_guides.as_mut().unwrap().line_width = NonZeroU32::new(2);
+        })
+        .expect("应删除显式覆盖并添加嵌套字段");
+    });
+    let modified = fs::read_to_string(&path).unwrap();
+    assert!(modified.contains("\"theme\" : \"dark\", // 外观\r\n"));
+    assert!(modified.contains("/* 参考线 */"));
+    assert!(!modified.contains("terminal_shell"));
+    let parsed = parse_user_settings(&modified).unwrap();
+    assert_eq!(parsed.indent_guides.unwrap().line_width, NonZeroU32::new(2));
+    assert_eq!(parsed.terminal_shell, None);
 }
 
 #[gpui::test]
@@ -453,7 +520,7 @@ fn settings_window_update_writes_file_and_manual_edit_reuses_the_same_store_path
 ) {
     cx.update(|cx| cx.set_global(SettingsStore::new(UserSettings::default())));
     let directory = tempfile::tempdir().expect("应创建临时设置目录");
-    let path = directory.path().join("settings.json");
+    let path = directory.path().join("settings.jsonc");
     fs::write(&path, r#"{"theme":"dark"}"#).expect("应写入初始设置");
 
     cx.update(|cx| {
@@ -486,7 +553,7 @@ fn settings_window_update_writes_file_and_manual_edit_reuses_the_same_store_path
         })
     );
 
-    // 手工编辑 settings.json 后，文件监听读取同一文本并走同一个 store 入口。
+    // 手工编辑 settings.jsonc 后，文件监听读取同一文本并走同一个 store 入口。
     let manually_edited = r#"{"theme":"light","content_font_size":20}"#;
     fs::write(&path, manually_edited).expect("应模拟手工编辑");
     cx.update(|cx| {
@@ -518,7 +585,7 @@ fn settings_store_notifies_observers_for_settings_window_and_manual_updates(
     cx.run_until_parked();
 
     let directory = tempfile::tempdir().expect("应创建临时设置目录");
-    let path = directory.path().join("settings.json");
+    let path = directory.path().join("settings.jsonc");
     fs::write(&path, r#"{"theme":"dark"}"#).expect("应写入初始设置");
 
     cx.update(|cx| {
@@ -542,7 +609,7 @@ fn settings_store_notifies_observers_for_settings_window_and_manual_updates(
 fn rejected_settings_window_update_keeps_file_and_runtime_snapshot(cx: &mut TestAppContext) {
     cx.update(|cx| cx.set_global(SettingsStore::new(UserSettings::default())));
     let directory = tempfile::tempdir().expect("应创建临时设置目录");
-    let path = directory.path().join("settings.json");
+    let path = directory.path().join("settings.jsonc");
     let original = r#"{"theme":"dark"}"#;
     fs::write(&path, original).expect("应写入初始设置");
 

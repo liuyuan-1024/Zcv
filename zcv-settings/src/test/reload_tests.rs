@@ -14,7 +14,7 @@ fn event(path: &Path, kind: PathEventKind) -> PathEvent {
 fn only_settings_file_events_trigger_reload() {
     let base = std::env::current_dir().expect("测试应能取得当前目录");
     let config = base.join(".zcv");
-    let settings = config.join("settings.json");
+    let settings = config.join("settings.jsonc");
 
     assert!(is_settings_event(
         &event(&settings, PathEventKind::Changed),

@@ -92,7 +92,7 @@ fn wide_char_force_width_aligns_render_width(cx: &mut TestAppContext) {
         zcv_assets::Assets.load_fonts(cx).expect("内置字体应能加载");
     });
     let (_, cx) = cx.add_window_view(|window, cx| {
-        ThemeChoice::System.apply(cx, Some(window));
+        ThemeChoice::System.apply_for_appearance(cx, window.appearance());
         EmptyView
     });
     cx.update(|window, cx| {
@@ -186,7 +186,7 @@ fn row_fingerprint_is_stable_and_sensitive() {
 #[gpui::test]
 fn wide_char_spacer_skips_text_not_background(cx: &mut TestAppContext) {
     let (_, cx) = cx.add_window_view(|window, cx| {
-        ThemeChoice::System.apply(cx, Some(window));
+        ThemeChoice::System.apply_for_appearance(cx, window.appearance());
         EmptyView
     });
     let red = Color::Spec(Rgb { r: 255, g: 0, b: 0 });
@@ -230,7 +230,7 @@ fn wide_char_spacer_skips_text_not_background(cx: &mut TestAppContext) {
 #[gpui::test]
 fn row_to_styled_line_merges_same_style_and_trims_trailing_spaces(cx: &mut TestAppContext) {
     let (_, cx) = cx.add_window_view(|window, cx| {
-        ThemeChoice::System.apply(cx, Some(window));
+        ThemeChoice::System.apply_for_appearance(cx, window.appearance());
         EmptyView
     });
     let red = Color::Spec(Rgb { r: 255, g: 0, b: 0 });

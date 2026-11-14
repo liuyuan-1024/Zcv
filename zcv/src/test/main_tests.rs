@@ -1,14 +1,11 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use gpui::{AppContext, TestAppContext};
+use gpui::TestAppContext;
 use zcv_language::LanguageRegistry;
-use zcv_settings::{
-    GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore, UserSettings,
-};
 use zcv_workspace::Workspace;
 
 use super::{InitialOpen, initial_open, open_initial};
-use crate::test_support::quiet_watcher_factory;
+use crate::test_support::{init_test_settings, quiet_watcher_factory};
 
 #[test]
 fn startup_uses_explicit_command_line_project() {
@@ -80,9 +77,7 @@ fn startup_file_opens_in_empty_workspace(cx: &mut TestAppContext) {
         .to_path_buf();
     let languages = std::sync::Arc::new(LanguageRegistry::new());
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, languages.clone());
         crate::app_menus::install(cx);
         open_initial(
@@ -122,9 +117,7 @@ fn incoming_file_reuses_existing_window(cx: &mut TestAppContext) {
     std::fs::write(&file, "内容").expect("应创建文件");
     let languages = std::sync::Arc::new(LanguageRegistry::new());
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, languages.clone());
         crate::app_menus::install(cx);
         open_initial(
@@ -166,9 +159,7 @@ fn incoming_file_reuses_existing_window(cx: &mut TestAppContext) {
 fn closed_last_window_can_open_a_workspace_again(cx: &mut TestAppContext) {
     let languages = std::sync::Arc::new(LanguageRegistry::new());
     cx.update(|cx| {
-        let reporter = cx.new(|_| SettingsErrorReporter::default());
-        cx.set_global(GlobalSettingsErrorReporter(reporter));
-        cx.set_global(SettingsStore::new(UserSettings::default()));
+        init_test_settings(cx);
         zcv_editor::init(cx, languages.clone());
         crate::app_menus::install(cx);
         open_initial(

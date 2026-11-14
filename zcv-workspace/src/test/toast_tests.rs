@@ -6,7 +6,7 @@ use super::{ToastAction, ToastKind, ToastLayer};
 
 #[gpui::test]
 fn multiple_toasts_keep_independent_actions_and_lifetimes(cx: &mut TestAppContext) {
-    let layer = cx.new(|_| ToastLayer::new());
+    let layer = cx.new(|_| ToastLayer::default());
     let (first, second, persistent) = layer.update(cx, |layer, cx| {
         let first = layer.show(
             ToastKind::Info,
@@ -42,7 +42,7 @@ fn multiple_toasts_keep_independent_actions_and_lifetimes(cx: &mut TestAppContex
         assert_eq!(layer.toasts[1].id, persistent);
     });
 
-    let other_layer = cx.new(|_| ToastLayer::new());
+    let other_layer = cx.new(|_| ToastLayer::default());
     let other_id = other_layer.update(cx, |layer, cx| {
         layer.show(ToastKind::Info, "另一个工作区", vec![], None, cx)
     });
@@ -52,7 +52,7 @@ fn multiple_toasts_keep_independent_actions_and_lifetimes(cx: &mut TestAppContex
 
 #[gpui::test]
 fn timed_toasts_expire_independently_and_persistent_toasts_remain(cx: &mut TestAppContext) {
-    let layer = cx.new(|_| ToastLayer::new());
+    let layer = cx.new(|_| ToastLayer::default());
     let (first, second, persistent) = layer.update(cx, |layer, cx| {
         let first = layer.show(
             ToastKind::Info,
@@ -95,7 +95,7 @@ fn timed_toasts_expire_independently_and_persistent_toasts_remain(cx: &mut TestA
 
 #[gpui::test]
 fn new_toast_appears_below_and_moves_older_toast_up(cx: &mut TestAppContext) {
-    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::new());
+    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::default());
     layer.update(cx, |layer, cx| {
         layer.show(ToastKind::Info, "旧提示", vec![], None, cx);
     });
@@ -134,7 +134,7 @@ fn new_toast_appears_below_and_moves_older_toast_up(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn tall_toast_pushes_older_toast_by_its_measured_height(cx: &mut TestAppContext) {
-    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::new());
+    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::default());
     layer.update(cx, |layer, cx| {
         layer.show(ToastKind::Info, "旧提示", vec![], None, cx);
     });
@@ -169,7 +169,7 @@ fn tall_toast_pushes_older_toast_by_its_measured_height(cx: &mut TestAppContext)
 
 #[gpui::test]
 fn rapid_toasts_continue_rising_without_jumping(cx: &mut TestAppContext) {
-    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::new());
+    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::default());
     layer.update(cx, |layer, cx| {
         layer.show(ToastKind::Info, "第一条", vec![], None, cx);
     });
@@ -192,7 +192,7 @@ fn rapid_toasts_continue_rising_without_jumping(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn overflowing_toast_stack_keeps_latest_toast_visible(cx: &mut TestAppContext) {
-    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::new());
+    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::default());
     cx.update(|_, cx| cx.set_reduce_motion(true));
     layer.update(cx, |layer, cx| {
         for index in 0..12 {
@@ -214,7 +214,7 @@ fn overflowing_toast_stack_keeps_latest_toast_visible(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn closing_newest_toast_does_not_replay_entrance(cx: &mut TestAppContext) {
-    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::new());
+    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::default());
     let newest = layer.update(cx, |layer, cx| {
         layer.show(ToastKind::Info, "第一条", vec![], None, cx);
         layer.show(ToastKind::Info, "第二条", vec![], None, cx);
@@ -237,7 +237,7 @@ fn closing_newest_toast_does_not_replay_entrance(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn toast_renders_all_caller_actions_and_closes_only_the_chosen_toast(cx: &mut TestAppContext) {
-    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::new());
+    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::default());
     cx.update(|_, cx| cx.set_reduce_motion(true));
     let chosen = Rc::new(Cell::new(None));
     layer.update(cx, |layer, cx| {

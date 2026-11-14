@@ -1,7 +1,7 @@
 //! Toast —— 工作区内的提示（成功/错误/信息）。
 //!
 //! 三段式形态：头部行（左侧语义图标，右侧复制/关闭）、内容主体（固定最大宽度内自动换行）、底部操作按钮。
-//! 由 Workspace 持有并叠加在根视图上，各条提示独立计时和关闭。
+//! 由宿主窗口持有并叠加在根视图上，各条提示独立计时和关闭。
 //! 容器自身不注册鼠标事件（不创建 hitbox），不会拦截下方视图的交互。
 
 use std::{
@@ -80,8 +80,8 @@ struct ActiveToast {
     dismiss_started_at: Option<Instant>,
 }
 
-/// 全局提示层：Workspace 持有并叠加渲染。
-pub(crate) struct ToastLayer {
+/// 宿主窗口持有的提示层。
+pub struct ToastLayer {
     toasts: Vec<ActiveToast>,
     next_id: u64,
     entering_toast: Option<ToastId>,
@@ -236,8 +236,8 @@ impl Element for ToastStackContent {
     }
 }
 
-impl ToastLayer {
-    pub(crate) fn new() -> Self {
+impl Default for ToastLayer {
+    fn default() -> Self {
         Self {
             toasts: Vec::new(),
             next_id: 0,
@@ -245,9 +245,11 @@ impl ToastLayer {
             scroll_handle: ScrollHandle::new(),
         }
     }
+}
 
+impl ToastLayer {
     /// 展示一条提示；`dismiss_after` 之后自动消失（None 表示仅手动关闭）。
-    pub(crate) fn show(
+    pub fn show(
         &mut self,
         kind: ToastKind,
         message: impl Into<SharedString>,

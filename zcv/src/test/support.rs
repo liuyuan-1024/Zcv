@@ -5,7 +5,11 @@
 
 use std::{path::Path, sync::Arc, time::Duration};
 
+use gpui::{App, AppContext as _};
 use zcv_fs_watch::{FsEventStream, Watcher};
+use zcv_settings::{
+    GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore, UserSettings,
+};
 
 use crate::workspace::FileWatcherFactory;
 
@@ -34,4 +38,12 @@ pub(crate) fn quiet_watcher() -> Arc<dyn Watcher> {
 /// 每次都返回静默监听器的工厂，用于走完整工作区装配路径的测试。
 pub(crate) fn quiet_watcher_factory() -> FileWatcherFactory {
     Arc::new(|| quiet_watcher())
+}
+
+/// 安装内存设置，并按应用启动顺序初始化全局外观。
+pub(crate) fn init_test_settings(cx: &mut App) {
+    let reporter = cx.new(|_| SettingsErrorReporter::default());
+    cx.set_global(GlobalSettingsErrorReporter(reporter));
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    crate::appearance::init(cx);
 }

@@ -12,7 +12,7 @@ pub mod syntax;
 mod theme_data;
 pub mod typography;
 
-use gpui::{App, Window};
+use gpui::{App, WindowAppearance};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use theme_data::{ThemeData, theme_by_id, themes};
@@ -50,19 +50,19 @@ impl ThemeChoice {
         }
     }
 
-    /// 解析为具体主题：`System` 按窗口外观选择匹配的主题，无窗口时默认深色。
-    pub(crate) fn effective(self, window: Option<&Window>) -> &'static ThemeData {
+    /// 解析为具体主题：`System` 按应用系统外观选择匹配的主题。
+    pub(crate) fn effective(self, appearance: WindowAppearance) -> &'static ThemeData {
         match self {
             Self::Named(id) => theme_by_id(id).expect("具名主题必须来自注册表"),
-            Self::System => window
-                .map(|w| w.appearance())
-                .and_then(|appearance| themes().iter().find(|theme| theme.appearance == appearance))
+            Self::System => themes()
+                .iter()
+                .find(|theme| theme.appearance == appearance)
                 .unwrap_or_else(first_theme),
         }
     }
 
-    pub fn apply(self, cx: &mut App, window: Option<&Window>) {
-        let theme = self.effective(window);
+    pub fn apply_for_appearance(self, cx: &mut App, appearance: WindowAppearance) {
+        let theme = self.effective(appearance);
         color::set_theme(theme, cx);
         syntax::set_theme(theme, cx);
     }

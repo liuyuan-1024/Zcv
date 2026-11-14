@@ -208,7 +208,7 @@ impl Workspace {
         });
 
         let status_bar = cx.new(|cx| StatusBar::new(pane.clone(), cx));
-        let toast_layer = cx.new(|_| ToastLayer::new());
+        let toast_layer = cx.new(|_| ToastLayer::default());
 
         Self {
             focus,

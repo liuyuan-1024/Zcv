@@ -115,7 +115,7 @@ described_actions!(
     [
         Save => ("保存", "保存当前文档"),
         OpenSettings => ("打开设置", "打开独立设置窗口"),
-        OpenSettingsFile => ("打开设置文件", "在编辑器中打开 settings.json 与配置参考"),
+        OpenSettingsFile => ("打开设置文件", "在工作区编辑 settings.jsonc"),
         OpenLocalFile => ("打开本地文件", "选择文件并在当前工作区打开"),
         OpenLocalDirectory => ("打开本地目录", "从本地目录选择并切换项目"),
         AddDirectoryToProject => ("添加目录到项目", "选择目录并加入当前项目"),

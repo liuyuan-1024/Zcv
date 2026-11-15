@@ -11,7 +11,7 @@ use super::{
     file::{read_user_settings_file_at, replace_user_settings_file, settings_file},
     jsonc,
     merge::UserSettings,
-    schema::{UserSettingsContent, parse_user_settings, validate_user_settings},
+    schema::{AutosaveSetting, UserSettingsContent, parse_user_settings, validate_user_settings},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +60,13 @@ impl SettingsStore {
 
     pub fn get(cx: &App) -> UserSettings {
         cx.global::<Self>().settings.clone()
+    }
+
+    pub fn autosave(cx: &App) -> AutosaveSetting {
+        cx.try_global::<Self>().map_or_else(
+            || UserSettings::default().autosave,
+            |store| store.settings.autosave,
+        )
     }
 
     /// 读取用户显式填写的覆盖值；未填写的字段为 `None`。

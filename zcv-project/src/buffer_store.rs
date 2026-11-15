@@ -2,7 +2,12 @@
 //!
 //! Store 只保留弱引用；只要还有 Editor 或 View 持有文档，它就能按路径复用，最后一个使用者释放后，整条文档实体链也随之结束。
 
-use std::{collections::HashMap, fs::File, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs::File,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::{
     text_file::{BufferLoadError, decode_to_string},
@@ -106,6 +111,13 @@ impl BufferStore {
                 let buffer = buffer.upgrade()?;
                 Some((path.clone(), buffer.read(cx).text_snapshot()))
             })
+            .collect()
+    }
+
+    pub(crate) fn opened_file_buffers(&self) -> Vec<(Entity<LanguageBuffer>, PathBuf)> {
+        self.opened_buffers
+            .iter()
+            .filter_map(|(path, buffer)| Some((buffer.upgrade()?, path.as_path().to_path_buf())))
             .collect()
     }
 

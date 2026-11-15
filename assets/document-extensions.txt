@@ -9,6 +9,7 @@ hpp
 html
 js
 json
+jsonc
 jsx
 md
 py

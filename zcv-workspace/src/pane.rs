@@ -36,6 +36,9 @@ pub enum PaneEvent {
     ActivateItem {
         item_id: EntityId,
     },
+    CloseRequested {
+        item_id: EntityId,
+    },
     /// 标签页被关闭。
     RemovedItem {
         item_id: EntityId,
@@ -730,12 +733,10 @@ impl Pane {
 
 impl Pane {
     /// 关闭活动标签；焦点归还在 `close_tab` 内统一处理（快捷键在 Pane 上下文触发，焦点必在 Pane 内）。
-    fn handle_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(item_id) = self.active else {
-            return;
-        };
-        self.close_tab(item_id, window, cx);
-        window.refresh();
+    fn handle_close_tab(&mut self, _: &CloseTab, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(item_id) = self.active {
+            cx.emit(PaneEvent::CloseRequested { item_id });
+        }
     }
 
     fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -1004,13 +1005,9 @@ fn close_button(pane_entity: &Entity<Pane>, item_id: EntityId, cx: &App) -> impl
         .no_occlude()
         .label("关闭")
         .shortcut(zcv_keymap::display_shortcut(&CloseTab, cx))
-        .on_click(
-            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
-                // 焦点归还在 close_tab 内统一处理（点击时焦点在 Pane 内）。
-                entity.update(cx, |pane, cx| pane.close_tab(item_id, window, cx));
-                window.refresh();
-            },
-        )
+        .on_click(move |_: &gpui::ClickEvent, _, cx: &mut App| {
+            entity.update(cx, |_, cx| cx.emit(PaneEvent::CloseRequested { item_id }));
+        })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

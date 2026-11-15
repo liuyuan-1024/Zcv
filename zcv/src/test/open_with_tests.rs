@@ -7,6 +7,7 @@ fn document_extensions_asset_is_valid() {
     let extensions = document_extensions().unwrap();
     assert!(!extensions.is_empty());
     assert!(extensions.contains(&"md".to_owned()));
+    assert!(extensions.iter().any(|name| name == "jsonc"));
     for name in &extensions {
         assert!(
             name.bytes()

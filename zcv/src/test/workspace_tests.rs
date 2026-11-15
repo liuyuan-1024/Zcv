@@ -575,3 +575,75 @@ fn switching_replaces_root_in_same_window(cx: &mut TestAppContext) {
         assert_ne!(new_root.entity_id(), old_id);
     });
 }
+
+#[gpui::test]
+fn autosave_distinguishes_document_focus_from_window_deactivation(cx: &mut TestAppContext) {
+    use zcv_settings::{AutosaveSetting, UserSettings};
+
+    let mut settings = UserSettings {
+        autosave: AutosaveSetting::OnWindowChange,
+        ..UserSettings::default()
+    };
+    cx.update(|cx| {
+        init_test_settings(cx);
+        cx.set_global(SettingsStore::new(settings.clone()));
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("first.txt");
+    let second = directory.path().join("second.txt");
+    fs::write(&first, "一\n").unwrap();
+    fs::write(&second, "二\n").unwrap();
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages.clone()));
+    let (workspace, cx) = cx
+        .add_window_view(|window, cx| build_workspace(&[], languages, quiet_watcher(), window, cx));
+    cx.update(|window, _| window.activate_window());
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_path(first.clone(), true, window, cx);
+    });
+    cx.run_until_parked();
+
+    cx.simulate_input("新");
+    cx.run_until_parked();
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_path(second.clone(), true, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(fs::read_to_string(&first).unwrap(), "一\n");
+
+    cx.deactivate_window();
+    cx.run_until_parked();
+    assert_eq!(fs::read_to_string(&first).unwrap(), "新一\n");
+
+    settings.autosave = AutosaveSetting::OnFocusChange;
+    cx.update(|window, cx| {
+        cx.set_global(SettingsStore::new(settings));
+        window.activate_window();
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_path(first.clone(), true, window, cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_input("新");
+    cx.run_until_parked();
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_path(second.clone(), true, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(fs::read_to_string(&first).unwrap(), "新新一\n");
+
+    cx.update(|_, cx| {
+        cx.set_global(SettingsStore::new(UserSettings {
+            autosave: AutosaveSetting::AfterDelay {
+                milliseconds: 1000.try_into().unwrap(),
+            },
+            ..UserSettings::default()
+        }));
+    });
+    cx.simulate_input("新");
+    cx.run_until_parked();
+    assert_eq!(fs::read_to_string(&second).unwrap(), "二\n");
+    cx.dispatch_action(zcv_actions::CloseTab);
+    cx.run_until_parked();
+    assert_eq!(fs::read_to_string(&second).unwrap(), "新二\n");
+}

@@ -19,9 +19,9 @@ pub use file::ensure_user_settings_file;
 pub use merge::UserSettings;
 pub use reload::init;
 pub use schema::{
-    AutoIndentMode, CursorAnimationSettingsContent, CursorShape, IndentGuideSettings,
-    IndentGuideSettingsContent, LanguageOverrideContent, SoftWrapMode, TabConfig,
-    TerminalCursorShape, TerminalShellSetting, UserSettingsContent,
+    AutoIndentMode, AutosaveSetting, CursorAnimationSettingsContent, CursorShape,
+    IndentGuideSettings, IndentGuideSettingsContent, LanguageOverrideContent, SoftWrapMode,
+    TabConfig, TerminalCursorShape, TerminalShellSetting, UserSettingsContent,
 };
 pub use store::{
     GlobalSettingsErrorReporter, SettingsError, SettingsErrorReporter, SettingsStore,

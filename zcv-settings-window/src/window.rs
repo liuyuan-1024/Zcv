@@ -1,6 +1,9 @@
 //! 可视化设置页与窗口导航。
 
-use std::{num::NonZeroUsize, time::Duration};
+use std::{
+    num::{NonZeroU64, NonZeroUsize},
+    time::Duration,
+};
 
 use gpui::{
     AnyElement, App, Context, Div, ElementId, Entity, FocusHandle, Focusable, IntoElement, Render,
@@ -8,8 +11,8 @@ use gpui::{
 };
 use zcv_actions::OpenSettingsFile;
 use zcv_settings::{
-    CursorShape, IndentGuideSettingsContent, SettingsStore, SoftWrapMode, TerminalCursorShape,
-    UserSettingsContent, update_user_settings,
+    AutosaveSetting, CursorShape, IndentGuideSettingsContent, SettingsStore, SoftWrapMode,
+    TerminalCursorShape, UserSettingsContent, update_user_settings,
 };
 use zcv_theme::{ThemeChoice, color, scale, typography};
 use zcv_title_bar::TitleBar;
@@ -202,6 +205,7 @@ impl SettingsWindow {
         let content_font_size = settings.content_font_size;
         let content_line_height = settings.content_line_height;
         let soft_wrap = settings.soft_wrap;
+        let autosave = settings.autosave;
         let preferred_line_length = settings.preferred_line_length;
         let tab_size = settings.tab.tab_size();
         let insert_spaces = settings.tab.insert_spaces;
@@ -305,6 +309,22 @@ impl SettingsWindow {
             SettingsPage::Editor => render_section(
                 "编辑器",
                 vec![
+                    render_setting_row(
+                        "autosave",
+                        "自动保存",
+                        "停止输入、离开文档或切离窗口时保存未保存的文件。",
+                        render_autosave_segments(autosave, cx),
+                        ui_size,
+                        cx,
+                    ),
+                    render_number_row(
+                        "autosave-delay",
+                        "自动保存延迟",
+                        "仅在延迟保存模式下生效，单位为毫秒。",
+                        autosave_delay_stepper(autosave),
+                        ui_size,
+                        cx,
+                    ),
                     render_setting_row(
                         "soft-wrap",
                         "软换行",
@@ -747,6 +767,65 @@ fn render_theme_segments(selected: ThemeChoice, cx: &mut Context<SettingsWindow>
     render_segments("theme", segments, cx)
 }
 
+fn render_autosave_segments(
+    selected: AutosaveSetting,
+    cx: &mut Context<SettingsWindow>,
+) -> AnyElement {
+    let delay = match selected {
+        AutosaveSetting::AfterDelay { milliseconds } => milliseconds,
+        _ => NonZeroU64::new(1000).expect("初始延迟必须大于零"),
+    };
+    let segments = [
+        ("off", "关闭", AutosaveSetting::Off),
+        (
+            "delay",
+            "延迟",
+            AutosaveSetting::AfterDelay {
+                milliseconds: delay,
+            },
+        ),
+        ("focus", "文档失焦", AutosaveSetting::OnFocusChange),
+        ("window", "窗口失焦", AutosaveSetting::OnWindowChange),
+    ]
+    .into_iter()
+    .map(|(id, label, mode)| {
+        let action: WindowAction = Box::new(move |window, cx| {
+            window.update_setting(cx, "自动保存", |content| content.autosave = Some(mode));
+        });
+        (id.to_string(), label, mode == selected, action)
+    })
+    .collect();
+    render_segments("autosave", segments, cx)
+}
+
+fn autosave_delay_stepper(setting: AutosaveSetting) -> Stepper {
+    let delay = match setting {
+        AutosaveSetting::AfterDelay { milliseconds } => Some(milliseconds.get()),
+        _ => None,
+    };
+    Stepper {
+        value: delay.map_or_else(|| "—".to_string(), |delay| delay.to_string()),
+        can_decrease: delay.is_some_and(|value| value > 1),
+        can_increase: delay.is_some_and(|value| value < u64::MAX),
+        decrease: autosave_delay_action(
+            delay.and_then(|value| NonZeroU64::new(value.saturating_sub(250).max(1))),
+        ),
+        increase: autosave_delay_action(
+            delay.and_then(|value| NonZeroU64::new(value.saturating_add(250))),
+        ),
+    }
+}
+
+fn autosave_delay_action(milliseconds: Option<NonZeroU64>) -> WindowAction {
+    Box::new(move |window, cx| {
+        if let Some(milliseconds) = milliseconds {
+            window.update_setting(cx, "自动保存延迟", |content| {
+                content.autosave = Some(AutosaveSetting::AfterDelay { milliseconds });
+            });
+        }
+    })
+}
+
 fn render_soft_wrap_segments(
     selected: SoftWrapMode,
     cx: &mut Context<SettingsWindow>,
@@ -988,6 +1067,7 @@ fn explicit_override_count(content: &UserSettingsContent) -> usize {
         content.use_autoclose.is_some(),
         content.use_auto_surround.is_some(),
         content.auto_indent.is_some(),
+        content.autosave.is_some(),
         content.extend_comment_on_newline.is_some(),
         content.extend_list_on_newline.is_some(),
         content.remove_trailing_whitespace_on_save.is_some(),

@@ -8,9 +8,9 @@ use zcv_theme::ThemeChoice;
 use super::{
     INITIAL_USER_SETTINGS,
     schema::{
-        AutoIndentMode, BuiltinSettingsContent, CursorShape, IndentGuideSettings, LanguageOverride,
-        LanguageOverrideContent, SoftWrapMode, TabConfig, TerminalCursorShape, UserSettingsContent,
-        parse_builtin_settings,
+        AutoIndentMode, AutosaveSetting, BuiltinSettingsContent, CursorShape, IndentGuideSettings,
+        LanguageOverride, LanguageOverrideContent, SoftWrapMode, TabConfig, TerminalCursorShape,
+        UserSettingsContent, parse_builtin_settings,
     },
 };
 
@@ -48,6 +48,7 @@ pub struct UserSettings {
     pub use_auto_surround: bool,
     /// 自动缩进策略；语言的 `indents.scm` 在语法感知模式下生效。
     pub auto_indent: AutoIndentMode,
+    pub autosave: AutosaveSetting,
     /// 换行时是否续写行注释与文档注释。
     pub extend_comment_on_newline: bool,
     /// 换行时是否续写 Markdown 列表。
@@ -234,6 +235,7 @@ impl UserSettings {
                 .use_auto_surround
                 .unwrap_or(defaults.use_auto_surround),
             auto_indent: content.auto_indent.unwrap_or(defaults.auto_indent),
+            autosave: content.autosave.unwrap_or(defaults.autosave),
             extend_comment_on_newline: content
                 .extend_comment_on_newline
                 .unwrap_or(defaults.extend_comment_on_newline),

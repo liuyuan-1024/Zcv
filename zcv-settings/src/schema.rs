@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     fmt,
     marker::PhantomData,
-    num::{NonZeroU32, NonZeroUsize},
+    num::{NonZeroU32, NonZeroU64, NonZeroUsize},
 };
 
 use anyhow::{Context as _, Result, ensure};
@@ -25,6 +25,16 @@ pub enum SoftWrapMode {
     None,
     EditorWidth,
     Bounded,
+}
+
+/// 自动保存触发方式。
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum AutosaveSetting {
+    Off,
+    AfterDelay { milliseconds: NonZeroU64 },
+    OnFocusChange,
+    OnWindowChange,
 }
 
 /// 自动缩进策略。
@@ -92,6 +102,7 @@ pub(crate) struct BuiltinSettingsContent {
     pub(crate) use_autoclose: bool,
     pub(crate) use_auto_surround: bool,
     pub(crate) auto_indent: AutoIndentMode,
+    pub(crate) autosave: AutosaveSetting,
     pub(crate) extend_comment_on_newline: bool,
     pub(crate) extend_list_on_newline: bool,
     pub(crate) remove_trailing_whitespace_on_save: bool,
@@ -340,6 +351,12 @@ pub struct UserSettingsContent {
         skip_serializing_if = "Option::is_none"
     )]
     pub auto_indent: Option<AutoIndentMode>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub autosave: Option<AutosaveSetting>,
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_option",

@@ -4,7 +4,7 @@
 //! 面板、顶栏、状态项与项目相关订阅由应用装配层注入。
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     iter,
     ops::Range,
     path::{Path, PathBuf},
@@ -14,16 +14,17 @@ use std::{
 };
 
 use gpui::{
-    Action, AnyView, App, AsyncApp, Context, Div, DragMoveEvent, Entity, FocusHandle, Render,
-    SharedString, Stateful, Subscription, Task, WeakEntity, Window, div, prelude::*,
+    Action, AnyView, App, AsyncApp, Context, Div, DragMoveEvent, Entity, EntityId, FocusHandle,
+    Focusable, PromptLevel, Render, SharedString, Stateful, Subscription, Task, WeakEntity, Window,
+    div, prelude::*,
 };
 use zcv_actions::{
     FocusOrHidePanel, MinimizeWindow, QuitWindow, Save, ToggleBottomDock, ToggleLeftDock,
     ToggleMaximizeWindow,
 };
 use zcv_path::AbsolutePathBuf;
-use zcv_project::{FileSaveConflictPolicy, Project};
-use zcv_settings::SettingsStore;
+use zcv_project::{FileSaveConflictPolicy, Project, ProjectEvent};
+use zcv_settings::{AutosaveSetting, SettingsStore};
 use zcv_theme::{color, typography, typography::Typography};
 use zcv_ui::{ToastAction, ToastId, ToastKind, ToastLayer};
 
@@ -56,6 +57,9 @@ pub struct Workspace {
     toast_layer: Entity<ToastLayer>,
     conflict_toasts: HashMap<gpui::EntityId, ToastId>,
     project: Entity<Project>,
+    autosave_focus_subscriptions: HashMap<EntityId, [Subscription; 2]>,
+    pending_focus_saves: HashSet<EntityId>,
+    autosave_error_toasts: HashMap<EntityId, ToastId>,
     left_dock: Entity<Dock>,
     right_dock: Entity<Dock>,
     bottom_dock: Entity<Dock>,
@@ -129,6 +133,14 @@ impl Workspace {
         let pane_for_layout = pane.clone();
         let layout_subscription =
             cx.subscribe_in(&pane_for_layout, window, |this, _, event, window, cx| {
+                match *event {
+                    PaneEvent::AddItem { item_id } => {
+                        this.observe_autosave_item(item_id, window, cx)
+                    }
+                    PaneEvent::RemovedItem { item_id } => this.remove_autosave_item(item_id),
+                    PaneEvent::CloseRequested { item_id } => this.close_item(item_id, window, cx),
+                    _ => {}
+                }
                 if let PaneEvent::RemovedItem { item_id } = event
                     && let Some(id) = this.conflict_toasts.remove(item_id)
                 {
@@ -207,6 +219,27 @@ impl Workspace {
             this.schedule_window_bounds_save(window, cx);
         });
 
+        let autosave_activation =
+            cx.observe_window_activation(window, Self::autosave_window_activation);
+        let autosave_failures = cx.subscribe(&project, |this, _, event, cx| {
+            this.report_autosave_failure(event, cx);
+        });
+        let autosave_settings = cx.observe_global::<SettingsStore>(|this, cx| {
+            if SettingsStore::autosave(cx) != AutosaveSetting::OnFocusChange {
+                this.pending_focus_saves.clear();
+            }
+        });
+        let autosave_focus = [
+            pane.read(cx).focus_handle(),
+            left_dock.read(cx).focus_handle(cx),
+            right_dock.read(cx).focus_handle(cx),
+            bottom_dock.read(cx).focus_handle(cx),
+        ]
+        .map(|focus| {
+            cx.on_focus_in(&focus, window, |this, window, cx| {
+                this.defer_autosave_focus(window, cx);
+            })
+        });
         let status_bar = cx.new(|cx| StatusBar::new(pane.clone(), cx));
         let toast_layer = cx.new(|_| ToastLayer::default());
 
@@ -217,6 +250,9 @@ impl Workspace {
             toast_layer,
             conflict_toasts: HashMap::new(),
             project,
+            autosave_focus_subscriptions: HashMap::new(),
+            pending_focus_saves: HashSet::new(),
+            autosave_error_toasts: HashMap::new(),
             left_dock,
             right_dock,
             bottom_dock,
@@ -225,6 +261,8 @@ impl Workspace {
                 .chain(dock_layout_subscriptions)
                 .chain(iter::once(focus_lost_subscription))
                 .chain(iter::once(window_bounds_subscription))
+                .chain([autosave_activation, autosave_failures, autosave_settings])
+                .chain(autosave_focus)
                 .collect(),
             workspace_actions: Vec::new(),
             layout_path,
@@ -1002,6 +1040,9 @@ impl Workspace {
     }
 
     pub(crate) fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.flush_autosave_on_close(cx) {
+            return;
+        }
         let roots: Vec<PathBuf> = self
             .project
             .read(cx)
@@ -1010,6 +1051,16 @@ impl Workspace {
             .collect();
         window_bounds::save_window_bounds(&roots, window, cx);
         self.flush_layout(cx);
+        for handle in cx.windows() {
+            if handle.window_id() != window.window_handle().window_id()
+                && let Some(handle) = handle.downcast::<Self>()
+                && handle
+                    .update(cx, |workspace, _, cx| workspace.flush_autosave_on_close(cx))
+                    .is_ok_and(|saved| !saved)
+            {
+                return;
+            }
+        }
         cx.quit();
     }
 
@@ -1030,6 +1081,196 @@ impl Workspace {
         self.toggle_maximize(window, cx);
     }
 
+    fn observe_autosave_item(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = self
+            .pane
+            .read(cx)
+            .tabs()
+            .iter()
+            .find(|item| item.item_id() == id)
+        else {
+            return;
+        };
+        let focus = item.item_focus_handle(cx);
+        let entered = cx.on_focus_in(&focus, window, |workspace, window, cx| {
+            workspace.defer_autosave_focus(window, cx);
+        });
+        let left = cx.on_focus_out(&focus, window, move |workspace, _, window, cx| {
+            if SettingsStore::autosave(cx) == AutosaveSetting::OnFocusChange {
+                workspace.pending_focus_saves.insert(id);
+                workspace.defer_autosave_focus(window, cx);
+            }
+        });
+        self.autosave_focus_subscriptions
+            .insert(id, [entered, left]);
+    }
+
+    fn remove_autosave_item(&mut self, id: EntityId) {
+        self.autosave_focus_subscriptions.remove(&id);
+        self.pending_focus_saves.remove(&id);
+    }
+
+    fn defer_autosave_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = cx.weak_entity();
+        window.defer(cx, move |window, cx| {
+            workspace
+                .update(cx, |workspace, cx| {
+                    workspace.flush_autosave_focus(window, cx)
+                })
+                .ok();
+        });
+    }
+
+    fn flush_autosave_focus(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if SettingsStore::autosave(cx) != AutosaveSetting::OnFocusChange {
+            self.pending_focus_saves.clear();
+            return;
+        }
+        if self.pending_focus_saves.is_empty() {
+            return;
+        }
+        let pane = self.pane.read(cx);
+        let focused_item = window
+            .is_window_active()
+            .then(|| self.focused_pane_item(window, cx))
+            .flatten();
+        let in_dock = [&self.left_dock, &self.right_dock, &self.bottom_dock]
+            .iter()
+            .any(|dock| dock.read(cx).focus_handle(cx).contains_focused(window, cx));
+        if window.is_window_active()
+            && focused_item.is_none()
+            && !pane.focus_handle().is_focused(window)
+            && !in_dock
+        {
+            return;
+        }
+        let mut visited: HashSet<_> = focused_item
+            .and_then(|item| item.multi_buffer(cx))
+            .into_iter()
+            .flat_map(|buffer| buffer.read(cx).file_buffers(cx))
+            .map(|(source, _)| source.entity_id())
+            .collect();
+        let blurred_items = std::mem::take(&mut self.pending_focus_saves);
+        let buffers = pane
+            .tabs()
+            .iter()
+            .filter(|item| blurred_items.contains(&item.item_id()))
+            .filter_map(|item| item.multi_buffer(cx))
+            .flat_map(|buffer| buffer.read(cx).file_buffers(cx))
+            .filter(|(buffer, _)| visited.insert(buffer.entity_id()))
+            .collect();
+        self.project
+            .update(cx, |project, cx| project.autosave_file_buffers(buffers, cx));
+    }
+
+    fn focused_pane_item<'a>(&self, window: &Window, cx: &'a App) -> Option<&'a dyn ItemHandle> {
+        self.pane
+            .read(cx)
+            .tabs()
+            .iter()
+            .find(|item| item.item_focus_handle(cx).contains_focused(window, cx))
+            .map(Box::as_ref)
+    }
+
+    fn autosave_window_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.is_window_active() {
+            return;
+        }
+        match SettingsStore::autosave(cx) {
+            AutosaveSetting::OnWindowChange => {
+                self.project
+                    .update(cx, |project, cx| project.autosave_open_buffers(cx));
+            }
+            AutosaveSetting::OnFocusChange => {
+                if let Some(id) = self.focused_pane_item(window, cx).map(ItemHandle::item_id) {
+                    self.pending_focus_saves.insert(id);
+                }
+                self.flush_autosave_focus(window, cx);
+            }
+            _ => {}
+        }
+    }
+
+    fn report_autosave_failure(&mut self, event: &ProjectEvent, cx: &mut Context<Self>) {
+        let ProjectEvent::AutosaveFailed {
+            buffer_id,
+            path,
+            conflict,
+            error,
+        } = event
+        else {
+            return;
+        };
+        if *conflict {
+            let item = self
+                .pane
+                .read(cx)
+                .tabs()
+                .iter()
+                .find(|item| item.can_save(cx) && item.conflicted_file_paths(cx).contains(path))
+                .map(|item| item.boxed_clone());
+            if let Some(item) = item {
+                self.show_save_conflict(item.as_ref(), cx);
+                return;
+            }
+        }
+        self.autosave_error_toasts
+            .retain(|_, id| self.toast_layer.read(cx).contains(*id));
+        if !self.autosave_error_toasts.contains_key(buffer_id) {
+            let id = self.show_toast(
+                ToastKind::Error,
+                format!("自动保存失败：{}：{error}", path.display()),
+                vec![],
+                Some(Duration::from_secs(8)),
+                cx,
+            );
+            self.autosave_error_toasts.insert(*buffer_id, id);
+        }
+    }
+
+    fn close_item(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let buffers = self
+            .pane
+            .read(cx)
+            .tabs()
+            .iter()
+            .find(|item| item.item_id() == id)
+            .and_then(|item| item.multi_buffer(cx))
+            .map_or_else(Vec::new, |buffer| buffer.read(cx).file_buffers(cx));
+        if self
+            .project
+            .update(cx, |project, cx| project.autosave_file_buffers(buffers, cx))
+        {
+            self.pane
+                .update(cx, |pane, cx| pane.close_tab(id, window, cx));
+            return;
+        }
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "自动保存未完成",
+            Some("保留标签页以处理保存问题，或放弃未保存编辑并关闭。"),
+            &["保留标签页", "放弃编辑"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await == Ok(1) {
+                this.update_in(cx, |workspace, window, cx| {
+                    workspace
+                        .pane
+                        .update(cx, |pane, cx| pane.close_tab(id, window, cx));
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// 启用自动保存后，窗口关闭须等脏文件成功写盘。
+    pub fn flush_autosave_on_close(&mut self, cx: &mut Context<Self>) -> bool {
+        self.project
+            .update(cx, |project, cx| project.autosave_open_buffers(cx))
+    }
+
     fn handle_save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
         let pane = self.pane.clone();
         let Some(item) = pane.read(cx).active_item().map(ItemHandle::boxed_clone) else {
@@ -1038,12 +1279,18 @@ impl Workspace {
         if !item.can_save(cx) {
             return;
         }
+        if !self.show_save_conflict(item.as_ref(), cx) {
+            self.save_item(item, FileSaveConflictPolicy::Reject, window, cx);
+        }
+    }
+
+    fn show_save_conflict(&mut self, item: &dyn ItemHandle, cx: &mut Context<Self>) -> bool {
         let conflicted_paths = item.conflicted_file_paths(cx);
         if !conflicted_paths.is_empty() {
             if let Some(id) = self.conflict_toasts.get(&item.item_id()).copied()
                 && self.toast_layer.read(cx).contains(id)
             {
-                return;
+                return true;
             }
             let message = if conflicted_paths.len() == 1 {
                 format!(
@@ -1087,14 +1334,9 @@ impl Workspace {
                 cx,
             );
             self.conflict_toasts.insert(item.item_id(), id);
-            return;
+            return true;
         }
-        self.save_item(
-            item.boxed_clone(),
-            FileSaveConflictPolicy::Reject,
-            window,
-            cx,
-        );
+        false
     }
 
     fn save_item(

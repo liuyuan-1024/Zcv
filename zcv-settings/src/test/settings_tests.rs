@@ -628,3 +628,34 @@ fn rejected_settings_window_update_keeps_file_and_runtime_snapshot(cx: &mut Test
         "校验失败不得改写设置文件"
     );
 }
+
+#[test]
+fn autosave_modes_are_validated_and_default_to_off() {
+    assert_eq!(UserSettings::default().autosave, AutosaveSetting::Off);
+    for (json, expected) in [
+        (r#""off""#, AutosaveSetting::Off),
+        (r#""on_focus_change""#, AutosaveSetting::OnFocusChange),
+        (r#""on_window_change""#, AutosaveSetting::OnWindowChange),
+        (
+            r#"{"after_delay":{"milliseconds":1000}}"#,
+            AutosaveSetting::AfterDelay {
+                milliseconds: 1000.try_into().unwrap(),
+            },
+        ),
+    ] {
+        let settings = parse_user_settings(&format!(r#"{{"autosave":{json}}}"#)).unwrap();
+        assert_eq!(UserSettings::merge(settings).autosave, expected);
+    }
+    for json in [
+        "null",
+        r#""always""#,
+        r#"{"after_delay":{"milliseconds":0}}"#,
+        r#"{"after_delay":{}}"#,
+        r#"{"after_delay":{"milliseconds":1,"extra":true}}"#,
+    ] {
+        assert!(
+            parse_user_settings(&format!(r#"{{"autosave":{json}}}"#)).is_err(),
+            "{json}"
+        );
+    }
+}

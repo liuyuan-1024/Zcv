@@ -40,12 +40,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-2022]
+        os: [macos-26, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: 准备 Metal Toolchain
+        if: runner.os == 'macOS'
+        run: |
+          if ! xcrun metal -v >/dev/null 2>&1; then xcodebuild -downloadComponent MetalToolchain; fi
       - name: 检查原生后端可编译
         run: cargo check -p zcv-fs-watch -p zcv-git -p zcv-terminal -p zcv-update -p Zcv --all-targets
       - name: 运行文件监听与更新后端测试

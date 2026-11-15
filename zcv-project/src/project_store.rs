@@ -23,10 +23,13 @@ use zcv_language::{LanguageBuffer, LanguageBufferEvent, LanguageRegistry};
 use zcv_path::{
     AbsolutePathBuf, DisplayPath, ProjectRootDisplay, ProjectRootId, normalize_for_comparison,
 };
+use zcv_settings::SettingsStore;
 use zcv_text::{ByteOffset, Edit, Snapshot, TextRange, TextResult, TransactionMetadata};
 
 use crate::search::SearchQuery;
 
+#[path = "autosave.rs"]
+mod autosave;
 mod platform;
 
 use super::{
@@ -47,6 +50,12 @@ enum ReloadStep {
     Done,
     ReadAgain,
     WaitForFile,
+}
+
+#[derive(Clone, Copy)]
+enum SaveMode {
+    Manual(FileSaveConflictPolicy),
+    Automatic { format: bool },
 }
 
 /// 保存时如何处理文档已知的磁盘冲突。
@@ -97,6 +106,12 @@ pub enum ProjectEvent {
     /// 磁盘路径可能变化；供直接搜索文件系统的消费方失效缓存。
     FileSystemChanged,
     FileWatcherError(FileWatcherError),
+    AutosaveFailed {
+        buffer_id: EntityId,
+        path: PathBuf,
+        conflict: bool,
+        error: String,
+    },
 }
 
 pub struct Project {
@@ -114,6 +129,9 @@ pub struct Project {
     external_buffer_watches: HashMap<EntityId, AbsolutePathBuf>,
     buffer_subscriptions: HashMap<EntityId, (Subscription, Subscription)>,
     reload_tasks: HashMap<EntityId, (u64, Task<()>)>,
+    autosave_tasks: HashMap<EntityId, Task<()>>,
+    disk_text_hashes: HashMap<EntityId, [u8; 32]>,
+    _autosave_setting_subscription: Subscription,
     next_reload_id: u64,
     /// 应用装配层创建并注入的唯一语言注册表；项目内所有语言 Buffer 与 diff 源共享同一份，避免多处独立加载。
     language_registry: Arc<LanguageRegistry>,
@@ -221,6 +239,15 @@ impl Project {
             git_store.update(cx, |store, cx| store.schedule_scan(cx));
         }
 
+        let mut autosave_setting = SettingsStore::autosave(cx);
+        let autosave_setting_subscription =
+            cx.observe_global::<SettingsStore>(move |project, cx| {
+                let setting = SettingsStore::autosave(cx);
+                if setting != autosave_setting {
+                    autosave_setting = setting;
+                    project.update_autosave_setting(cx);
+                }
+            });
         let next_root_id = worktrees.len() as u64 + 1;
         Self {
             worktrees,
@@ -233,6 +260,9 @@ impl Project {
             external_buffer_watches: HashMap::new(),
             buffer_subscriptions: HashMap::new(),
             reload_tasks: HashMap::new(),
+            autosave_tasks: HashMap::new(),
+            disk_text_hashes: HashMap::new(),
+            _autosave_setting_subscription: autosave_setting_subscription,
             next_reload_id: 0,
             language_registry: languages,
             pending_file_watcher_errors,
@@ -720,7 +750,7 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         let buffer = self.buffer_store.open_buffer(path, cx)?;
-        self.subscribe_to_buffer(&buffer, cx);
+        self.subscribe_to_buffer(&buffer, true, cx);
         Ok(buffer)
     }
 
@@ -741,7 +771,7 @@ impl Project {
                 let buffer = project
                     .buffer_store
                     .install_loaded_buffer(&path, buffer, cx)?;
-                project.subscribe_to_buffer(&buffer, cx);
+                project.subscribe_to_buffer(&buffer, true, cx);
                 Ok(buffer)
             })
             .expect("文件加载任务运行期间 Project 必须存活")
@@ -794,17 +824,28 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         let buffer = self.buffer_store.open_deleted_buffer(path, cx)?;
-        self.subscribe_to_buffer(&buffer, cx);
+        self.subscribe_to_buffer(&buffer, false, cx);
         Ok(buffer)
     }
 
-    fn subscribe_to_buffer(&mut self, buffer: &Entity<LanguageBuffer>, cx: &mut Context<Self>) {
+    fn subscribe_to_buffer(
+        &mut self,
+        buffer: &Entity<LanguageBuffer>,
+        on_disk: bool,
+        cx: &mut Context<Self>,
+    ) {
         let id = buffer.entity_id();
         self.watch_external_buffer(id, buffer, cx);
         if self.buffer_subscriptions.contains_key(&id) {
             return;
         }
+        if on_disk {
+            self.remember_disk_text(id, &buffer.read(cx).text_snapshot());
+        }
         let subscription = cx.subscribe(buffer, |project, buffer, event, cx| {
+            if *event == LanguageBufferEvent::TextChanged {
+                project.schedule_autosave(&buffer, cx);
+            }
             if *event == LanguageBufferEvent::ReloadNeeded
                 && let Some(path) = project.buffer_store.path_for_buffer(&buffer)
             {
@@ -816,6 +857,8 @@ impl Project {
             project.buffer_store.release_buffer(id);
             project.buffer_subscriptions.remove(&id);
             project.reload_tasks.remove(&id);
+            project.autosave_tasks.remove(&id);
+            project.disk_text_hashes.remove(&id);
         });
         self.buffer_subscriptions
             .insert(id, (subscription, release));
@@ -925,7 +968,8 @@ impl Project {
                         if project.buffer_store.path_for_buffer(&buffer).as_ref() != Some(&path) {
                             return ReloadStep::Done;
                         }
-                        buffer.update(cx, |buffer, cx| {
+                        let mut reloaded = false;
+                        let step = buffer.update(cx, |buffer, cx| {
                             if buffer.is_dirty() {
                                 buffer.file_changed_on_disk(cx);
                                 return ReloadStep::Done;
@@ -935,13 +979,17 @@ impl Project {
                             }
                             match loaded {
                                 Ok(text) => {
-                                    let _ = buffer.replace_text(text, cx);
+                                    reloaded = buffer.replace_text(text, cx).is_ok();
                                     ReloadStep::Done
                                 }
                                 Err(BufferLoadError::Io(_)) => ReloadStep::WaitForFile,
                                 Err(_) => ReloadStep::Done,
                             }
-                        })
+                        });
+                        if reloaded {
+                            project.remember_disk_text(id, &buffer.read(cx).text_snapshot());
+                        }
+                        step
                     }) else {
                         break;
                     };
@@ -1058,7 +1106,16 @@ impl Project {
         conflict_policy: FileSaveConflictPolicy,
         cx: &mut Context<Self>,
     ) -> Result<(), BufferSaveError> {
-        if conflict_policy == FileSaveConflictPolicy::Reject
+        self.save_file_buffers_with_mode(buffers, SaveMode::Manual(conflict_policy), cx)
+    }
+
+    fn save_file_buffers_with_mode(
+        &mut self,
+        buffers: Vec<(Entity<LanguageBuffer>, PathBuf)>,
+        mode: SaveMode,
+        cx: &mut Context<Self>,
+    ) -> Result<(), BufferSaveError> {
+        if !matches!(mode, SaveMode::Manual(FileSaveConflictPolicy::Overwrite))
             && let Some((_, path)) = buffers
                 .iter()
                 .find(|(buffer, _)| buffer.read(cx).has_disk_conflict())
@@ -1068,7 +1125,15 @@ impl Project {
         let mut saved_paths = Vec::with_capacity(buffers.len());
         let mut resolved_conflict_paths: Vec<AbsolutePathBuf> = Vec::new();
         for (language_buffer, path) in buffers {
-            language_buffer.update(cx, format_buffer_for_save)?;
+            let file = match mode {
+                SaveMode::Automatic { .. } => {
+                    Some(self.open_autosave_target(&language_buffer, &path, cx)?)
+                }
+                SaveMode::Manual(_) => None,
+            };
+            if !matches!(mode, SaveMode::Automatic { format: false }) {
+                language_buffer.update(cx, format_buffer_for_save)?;
+            }
             let snapshot = language_buffer.read(cx).text_snapshot();
             let is_unmerged = self
                 .git_store
@@ -1090,7 +1155,12 @@ impl Project {
                 }
             }
             let saved_version = snapshot.version();
-            write_buffer_to_path(&snapshot, &path)?;
+            match file {
+                Some(mut file) => write_snapshot_to_file(&snapshot, &mut file)?,
+                None => write_buffer_to_path(&snapshot, &path)?,
+            }
+            self.remember_disk_text(language_buffer.entity_id(), &snapshot);
+            self.autosave_tasks.remove(&language_buffer.entity_id());
             language_buffer.update(cx, |language_buffer, cx| {
                 language_buffer.did_save(saved_version, cx);
             });
@@ -1155,6 +1225,10 @@ impl Project {
                     }
                     for ((buffer, _, _), text) in sources.into_iter().zip(texts) {
                         buffer.update(cx, |buffer, cx| buffer.replace_text(text, cx))?;
+                        project.remember_disk_text(
+                            buffer.entity_id(),
+                            &buffer.read(cx).text_snapshot(),
+                        );
                     }
                     Ok(())
                 })?
@@ -1491,7 +1565,11 @@ impl Project {
         let mut notified_buffers = HashSet::new();
         for event in &events {
             for buffer in self.buffer_store.buffers_under_path(&event.path) {
-                if notified_buffers.insert(buffer.entity_id()) {
+                if notified_buffers.insert(buffer.entity_id())
+                    && !(buffer.read(cx).is_dirty()
+                        && SettingsStore::autosave(cx) != zcv_settings::AutosaveSetting::Off
+                        && self.disk_matches_baseline(&buffer))
+                {
                     buffer.update(cx, |buffer, cx| buffer.file_changed_on_disk(cx));
                 }
             }
@@ -1635,9 +1713,12 @@ fn keep_git_state_event(path: &Path) -> bool {
 }
 
 fn write_buffer_to_path(snapshot: &Snapshot, path: &Path) -> Result<(), BufferSaveError> {
-    let version = snapshot.version();
-    let mut file = File::create(path)?;
-    write_buffer_to(snapshot, version, &mut file)?;
+    write_snapshot_to_file(snapshot, &mut File::create(path)?)
+}
+
+fn write_snapshot_to_file(snapshot: &Snapshot, file: &mut File) -> Result<(), BufferSaveError> {
+    write_buffer_to(snapshot, snapshot.version(), file)?;
+    file.set_len(snapshot.len_bytes().get() as u64)?;
     file.sync_all()?;
     Ok(())
 }

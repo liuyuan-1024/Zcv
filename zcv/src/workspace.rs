@@ -129,13 +129,6 @@ fn switch_project_callback(languages: Arc<LanguageRegistry>) -> OnProjectSelecte
                 return; // 窗口保持原样。
             }
         };
-        let recent_paths: Vec<PathBuf> = roots
-            .iter()
-            .map(|root| root.as_path().to_path_buf())
-            .collect();
-        let recent_error = add_to_recent(&recent_paths)
-            .err()
-            .map(|error| format!("更新最近项目列表失败：{error:#}"));
         // 先保存当前窗口边界（全局默认 + 旧工作区记录）；随后窗口不重建，尺寸自然保持。
         let current_roots: Vec<PathBuf> = window
             .root::<Workspace>()
@@ -152,9 +145,24 @@ fn switch_project_callback(languages: Arc<LanguageRegistry>) -> OnProjectSelecte
             .unwrap_or_default();
         save_window_bounds(&current_roots, window, app);
         // 旧工作区根即将被替换销毁，节流中的布局保存会随实体释放而丢失，先冲刷落盘。
-        if let Some(Some(workspace)) = window.root::<Workspace>() {
-            workspace.update(app, |workspace, cx| workspace.flush_layout(cx));
+        if let Some(Some(workspace)) = window.root::<Workspace>()
+            && !workspace.update(app, |workspace, cx| {
+                if !workspace.flush_autosave_on_close(cx) {
+                    return false;
+                }
+                workspace.flush_layout(cx);
+                true
+            })
+        {
+            return;
         }
+        let recent_paths: Vec<PathBuf> = roots
+            .iter()
+            .map(|root| root.as_path().to_path_buf())
+            .collect();
+        let recent_error = add_to_recent(&recent_paths)
+            .err()
+            .map(|error| format!("更新最近项目列表失败：{error:#}"));
         let languages = Arc::clone(&languages);
         window.replace_root(app, move |window, cx| {
             let workspace = build_workspace(
@@ -520,9 +528,14 @@ fn open_workspace_window(
                 }
                 workspace
             });
-            let workspace_for_close = workspace.clone();
-            window.on_window_should_close(cx, move |window, cx| {
-                workspace_for_close.update(cx, |workspace, cx| {
+            window.on_window_should_close(cx, |window, cx| {
+                let Some(Some(workspace)) = window.root::<Workspace>() else {
+                    return true;
+                };
+                workspace.update(cx, |workspace, cx| {
+                    if !workspace.flush_autosave_on_close(cx) {
+                        return false;
+                    }
                     let roots: Vec<PathBuf> = workspace
                         .project()
                         .read(cx)
@@ -531,8 +544,8 @@ fn open_workspace_window(
                         .collect();
                     save_window_bounds(&roots, window, cx);
                     workspace.flush_layout(cx);
-                });
-                true
+                    true
+                })
             });
             workspace
         },
@@ -1152,7 +1165,8 @@ fn initialize_workspace(
             }
             ProjectEvent::EntriesChanged
             | ProjectEvent::WorktreeScanCompleted
-            | ProjectEvent::FileSystemChanged => {}
+            | ProjectEvent::FileSystemChanged
+            | ProjectEvent::AutosaveFailed { .. } => {}
             ProjectEvent::FileWatcherError(error) => {
                 show_file_watcher_error(workspace, error, cx);
             }

@@ -15,6 +15,7 @@ gpui.workspace = true
 futures.workspace = true
 regex.workspace = true
 regex-automata.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 trash.workspace = true
 zcv-text.workspace = true
@@ -22,6 +23,7 @@ zcv-fs-watch.workspace = true
 zcv-git.workspace = true
 zcv-buffer-diff.workspace = true
 zcv-language.workspace = true
+zcv-settings.workspace = true
 zcv-path.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -30,7 +32,6 @@ windows-sys = { workspace = true, features = ["Win32_UI_Shell"] }
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
-zcv-settings.workspace = true
 
 [lints]
 workspace = true

@@ -2410,3 +2410,94 @@ fn test_file_path() -> PathBuf {
         std::process::id()
     ))
 }
+
+#[gpui::test]
+fn autosave_delay_restarts_after_edits_and_respects_hot_reload(cx: &mut TestAppContext) {
+    let delay = Duration::from_millis(100);
+    let mut settings = UserSettings {
+        autosave: zcv_settings::AutosaveSetting::AfterDelay {
+            milliseconds: 100.try_into().unwrap(),
+        },
+        ..UserSettings::default()
+    };
+    cx.set_global(SettingsStore::new(settings.clone()));
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("file.txt");
+    fs::write(&path, "原文  \n").unwrap();
+    let project = cx
+        .new(|cx| Project::empty_with_watcher(test_languages(), Arc::new(TestWatcher::new()), cx));
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&path, cx))
+        .unwrap();
+    let insert = |cx: &mut TestAppContext, text: &str| {
+        buffer.update(cx, |buffer, cx| {
+            buffer
+                .edit(
+                    [Edit::insert(ByteOffset::ZERO, text.to_string()).unwrap()],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .unwrap();
+        });
+        cx.run_until_parked();
+    };
+    insert(cx, "甲");
+    cx.executor().advance_clock(delay / 2);
+    insert(cx, "乙 ");
+    cx.executor().advance_clock(delay / 2);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "原文  \n");
+    cx.executor().advance_clock(delay / 2);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "乙 甲原文  \n");
+
+    insert(cx, "丙");
+    settings.autosave = zcv_settings::AutosaveSetting::Off;
+    cx.set_global(SettingsStore::new(settings));
+    cx.executor().advance_clock(delay);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "乙 甲原文  \n");
+    cx.read_entity(&buffer, |buffer, _| assert!(buffer.is_dirty()));
+}
+
+#[gpui::test]
+fn autosave_checks_disk_before_writing_even_without_a_watcher_event(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings {
+        autosave: zcv_settings::AutosaveSetting::OnWindowChange,
+        ..UserSettings::default()
+    }));
+    let directory = tempfile::tempdir().unwrap();
+    let project = cx
+        .new(|cx| Project::empty_with_watcher(test_languages(), Arc::new(TestWatcher::new()), cx));
+    let mut buffers = Vec::new();
+    for name in ["changed.txt", "deleted.txt", "unchanged.txt"] {
+        let path = directory.path().join(name);
+        fs::write(&path, "原文\n").unwrap();
+        let buffer = project
+            .update(cx, |project, cx| project.open_buffer(&path, cx))
+            .unwrap();
+        buffer.update(cx, |buffer, cx| {
+            buffer
+                .edit(
+                    [Edit::insert(ByteOffset::ZERO, "编辑".to_owned()).unwrap()],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .unwrap();
+        });
+        buffers.push(buffer);
+    }
+    let changed = directory.path().join("changed.txt");
+    let deleted = directory.path().join("deleted.txt");
+    fs::write(&changed, "外部修改").unwrap();
+    fs::remove_file(&deleted).unwrap();
+
+    assert!(!project.update(cx, Project::autosave_open_buffers));
+    assert_eq!(fs::read_to_string(changed).unwrap(), "外部修改");
+    assert!(!deleted.exists());
+    assert_eq!(
+        fs::read_to_string(directory.path().join("unchanged.txt")).unwrap(),
+        "编辑原文\n"
+    );
+    for buffer in &buffers[..2] {
+        cx.read_entity(buffer, |buffer, _| assert!(buffer.has_disk_conflict()));
+    }
+    cx.read_entity(&buffers[2], |buffer, _| assert!(!buffer.is_dirty()));
+}

@@ -110,6 +110,42 @@ fn opening_files_from_settings_window_uses_the_workspaces_pane(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn unsupported_files_open_as_tabs_without_a_toast(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = directory.path().canonicalize().expect("应获得临时目录路径");
+    let binary = root.join("binary.bin");
+    let invalid_utf8 = root.join("invalid.txt");
+    fs::write(&binary, b"binary\0data").expect("应写入二进制文件");
+    fs::write(&invalid_utf8, [0xff]).expect("应写入无效 UTF-8 文件");
+    let languages = test_languages();
+    cx.update(|cx| {
+        init_test_settings(cx);
+        zcv_editor::init(cx, languages.clone());
+    });
+    let (workspace, visual) = cx
+        .add_window_view(|window, cx| build_workspace(&[], languages, quiet_watcher(), window, cx));
+
+    for path in [&binary, &invalid_utf8, &binary] {
+        workspace.update_in(visual, |workspace, window, cx| {
+            workspace.open_path(path.clone(), true, window, cx);
+        });
+        visual.run_until_parked();
+        visual.read_entity(&workspace, |workspace, cx| {
+            let pane = workspace.pane().read(cx);
+            let active = pane.active_item().expect("应打开文件标签");
+            assert_eq!(active.item_path(cx).as_deref(), Some(path.as_path()));
+            assert!(active.multi_buffer(cx).is_none());
+            assert!(!active.can_save(cx));
+        });
+        assert!(visual.debug_bounds("breadcrumbs-button").is_some());
+        assert!(visual.debug_bounds("toast-0").is_none());
+    }
+    visual.read_entity(&workspace, |workspace, cx| {
+        assert_eq!(workspace.pane().read(cx).tabs().len(), 2);
+    });
+}
+
+#[gpui::test]
 fn settings_window_tracks_application_typography(cx: &mut TestAppContext) {
     cx.update(|cx| {
         init_test_settings(cx);

@@ -186,14 +186,17 @@ fn buffer_search_does_not_use_a_path_as_search_capability(cx: &mut TestAppContex
         let location = bar.update(cx, |bar, cx| {
             bar.set_active_pane_item(Some(&item as &dyn ItemHandle), window, cx)
         });
-        assert_eq!(location, ToolbarItemLocation::Hidden);
+        assert_eq!(location, ToolbarItemLocation::Secondary);
+        let item_focus = item.read(cx).focus_handle(cx);
+        window.focus(&item_focus, cx);
         bar.update(cx, |bar, cx| bar.deploy(Some("needle".into()), window, cx));
+        assert!(item_focus.is_focused(window));
         assert_eq!(item.read(cx).last_query, None);
         TestView
     });
 }
 
-/// 编辑器显示缓冲搜索工具区；其他 Item 由各自的工具项承担，工具区隐藏。
+/// 编辑器显示文档工具栏；无文件路径的其他 Item 由各自的工具项提供工具栏。
 #[gpui::test]
 fn document_toolbar_is_visible_for_editor_and_hidden_for_other_items(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));

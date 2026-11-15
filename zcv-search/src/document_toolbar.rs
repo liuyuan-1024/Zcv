@@ -80,7 +80,7 @@ impl EventEmitter<ToolbarItemEvent> for DocumentToolbar {}
 impl ToolbarItemView for DocumentToolbar {
     /// 活动 Item 变化时同步搜索目标与工具栏内容，并返回本工具项的显示位置。
     ///
-    /// 只有使用编辑器通用文档工具栏的编辑器 Item 显示本工具区；
+    /// 普通文件标签显示路径，直接打开的编辑器还提供搜索与预览入口。
     /// 预览、差异、提交图等 Item 由各自的工具项承担工具区。
     fn set_active_pane_item(
         &mut self,
@@ -88,23 +88,27 @@ impl ToolbarItemView for DocumentToolbar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
-        self.preview_button.update(cx, |preview_button, cx| {
-            preview_button.set_active_item(item, window, cx)
-        });
-        self.breadcrumbs
-            .update(cx, |breadcrumbs, cx| breadcrumbs.set_item(item, cx));
         // 只有直接打开的 Editor Item 使用这份 Pane 搜索会话。
         // 组合 Item 即使暴露内层 Editor，也不借用这份 Pane 搜索会话。
         let editor_item = item.filter(|item| {
             item.act_as::<Editor>(cx)
                 .is_some_and(|editor| editor.entity_id() == item.item_id())
         });
+        self.preview_button.update(cx, |preview_button, cx| {
+            preview_button.set_active_item(editor_item, window, cx)
+        });
+        self.breadcrumbs
+            .update(cx, |breadcrumbs, cx| breadcrumbs.set_item(item, cx));
         let target = editor_item
             .and_then(|item| item.as_searchable(cx))
             .map(|handle| handle.downgrade());
         self.search_bar
             .update(cx, |bar, cx| bar.set_target(target, window, cx));
-        if editor_item.is_some() {
+        if editor_item.is_some()
+            || item.is_some_and(|item| {
+                item.item_path(cx).is_some() && item.as_preview_item(cx).is_none()
+            })
+        {
             ToolbarItemLocation::Secondary
         } else {
             ToolbarItemLocation::Hidden
@@ -118,6 +122,7 @@ impl Render for DocumentToolbar {
         let colors = color::current(cx);
         let search_bar = self.search_bar.clone();
         let visible = search_bar.read(cx).visible();
+        let has_search_target = search_bar.read(cx).has_target();
         let weak = search_bar.downgrade();
         let breadcrumbs_line = div()
             .w_full()
@@ -130,7 +135,7 @@ impl Render for DocumentToolbar {
             .child(self.preview_button.clone())
             // 搜索按钮：未打开时提示 cmd-f（搜索）；
             // 打开后按钮语义为「关闭」，高亮并提示 esc（关闭搜索）。
-            .child({
+            .when(has_search_target, |row| {
                 let search_toggle =
                     Button::icon("toolbar-file-search", "icons/magnifying_glass.svg")
                         .label(if visible { "关闭搜索" } else { "搜索" })
@@ -144,11 +149,11 @@ impl Render for DocumentToolbar {
                                 bar.update(cx, |bar, cx| bar.toggle_search(window, cx));
                             }
                         });
-                if visible {
+                row.child(if visible {
                     search_toggle.shortcut(display_shortcut(&ClearSearch, cx))
                 } else {
                     search_toggle.shortcut(display_shortcut(&DeployFind, cx))
-                }
+                })
             })
             .into_any_element();
         let container = div()

@@ -8,10 +8,13 @@ use std::{
     sync::Arc,
 };
 
-use gpui::{App, Context, Entity, Task, Window};
-use zcv_project::Project;
+use gpui::{App, AppContext, Context, Entity, Task, Window};
+use zcv_project::{BufferLoadError, Project};
 
-use crate::{Workspace, item::ItemHandle, provider_registry::ProviderRegistry};
+use crate::{
+    Workspace, item::ItemHandle, provider_registry::ProviderRegistry,
+    unsupported_file::UnsupportedFile,
+};
 
 /// 文件路径 → Workspace Item 的工厂接口。
 pub trait ItemProvider: Send + Sync + 'static {
@@ -59,6 +62,39 @@ pub fn register_serialized_item_provider<P: SerializedItemProvider>(provider: P,
 /// 返回最后注册且支持该路径的 Item Provider。
 pub(crate) fn item_provider_for_path(path: &Path, cx: &App) -> Option<Arc<dyn ItemProvider>> {
     ProviderRegistry::<dyn ItemProvider>::find(cx, |provider| provider.supports(path, cx))
+}
+
+/// 打开文件标签。没有对应视图的本地文件由工作区提供系统打开入口。
+pub(crate) fn open_file_item(
+    path: PathBuf,
+    project: Entity<Project>,
+    cx: &mut App,
+) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
+    let Some(provider) = item_provider_for_path(&path, cx) else {
+        return Task::ready(
+            path.metadata()
+                .map_err(anyhow::Error::from)
+                .and_then(|metadata| {
+                    anyhow::ensure!(metadata.is_file(), "路径不是普通文件");
+                    Ok(unsupported_file(path, cx))
+                }),
+        );
+    };
+    let task = provider.open_item(path.clone(), project, cx);
+    cx.spawn(async move |cx| match task.await {
+        Err(error)
+            if error
+                .downcast_ref::<BufferLoadError>()
+                .is_some_and(BufferLoadError::is_unsupported_content) =>
+        {
+            Ok(cx.update(|cx| unsupported_file(path, cx)))
+        }
+        result => result,
+    })
+}
+
+fn unsupported_file(path: PathBuf, cx: &mut App) -> Box<dyn ItemHandle> {
+    Box::new(cx.new(|cx| UnsupportedFile::new(path, cx)))
 }
 
 /// 返回指定持久化类型的恢复工厂。

@@ -6,6 +6,8 @@ Zcv 是一个以本地编辑体验为核心的代码编辑器，使用 Rust 与 
 
 macOS 打包版可在 Finder 中作为本地文本文件的打开方式。文件会进入当前工作区；若所有窗口已关闭，则先打开空工作区。
 
+Zcv 无法展示的本地文件会打开一个标签页，可点击「使用本机默认应用打开」交给系统处理。
+
 Windows 版启动时自动把当前 Zcv.exe 注册为本地文件的候选打开程序，无需运行任何脚本；之后可在 Windows“默认应用”设置中按扩展名选择 Zcv。注册的扩展名与 macOS 打包版共用 [`assets/document-extensions.txt`](assets/document-extensions.txt)；macOS 由系统的 LaunchServices 自动完成同等注册，还通过 `public.text` 内容类型支持其他文本文件。更换可执行文件位置后，直接启动新位置的 Zcv.exe 一次即可把注册指向新位置；取消注册需删除 `HKCU` 下的 `Software\Classes\Applications\Zcv.exe`、`Software\Classes\Zcv.Document`、`Software\Zcv`、各扩展名 `OpenWithProgids` 中的 `Zcv.Document` 值和 `Software\RegisteredApplications` 中的 `Zcv` 值。文件路径由启动参数传入；Windows 已有 Zcv 进程时，后续启动会把打开请求交给现有进程，并在当前工作区窗口打开文件。目录参数仍作为项目根目录打开。
 
 项目处于快速演进阶段，编辑器核心以既定目标架构为准，优先建立清晰的模块边界、状态所有权和单一数据源，不为错误的历史设计保留兼容层。

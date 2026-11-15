@@ -30,7 +30,7 @@ use zcv_ui::{ToastAction, ToastId, ToastKind, ToastLayer};
 use crate::{
     ItemHandle, OpenPathCallback,
     dock::{Dock, DockEvent, DockPosition, DockStructure, DraggedDock, render_body},
-    item_provider::{item_provider_for_path, serialized_item_provider_for_kind},
+    item_provider::{open_file_item, serialized_item_provider_for_kind},
     layout_state::{self, PanelState, SerializedPane, SerializedPaneItem, WorkspaceLayout},
     pane::{Pane, PaneEvent},
     panel::{Panel, PanelEvent, PanelHandle},
@@ -527,13 +527,7 @@ impl Workspace {
             let Some(path) = path else {
                 continue;
             };
-            let Some(provider) = item_provider_for_path(&path, cx) else {
-                continue;
-            };
-            source_tasks.push((
-                serialized_path,
-                provider.open_item(path, project.clone(), cx),
-            ));
+            source_tasks.push((serialized_path, open_file_item(path, project.clone(), cx)));
         }
         let active_index = state.active_item;
         cx.spawn_in(window, async move |_workspace, cx| {
@@ -740,17 +734,7 @@ impl Workspace {
                 tasks.push((path, Task::ready(Ok(preview))));
                 continue;
             }
-            let Some(provider) = item_provider_for_path(&path, cx) else {
-                self.show_toast(
-                    ToastKind::Error,
-                    format!("打开文件失败：{}：没有支持该类型", path.display()),
-                    vec![],
-                    Some(Duration::from_secs(5)),
-                    cx,
-                );
-                continue;
-            };
-            let task = provider.open_item(path.clone(), self.project.clone(), cx);
+            let task = open_file_item(path.clone(), self.project.clone(), cx);
             tasks.push((path, task));
         }
         let pane = self.pane.clone();

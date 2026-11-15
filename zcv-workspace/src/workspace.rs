@@ -26,6 +26,7 @@ mod status_bar;
 mod status_color;
 mod toolbar;
 mod top_bar;
+mod unsupported_file;
 mod window_bounds;
 mod workspace_state;
 

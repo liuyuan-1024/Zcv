@@ -15,9 +15,9 @@ mod test_support;
 mod worktree;
 
 pub use git_store::{
-    ConflictSet, ConflictSetChanged, ConflictSetSnapshot, GitJobPhase, GitJobStatus,
-    GitOperationKind, GitOperationOutcome, GitScanState, GitStore, GitStoreEvent,
-    RemoteOperationState, RepositorySnapshot, RevisionLoadResult, StatusEntry,
+    ConflictSet, ConflictSetChanged, ConflictSetSnapshot, GitJobStatus, GitOperationKind,
+    GitOperationOutcome, GitScanState, GitStore, GitStoreEvent, RemoteOperationState,
+    RepositorySnapshot, RevisionLoadResult, StatusEntry,
 };
 pub use project_store::{
     FileSaveConflictPolicy, FileWatcherError, FileWatcherOperation, Project, ProjectEvent,

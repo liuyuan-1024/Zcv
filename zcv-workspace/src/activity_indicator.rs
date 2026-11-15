@@ -1,34 +1,33 @@
-//! ActivityIndicator —— 状态栏后台任务指示器。
-//!
-//! 订阅 GitStore 的任务事件，展示排队/执行/取消/确认阶段；远程任务提供显式取消入口。
+//! 状态栏后台活动指示器。
 
-use std::time::Duration;
+use std::{rc::Rc, time::Duration};
 
-use gpui::{
-    Animation, AnimationExt, Entity, IntoElement, MouseButton, Render, Subscription, Window, div,
-    prelude::*,
-};
-use zcv_project::{GitJobPhase, GitJobStatus, GitStore, GitStoreEvent};
+use gpui::{Animation, AnimationExt, MouseButton, Render, Subscription, Window, div, prelude::*};
+use zcv_activity::{ActivityChanged, ActivityPhase, ActivitySource, BackgroundActivity};
 use zcv_theme::{color, scale};
 use zcv_ui::TooltipSpec;
 
 use crate::{ItemHandle, StatusItemView};
 
 pub struct ActivityIndicator {
-    git_store: Entity<GitStore>,
-    _git_subscription: Subscription,
+    sources: Vec<Box<dyn ActivitySource>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl ActivityIndicator {
-    pub fn new(git_store: Entity<GitStore>, cx: &mut Context<Self>) -> Self {
-        let _git_subscription = cx.subscribe(&git_store, |_item, _store, event, cx| {
-            if matches!(event, GitStoreEvent::JobsUpdated) {
-                cx.notify();
-            }
+    /// 按来源顺序选择主活动。
+    pub fn new(sources: Vec<Box<dyn ActivitySource>>, cx: &mut Context<Self>) -> Self {
+        let indicator = cx.weak_entity();
+        let changed: ActivityChanged = Rc::new(move |cx| {
+            let _ = indicator.update(cx, |_, cx| cx.notify());
         });
+        let subscriptions = sources
+            .iter()
+            .map(|source| source.observe(changed.clone(), cx))
+            .collect();
         Self {
-            git_store,
-            _git_subscription,
+            sources,
+            _subscriptions: subscriptions,
         }
     }
 }
@@ -38,72 +37,74 @@ impl StatusItemView for ActivityIndicator {
 }
 
 impl Render for ActivityIndicator {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 动画帧直接读取共享进度，使 git 流式输出无需逐行跨线程发送界面事件也能更新。
-        let Some(task) = self.git_store.read(cx).current_job() else {
-            // 无任务时不占位。
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut activities = Vec::new();
+        for source in &self.sources {
+            source.collect(&mut activities, cx);
+        }
+        let mut activities = activities.into_iter();
+        let Some(primary) = activities.next() else {
             return div().into_any_element();
         };
-        let mut item = div()
-            .id("activity-indicator")
-            .flex()
-            .items_center()
-            .gap(scale::S6)
-            .text_color(color::current(cx).text_muted)
-            .child(animated_task(task.clone()));
-        if let Some(build) = TooltipSpec::from_lines([match task.phase {
-            GitJobPhase::Queued if task.cancellable => "远程操作已排队，右键取消",
-            GitJobPhase::Queued => "后台任务已排队",
-            GitJobPhase::Running if task.cancellable => "右键取消并终止 Git 进程",
-            GitJobPhase::Running => "后台任务正在执行",
-            GitJobPhase::Cancelling => "正在终止 Git 及其子进程",
-            GitJobPhase::Reconciling => "正在检查操作中断前远端是否已更新",
-        }])
-        .build()
-        {
-            item = item.tooltip(build);
+        let label = activity_label(&primary);
+        let mut lines = vec![label.clone()];
+        lines.extend(activities.map(|activity| activity_label(&activity)));
+        let remaining = lines.len() - 1;
+        let BackgroundActivity {
+            progress,
+            detail,
+            cancel,
+            ..
+        } = primary;
+        lines.extend(detail.map(|detail| detail.to_string()));
+        if cancel.is_some() {
+            lines.push("右键取消".into());
         }
-        let git_store = self.git_store.clone();
-        item.on_mouse_up(MouseButton::Right, move |_event, _window, cx| {
-            git_store.update(cx, |store, cx| store.cancel_current_job(cx));
-        })
-        .into_any_element()
+
+        let mut indicator = div()
+            .id("activity-indicator")
+            .debug_selector(|| "workspace-background-task".into())
+            .text_color(color::current(cx).text_muted)
+            .child(div().with_animation(
+                "background-activity-spinner",
+                Animation::new(Duration::from_millis(1000)).repeat(),
+                move |row, delta| {
+                    let frame =
+                        (delta * SPINNER_FRAMES.len() as f32) as usize % SPINNER_FRAMES.len();
+                    let mut message = label.clone();
+                    if let Some(progress) = progress.as_ref().and_then(|read| read()) {
+                        message.push_str(" · ");
+                        message.extend(progress.chars().take(72));
+                    }
+                    if remaining > 0 {
+                        message.push_str(&format!("（另有 {remaining} 项）"));
+                    }
+                    row.flex()
+                        .items_center()
+                        .gap(scale::S6)
+                        .child(SPINNER_FRAMES[frame])
+                        .child(message)
+                },
+            ));
+        if let Some(tooltip) = TooltipSpec::from_lines(lines).build() {
+            indicator = indicator.tooltip(tooltip);
+        }
+        if let Some(cancel) = cancel {
+            indicator = indicator.on_mouse_up(MouseButton::Right, move |_, _, cx| cancel(cx));
+        }
+        indicator.into_any_element()
     }
 }
 
-// ═══ 私有渲染辅助 ═════════════════════════════════════════════════
+fn activity_label(activity: &BackgroundActivity) -> String {
+    let name = &activity.name;
+    match activity.phase {
+        ActivityPhase::Queued => format!("等待{name}…"),
+        ActivityPhase::Running => format!("正在{name}"),
+        ActivityPhase::Cancelling => format!("正在取消{name}…"),
+        ActivityPhase::Confirming => format!("正在确认{name}结果…"),
+    }
+}
 
-/// spinner 帧：Braille 点阵字符（等宽，帧间无布局抖动）。
+/// Braille 点阵字符等宽，避免动画引起布局抖动。
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-fn animated_task(task: GitJobStatus) -> impl IntoElement {
-    div().with_animation(
-        "activity-indicator-task",
-        Animation::new(Duration::from_millis(1000)).repeat(),
-        move |row, delta| {
-            let frame = (delta * SPINNER_FRAMES.len() as f32) as usize % SPINNER_FRAMES.len();
-            row.flex()
-                .items_center()
-                .gap(scale::S6)
-                .child(SPINNER_FRAMES[frame])
-                .child(task_message(&task))
-        },
-    )
-}
-
-fn task_message(task: &GitJobStatus) -> String {
-    let mut message = match task.phase {
-        GitJobPhase::Queued => format!("等待{}…", task.name),
-        GitJobPhase::Running => format!("正在{}", task.name),
-        GitJobPhase::Cancelling => format!("正在取消{}…", task.name),
-        GitJobPhase::Reconciling => "正在确认远端状态…".to_string(),
-    };
-    if task.phase == GitJobPhase::Running
-        && let Some(progress) = task.progress()
-    {
-        let progress: String = progress.chars().take(72).collect();
-        message.push_str(" · ");
-        message.push_str(&progress);
-    }
-    message
-}

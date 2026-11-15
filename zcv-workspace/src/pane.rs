@@ -20,7 +20,7 @@ use zcv_ui::{Button, SvgIcon, Tab, TabBar};
 use crate::{
     ItemEvent, ItemHandle, Toolbar,
     layout_state::{SerializedPane, SerializedPaneItem},
-    preview::{OpenPathCallback, PreviewDocument, source_provider_for},
+    preview::{OpenPathCallback, PreviewDocument, SourcePreview, source_provider_for},
 };
 
 // ═══ Pane 事件 ════════════════════════════════════════════════════════
@@ -312,15 +312,24 @@ impl Pane {
         }
 
         let source_item = self.tabs[index].boxed_clone();
-        let path = source_item.item_path(cx)?;
+        let (provider, path, multi_buffer) =
+            match SourcePreview::for_item(source_item.as_ref(), cx)? {
+                SourcePreview::Tab {
+                    provider,
+                    path,
+                    multi_buffer,
+                } => (provider, path, multi_buffer),
+                SourcePreview::External { provider, path } => {
+                    provider.open(source_item, path, window, cx);
+                    return None;
+                }
+            };
         if let Some(preview_index) = self.preview_index_for_path(&path, cx) {
             let focus = self.activate_item_at(preview_index, window, cx);
             window.focus(&focus, cx);
             window.refresh();
             return Some(focus);
         }
-        let provider = source_provider_for(&path, cx)?;
-        let multi_buffer = source_item.multi_buffer(cx)?;
         let preview = provider.create(
             PreviewDocument::Source {
                 path,

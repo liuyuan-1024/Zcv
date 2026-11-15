@@ -50,11 +50,20 @@ impl<T: ?Sized + 'static> ProviderRegistry<T> {
 
     /// 返回最后注册且满足条件的 Provider。
     pub(crate) fn find(cx: &App, mut predicate: impl FnMut(&T) -> bool) -> Option<Arc<T>> {
+        Self::find_map(cx, |provider| {
+            predicate(provider).then(|| Arc::clone(provider))
+        })
+    }
+
+    /// 按逆注册顺序返回第一个适用的结果。
+    pub(crate) fn find_map<R>(
+        cx: &App,
+        mut resolve: impl FnMut(&Arc<T>) -> Option<R>,
+    ) -> Option<R> {
         cx.try_global::<ProviderRegistry<T>>()?
             .providers
             .iter()
             .rev()
-            .find(|entry| predicate(&*entry.provider))
-            .map(|entry| Arc::clone(&entry.provider))
+            .find_map(|entry| resolve(&entry.provider))
     }
 }

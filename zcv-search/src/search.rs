@@ -3,7 +3,7 @@
 //! `zcv-workspace` 只提供 `SearchableItem` 与 Item 工具区接口；
 //! 本 crate 持有搜索状态、交互与项目搜索视图，避免工作区框架依赖具体功能。
 
-mod document_toolbar;
+mod document_search;
 mod project_search;
 mod search_bar;
 
@@ -49,11 +49,14 @@ pub fn init(cx: &mut App) {
 /// 把 Pane 文档搜索栏、项目搜索工具项及其 action 路由注入 Workspace。
 pub fn install(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let pane = workspace.pane().clone();
-    let document_toolbar_item = document_toolbar::install(workspace, cx);
+    let document_search_button = document_search::install(workspace, cx);
+    let document_search_row =
+        document_search_button.update(cx, |toolbar, cx| toolbar.search_row(cx));
     let project_search_toolbar = cx.new(|_| ProjectSearchToolbar::new());
     pane.update(cx, |pane, cx| {
         pane.toolbar().update(cx, |toolbar, cx| {
-            toolbar.add_item(document_toolbar_item.clone(), window, cx);
+            toolbar.add_item(document_search_button.clone(), window, cx);
+            toolbar.add_item(document_search_row, window, cx);
             toolbar.add_item(project_search_toolbar, window, cx);
         });
     });
@@ -64,16 +67,16 @@ pub fn install(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<
     });
 
     // Item 自持的搜索栏在自身焦点链上接收搜索快捷键；根节点只服务直接打开的 Editor。
-    let document_toolbar_for_action = document_toolbar_item.clone();
+    let document_search_for_action = document_search_button.clone();
     workspace.register_action(move |_workspace, _: &DeployFind, window, cx| {
-        document_toolbar_for_action.update(cx, |toolbar, cx| {
+        document_search_for_action.update(cx, |toolbar, cx| {
             toolbar.deploy(None, window, cx);
         });
     });
 
-    let document_toolbar_for_replace = document_toolbar_item.clone();
+    let document_search_for_replace = document_search_button.clone();
     workspace.register_action(move |_workspace, _: &DeployReplace, window, cx| {
-        document_toolbar_for_replace.update(cx, |toolbar, cx| {
+        document_search_for_replace.update(cx, |toolbar, cx| {
             toolbar.toggle_replace(window, cx);
         });
     });

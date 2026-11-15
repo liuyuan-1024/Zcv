@@ -105,6 +105,10 @@ const FIXTURES: &[Fixture] = &[
         language: "YAML",
     },
     Fixture {
+        file: "paper.tex",
+        language: "LaTeX",
+    },
+    Fixture {
         file: "markdown.md",
         language: "Markdown",
     },

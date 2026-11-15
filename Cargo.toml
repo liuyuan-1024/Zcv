@@ -7,6 +7,7 @@
 members = [
     "zcv",
     "zcv-actions",
+    "zcv-activity",
     "zcv-assets",
     "zcv-benchmarks",
     "zcv-buffer-diff",
@@ -23,6 +24,7 @@ members = [
     "zcv-preview-markdown",
     "zcv-preview-image",
     "zcv-preview-svg",
+    "zcv-preview-latex",
     "zcv-path",
     "zcv-project",
     "zcv-search",
@@ -51,6 +53,7 @@ doc_lazy_continuation = "allow"
 [workspace.dependencies]
 # ---- 内部 crate ----
 zcv-actions = { path = "zcv-actions" }
+zcv-activity = { path = "zcv-activity" }
 zcv-assets = { path = "zcv-assets" }
 zcv-buffer-diff = { path = "zcv-buffer-diff" }
 zcv-editor = { path = "zcv-editor" }
@@ -65,6 +68,7 @@ zcv-picker = { path = "zcv-picker" }
 zcv-preview-markdown = { path = "zcv-preview-markdown" }
 zcv-preview-image = { path = "zcv-preview-image" }
 zcv-preview-svg = { path = "zcv-preview-svg" }
+zcv-preview-latex = { path = "zcv-preview-latex" }
 zcv-path = { path = "zcv-path" }
 zcv-project = { path = "zcv-project" }
 zcv-project-tree = { path = "zcv-project-tree" }
@@ -113,6 +117,7 @@ tree-sitter-swift = "0.7.3"
 tree-sitter-toml-ng = "0.7.0"
 tree-sitter-zig = "1.1.2"
 tree-sitter-md = { git = "https://github.com/tree-sitter-grammars/tree-sitter-markdown", rev = "9a23c1a96c0513d8fc6520972beedd419a973539" }
+tree-sitter-latex = { package = "codebook-tree-sitter-latex", version = "0.6.1" }
 tree-sitter-json = "0.24"
 tree-sitter-yaml = "0.7.2"
 tree-sitter-bash = "0.25.1"

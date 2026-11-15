@@ -8,6 +8,7 @@ description = "工作区：Item、Pane、Dock、StatusBar、Toolbar 与 Workspac
 path = "src/workspace.rs"
 
 [dependencies]
+zcv-activity.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Zcv —— 新一代 GPUI 桌面编辑器（Zed的忠实粉丝）"
 
 [dependencies]
+zcv-activity.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 gpui.workspace = true
@@ -26,6 +27,7 @@ zcv-outline.workspace = true
 zcv-preview-markdown.workspace = true
 zcv-preview-image.workspace = true
 zcv-preview-svg.workspace = true
+zcv-preview-latex.workspace = true
 zcv-project.workspace = true
 zcv-path.workspace = true
 zcv-project-tree.workspace = true

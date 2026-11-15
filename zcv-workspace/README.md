@@ -33,7 +33,11 @@
 
 保存冲突由 `Item` 报告所涉及的源文件；工作区对每个标签只展示一条常驻选择提示。“覆盖”以显式策略重试保存，“还原”由 `Item` 请求文件边界重载冲突源。标签关闭时同时移除其提示，工作区不保存冲突事实或文件内容。
 
-`Item` 不持有也不返回工具区视图：它只通过 `show_toolbar` 与面包屑数据参与 Pane 的工具区。工具项实现 `ToolbarItemView`，由装配层注册到 Pane 的 `Toolbar`；每个工具项依据当前活动 `Item` 返回自己的 `ToolbarItemLocation`，显隐与换位由工具区统一完成。`Item::breadcrumbs` 只提供根内相对路径片段；`Breadcrumbs` 拥有根段的消歧、显示与订阅，单根项目省略根段，多根项目统一显示 Project 派生的根标签。
+`Item` 不持有也不返回工具区视图：它只通过 `show_toolbar` 与面包屑数据参与 Pane 的工具区。工具项实现 `ToolbarItemView`，由装配层注册到 Pane 的 `Toolbar`；每个工具项依据当前活动 `Item` 返回自己的 `ToolbarItemLocation`，显隐与换位由工具区统一完成。`PrimaryLeft` 和 `PrimaryRight` 共用一行，各自按注册顺序排列多个工具项。普通文档的面包屑位于左侧，操作按钮位于右侧。展开的文件搜索栏使用 `Secondary` 独立行。`Item::breadcrumbs` 只提供根内相对路径片段；`Breadcrumbs` 拥有根段的消歧、显示与订阅，单根项目省略根段，多根项目统一显示 Project 派生的根标签。
+
+### 后台任务
+
+任务由各功能模块启动并维护状态。GitStore 管理 Git 操作的进度和取消，并直接提供活动状态。LaTeX 模块从自己的在途构建提供活动。应用装配层为窗口传入遵循 `zcv-activity` 中 `ActivitySource` 协议的活动来源。来源提供任务名称、通用阶段、可选进度与取消操作。指示器按来源顺序选择主活动，统一生成阶段文案并渲染进度和可用操作。
 
 ### Panel
 
@@ -43,8 +47,9 @@
 
 - `ItemProvider` 根据路径创建或恢复具体 `Item`。
 - `PreviewProvider` 根据文件能力创建具体预览，并明确声明来源模式（源码派生或独立文件）以及展示类型（流式排版或画布）。
+- `ExternalPreviewProvider` 为活动源码提供显式预览行为，例如将 LaTeX 编译结果交给系统 PDF 阅读器。两类 Provider 共用注册表、文档工具栏的预览按钮和快捷键。显式触发时按注册顺序的逆序选取适用能力，自动打开与布局恢复只选择标签页预览。
 - 画布预览必须使用 `PreviewViewport` 渲染内容。它接收内容的逻辑尺寸，统一读取工作区内容缩放，计算适应窗口后的显示尺寸，并负责居中与双向滚动；格式实现不得自行读取排版状态或复制这套布局状态。
-- 预览 Item 通过 `PreviewItem` 暴露预览身份及可选的源码 Item；Pane 的 `PreviewToolbar` 为预览显示文件面包屑，仅在存在源码 Item 时提供「返回源码」。
+- 预览 Item 通过 `PreviewItem` 暴露预览身份及可选的源码 Item；面包屑在主行左侧显示预览的路径，源码派生预览优先读取源码 Item 的路径；右侧的 `PreviewButton` 仅在存在源码 Item 时提供「返回源码」。
 - `Item` 协议暴露「当前可见源码锚点」与「按源码锚点揭示」两个可选能力。Pane 在同一路径的源码与预览标签之间切换时，只读取一次出口项的可见锚点并交给入口项，不保存副本，也不复制 Item 领域状态。
 
 Provider 是工作区的扩展入口。注册应由具体功能 crate 的初始化入口完成；不要让 `zcv-workspace` 依赖所有实现方。

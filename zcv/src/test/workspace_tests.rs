@@ -146,6 +146,102 @@ fn unsupported_files_open_as_tabs_without_a_toast(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn background_activity_stays_visible_until_all_tasks_finish(cx: &mut TestAppContext) {
+    use gpui::{App, Entity, Subscription};
+    use zcv_activity::{ActivityChanged, ActivityPhase, ActivitySource, BackgroundActivity};
+    use zcv_workspace::ActivityIndicator;
+
+    struct TestSource(Entity<Vec<&'static str>>);
+
+    impl ActivitySource for TestSource {
+        fn observe(&self, changed: ActivityChanged, cx: &mut App) -> Subscription {
+            cx.observe(&self.0, move |_, cx| changed(cx))
+        }
+
+        fn collect(&self, activities: &mut Vec<BackgroundActivity>, cx: &App) {
+            activities.extend(
+                self.0
+                    .read(cx)
+                    .iter()
+                    .copied()
+                    .map(|name| BackgroundActivity::new(name, ActivityPhase::Running)),
+            );
+        }
+    }
+
+    cx.update(init_test_settings);
+    let first = cx.new(|_| vec!["执行 Git 操作"]);
+    let last = cx.new(|_| vec!["编译 LaTeX"]);
+    let (_, visual) = cx.add_window_view(|_, cx| {
+        ActivityIndicator::new(
+            vec![
+                Box::new(TestSource(first.clone())),
+                Box::new(TestSource(last.clone())),
+            ],
+            cx,
+        )
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("workspace-background-task").is_some());
+
+    first.update(visual, |activities, cx| {
+        activities.clear();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("workspace-background-task").is_some());
+
+    last.update(visual, |activities, cx| {
+        activities.clear();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("workspace-background-task").is_none());
+}
+
+#[gpui::test]
+fn latex_preview_precedes_search_on_the_document_toolbar(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = directory.path().canonicalize().expect("应获得临时目录路径");
+    let latex = root.join("paper.tex");
+    let text = root.join("notes.txt");
+    fs::write(&latex, r"\documentclass{article}").expect("应写入 LaTeX 文件");
+    fs::write(&text, "笔记").expect("应写入文本文件");
+    let languages = test_languages();
+    cx.update(|cx| {
+        init_test_settings(cx);
+        zcv_editor::init(cx, languages.clone());
+        zcv_preview_latex::init(cx);
+    });
+    let (workspace, visual) = cx
+        .add_window_view(|window, cx| build_workspace(&[], languages, quiet_watcher(), window, cx));
+
+    workspace.update_in(visual, |workspace, window, cx| {
+        workspace.open_path(latex, true, window, cx);
+    });
+    visual.run_until_parked();
+    let breadcrumbs = visual
+        .debug_bounds("breadcrumbs-button")
+        .expect("应显示面包屑");
+    let preview = visual
+        .debug_bounds("document-preview")
+        .expect("应显示编译按钮");
+    let search = visual
+        .debug_bounds("toolbar-file-search")
+        .expect("应显示搜索按钮");
+    assert_eq!(preview.center().y, search.center().y);
+    assert!(preview.contains(&gpui::point(preview.center().x, breadcrumbs.center().y)));
+    assert!(preview.right() <= search.origin.x);
+
+    workspace.update_in(visual, |workspace, window, cx| {
+        workspace.open_path(text, true, window, cx);
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("document-preview").is_none());
+    assert!(visual.debug_bounds("toolbar-file-search").is_some());
+}
+
+#[gpui::test]
 fn settings_window_tracks_application_typography(cx: &mut TestAppContext) {
     cx.update(|cx| {
         init_test_settings(cx);

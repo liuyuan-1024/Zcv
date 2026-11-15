@@ -20,7 +20,8 @@ mod snapshots;
 pub use conflict_set::{ConflictSet, ConflictSetChanged, ConflictSetSnapshot};
 
 use jobs::{GitJob, GitJobId, GitJobKey, GitJobRecord, ScheduledGitJob};
-pub use jobs::{GitJobPhase, GitJobStatus, GitOperationKind};
+pub use jobs::{GitJobStatus, GitOperationKind};
+use zcv_activity::ActivityPhase;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -145,7 +146,7 @@ pub struct RemoteOperationState {
     pub behind: usize,
     /// 当前远程操作及其阶段；存在时同步、拉取、推送入口全部禁用。
     pub operation: Option<GitOperationKind>,
-    pub phase: Option<GitJobPhase>,
+    pub phase: Option<ActivityPhase>,
 }
 
 /// 仓库发现与仓库状态读取各自的进度。
@@ -545,7 +546,7 @@ impl GitStore {
                     let mut cancelled_outcome = None;
                     if cancelled && let GitJob::GitOperation { operation, .. } = &job {
                         this.update(&mut cx, |store, cx| {
-                            store.set_job_phase(scheduled.id, GitJobPhase::Reconciling, cx)
+                            store.set_job_phase(scheduled.id, ActivityPhase::Confirming, cx)
                         });
                         let repository = repositories_for_reconciliation.first().cloned();
                         let operation = *operation;

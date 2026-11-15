@@ -46,9 +46,9 @@ pub use pane::{Pane, PaneEvent};
 pub use panel::{Panel, PanelEvent, PanelHandle};
 pub use panel_buttons::PanelButtons;
 pub use preview::{
-    OpenPathCallback, PreviewButton, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewMode,
-    PreviewPresentation, PreviewProvider, PreviewToolbar, PreviewViewport, PreviewViewportOptions,
-    register,
+    ExternalPreviewProvider, OpenPathCallback, PreviewButton, PreviewDocument, PreviewItem,
+    PreviewItemHandle, PreviewMode, PreviewPresentation, PreviewProvider, PreviewViewport,
+    PreviewViewportOptions, register, register_external_preview,
 };
 pub use recent_projects::{
     OnProjectSelected, RecentProjects, add_to_recent, most_recent_valid_project, remove_from_recent,

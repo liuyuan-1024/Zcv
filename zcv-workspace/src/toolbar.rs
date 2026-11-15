@@ -18,7 +18,7 @@ pub enum ToolbarItemLocation {
     Hidden,
     /// 主行左侧。
     PrimaryLeft,
-    /// 主行右侧。
+    /// 主行右侧，多个工具项按注册顺序从左向右排列。
     PrimaryRight,
     /// 主行下方的独立行。
     Secondary,
@@ -146,15 +146,12 @@ impl Render for Toolbar {
             return div();
         }
 
-        let left: Vec<AnyView> = self
+        let mut left = self
             .items_with_location(ToolbarItemLocation::PrimaryLeft)
-            .collect();
-        let right: Vec<AnyView> = self
+            .peekable();
+        let mut right = self
             .items_with_location(ToolbarItemLocation::PrimaryRight)
-            .collect();
-        let secondary: Vec<AnyView> = self
-            .items_with_location(ToolbarItemLocation::Secondary)
-            .collect();
+            .peekable();
 
         let colors = color::current(cx);
         let mut container = div()
@@ -166,8 +163,8 @@ impl Render for Toolbar {
             .flex_col()
             .gap(scale::S6);
 
-        let has_left = !left.is_empty();
-        let has_right = !right.is_empty();
+        let has_left = left.peek().is_some();
+        let has_right = right.peek().is_some();
         if has_left || has_right {
             let mut row = div()
                 .w_full()
@@ -201,7 +198,7 @@ impl Render for Toolbar {
             container = container.child(row);
         }
 
-        container.children(secondary)
+        container.children(self.items_with_location(ToolbarItemLocation::Secondary))
     }
 }
 

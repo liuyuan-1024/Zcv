@@ -8,6 +8,7 @@ description = "版本控制 UI —— 变更树面板、项目差异视图与提
 path = "src/lib.rs"
 
 [dependencies]
+zcv-activity.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 futures-lite.workspace = true

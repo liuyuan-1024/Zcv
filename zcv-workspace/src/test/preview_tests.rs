@@ -2,16 +2,15 @@ use gpui::{Focusable, TestAppContext, px};
 
 use super::*;
 use zcv_fs_watch::FsWatcher;
+use zcv_project::Project;
+
+use crate::Breadcrumbs;
 
 struct DiagramProvider;
 
 struct LaterDiagramProvider;
 
 struct StandaloneDiagramProvider;
-
-fn provider_for(path: &Path, cx: &App) -> Option<Arc<dyn PreviewProvider>> {
-    ProviderRegistry::<dyn PreviewProvider>::find(cx, |provider| provider.supports(path, cx))
-}
 
 struct PreviewViewportTestView {
     focus: FocusHandle,
@@ -104,12 +103,12 @@ fn provider_is_discovered_and_duplicate_registration_is_ignored(cx: &mut TestApp
     });
 
     cx.read(|cx| {
-        let provider = provider_for(Path::new("architecture.diagram"), cx)
+        let provider = source_provider_for(Path::new("architecture.diagram"), cx)
             .expect("新格式应由注册的 Provider 匹配");
         assert!(provider.supports(Path::new("architecture.diagram"), cx));
-        assert!(provider_for(Path::new("architecture.txt"), cx).is_none());
+        assert!(source_provider_for(Path::new("architecture.txt"), cx).is_none());
         assert_eq!(
-            cx.global::<ProviderRegistry<dyn PreviewProvider>>()
+            cx.global::<ProviderRegistry<RegisteredPreview>>()
                 .providers
                 .len(),
             1
@@ -125,12 +124,13 @@ fn last_registered_matching_provider_takes_priority(cx: &mut TestAppContext) {
     });
 
     cx.read(|cx| {
-        let selected = provider_for(Path::new("architecture.diagram"), cx).unwrap();
-        let registry = cx.global::<ProviderRegistry<dyn PreviewProvider>>();
-        assert!(Arc::ptr_eq(
-            &selected,
-            &registry.providers.last().unwrap().provider
-        ));
+        let selected = source_provider_for(Path::new("architecture.diagram"), cx).unwrap();
+        let registry = cx.global::<ProviderRegistry<RegisteredPreview>>();
+        let RegisteredPreview::Tab(last) = registry.providers.last().unwrap().provider.as_ref()
+        else {
+            panic!("最后注册的应为标签页预览");
+        };
+        assert!(Arc::ptr_eq(&selected, last));
     });
 }
 
@@ -231,7 +231,7 @@ impl Render for TestView {
 
 /// 独立预览显示面包屑行但没有「返回源码」，源码派生预览才显示该按钮。
 #[gpui::test]
-fn preview_toolbar_follows_preview_items(cx: &mut TestAppContext) {
+fn preview_controls_follow_preview_items(cx: &mut TestAppContext) {
     let pane = cx.new(Pane::new);
     let project = cx.new(|cx| {
         Project::empty_with_watcher(
@@ -240,18 +240,30 @@ fn preview_toolbar_follows_preview_items(cx: &mut TestAppContext) {
             cx,
         )
     });
-    let toolbar = cx.new(|cx| PreviewToolbar::new(pane.downgrade(), project, cx));
+    let breadcrumbs = cx.new(|cx| Breadcrumbs::new(project, cx));
+    let button = cx.new(|_| PreviewButton::new(pane.downgrade()));
     cx.add_window_view(|window, cx| {
         let preview = cx.new(|cx| ProbeItem {
             focus: cx.focus_handle(),
             is_preview: true,
             source_item: None,
         });
-        let preview_location = toolbar.update(cx, |toolbar, cx| {
-            toolbar.set_active_pane_item(Some(&preview as &dyn ItemHandle), window, cx)
-        });
-        assert_eq!(preview_location, ToolbarItemLocation::Secondary);
-        assert!(!toolbar.read(cx).has_source);
+        assert_eq!(
+            breadcrumbs.update(cx, |view, cx| view.set_active_pane_item(
+                Some(&preview),
+                window,
+                cx
+            )),
+            ToolbarItemLocation::PrimaryLeft
+        );
+        assert_eq!(
+            button.update(cx, |button, cx| button.set_active_pane_item(
+                Some(&preview),
+                window,
+                cx
+            )),
+            ToolbarItemLocation::Hidden
+        );
 
         let source = cx.new(|cx| ProbeItem {
             focus: cx.focus_handle(),
@@ -263,22 +275,45 @@ fn preview_toolbar_follows_preview_items(cx: &mut TestAppContext) {
             is_preview: true,
             source_item: Some(Box::new(source)),
         });
-        let derived_location = toolbar.update(cx, |toolbar, cx| {
-            toolbar.set_active_pane_item(Some(&derived_preview as &dyn ItemHandle), window, cx)
-        });
-        assert_eq!(derived_location, ToolbarItemLocation::Secondary);
-        assert!(toolbar.read(cx).has_source);
+        assert_eq!(
+            breadcrumbs.update(cx, |view, cx| view.set_active_pane_item(
+                Some(&derived_preview),
+                window,
+                cx
+            )),
+            ToolbarItemLocation::PrimaryLeft
+        );
+        assert_eq!(
+            button.update(cx, |button, cx| button.set_active_pane_item(
+                Some(&derived_preview),
+                window,
+                cx
+            )),
+            ToolbarItemLocation::PrimaryRight
+        );
+        assert_eq!(button.read(cx).action, Some(PreviewAction::ReturnToSource));
 
         let plain = cx.new(|cx| ProbeItem {
             focus: cx.focus_handle(),
             is_preview: false,
             source_item: None,
         });
-        let plain_location = toolbar.update(cx, |toolbar, cx| {
-            toolbar.set_active_pane_item(Some(&plain as &dyn ItemHandle), window, cx)
-        });
-        assert_eq!(plain_location, ToolbarItemLocation::Hidden);
-        assert!(!toolbar.read(cx).has_source);
+        assert_eq!(
+            breadcrumbs.update(cx, |view, cx| view.set_active_pane_item(
+                Some(&plain),
+                window,
+                cx
+            )),
+            ToolbarItemLocation::Hidden
+        );
+        assert_eq!(
+            button.update(cx, |button, cx| button.set_active_pane_item(
+                Some(&plain),
+                window,
+                cx
+            )),
+            ToolbarItemLocation::Hidden
+        );
         TestView
     });
 }

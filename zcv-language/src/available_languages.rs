@@ -1731,6 +1731,22 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
         )
         .with_input(YAML_INPUT),
         LanguageSpec::tree_sitter(
+            "LaTeX",
+            LanguageMatcher {
+                suffixes: &["tex"],
+                first_line_pattern: None,
+            },
+            || tree_sitter_latex::LANGUAGE.into(),
+            file_language_queries!("latex"),
+            None,
+            COMMON_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
+        )
+        .with_input(LanguageInputConfig {
+            line_comments: &["% "],
+            ..LanguageInputConfig::empty()
+        }),
+        LanguageSpec::tree_sitter(
             "Markdown",
             LanguageMatcher {
                 suffixes: &["md", "markdown"],

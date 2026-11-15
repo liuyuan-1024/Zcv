@@ -22,6 +22,7 @@ dependencies = [
  "windows 0.62.2",
  "windows-registry 0.6.1",
  "zcv-actions",
+ "zcv-activity",
  "zcv-assets",
  "zcv-editor",
  "zcv-fs-watch",
@@ -30,6 +31,7 @@ dependencies = [
  "zcv-outline",
  "zcv-path",
  "zcv-preview-image",
+ "zcv-preview-latex",
  "zcv-preview-markdown",
  "zcv-preview-svg",
  "zcv-project",
@@ -967,6 +969,16 @@ name = "clap_lex"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
+
+[[package]]
+name = "codebook-tree-sitter-latex"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3ab764ede0961a43ee3121cd8a71dd01d355f836181ebf2ede04f4c24636ca0"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
 
 [[package]]
 name = "codespan-reporting"
@@ -8487,6 +8499,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "zcv-activity"
+version = "0.11.1"
+dependencies = [
+ "gpui",
+]
+
+[[package]]
 name = "zcv-assets"
 version = "0.11.1"
 dependencies = [
@@ -8604,6 +8623,7 @@ dependencies = [
 name = "zcv-language"
 version = "0.11.1"
 dependencies = [
+ "codebook-tree-sitter-latex",
  "gpui",
  "lru",
  "regex",
@@ -8696,6 +8716,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zcv-preview-latex"
+version = "0.11.1"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "smol",
+ "tempfile",
+ "zcv-activity",
+ "zcv-editor",
+ "zcv-project",
+ "zcv-ui",
+ "zcv-workspace",
+]
+
+[[package]]
 name = "zcv-preview-markdown"
 version = "0.11.1"
 dependencies = [
@@ -8752,6 +8787,7 @@ dependencies = [
  "thiserror 2.0.21",
  "trash",
  "windows-sys 0.61.2",
+ "zcv-activity",
  "zcv-buffer-diff",
  "zcv-fs-watch",
  "zcv-git",
@@ -8939,6 +8975,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "zcv-actions",
+ "zcv-activity",
  "zcv-buffer-diff",
  "zcv-editor",
  "zcv-fs-watch",
@@ -8969,6 +9006,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "zcv-actions",
+ "zcv-activity",
  "zcv-editor",
  "zcv-fs-watch",
  "zcv-fuzzy",

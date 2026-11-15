@@ -24,12 +24,13 @@ use zcv_actions::{
     Activate, Collapse, Commit, Expand, InitRepository, SelectNext, SelectPrev, ToggleStaged,
     Uncommit,
 };
+use zcv_activity::ActivityPhase;
 use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus};
 use zcv_keymap::display_shortcut;
 use zcv_path::{AbsolutePathBuf, RelativePathBuf, compare_tree_entries};
 use zcv_project::{
-    GitJobPhase, GitOperationKind, GitScanState, GitStoreEvent, Project, RemoteOperationState,
+    GitOperationKind, GitScanState, GitStoreEvent, Project, RemoteOperationState,
     RepositorySnapshot,
 };
 use zcv_theme::{color, scale, typography};
@@ -1077,19 +1078,19 @@ fn render_remote_operations(
 
 fn remote_operation_label(state: &RemoteOperationState) -> Option<&'static str> {
     let operation = state.operation?;
-    Some(match state.phase.unwrap_or(GitJobPhase::Queued) {
-        GitJobPhase::Queued => match operation {
+    Some(match state.phase.unwrap_or(ActivityPhase::Queued) {
+        ActivityPhase::Queued => match operation {
             GitOperationKind::Fetch => "等待同步…",
             GitOperationKind::Pull => "等待拉取…",
             GitOperationKind::Push => "等待推送…",
         },
-        GitJobPhase::Running => match operation {
+        ActivityPhase::Running => match operation {
             GitOperationKind::Fetch => "正在同步…",
             GitOperationKind::Pull => "正在拉取…",
             GitOperationKind::Push => "正在推送…",
         },
-        GitJobPhase::Cancelling => "正在取消远程操作…",
-        GitJobPhase::Reconciling => "正在确认远端状态…",
+        ActivityPhase::Cancelling => "正在取消远程操作…",
+        ActivityPhase::Confirming => "正在确认远端状态…",
     })
 }
 

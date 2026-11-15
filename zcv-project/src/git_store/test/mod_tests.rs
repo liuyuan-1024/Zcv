@@ -1065,13 +1065,13 @@ fn cancelling_queued_remote_operation_keeps_gate_closed_until_finished(cx: &mut 
     git_store.update(cx, |store, cx| {
         drop(store.run_operation(GitOperationKind::Push, cx));
         let status = store.current_job().expect("推送应立即进入排队状态");
-        assert_eq!(status.phase, GitJobPhase::Queued);
+        assert_eq!(status.phase, ActivityPhase::Queued);
         assert_eq!(status.operation, Some(GitOperationKind::Push));
 
         store.cancel_current_job(cx);
         assert_eq!(
             store.current_job().map(|status| status.phase),
-            Some(GitJobPhase::Cancelling)
+            Some(ActivityPhase::Cancelling)
         );
         let next_job_id = store.next_job_id;
         drop(store.run_operation(GitOperationKind::Fetch, cx));
@@ -1122,7 +1122,7 @@ fn stale_job_completion_does_not_remove_newer_same_key(cx: &mut TestAppContext) 
                 key: key.clone(),
                 name: "新推送".into(),
                 operation: Some(GitOperationKind::Push),
-                phase: GitJobPhase::Queued,
+                phase: ActivityPhase::Queued,
                 cancellation: Some(GitCancellation::new()),
             },
         );

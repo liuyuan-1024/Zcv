@@ -21,6 +21,12 @@ Windows 版启动时自动把当前 Zcv.exe 注册为本地文件的候选打开
 
 自动更新要求完整的应用安装目录与更新辅助程序；通过 Cargo 直接运行源码时不启用自动更新。打包、发布与更新协议见 [`zcv-update`](zcv-update/README.md)。
 
+### LaTeX 编辑与预览
+
+打开 `.tex` 源文件后，编辑器工具栏会显示「编译并预览 LaTeX」。点击后，Zcv 保存当前文档，用本机的 `latexmk` 和 XeLaTeX 编译，并用系统默认的 PDF 阅读器打开结果。当前文件须能独立编译。相对路径以源文件所在目录为基准。
+
+需要在本机安装含 `latexmk` 和 XeLaTeX 的 TeX 发行版，并将工具加入 `PATH`。macOS 也会搜索 MacTeX 的标准工具目录 `/Library/TeX/texbin`。成功生成的 PDF 位于源文件旁的 `.zcv-latex/<文件名>.tex/preview.pdf`。编译失败时可从错误提示复制编译输出，上次成功生成的 PDF 仍可查看。
+
 ## 开发与运行
 
 ### 构建环境
@@ -73,6 +79,7 @@ Buffer → LanguageBuffer → MultiBuffer → DisplayMap → Editor → EditorEl
 | [`zcv-multi-buffer`](zcv-multi-buffer/README.md) | 组织源文档片段，管理组合坐标、源映射与差异投影。 |
 | [`zcv-editor`](zcv-editor/README.md) | 显示投影、选择、滚动、输入与事务编排，以及布局、渲染和命中测试。 |
 | [`zcv-project`](zcv-project/README.md) | 本地项目、文件文档生命周期、Git 状态与项目级搜索。 |
+| [`zcv-activity`](zcv-activity/src/lib.rs) | 定义后台活动的状态和读取协议。 |
 | [`zcv-workspace`](zcv-workspace/README.md) | `Item`、`Pane`、`Dock`、窗口状态与工作区装配。 |
 | [`zcv-ui`](zcv-ui/README.md) | 设计系统与可复用视觉组件。 |
 | [`zcv-update`](zcv-update/README.md) | 更新清单、产物校验与跨进程替换事务。 |

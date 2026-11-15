@@ -1,0 +1,22 @@
+[package]
+name = "zcv-preview-latex"
+version.workspace = true
+edition.workspace = true
+description = "LaTeX 本地编译与 PDF 预览"
+
+[lib]
+path = "src/preview_latex.rs"
+
+[dependencies]
+zcv-activity.workspace = true
+anyhow.workspace = true
+gpui.workspace = true
+smol.workspace = true
+tempfile.workspace = true
+zcv-editor.workspace = true
+zcv-project.workspace = true
+zcv-ui.workspace = true
+zcv-workspace.workspace = true
+
+[lints]
+workspace = true

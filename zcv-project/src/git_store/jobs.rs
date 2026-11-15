@@ -5,7 +5,8 @@
 
 use std::{ops::Range, sync::Arc};
 
-use gpui::{Context, Entity};
+use gpui::{App, Context, Entity, Subscription};
+use zcv_activity::{ActivityChanged, ActivityPhase, ActivitySource, BackgroundActivity};
 use zcv_buffer_diff::BufferDiff;
 use zcv_git::{GitCancellation, GitHunkOperation, HunkEdit, WorkingCopySnapshot};
 use zcv_path::AbsolutePathBuf;
@@ -15,20 +16,11 @@ use super::{GitOperationOutcome, GitStore, GitStoreEvent};
 /// job 标识。
 pub(super) type GitJobId = u64;
 
-/// job 执行阶段。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GitJobPhase {
-    Queued,
-    Running,
-    Cancelling,
-    Reconciling,
-}
-
 #[derive(Clone)]
 pub struct GitJobStatus {
     pub name: Arc<str>,
     pub operation: Option<GitOperationKind>,
-    pub phase: GitJobPhase,
+    pub phase: ActivityPhase,
     pub cancellable: bool,
     progress_source: Option<GitCancellation>,
 }
@@ -166,7 +158,7 @@ pub(super) struct GitJobRecord {
     pub(super) key: GitJobKey,
     pub(super) name: Arc<str>,
     pub(super) operation: Option<GitOperationKind>,
-    pub(super) phase: GitJobPhase,
+    pub(super) phase: ActivityPhase,
     pub(super) cancellation: Option<GitCancellation>,
 }
 
@@ -262,7 +254,7 @@ impl GitStore {
                 key: key.clone(),
                 name,
                 operation,
-                phase: GitJobPhase::Queued,
+                phase: ActivityPhase::Queued,
                 cancellation: cancellation.clone(),
             },
         );
@@ -313,9 +305,14 @@ impl GitStore {
             operation: record.operation,
             phase: record.phase,
             cancellable: record.operation.is_some()
-                && matches!(record.phase, GitJobPhase::Queued | GitJobPhase::Running),
+                && matches!(record.phase, ActivityPhase::Queued | ActivityPhase::Running),
             progress_source: record.cancellation.clone(),
         })
+    }
+
+    /// 提供 GitStore 持有的可见活动。
+    pub fn activity_source(store: Entity<Self>) -> impl ActivitySource {
+        GitActivitySource(store)
     }
 
     /// 取消当前远程任务。状态保持为取消中，直到进程退出并完成远端确认。
@@ -325,7 +322,7 @@ impl GitStore {
             .values()
             .filter(|job| {
                 job.operation.is_some()
-                    && matches!(job.phase, GitJobPhase::Queued | GitJobPhase::Running)
+                    && matches!(job.phase, ActivityPhase::Queued | ActivityPhase::Running)
             })
             .map(|job| job.id)
             .min()
@@ -335,7 +332,7 @@ impl GitStore {
         let Some(record) = self.jobs.get_mut(&id) else {
             return;
         };
-        record.phase = GitJobPhase::Cancelling;
+        record.phase = ActivityPhase::Cancelling;
         if let Some(cancellation) = &record.cancellation {
             cancellation.cancel();
         }
@@ -351,9 +348,9 @@ impl GitStore {
                 .as_ref()
                 .is_some_and(GitCancellation::is_cancelled)
             {
-                GitJobPhase::Cancelling
+                ActivityPhase::Cancelling
             } else {
-                GitJobPhase::Running
+                ActivityPhase::Running
             };
         }
         cx.emit(GitStoreEvent::JobsUpdated);
@@ -362,7 +359,7 @@ impl GitStore {
     pub(super) fn set_job_phase(
         &mut self,
         id: GitJobId,
-        phase: GitJobPhase,
+        phase: ActivityPhase,
         cx: &mut Context<Self>,
     ) {
         if let Some(record) = self.jobs.get_mut(&id) {
@@ -396,3 +393,39 @@ impl GitStore {
 #[cfg(test)]
 #[path = "test/jobs_tests.rs"]
 mod tests;
+
+struct GitActivitySource(Entity<GitStore>);
+
+impl GitActivitySource {
+    fn git_activity(&self, cx: &App) -> Option<BackgroundActivity> {
+        let task = self.0.read(cx).current_job()?;
+        let mut activity = BackgroundActivity::new(task.name.as_ref(), task.phase);
+        if task.phase == ActivityPhase::Confirming {
+            activity = activity.with_detail("检查远端是否已更新");
+        }
+        if task.cancellable {
+            let git_store = self.0.downgrade();
+            activity = activity.on_cancel(move |cx| {
+                let _ = git_store.update(cx, |store, cx| store.cancel_current_job(cx));
+            });
+        }
+        if task.phase == ActivityPhase::Running {
+            activity = activity.with_progress(move || task.progress());
+        }
+        Some(activity)
+    }
+}
+
+impl ActivitySource for GitActivitySource {
+    fn observe(&self, changed: ActivityChanged, cx: &mut App) -> Subscription {
+        cx.subscribe(&self.0, move |_, event, cx| {
+            if matches!(event, GitStoreEvent::JobsUpdated) {
+                changed(cx);
+            }
+        })
+    }
+
+    fn collect(&self, activities: &mut Vec<BackgroundActivity>, cx: &App) {
+        activities.extend(self.git_activity(cx));
+    }
+}

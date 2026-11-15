@@ -145,6 +145,7 @@ fn main() {
         // 应用级唯一语言注册表：预览 Provider 与工作区内的 Project 共享同一份。
         zcv_preview_markdown::init(Arc::clone(&languages), cx);
         zcv_preview_svg::init(cx);
+        zcv_preview_latex::init(cx);
         zcv_editor::init(cx, Arc::clone(&languages));
         zcv_preview_image::init(cx);
         zcv_search::init(cx);

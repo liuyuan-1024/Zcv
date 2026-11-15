@@ -19,12 +19,10 @@ use gpui::{
 };
 use zcv_actions::TogglePreview;
 use zcv_multi_buffer::MultiBuffer;
-use zcv_project::Project;
-use zcv_theme::{color, scale};
+use zcv_theme::color;
 use zcv_ui::Button;
 
 use crate::{
-    breadcrumbs::Breadcrumbs,
     item::{Item, ItemEvent, ItemHandle},
     pane::Pane,
     provider_registry::ProviderRegistry,
@@ -381,9 +379,18 @@ pub trait PreviewProvider: Send + Sync + 'static {
     fn create(&self, document: PreviewDocument, cx: &mut App) -> Box<dyn ItemHandle>;
 }
 
-/// 注册格式预览 Provider。同一具体 Provider 类型只注册一次。
+enum RegisteredPreview {
+    Tab(Arc<dyn PreviewProvider>),
+    External(Arc<dyn ExternalPreviewProvider>),
+}
+
+/// 注册工作区内的格式预览。同一具体 Provider 类型只注册一次。
 pub fn register<P: PreviewProvider>(provider: P, cx: &mut App) {
-    ProviderRegistry::<dyn PreviewProvider>::register(Arc::new(provider), TypeId::of::<P>(), cx);
+    ProviderRegistry::register(
+        Arc::new(RegisteredPreview::Tab(Arc::new(provider))),
+        TypeId::of::<P>(),
+        cx,
+    );
 }
 
 pub(crate) fn source_provider_for(path: &Path, cx: &App) -> Option<Arc<dyn PreviewProvider>> {
@@ -395,178 +402,181 @@ pub(crate) fn standalone_provider_for(path: &Path, cx: &App) -> Option<Arc<dyn P
 }
 
 fn provider_for_mode(path: &Path, mode: PreviewMode, cx: &App) -> Option<Arc<dyn PreviewProvider>> {
-    ProviderRegistry::<dyn PreviewProvider>::find(cx, |provider| {
-        provider.mode() == mode && provider.supports(path, cx)
+    ProviderRegistry::<RegisteredPreview>::find_map(cx, |entry| match entry.as_ref() {
+        RegisteredPreview::Tab(provider)
+            if provider.mode() == mode && provider.supports(path, cx) =>
+        {
+            Some(Arc::clone(provider))
+        }
+        _ => None,
     })
 }
 
-/// 预览共用的工具栏：左侧显示文件面包屑；有源码 Item 时右侧显示「返回源码」。
-///
-/// 工具项是 Pane 级的持久实体：活动 Item 是预览视图时显示，否则隐藏。
-/// 预览格式实现不再各自持有工具栏视图，也不再注入返回源码回调。
-pub struct PreviewToolbar {
-    pane: WeakEntity<Pane>,
-    breadcrumbs: Entity<Breadcrumbs>,
-    has_source: bool,
+/// 用户显式触发的外部源码预览，例如通过系统阅读器打开编译产物。
+pub trait ExternalPreviewProvider: Send + Sync + 'static {
+    fn supports(&self, item: &dyn ItemHandle, path: &Path, cx: &App) -> bool;
+
+    fn label(&self) -> &'static str;
+
+    fn open(&self, item: Box<dyn ItemHandle>, path: PathBuf, window: &mut Window, cx: &mut App);
 }
 
-impl PreviewToolbar {
-    pub fn new(pane: WeakEntity<Pane>, project: Entity<Project>, cx: &mut Context<Self>) -> Self {
-        let breadcrumbs = cx.new(|cx| Breadcrumbs::new(project, cx));
-        Self {
-            pane,
-            breadcrumbs,
-            has_source: false,
+pub fn register_external_preview<P: ExternalPreviewProvider>(provider: P, cx: &mut App) {
+    ProviderRegistry::register(
+        Arc::new(RegisteredPreview::External(Arc::new(provider))),
+        TypeId::of::<P>(),
+        cx,
+    );
+}
+
+pub(crate) enum SourcePreview {
+    Tab {
+        provider: Arc<dyn PreviewProvider>,
+        path: PathBuf,
+        multi_buffer: Entity<MultiBuffer>,
+    },
+    External {
+        provider: Arc<dyn ExternalPreviewProvider>,
+        path: PathBuf,
+    },
+}
+
+impl SourcePreview {
+    pub(crate) fn for_item(item: &dyn ItemHandle, cx: &App) -> Option<Self> {
+        let path = item.item_path(cx)?;
+        ProviderRegistry::<RegisteredPreview>::find_map(cx, |entry| match entry.as_ref() {
+            RegisteredPreview::Tab(provider)
+                if provider.mode() == PreviewMode::Source && provider.supports(&path, cx) =>
+            {
+                Some(Self::Tab {
+                    provider: Arc::clone(provider),
+                    path: path.clone(),
+                    multi_buffer: item.multi_buffer(cx)?,
+                })
+            }
+            RegisteredPreview::External(provider) if provider.supports(item, &path, cx) => {
+                Some(Self::External {
+                    provider: Arc::clone(provider),
+                    path: path.clone(),
+                })
+            }
+            _ => None,
+        })
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Tab { .. } => "预览",
+            Self::External { provider, .. } => provider.label(),
         }
     }
 }
 
-impl EventEmitter<ToolbarItemEvent> for PreviewToolbar {}
-
-impl ToolbarItemView for PreviewToolbar {
-    fn set_active_pane_item(
-        &mut self,
-        item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> ToolbarItemLocation {
-        let preview = item.and_then(|item| item.as_preview_item(cx));
-        let source = preview.as_ref().and_then(|preview| preview.source_item(cx));
-        let has_source = source.is_some();
-        if self.has_source != has_source {
-            self.has_source = has_source;
-            cx.notify();
-        }
-        let breadcrumb_item = source
-            .as_deref()
-            .or_else(|| item.filter(|_| preview.is_some()));
-        self.breadcrumbs.update(cx, |breadcrumbs, cx| {
-            breadcrumbs.set_item(breadcrumb_item, cx)
-        });
-        if preview.is_some() {
-            ToolbarItemLocation::Secondary
-        } else {
-            ToolbarItemLocation::Hidden
-        }
-    }
-}
-
-impl Render for PreviewToolbar {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .w_full()
-            .flex()
-            .items_center()
-            .gap(scale::S6)
-            .child(div().flex_1().min_w_0().child(self.breadcrumbs.clone()))
-            .when(self.has_source, |row| {
-                row.child(
-                    Button::icon("preview-toolbar-source", "icons/eye_off.svg")
-                        .label("返回源码")
-                        .on_click({
-                            let pane = self.pane.clone();
-                            move |_, window, cx| {
-                                pane.update(cx, |pane, cx| {
-                                    pane.toggle_preview(window, cx);
-                                })
-                                .ok();
-                            }
-                        }),
-                )
-            })
-    }
-}
-
-/// 预览能力入口：活动 Item 是尚未进入预览的源码文件时显示「预览」按钮。
-///
-/// 预览视图的「返回源码」由 [`PreviewToolbar`] 承担，本按钮不处理反向切换。
+/// 在源码和对应预览之间切换，跟随活动 Item 选择按钮语义。
 pub struct PreviewButton {
     pane: WeakEntity<Pane>,
-    previewable: bool,
     active_item: Option<Box<dyn ItemHandle>>,
+    action: Option<PreviewAction>,
     _subscription: Option<Subscription>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewAction {
+    Open(&'static str),
+    ReturnToSource,
 }
 
 impl PreviewButton {
     pub fn new(pane: WeakEntity<Pane>) -> Self {
         Self {
             pane,
-            previewable: false,
             active_item: None,
+            action: None,
             _subscription: None,
         }
     }
 
-    /// 只有尚未进入预览、且路径注册了源码派生预览的源码 Item 才显示入口。
-    fn is_previewable(item: Option<&dyn ItemHandle>, cx: &App) -> bool {
-        let Some(item) = item else {
-            return false;
-        };
-        if item.as_preview_item(cx).is_some() {
-            return false;
+    fn action_for(item: &dyn ItemHandle, cx: &App) -> Option<PreviewAction> {
+        if let Some(preview) = item.as_preview_item(cx) {
+            return preview
+                .source_item(cx)
+                .map(|_| PreviewAction::ReturnToSource);
         }
-        item.item_path(cx)
-            .as_deref()
-            .is_some_and(|path| source_provider_for(path, cx).is_some())
+        SourcePreview::for_item(item, cx).map(|preview| PreviewAction::Open(preview.label()))
     }
 
-    fn refresh_previewable(&mut self, cx: &mut Context<Self>) {
-        let previewable = Self::is_previewable(self.active_item.as_deref(), cx);
-        if previewable == self.previewable {
-            return;
+    fn location(&self) -> ToolbarItemLocation {
+        if self.action.is_some() {
+            ToolbarItemLocation::PrimaryRight
+        } else {
+            ToolbarItemLocation::Hidden
         }
-        self.previewable = previewable;
-        cx.notify();
+    }
+
+    fn refresh_action(&mut self, cx: &mut Context<Self>) {
+        let action = self
+            .active_item
+            .as_deref()
+            .and_then(|item| Self::action_for(item, cx));
+        if self.action != action {
+            self.action = action;
+            cx.emit(ToolbarItemEvent::ChangeLocation(self.location()));
+            cx.notify();
+        }
     }
 }
 
-impl PreviewButton {
-    pub fn set_active_item(
-        &mut self,
-        active_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self._subscription = None;
-        self.active_item = active_item.map(ItemHandle::boxed_clone);
-        self.previewable = Self::is_previewable(active_item, cx);
+impl EventEmitter<ToolbarItemEvent> for PreviewButton {}
 
-        if let Some(item) = active_item {
-            let this = cx.entity().downgrade();
-            self._subscription = Some(item.subscribe_to_item_events(
+impl ToolbarItemView for PreviewButton {
+    fn set_active_pane_item(
+        &mut self,
+        item: Option<&dyn ItemHandle>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        self.active_item = item.map(ItemHandle::boxed_clone);
+        self._subscription = item.map(|item| {
+            let button = cx.weak_entity();
+            item.subscribe_to_item_events(
                 cx,
                 Box::new(move |event, cx| {
                     if event == ItemEvent::PathChanged {
-                        let this = this.clone();
+                        let button = button.clone();
                         cx.defer(move |cx| {
-                            this.update(cx, |this, cx| this.refresh_previewable(cx))
-                                .ok();
+                            let _ = button.update(cx, |button, cx| button.refresh_action(cx));
                         });
                     }
                 }),
-            ));
+            )
+        });
+        let action = item.and_then(|item| Self::action_for(item, cx));
+        if self.action != action {
+            self.action = action;
+            cx.notify();
         }
-        cx.notify();
+        self.location()
     }
 }
 
 impl Render for PreviewButton {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pane = self.pane.clone();
-        div().when(self.previewable, |controls| {
-            controls.child(
-                Button::icon("toolbar-preview", "icons/eye.svg")
-                    .label("预览")
-                    .color(color::current(cx).text_muted)
-                    .shortcut(zcv_keymap::display_shortcut(&TogglePreview, cx))
-                    .on_click(move |_, window, cx| {
-                        pane.update(cx, |pane, cx| {
-                            pane.toggle_preview(window, cx);
-                        })
-                        .ok();
-                    }),
-            )
-        })
+        let button = match self.action {
+            Some(PreviewAction::Open(label)) => Button::icon("toolbar-preview", "icons/eye.svg")
+                .color(color::current(cx).text_muted)
+                .label(label)
+                .shortcut(zcv_keymap::display_shortcut(&TogglePreview, cx)),
+            Some(PreviewAction::ReturnToSource) => {
+                Button::icon("preview-toolbar-source", "icons/eye_off.svg").label("返回源码")
+            }
+            None => return div(),
+        };
+        div()
+            .debug_selector(|| "document-preview".into())
+            .child(button.on_click(move |_, window, cx| {
+                let _ = pane.update(cx, |pane, cx| pane.toggle_preview(window, cx));
+            }))
     }
 }
 

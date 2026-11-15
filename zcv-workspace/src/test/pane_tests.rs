@@ -1083,3 +1083,52 @@ fn toggling_preview_hands_off_the_reading_anchor(cx: &mut TestAppContext) {
         "从源码切到预览时，应把源码阅读锚点交给预览"
     );
 }
+
+#[gpui::test]
+fn external_preview_opens_only_on_explicit_toggle(cx: &mut TestAppContext) {
+    use std::sync::{Arc, Mutex};
+
+    struct ExternalPreview(Arc<Mutex<Vec<PathBuf>>>);
+
+    impl crate::ExternalPreviewProvider for ExternalPreview {
+        fn supports(&self, _: &dyn ItemHandle, path: &Path, _: &App) -> bool {
+            path.extension().is_some_and(|extension| extension == "svg")
+        }
+
+        fn label(&self) -> &'static str {
+            "外部预览"
+        }
+
+        fn open(&self, item: Box<dyn ItemHandle>, path: PathBuf, _: &mut Window, cx: &mut App) {
+            assert_eq!(item.item_path(cx).as_deref(), Some(path.as_path()));
+            self.0.lock().unwrap().push(path);
+        }
+    }
+
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    cx.update(|cx| crate::register_external_preview(ExternalPreview(opened.clone()), cx));
+    let pane = cx.new(Pane::new);
+    let path = PathBuf::from("paper.svg");
+    let buffer = test_buffer(cx, "论文");
+    open_transient_file_in_test(cx, &pane, path.clone(), buffer);
+    assert!(opened.lock().unwrap().is_empty());
+
+    toggle_preview_in_test(cx, &pane);
+    assert_eq!(
+        opened.lock().unwrap().as_slice(),
+        std::slice::from_ref(&path)
+    );
+    cx.read_entity(&pane, |pane, cx| {
+        assert_eq!(pane.tabs().len(), 1);
+        assert_eq!(pane.active_path(cx), Some(path));
+    });
+
+    // 同一源码有多个适用的预览实现时，显式操作使用最后注册的实现。
+    init_previews(cx);
+    toggle_preview_in_test(cx, &pane);
+    assert_eq!(opened.lock().unwrap().len(), 1);
+    cx.read_entity(&pane, |pane, cx| {
+        assert!(pane.active_item().unwrap().as_preview_item(cx).is_some());
+    });
+}

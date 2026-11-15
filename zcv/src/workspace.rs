@@ -23,17 +23,19 @@ use zcv_actions::{
     IncreaseUiFontSize, NewTerminal, OpenLocalDirectory, OpenLocalFile, ResetContentFontSize,
     ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleRecentProjects,
 };
+use zcv_activity::ActivitySource;
 use zcv_fs_watch::{FsWatcher, Watcher};
 use zcv_language::LanguageRegistry;
 use zcv_project::{
-    FileWatcherError, FileWatcherOperation, GitOperationKind, GitOperationOutcome, GitStoreEvent,
-    Project, ProjectEvent,
+    FileWatcherError, FileWatcherOperation, GitOperationKind, GitOperationOutcome, GitStore,
+    GitStoreEvent, Project, ProjectEvent,
 };
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_ui::{ToastAction, ToastKind};
 use zcv_workspace::{
-    ActivityIndicator, DockPosition, OnProjectSelected, PaneEvent, PanelButtons, PreviewToolbar,
-    TopBar, Workspace, add_to_recent, load_window_bounds, remove_from_recent, save_window_bounds,
+    ActivityIndicator, Breadcrumbs, DockPosition, OnProjectSelected, PaneEvent, PanelButtons,
+    PreviewButton, TopBar, Workspace, add_to_recent, load_window_bounds, remove_from_recent,
+    save_window_bounds,
 };
 
 use crate::{
@@ -735,17 +737,17 @@ fn initialize_common_workspace(
         window.refresh();
     });
 
+    let pane = workspace.pane();
+    let toolbar = pane.read(cx).toolbar().clone();
+    let breadcrumbs = cx.new(|cx| Breadcrumbs::new(workspace.project().clone(), cx));
+    let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
+    toolbar.update(cx, |toolbar, cx| {
+        toolbar.add_item(breadcrumbs, window, cx);
+        toolbar.add_item(preview_button, window, cx);
+    });
+    // 预览类工具项排在文件搜索按钮之前。
     zcv_search::install(workspace, window, cx);
     install_version_control(workspace, window, cx);
-
-    let pane = workspace.pane().clone();
-    let project = workspace.project().clone();
-    let preview_toolbar = cx.new(|cx| PreviewToolbar::new(pane.downgrade(), project, cx));
-    pane.update(cx, |pane, cx| {
-        pane.toolbar().update(cx, |toolbar, cx| {
-            toolbar.add_item(preview_toolbar, window, cx);
-        });
-    });
 }
 
 /// 装配 Workspace：顶栏注入、面板/状态项注册、订阅接线。
@@ -1058,19 +1060,22 @@ fn initialize_workspace(
 
     // ═══ 状态栏注册 ═══════════════════════════════════════════════
 
+    let git_store = project.read(cx).git_store();
+    let mut sources: Vec<Box<dyn ActivitySource>> =
+        vec![Box::new(GitStore::activity_source(git_store.clone()))];
+    sources.extend(zcv_preview_latex::activity_source(
+        cx.entity().entity_id(),
+        cx,
+    ));
     let status_bar = workspace.status_bar().clone();
     status_bar.update(cx, |bar, cx| {
-        bar.add_left_item(
-            cx.new(|cx| ActivityIndicator::new(project.read(cx).git_store(), cx)),
-            cx,
-        );
+        bar.add_left_item(cx.new(|cx| ActivityIndicator::new(sources, cx)), cx);
     });
 
     // ═══ 订阅接线 ═════════════════════════════════════════════════
 
     let pane = workspace.pane().clone();
 
-    let git_store = project.read(cx).git_store();
     let git_subscription = cx.subscribe(&git_store, move |workspace, _store, event, cx| {
         let read_error = match event {
             GitStoreEvent::CommitFailed(workdir, error) => Some(format!(

@@ -1,0 +1,11 @@
+[package]
+name = "zcv-activity"
+version.workspace = true
+edition.workspace = true
+description = "后台活动状态与来源协议"
+
+[dependencies]
+gpui.workspace = true
+
+[lints]
+workspace = true

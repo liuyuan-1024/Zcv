@@ -1,15 +1,18 @@
 use std::path::PathBuf;
 
 use gpui::{
-    AnyElement, ClipboardItem, Context, Entity, Render, SharedString, Subscription, Window, div,
-    prelude::*,
+    AnyElement, ClipboardItem, Context, Entity, EventEmitter, Render, SharedString, Subscription,
+    Window, div, prelude::*,
 };
 use zcv_path::DisplayPath;
 use zcv_project::{Project, ProjectEvent};
 use zcv_theme::color;
 use zcv_ui::{ButtonLike, TooltipSpec};
 
-use crate::{ItemEvent, ItemHandle, typography_for_window};
+use crate::{
+    ItemEvent, ItemHandle, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
+    typography_for_window,
+};
 
 const MAX_SEGMENTS: usize = 12;
 
@@ -64,6 +67,29 @@ impl Breadcrumbs {
             ));
         }
         cx.notify();
+    }
+}
+
+impl EventEmitter<ToolbarItemEvent> for Breadcrumbs {}
+
+impl ToolbarItemView for Breadcrumbs {
+    fn set_active_pane_item(
+        &mut self,
+        item: Option<&dyn ItemHandle>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        let preview = item.and_then(|item| item.as_preview_item(cx));
+        let source = preview.as_ref().and_then(|preview| preview.source_item(cx));
+        let item = source
+            .as_deref()
+            .or_else(|| item.filter(|item| preview.is_some() || item.item_path(cx).is_some()));
+        self.set_item(item, cx);
+        if item.is_some() {
+            ToolbarItemLocation::PrimaryLeft
+        } else {
+            ToolbarItemLocation::Hidden
+        }
     }
 }
 

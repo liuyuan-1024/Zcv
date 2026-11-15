@@ -19,7 +19,6 @@ use crate::worktree::discover_repositories_for_roots;
 /// 后台 job 的执行结果。
 pub(super) enum JobResult {
     Reload(Vec<Result<ReloadScan, (AbsolutePathBuf, String)>>),
-    DiscoveryFailed(String),
     Refresh(Vec<(usize, Result<RefreshData, String>)>),
     GitOperation(anyhow::Result<()>),
     /// uncommit 的结果（被撤销提交的完整消息，供填回提交信息编辑器）。
@@ -29,7 +28,6 @@ pub(super) enum JobResult {
 /// 全量扫描的产出（一个仓库）。
 pub(super) struct ReloadScan {
     pub(super) working_directory: AbsolutePathBuf,
-    pub(super) repository: Arc<dyn GitRepository>,
     pub(super) snapshot: RepositorySnapshot,
     pub(super) clean_conflicts: Vec<RelativePathBuf>,
 }
@@ -53,34 +51,27 @@ pub(super) struct RefreshData {
     pub(super) clean_conflicts: Vec<RelativePathBuf>,
 }
 
+/// 只发现仓库身份，仓库状态由后续后台扫描读取。
+pub(super) fn discover_repositories(
+    roots: &[AbsolutePathBuf],
+) -> anyhow::Result<Vec<Arc<dyn GitRepository>>> {
+    Ok(discover_repositories_for_roots(roots)?
+        .into_iter()
+        .map(|repository| Arc::new(repository) as Arc<dyn GitRepository>)
+        .collect())
+}
+
 /// 后台线程：执行一个 job（所有 git 命令在这里同步阻塞运行）。
 pub(super) async fn execute_job(
     roots: Vec<AbsolutePathBuf>,
     job: GitJob,
     repositories: Vec<Arc<dyn GitRepository>>,
     grouped_paths: Vec<Vec<RelativePathBuf>>,
-    _grouped_diff_requests: Vec<Vec<()>>,
     cancellation: Option<GitCancellation>,
 ) -> JobResult {
     match job {
         GitJob::ReloadGitState => {
-            // 仓库发现（同步文件系统遍历，放后台）：逐根递归发现嵌套仓库并合并外层仓库，按工作目录去重。
-            let discovered = match discover_repositories_for_roots(&roots) {
-                Ok(discovered) => discovered,
-                Err(error) => return JobResult::DiscoveryFailed(format!("{error:#}")),
-            };
-            let work = discovered
-                .into_iter()
-                .enumerate()
-                .map(|(index, repository)| {
-                    (
-                        index,
-                        AbsolutePathBuf::new(repository.working_directory().to_path_buf())
-                            .expect("Git 仓库工作目录必须是绝对路径"),
-                        Arc::new(repository) as Arc<dyn GitRepository>,
-                    )
-                })
-                .collect::<Vec<_>>();
+            let work = repositories;
             if work.is_empty() {
                 return JobResult::Reload(Vec::new());
             }
@@ -97,15 +88,17 @@ pub(super) async fn execute_job(
                         let work = &work;
                         scope.spawn(move || {
                             work.iter()
+                                .enumerate()
                                 .skip(worker_index)
                                 .step_by(worker_count)
-                                .map(|(index, working_directory, repository)| {
+                                .map(|(index, repository)| {
+                                    let working_directory =
+                                        super::repository_working_directory(repository.as_ref());
                                     (
-                                        *index,
+                                        index,
                                         scan_repository_sync(repository)
                                             .map(|snapshot| ReloadScan {
                                                 working_directory: working_directory.clone(),
-                                                repository: repository.clone(),
                                                 clean_conflicts: clean_conflicts_for_snapshot(
                                                     repository, &snapshot,
                                                 ),

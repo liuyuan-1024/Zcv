@@ -3,141 +3,168 @@
 //! commit_job 按 job 类型比对旧快照，仅在真实变化时发出事件；
 //! 增量刷新经 merge_refresh 合并进旧快照，不整体重建。
 
-use std::collections::BTreeSet;
+use std::{collections::HashMap, sync::Arc};
 
 use gpui::Context;
-use zcv_git::GitRevision;
-use zcv_path::AbsolutePathBuf;
+use zcv_git::{GitRepository, GitRevision};
 
 use super::{
-    GitStore, GitStoreEvent, Repository,
+    GitScanState, GitStore, GitStoreEvent, Repository,
     background::{JobResult, merge_refresh},
     jobs::GitJob,
+    repository_working_directory,
 };
 
 impl GitStore {
+    pub(super) fn apply_repository_discovery(
+        &mut self,
+        result: anyhow::Result<Vec<Arc<dyn GitRepository>>>,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Arc<dyn GitRepository>>> {
+        let discovered = match result {
+            Ok(discovered) => discovered,
+            Err(error) => {
+                let message = format!("发现 Git 仓库失败：{error:#}");
+                let state = GitScanState::Failed(message.clone());
+                if self.repository_discovery != state {
+                    self.repository_discovery = state;
+                    cx.emit(GitStoreEvent::RepositoryDiscoveryChanged);
+                    cx.emit(GitStoreEvent::StatusScanFailed(message));
+                }
+                return None;
+            }
+        };
+
+        let old_paths: Vec<_> = self
+            .repositories
+            .iter()
+            .map(|repository| repository_working_directory(repository.repository.as_ref()))
+            .collect();
+        let new_paths: Vec<_> = discovered
+            .iter()
+            .map(|repository| repository_working_directory(repository.as_ref()))
+            .collect();
+        let repositories_changed = old_paths != new_paths;
+        if repositories_changed {
+            let mut previous: HashMap<_, _> = old_paths
+                .into_iter()
+                .zip(std::mem::take(&mut self.repositories))
+                .collect();
+            self.repositories = new_paths
+                .iter()
+                .zip(&discovered)
+                .map(|(path, repository)| {
+                    previous.remove(path).unwrap_or_else(|| Repository {
+                        repository: repository.clone(),
+                        status: GitScanState::Pending,
+                    })
+                })
+                .collect();
+            self.rebuild_status_index();
+            cx.emit(GitStoreEvent::Repositories);
+        }
+        if self.repository_discovery != GitScanState::Ready(()) {
+            self.repository_discovery = GitScanState::Ready(());
+            cx.emit(GitStoreEvent::RepositoryDiscoveryChanged);
+        }
+
+        if self
+            .active_repo_workdir
+            .as_ref()
+            .is_none_or(|active| !new_paths.contains(active))
+        {
+            let active = new_paths.into_iter().next();
+            if self.active_repo_workdir != active {
+                self.active_repo_workdir = active;
+                cx.emit(GitStoreEvent::ActiveRepositoryChanged);
+            }
+        }
+
+        Some(
+            self.repositories
+                .iter()
+                .map(|repository| repository.repository.clone())
+                .collect(),
+        )
+    }
+
     pub(super) fn commit_job(&mut self, job: &GitJob, result: JobResult, cx: &mut Context<Self>) {
         match (job, result) {
-            (GitJob::ReloadGitState, JobResult::DiscoveryFailed(error)) => {
-                self.report_scan_error(Some(format!("发现 Git 仓库失败：{error}")), cx);
-            }
             (GitJob::ReloadGitState, JobResult::Reload(results)) => {
-                let mut scans = Vec::new();
-                let mut errors = Vec::new();
+                let mut head_changed = false;
+                let mut statuses_changed = false;
+                let mut first_error = None;
+                let mut auto_resolve_paths = Vec::new();
+                let mut repositories: HashMap<_, _> = self
+                    .repositories
+                    .iter_mut()
+                    .map(|repository| {
+                        (
+                            repository_working_directory(repository.repository.as_ref()),
+                            repository,
+                        )
+                    })
+                    .collect();
                 for result in results {
+                    let path = match &result {
+                        Ok(scan) => &scan.working_directory,
+                        Err((path, _)) => path,
+                    };
+                    let Some(repository) = repositories.remove(path) else {
+                        continue;
+                    };
                     match result {
-                        Ok(scan) => scans.push(scan),
-                        Err((path, error)) => {
-                            if let Some(previous) = self.repositories.iter().find(|repository| {
-                                super::repository_working_directory(repository.repository.as_ref())
-                                    == path
-                            }) {
-                                scans.push(super::background::ReloadScan {
-                                    working_directory: path.clone(),
-                                    repository: previous.repository.clone(),
-                                    clean_conflicts: Vec::new(),
-                                    snapshot: previous.snapshot.clone(),
-                                });
+                        Ok(scan) => {
+                            let current = &scan.snapshot;
+                            if let Some(previous) = repository.status.ready() {
+                                head_changed |= previous.head != current.head
+                                    || previous.branch != current.branch
+                                    || previous.has_remote != current.has_remote
+                                    || previous.ahead != current.ahead
+                                    || previous.behind != current.behind;
+                                statuses_changed |=
+                                    previous.statuses_by_path != current.statuses_by_path;
+                            } else {
+                                head_changed |= current.head.is_some() || current.branch.is_some();
+                                statuses_changed = true;
                             }
-                            errors.push((path, error));
+                            repository.status = GitScanState::Ready(scan.snapshot);
+                            auto_resolve_paths.extend(
+                                scan.clean_conflicts
+                                    .iter()
+                                    .map(|path| scan.working_directory.join_relative(path)),
+                            );
+                        }
+                        Err((path, error)) => {
+                            let message = format!(
+                                "扫描 Git 状态失败（{}）：{error}",
+                                path.as_path().display()
+                            );
+                            match &repository.status {
+                                GitScanState::Ready(_) => {}
+                                GitScanState::Failed(previous) if *previous == message => {}
+                                GitScanState::Pending | GitScanState::Failed(_) => {
+                                    repository.status = GitScanState::Failed(message.clone());
+                                    statuses_changed = true;
+                                }
+                            }
+                            first_error.get_or_insert(message);
                         }
                     }
                 }
-                let error = errors.first().map(|(path, error)| {
-                    format!("扫描 Git 状态失败（{}）：{error}", path.as_path().display())
-                });
-                self.report_scan_error(error, cx);
-                let auto_resolve_paths = scans
-                    .iter()
-                    .flat_map(|scan| {
-                        scan.clean_conflicts
-                            .iter()
-                            .map(|path| scan.working_directory.join_relative(path))
-                    })
-                    .collect::<Vec<_>>();
-                let was_repository_scan_ready = self.repository_scan_ready;
-                let old_work_dirs: BTreeSet<AbsolutePathBuf> = self
-                    .repositories
-                    .iter()
-                    .map(|repository| {
-                        super::repository_working_directory(repository.repository.as_ref())
-                    })
-                    .collect();
-                let new_work_dirs: BTreeSet<AbsolutePathBuf> = scans
-                    .iter()
-                    .map(|scan| scan.working_directory.clone())
-                    .collect();
-
-                let mut head_changed = false;
-                let mut statuses_changed = false;
-                for scan in &scans {
-                    let prev = self.repositories.iter().find(|repository| {
-                        super::repository_working_directory(repository.repository.as_ref())
-                            == scan.working_directory
-                    });
-                    head_changed |= prev.is_none_or(|prev| {
-                        prev.snapshot.head != scan.snapshot.head
-                            || prev.snapshot.branch != scan.snapshot.branch
-                            || prev.snapshot.has_remote != scan.snapshot.has_remote
-                            || prev.snapshot.ahead != scan.snapshot.ahead
-                            || prev.snapshot.behind != scan.snapshot.behind
-                    });
-                    let Some(prev) = prev else {
-                        // 新发现的仓库没有旧快照可比：该仓库当前所有路径都按变化处理。
-                        statuses_changed = true;
-                        continue;
-                    };
-                    let previous = &prev.snapshot.statuses_by_path;
-                    let current = &scan.snapshot.statuses_by_path;
-                    statuses_changed |= previous != current;
-                }
-
-                self.repositories = scans
-                    .into_iter()
-                    .map(|scan| Repository {
-                        repository: scan.repository,
-                        snapshot: scan.snapshot,
-                    })
-                    .collect();
-
-                if old_work_dirs != new_work_dirs {
-                    cx.emit(GitStoreEvent::Repositories);
-                }
+                self.report_scan_error(first_error, cx);
                 if head_changed {
-                    // HEAD 变化：已加载/被引用的 HEAD 文本就地重读，新文本推送给共享 diff。
                     self.refresh_all_revision_documents(GitRevision::Head, cx);
                     cx.emit(GitStoreEvent::Head);
                 }
                 // 状态枚举和行数不能标识 index 内容；扫描确认所有已消费修订，文本未变时保持投影。
                 self.refresh_all_revision_documents(GitRevision::Index, cx);
                 if statuses_changed {
+                    self.rebuild_status_index();
                     cx.emit(GitStoreEvent::Statuses);
                 }
-                self.repository_scan_ready = true;
-                if !was_repository_scan_ready {
-                    cx.emit(GitStoreEvent::Repositories);
-                }
-                self.rebuild_status_index();
                 if !auto_resolve_paths.is_empty() {
                     self.resolve_conflicts(auto_resolve_paths, cx);
-                }
-                // 活动仓库维护：仍在集合中则保持；否则回退新集合第一个（Vec 序 = 祖先在前，与默认候选一致）；
-                // 集合为空 → None。注意用 repositories 而非 new_work_dirs：BTreeSet 按字典序迭代，取不到发现顺序。
-                // emit 是 deferred（pending_effects），订阅方永远读到赋值后的完整状态，首次扫描 None → Some(第一个) 恰好触发一次。
-                let new_active = self
-                    .active_repo_workdir
-                    .as_ref()
-                    .filter(|workdir| new_work_dirs.contains(*workdir))
-                    .cloned()
-                    .or_else(|| {
-                        self.repositories.first().map(|repository| {
-                            AbsolutePathBuf::canonicalize(repository.repository.working_directory())
-                                .expect("Git 仓库工作目录必须是绝对路径")
-                        })
-                    });
-                if self.active_repo_workdir != new_active {
-                    self.active_repo_workdir = new_active;
-                    cx.emit(GitStoreEvent::ActiveRepositoryChanged);
                 }
             }
             (GitJob::RefreshStatuses, JobResult::Refresh(refreshed)) => {
@@ -183,7 +210,10 @@ impl GitStore {
                     let workdir =
                         super::repository_working_directory(repository.repository.as_ref());
                     changed_paths.extend(data.paths.iter().map(|path| workdir.join_relative(path)));
-                    let (statuses, head) = merge_refresh(&mut repository.snapshot, data);
+                    let GitScanState::Ready(snapshot) = &mut repository.status else {
+                        continue;
+                    };
+                    let (statuses, head) = merge_refresh(snapshot, data);
                     statuses_changed |= statuses;
                     head_changed |= head;
                 }

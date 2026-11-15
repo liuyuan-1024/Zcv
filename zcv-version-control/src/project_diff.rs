@@ -635,7 +635,8 @@ impl DiffView {
                 | GitStoreEvent::Uncommitted(_, _)
                 | GitStoreEvent::UncommitFailed(_, _)
                 | GitStoreEvent::RevisionLoadFailed(_)
-                | GitStoreEvent::StatusScanFailed(_) => {}
+                | GitStoreEvent::StatusScanFailed(_)
+                | GitStoreEvent::RepositoryDiscoveryChanged => {}
             }),
         ];
         let language_registry = project.read(cx).language_registry();

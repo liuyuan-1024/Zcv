@@ -75,9 +75,11 @@ fn coalesce_refresh_paths(mut paths: Vec<RelativePathBuf>) -> Vec<RelativePathBu
 /// 状态变化事件由订阅方重读 GitStore；提交结果携带工作目录以定位对应草稿。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitStoreEvent {
-    /// 仓库集合发生变化（发现/消失）。
+    /// 仓库集合发生变化（发现或移除）。
     Repositories,
-    /// 文件状态或 diff 统计发生变化。
+    /// 当前项目根的仓库发现进度发生变化。
+    RepositoryDiscoveryChanged,
+    /// 仓库状态加载进度、文件状态或 diff 统计发生变化。
     Statuses,
     /// 当前分支、HEAD 或分支列表发生变化。
     Head,
@@ -144,6 +146,23 @@ pub struct RemoteOperationState {
     /// 当前远程操作及其阶段；存在时同步、拉取、推送入口全部禁用。
     pub operation: Option<GitOperationKind>,
     pub phase: Option<GitJobPhase>,
+}
+
+/// 仓库发现与仓库状态读取各自的进度。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GitScanState<T = ()> {
+    Pending,
+    Ready(T),
+    Failed(String),
+}
+
+impl<T> GitScanState<T> {
+    pub fn ready(&self) -> Option<&T> {
+        match self {
+            Self::Ready(value) => Some(value),
+            Self::Pending | Self::Failed(_) => None,
+        }
+    }
 }
 
 /// 单个仓库的状态快照。
@@ -268,7 +287,7 @@ impl GitStatusSnapshot {
 
 pub(super) struct Repository {
     repository: Arc<dyn GitRepository>,
-    snapshot: RepositorySnapshot,
+    status: GitScanState<RepositorySnapshot>,
 }
 
 /// 读取已由仓库发现阶段确认的工作目录路径。
@@ -379,8 +398,7 @@ pub struct GitStore {
     /// 根集合的权威所有者是 Project，本字段只经 `set_roots` 更新。
     roots: Vec<AbsolutePathBuf>,
     repositories: Vec<Repository>,
-    /// 是否已完成至少一次仓库发现；空集合也表示扫描已完成。
-    repository_scan_ready: bool,
+    repository_discovery: GitScanState,
     last_scan_error: Option<String>,
     /// 当前仓库状态的不可变派生索引；
     /// 项目树只克隆 Arc，不在 UI 线程复制状态表。
@@ -462,7 +480,8 @@ impl GitStore {
                         this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
                         continue;
                     }
-                    let Some(prepared) = this.update(&mut cx, |store, _| store.prepare_job(&job))
+                    let Some(mut prepared) =
+                        this.update(&mut cx, |store, _| store.prepare_job(&job))
                     else {
                         this.update(&mut cx, |store, cx| {
                             match &job {
@@ -486,6 +505,27 @@ impl GitStore {
                     };
                     // 标记在途任务（状态栏开始显示）。
                     this.update(&mut cx, |store, cx| store.set_in_flight(scheduled.id, cx));
+                    let discovery_roots = if matches!(job, GitJob::ReloadGitState) {
+                        let roots = prepared.roots.clone();
+                        let discovered = cx
+                            .background_executor()
+                            .spawn(async move { background::discover_repositories(&roots) })
+                            .await;
+                        let discovered = this.update(&mut cx, |store, cx| {
+                            if store.roots != prepared.roots {
+                                return None;
+                            }
+                            store.apply_repository_discovery(discovered, cx)
+                        });
+                        let Some(repositories) = discovered else {
+                            this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
+                            continue;
+                        };
+                        prepared.repositories = repositories;
+                        Some(prepared.roots.clone())
+                    } else {
+                        None
+                    };
                     let repositories_for_reconciliation = prepared.repositories.clone();
                     let result = cx
                         .background_executor()
@@ -494,7 +534,6 @@ impl GitStore {
                             job.clone(),
                             prepared.repositories,
                             prepared.grouped_paths,
-                            prepared.grouped_diff_requests,
                             scheduled.cancellation.clone(),
                         ))
                         .await;
@@ -538,7 +577,10 @@ impl GitStore {
                         // 不合并已取消命令的部分结果，后续确认与全量扫描才是状态真值来源。
                         if cancelled {
                             store.schedule_scan(cx);
-                        } else {
+                        } else if discovery_roots
+                            .as_ref()
+                            .is_none_or(|roots| *roots == store.roots)
+                        {
                             store.commit_job(&job, result, cx);
                         }
                         store.finish_job(scheduled.id, cx);
@@ -548,10 +590,15 @@ impl GitStore {
         });
 
         let self_handle = cx.weak_entity();
+        let repository_discovery = if roots.is_empty() {
+            GitScanState::Ready(())
+        } else {
+            GitScanState::Pending
+        };
         Self {
             roots,
             repositories: Vec::new(),
-            repository_scan_ready: false,
+            repository_discovery,
             last_scan_error: None,
             status_index: Arc::new(GitStatusSnapshot::default()),
             active_repo_workdir: None,
@@ -584,6 +631,10 @@ impl GitStore {
     /// 根集合的权威所有者是 Project；本字段是扫描任务的基准快照，只经此入口更新。
     pub fn set_roots(&mut self, roots: Vec<AbsolutePathBuf>, cx: &mut Context<Self>) {
         self.roots = roots;
+        if self.repository_discovery != GitScanState::Pending {
+            self.repository_discovery = GitScanState::Pending;
+            cx.emit(GitStoreEvent::RepositoryDiscoveryChanged);
+        }
         self.schedule_scan(cx);
     }
 
@@ -1143,14 +1194,14 @@ impl GitStore {
         );
     }
 
-    /// 枚举所有仓库（working_directory → 快照），顺序 = 发现顺序（祖先前置）。
+    /// 枚举所有仓库（工作目录 → 状态加载结果），顺序 = 发现顺序（祖先前置）。
     ///
     /// 返回借用，调用方按需读取字段；面板行模型构建的直接数据源。
-    pub fn repositories(&self) -> impl Iterator<Item = (&Path, &RepositorySnapshot)> {
+    pub fn repositories(&self) -> impl Iterator<Item = (&Path, &GitScanState<RepositorySnapshot>)> {
         self.repositories.iter().map(|repository| {
             (
                 repository.repository.working_directory(),
-                &repository.snapshot,
+                &repository.status,
             )
         })
     }
@@ -1166,7 +1217,11 @@ impl GitStore {
                 .repositories
                 .iter()
                 .map(|repository| {
-                    let statuses_by_path = repository.snapshot.statuses_by_path.clone();
+                    let statuses_by_path = repository
+                        .status
+                        .ready()
+                        .map(|snapshot| snapshot.statuses_by_path.clone())
+                        .unwrap_or_default();
                     GitRepositoryStatusSnapshot {
                         working_directory: repository_working_directory(
                             repository.repository.as_ref(),
@@ -1217,9 +1272,13 @@ impl GitStore {
         if paths.is_empty() {
             return;
         }
+        let needs_full_scan = paths.iter().any(|path| {
+            self.repo_for_path(path.as_path())
+                .is_some_and(|repository| matches!(repository.status, GitScanState::Failed(_)))
+        });
         self.paths_needing_status_update.extend(paths);
-        // 路径累积超过阈值时升级为全量扫描，避免单次增量 job 过大。
-        if self.paths_needing_status_update.len() >= MAX_INCREMENTAL_PATHS {
+        // 首次读取失败的仓库需要重新建立完整快照，增量只能合并到已有基线。
+        if needs_full_scan || self.paths_needing_status_update.len() >= MAX_INCREMENTAL_PATHS {
             self.schedule_scan(cx);
         } else {
             self.schedule_job(GitJob::RefreshStatuses, cx);
@@ -1277,13 +1336,15 @@ impl GitStore {
     /// 当前活动仓库的分支名（无仓库、active 未建立或活动仓库为空仓库时为 None）。
     pub fn current_branch(&self) -> Option<&str> {
         self.active_repository()
-            .and_then(|repository| repository.snapshot.branch.as_deref())
+            .and_then(|repository| repository.status.ready())
+            .and_then(|snapshot| snapshot.branch.as_deref())
     }
 
     /// 当前活动仓库 HEAD 提交的完整 oid（detached HEAD 时存在；空仓库无提交时为 None）。
     pub fn current_head_commit(&self) -> Option<&str> {
         self.active_repository()
-            .and_then(|repository| repository.snapshot.head.as_deref())
+            .and_then(|repository| repository.status.ready())
+            .and_then(|snapshot| snapshot.head.as_deref())
     }
 
     /// 指定仓库自身（排除嵌套仓库）的状态条目；调用方决定分组与忽略过滤。
@@ -1296,9 +1357,10 @@ impl GitStore {
             .flat_map(move |repository| {
                 let workdir = repository.repository.working_directory();
                 repository
-                    .snapshot
-                    .statuses_by_path
-                    .iter()
+                    .status
+                    .ready()
+                    .into_iter()
+                    .flat_map(|snapshot| &snapshot.statuses_by_path)
                     .filter(move |(relative, _)| {
                         self.status_belongs_to_repository(workdir, relative)
                     })
@@ -1321,7 +1383,8 @@ impl GitStore {
     /// 活动仓库的本地分支列表（无仓库、active 未建立时为 None；空仓库为空列表）。
     pub fn active_branch_list(&self) -> Option<&[Branch]> {
         self.active_repository()
-            .map(|repository| repository.snapshot.branch_list.as_slice())
+            .and_then(|repository| repository.status.ready())
+            .map(|snapshot| snapshot.branch_list.as_slice())
     }
 
     /// 指定仓库是否存在已暂存改动。
@@ -1362,10 +1425,11 @@ impl GitStore {
             .min_by_key(|(id, _, _)| *id);
         let mut state = self
             .active_repository()
-            .map(|repository| RemoteOperationState {
-                has_remote: repository.snapshot.has_remote,
-                ahead: repository.snapshot.ahead,
-                behind: repository.snapshot.behind,
+            .and_then(|repository| repository.status.ready())
+            .map(|snapshot| RemoteOperationState {
+                has_remote: snapshot.has_remote,
+                ahead: snapshot.ahead,
+                behind: snapshot.behind,
                 operation: None,
                 phase: None,
             })
@@ -1393,13 +1457,10 @@ impl GitStore {
         )
     }
 
-    /// 当前活动仓库的工作目录与只读快照。
-    pub fn active_repository_snapshot(&self) -> Option<(&Path, &RepositorySnapshot)> {
-        let repository = self.active_repository()?;
-        Some((
-            repository.repository.working_directory(),
-            &repository.snapshot,
-        ))
+    /// 当前活动仓库的状态加载结果。
+    pub fn active_repository_status(&self) -> Option<&GitScanState<RepositorySnapshot>> {
+        self.active_repository()
+            .map(|repository| &repository.status)
     }
 
     /// 显式选择活动仓库；仓库必须仍在当前发现集合中。
@@ -1420,8 +1481,8 @@ impl GitStore {
         !self.repositories.is_empty()
     }
 
-    pub fn is_repository_scan_ready(&self) -> bool {
-        self.repository_scan_ready
+    pub fn repository_discovery(&self) -> &GitScanState {
+        &self.repository_discovery
     }
 
     /// 读取 HEAD 或 index 文本；同一路径的调用共享在途加载。
@@ -1817,9 +1878,9 @@ impl GitStore {
 
     /// UI 线程：取出 job 需要的共享数据（后台线程不能访问 Entity 状态）。
     ///
-    /// 无工作区根（空工作区）时任何 git job 都无操作对象，直接丢弃。
+    /// 无工作区根时仅应用仓库发现结果，释放旧仓库。
     fn prepare_job(&mut self, job: &GitJob) -> Option<JobPreparation> {
-        if self.roots.is_empty() {
+        if self.roots.is_empty() && !matches!(job, GitJob::ReloadGitState) {
             return None;
         }
         let roots = self.roots.clone();
@@ -1832,7 +1893,6 @@ impl GitStore {
                     roots,
                     repositories: Vec::new(),
                     grouped_paths: Vec::new(),
-                    grouped_diff_requests: Vec::new(),
                 })
             }
             GitJob::RefreshStatuses => {
@@ -1842,13 +1902,19 @@ impl GitStore {
                 let (repositories, grouped_paths) = self.group_paths_by_repo(&paths);
                 let grouped_paths = grouped_paths
                     .into_iter()
-                    .map(coalesce_refresh_paths)
+                    .zip(&self.repositories)
+                    .map(|(paths, repository)| {
+                        if repository.status.ready().is_some() {
+                            coalesce_refresh_paths(paths)
+                        } else {
+                            Vec::new()
+                        }
+                    })
                     .collect();
                 Some(JobPreparation {
                     roots,
                     repositories,
                     grouped_paths,
-                    grouped_diff_requests: Vec::new(),
                 })
             }
             GitJob::GitOperation { .. }
@@ -1862,7 +1928,6 @@ impl GitStore {
                     roots,
                     repositories: vec![repository],
                     grouped_paths: Vec::new(),
-                    grouped_diff_requests: Vec::new(),
                 })
             }
             // init 作用于主根（首个工作区根），不依赖既有仓库集合。
@@ -1870,7 +1935,6 @@ impl GitStore {
                 roots,
                 repositories: Vec::new(),
                 grouped_paths: Vec::new(),
-                grouped_diff_requests: Vec::new(),
             }),
             GitJob::StageFiles { stage, paths } => {
                 let (repositories, grouped_paths) = self.group_paths_by_repo(paths);
@@ -1881,7 +1945,10 @@ impl GitStore {
                     .into_iter()
                     .enumerate()
                     .map(|(index, rel_paths)| {
-                        let statuses = &self.repositories[index].snapshot.statuses_by_path;
+                        let Some(snapshot) = self.repositories[index].status.ready() else {
+                            return Vec::new();
+                        };
+                        let statuses = &snapshot.statuses_by_path;
                         let mut expanded = Vec::new();
                         for rel in rel_paths {
                             let matches = |entry: &StatusEntry| {
@@ -1912,7 +1979,6 @@ impl GitStore {
                     roots,
                     repositories,
                     grouped_paths,
-                    grouped_diff_requests: Vec::new(),
                 })
             }
             GitJob::ResolveConflicts { paths } => {
@@ -1921,7 +1987,6 @@ impl GitStore {
                     roots,
                     repositories,
                     grouped_paths,
-                    grouped_diff_requests: Vec::new(),
                 })
             }
             GitJob::ApplyHunkEdits { path, .. } => {
@@ -1931,7 +1996,6 @@ impl GitStore {
                     roots,
                     repositories,
                     grouped_paths,
-                    grouped_diff_requests: Vec::new(),
                 })
             }
             // 提交和撤销提交的仓库身份由任务固定，不受焦点切换影响。
@@ -1941,7 +2005,6 @@ impl GitStore {
                     roots,
                     repositories: vec![repository.repository.clone()],
                     grouped_paths: Vec::new(),
-                    grouped_diff_requests: Vec::new(),
                 })
             }
         }
@@ -2050,7 +2113,6 @@ struct JobPreparation {
     roots: Vec<AbsolutePathBuf>,
     repositories: Vec<Arc<dyn GitRepository>>,
     grouped_paths: Vec<Vec<RelativePathBuf>>,
-    grouped_diff_requests: Vec<Vec<()>>,
 }
 
 #[cfg(test)]

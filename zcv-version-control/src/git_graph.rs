@@ -240,9 +240,7 @@ impl GitGraphView {
             _git_subscription: git_subscription,
             search_bar,
         };
-        if git_store.read(cx).is_repository_scan_ready() {
-            view.load_more(cx);
-        }
+        view.load_more(cx);
         view
     }
 
@@ -299,19 +297,14 @@ impl GitGraphView {
 
     /// 加载下一批提交；`loading`/`reached_end` 时跳过。后台读完成后回到实体逐条布局追加。
     fn load_more(&mut self, cx: &mut Context<Self>) {
+        let git_store = self.project.read(cx).git_store();
         if self.loading
             || self.reached_end
-            || !self
-                .project
-                .read(cx)
-                .git_store()
-                .read(cx)
-                .is_repository_scan_ready()
+            || git_store.read(cx).active_repository_workdir().is_none()
         {
             return;
         }
         self.loading = true;
-        let git_store = self.project.read(cx).git_store();
         let offset = self.offset;
         let generation = self.load_generation;
         let load = git_store.read(cx).load_commit_graph(offset, BATCH_SIZE);

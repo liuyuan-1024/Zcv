@@ -121,13 +121,17 @@ impl VersionControlPanel {
         let store = self.project.read(cx).git_store();
         store
             .read(cx)
-            .active_repository_snapshot()
-            .and_then(|(_, snapshot)| snapshot.last_commit_message.clone())
+            .active_repository_status()
+            .and_then(GitScanState::ready)
+            .and_then(|snapshot| snapshot.last_commit_message.clone())
     }
 }
 
 fn build_rows(_root: &Path, repos: &[(&Path, &RepositorySnapshot)]) -> Vec<GitRow> {
-    let trees = build_section_trees(repos.first().map(|(path, _)| *path), repos.iter().copied());
+    let trees = build_section_trees(
+        repos.first().map(|(path, _)| *path),
+        repos.iter().map(|&(path, snapshot)| (path, Some(snapshot))),
+    );
     flatten_rows(&trees, &HashSet::new(), &HashSet::new())
 }
 
@@ -271,7 +275,7 @@ fn section_header_counts_files_inside_collapsed_directories_and_sections() {
     ]);
     let trees = build_section_trees(
         Some(root.as_path()),
-        [(root.as_path(), &snapshot)].into_iter(),
+        [(root.as_path(), Some(&snapshot))].into_iter(),
     );
     let rows = flatten_rows(
         &trees,
@@ -329,7 +333,7 @@ fn directories_aggregate_status_and_diff_and_respect_expansion() {
     ]);
     let trees = build_section_trees(
         Some(root.as_path()),
-        [(root.as_path(), &snapshot)].into_iter(),
+        [(root.as_path(), Some(&snapshot))].into_iter(),
     );
 
     // 折叠：只显示顶层目录 src。
@@ -394,7 +398,7 @@ fn change_tree_uses_same_directory_and_name_order_as_file_tree() {
     ]);
     let trees = build_section_trees(
         Some(root.as_path()),
-        [(root.as_path(), &snapshot)].into_iter(),
+        [(root.as_path(), Some(&snapshot))].into_iter(),
     );
     let rows = flatten_rows(&trees, &HashSet::new(), &HashSet::new());
     assert_eq!(
@@ -417,13 +421,21 @@ fn active_tree_only_contains_paths_owned_by_the_active_repository() {
 
     let outer_tree = build_section_trees(
         Some(root.as_path()),
-        [(root.as_path(), &outer), (vendor.as_path(), &inner)].into_iter(),
+        [
+            (root.as_path(), Some(&outer)),
+            (vendor.as_path(), Some(&inner)),
+        ]
+        .into_iter(),
     );
     assert!(entry_keys(&flatten_rows(&outer_tree, &HashSet::new(), &HashSet::new())).is_empty());
 
     let inner_tree = build_section_trees(
         Some(vendor.as_path()),
-        [(root.as_path(), &outer), (vendor.as_path(), &inner)].into_iter(),
+        [
+            (root.as_path(), Some(&outer)),
+            (vendor.as_path(), Some(&inner)),
+        ]
+        .into_iter(),
     );
     assert_eq!(
         entry_keys(&flatten_rows(&inner_tree, &HashSet::new(), &HashSet::new())),
@@ -437,7 +449,7 @@ fn consecutive_single_change_directories_are_display_compressed() {
     let snapshot = snapshot(&[("src/components/editor/mod.rs", FileStatus::Untracked)]);
     let trees = build_section_trees(
         Some(root.as_path()),
-        [(root.as_path(), &snapshot)].into_iter(),
+        [(root.as_path(), Some(&snapshot))].into_iter(),
     );
     let expanded = HashSet::from([
         (GitSection::Unstaged, absolute(root.join("src"))),
@@ -469,7 +481,10 @@ fn switching_active_repository_switches_tree_contents() {
     let other = absolute(PathBuf::from("/other")).into_path_buf();
     let first = snapshot(&[("README.md", FileStatus::Untracked)]);
     let second = snapshot(&[("lib.rs", FileStatus::Untracked)]);
-    let repositories = [(root.as_path(), &first), (other.as_path(), &second)];
+    let repositories = [
+        (root.as_path(), Some(&first)),
+        (other.as_path(), Some(&second)),
+    ];
 
     let first_rows = flatten_rows(
         &build_section_trees(Some(root.as_path()), repositories.into_iter()),
@@ -611,8 +626,14 @@ fn repository_picker_switches_tree_stats_commit_and_graph_to_selected_repository
             .repositories()
             .find(|(path, _)| *path == workdir_b.as_path())
             .expect("仓库 B 应存在");
-        assert_eq!(a.1.last_commit_message.as_deref(), Some("initial"));
-        assert_eq!(b.1.last_commit_message.as_deref(), Some("提交 B 的修改"));
+        assert_eq!(
+            a.1.ready().unwrap().last_commit_message.as_deref(),
+            Some("initial")
+        );
+        assert_eq!(
+            b.1.ready().unwrap().last_commit_message.as_deref(),
+            Some("提交 B 的修改")
+        );
         assert_eq!(
             panel.read(cx).commit_states[&workdir_b]
                 .editor
@@ -635,7 +656,10 @@ fn repository_picker_switches_tree_stats_commit_and_graph_to_selected_repository
             .repositories()
             .find(|(path, _)| *path == workdir_b.as_path())
             .expect("仓库 B 应存在");
-        assert_eq!(b.1.last_commit_message.as_deref(), Some("initial"));
+        assert_eq!(
+            b.1.ready().unwrap().last_commit_message.as_deref(),
+            Some("initial")
+        );
         assert_eq!(
             panel.read(cx).commit_states[&workdir_b]
                 .editor
@@ -866,9 +890,16 @@ fn empty_state_initializes_repository_and_builds_section_tree(cx: &mut TestAppCo
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project_root = directory.path().to_path_buf();
     let project = test_project(project_root.clone(), cx);
-    let project_for_panel = project.clone();
-    let (panel, cx) = cx
-        .add_window_view(move |window, cx| VersionControlPanel::new(project_for_panel, window, cx));
+    let window = cx.open_window(size(px(800.), px(600.)), move |window, cx| {
+        VersionControlPanel::new(project, window, cx)
+    });
+    let panel = window.root(cx).expect("应打开版本控制面板");
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds("version-control-init").is_none(),
+        "仓库发现完成前不应提供初始化入口"
+    );
     cx.run_until_parked(); // 首次扫描完成：无仓库，行模型为空。
 
     let panel_focused = cx.update(|window, cx| panel.read(cx).focus.contains_focused(window, cx));
@@ -1854,7 +1885,8 @@ fn commit_flow_clears_editor_and_refreshes_last_commit(cx: &mut TestAppContext) 
             .read(cx)
             .repositories()
             .next()
-            .map(|(_, snapshot)| snapshot.statuses_by_path.len());
+            .and_then(|(_, status)| status.ready())
+            .map(|snapshot| snapshot.statuses_by_path.len());
         assert_eq!(statuses, Some(0), "已暂存改动应随提交清空");
     });
 }
@@ -1947,7 +1979,7 @@ fn commit_without_staged_changes_is_ignored(cx: &mut TestAppContext) {
         let snapshot = store
             .repositories()
             .next()
-            .map(|(_, snapshot)| snapshot)
+            .and_then(|(_, status)| status.ready())
             .expect("应存在仓库快照");
         assert!(
             snapshot

@@ -1,7 +1,7 @@
 //! VersionControlPanel —— 版本管理面板 Entity 组件。
 //!
-//! 无 git 仓库时居中显示"初始化仓库"按钮（点击对项目根执行 `git init`）；
-//! 有仓库时只展示 GitStore 当前活动仓库的变更树与提交区。
+//! 仓库发现完成后才显示仓库视图或初始化入口；仓库状态加载时先显示仓库选择器。
+//! 仓库状态可用后展示当前活动仓库的分支、变更树与提交区。
 //! 项目名按钮打开仓库选择器，分支名按钮打开当前仓库的分支选择器；分支行右侧提供拉取、推送、同步入口。
 //! 活动仓库由 GitStore 权威持有。
 //! 部分暂存文件同时出现在已暂存与未暂存两组；未解决的合并冲突展示在最上方的独立组中，不能直接暂存。
@@ -16,9 +16,9 @@ use std::{
 };
 
 use gpui::{
-    App, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, KeyContext, MouseButton,
-    ScrollStrategy, Subscription, UniformListScrollHandle, WeakEntity, Window, div, prelude::*,
-    uniform_list,
+    AnyElement, App, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, KeyContext,
+    MouseButton, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, WeakEntity,
+    Window, div, prelude::*, uniform_list,
 };
 use zcv_actions::{
     Activate, Collapse, Commit, Expand, InitRepository, SelectNext, SelectPrev, ToggleStaged,
@@ -29,7 +29,8 @@ use zcv_git::{DiffStat, FileStatus};
 use zcv_keymap::display_shortcut;
 use zcv_path::{AbsolutePathBuf, RelativePathBuf, compare_tree_entries};
 use zcv_project::{
-    GitJobPhase, GitOperationKind, GitStoreEvent, Project, RemoteOperationState, RepositorySnapshot,
+    GitJobPhase, GitOperationKind, GitScanState, GitStoreEvent, Project, RemoteOperationState,
+    RepositorySnapshot,
 };
 use zcv_theme::{color, scale, typography};
 use zcv_ui::{
@@ -101,14 +102,14 @@ impl<T> GitSections<T> {
 /// 不会因为父仓库的目录级未跟踪条目串到活动仓库的变更树。
 fn build_section_trees<'a>(
     active_workdir: Option<&Path>,
-    repositories: impl Iterator<Item = (&'a Path, &'a RepositorySnapshot)>,
+    repositories: impl Iterator<Item = (&'a Path, Option<&'a RepositorySnapshot>)>,
 ) -> GitSections<Vec<GitTreeNode>> {
     let repositories: Vec<_> = repositories.collect();
     let mut roots = GitSections::default();
     let Some(workdir) = active_workdir else {
         return roots;
     };
-    let Some((_, snapshot)) = repositories
+    let Some((_, Some(snapshot))) = repositories
         .iter()
         .find(|(candidate, _)| *candidate == workdir)
     else {
@@ -423,7 +424,7 @@ impl VersionControlPanel {
                     panel.state.borrow_mut().clear_selection();
                     panel.rebuild_rows(cx);
                 }
-                GitStoreEvent::Head => cx.notify(),
+                GitStoreEvent::Head | GitStoreEvent::RepositoryDiscoveryChanged => {}
                 GitStoreEvent::Committed(workdir) => {
                     if let Some(state) = panel.commit_states.get_mut(workdir)
                         && let Some(message) = state.pending_message.take()
@@ -577,8 +578,12 @@ impl VersionControlPanel {
                     AbsolutePathBuf::new(workdir.to_path_buf()).expect("仓库工作目录必须是绝对路径")
                 })
                 .collect();
-            let trees =
-                build_section_trees(store.active_repository_workdir(), store.repositories());
+            let trees = build_section_trees(
+                store.active_repository_workdir(),
+                store
+                    .repositories()
+                    .map(|(path, status)| (path, status.ready())),
+            );
             (all_workdirs, trees)
         };
         self.commit_states
@@ -741,11 +746,16 @@ impl VersionControlPanel {
     }
 
     fn init_repository(&mut self, cx: &mut Context<Self>) {
-        self.project.update(cx, |project, cx| {
-            project
-                .git_store()
-                .update(cx, |store, cx| store.git_init(cx));
-        });
+        let project = self.project.read(cx);
+        if project.roots().next().is_some() {
+            project.git_store().update(cx, |store, cx| {
+                if !store.has_repositories()
+                    && matches!(store.repository_discovery(), GitScanState::Ready(()))
+                {
+                    store.git_init(cx);
+                }
+            });
+        }
     }
 
     /// 切换指定行（分组 + 路径）的暂存状态：未暂存组 → 暂存，已暂存组 → 取消暂存。
@@ -839,105 +849,80 @@ impl Render for VersionControlPanel {
             self.focus_listeners_initialized = true;
         }
         self.state.borrow_mut().ensure_selected();
-        let git_store = self.project.read(cx).git_store();
-        let (
-            has_repositories,
-            active,
-            last_commit_message,
-            has_staged_changes,
-            diff_stat,
-            remote_operation_state,
-        ) = {
-            let store = git_store.read(cx);
-            let (active, last_commit_message) = match store.active_repository_snapshot() {
-                Some((workdir, snapshot)) => (
-                    Some((
-                        AbsolutePathBuf::new(workdir.to_path_buf())
-                            .expect("仓库工作目录必须是绝对路径"),
-                        snapshot.branch.is_some() || snapshot.head.is_some(),
-                    )),
-                    snapshot.last_commit_message.clone(),
-                ),
-                None => (None, None),
-            };
-            let (has_staged_changes, diff_stat) = active
-                .as_ref()
-                .map(|(workdir, _)| {
-                    (
-                        store.has_staged_changes(workdir.as_path()),
-                        store.diff_stat_for_repository(workdir.as_path()),
+        let project = self.project.read(cx);
+        let git_store = project.git_store();
+        let store = git_store.read(cx);
+        let status = store.active_repository_status();
+        let content = match status {
+            Some(GitScanState::Ready(_)) => {
+                let rows = self.state.borrow().row_snapshot();
+                let render_context = GitPanelRenderContext {
+                    state: Rc::clone(&self.state),
+                    rows,
+                    focus: self.focus.clone(),
+                    collapsed: Rc::clone(&self.collapsed_sections),
+                    weak: cx.weak_entity(),
+                };
+                // 列表占满剩余高度；底部提交区存在时收缩。
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(
+                        render_list(
+                            &self.scroll_handle,
+                            &self.scrollbar,
+                            render_context,
+                            self.changes_tree_is_focused(window),
+                        )
+                        .into_any_element(),
                     )
-                })
-                .unwrap_or_default();
-            (
-                store.has_repositories(),
-                active,
-                last_commit_message,
-                has_staged_changes,
-                diff_stat,
+                    .into_any_element()
+            }
+            Some(GitScanState::Pending) => render_centered_message("正在读取 Git 状态…", cx),
+            Some(GitScanState::Failed(error)) => render_centered_message(error.clone(), cx),
+            None if project.roots().next().is_none() => {
+                render_centered_message("未打开项目文件夹", cx)
+            }
+            None => match store.repository_discovery() {
+                GitScanState::Pending => render_centered_message("正在检测 Git 仓库…", cx),
+                GitScanState::Failed(error) => render_centered_message(error.clone(), cx),
+                GitScanState::Ready(()) => {
+                    render_empty_state(cx.weak_entity(), cx).into_any_element()
+                }
+            },
+        };
+
+        let mut body = div().size_full().flex().flex_col();
+        let mut footer = None;
+        if let Some(workdir) = store.active_repository_workdir() {
+            let snapshot = status.and_then(GitScanState::ready);
+            body = body.pt(scale::S4).child(render_repository_header(
+                self.repository_picker.clone(),
+                self.branch_picker.clone(),
+                snapshot.map(|snapshot| snapshot.branch.is_some() || snapshot.head.is_some()),
                 store.remote_operation_state(),
-            )
-        };
-        let changes_tree_focused = self.changes_tree_is_focused(window);
-        let content = if active.is_some() {
-            let rows = self.state.borrow().row_snapshot();
-            let render_context = GitPanelRenderContext {
-                state: Rc::clone(&self.state),
-                rows,
-                focus: self.focus.clone(),
-                collapsed: Rc::clone(&self.collapsed_sections),
-                weak: cx.weak_entity(),
-            };
-            // 列表占满剩余高度；底部提交区存在时收缩。
-            div()
-                .flex_1()
-                .min_h_0()
-                .overflow_hidden()
-                .child(
-                    render_list(
-                        &self.scroll_handle,
-                        &self.scrollbar,
-                        render_context,
-                        changes_tree_focused,
+                cx.weak_entity(),
+                cx,
+            ));
+            if let Some(snapshot) = snapshot {
+                body = body.child(render_stats_row(
+                    store.diff_stat_for_repository(workdir),
+                    cx.weak_entity(),
+                    cx,
+                ));
+                let key = AbsolutePathBuf::new(workdir.to_path_buf())
+                    .expect("仓库工作目录必须是绝对路径");
+                footer = self.commit_states.get(&key).map(|state| {
+                    render_commit_footer(
+                        &state.editor,
+                        snapshot.last_commit_message.as_deref(),
+                        store.has_staged_changes(workdir),
+                        cx.weak_entity(),
+                        cx,
                     )
-                    .into_any_element(),
-                )
-                .into_any_element()
-        } else if has_repositories {
-            div().flex_1().into_any_element()
-        } else {
-            render_empty_state(cx.weak_entity(), cx).into_any_element()
-        };
-
-        let footer = active.as_ref().and_then(|(workdir, _)| {
-            self.commit_states.get(workdir).map(|state| {
-                render_commit_footer(
-                    &state.editor,
-                    last_commit_message.as_deref(),
-                    has_staged_changes,
-                    cx.weak_entity(),
-                    cx,
-                )
-            })
-        });
-
-        // 仓库标题行、统计行、列表与提交区必须放进同一个 flex_col 容器（列表 flex_1 占满剩余高度）。
-        let mut body = div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .when(active.is_some(), |body| body.pt(scale::S4));
-        if let Some((_, has_branch)) = active {
-            body = body
-                .child(render_repository_header(
-                    self.repository_picker.clone(),
-                    self.branch_picker.clone(),
-                    has_branch,
-                    remote_operation_state,
-                    cx.weak_entity(),
-                    cx,
-                ))
-                .child(render_stats_row(diff_stat, cx.weak_entity(), cx));
+                });
+            }
         }
         body = body.child(content);
         if let Some(footer) = footer {
@@ -968,24 +953,26 @@ impl Render for VersionControlPanel {
 fn render_repository_header(
     repository_picker: Entity<RepositoryPicker>,
     branch_picker: Entity<BranchPicker>,
-    has_branch: bool,
+    has_branch: Option<bool>,
     remote_state: RemoteOperationState,
     weak: WeakEntity<VersionControlPanel>,
     cx: &App,
 ) -> impl IntoElement {
     let colors = color::current(cx);
-    let branch = if has_branch {
-        div()
-            .debug_selector(|| "version-control-branch-button".into())
-            .child(branch_picker)
-            .into_any_element()
-    } else {
-        Button::text("version-control.branch", "无分支")
-            .label("当前仓库没有分支")
-            .disabled(true)
-            .color(colors.text_muted)
-            .into_any_element()
-    };
+    let branch = has_branch.map(|has_branch| {
+        if has_branch {
+            div()
+                .debug_selector(|| "version-control-branch-button".into())
+                .child(branch_picker)
+                .into_any_element()
+        } else {
+            Button::text("version-control.branch", "无分支")
+                .label("当前仓库没有分支")
+                .disabled(true)
+                .color(colors.text_muted)
+                .into_any_element()
+        }
+    });
     div()
         .id(ElementId::Name("version-control-repository-header".into()))
         .w_full()
@@ -1005,16 +992,18 @@ fn render_repository_header(
                 .max_w_full()
                 .child(repository_picker),
         )
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .max_w_full()
-                .items_center()
-                .gap(scale::S6)
-                .child(div().flex_none().text_color(colors.text_muted).child("/"))
-                .child(div().min_w_0().child(branch)),
-        )
+        .when_some(branch, |header, branch| {
+            header.child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .max_w_full()
+                    .items_center()
+                    .gap(scale::S6)
+                    .child(div().flex_none().text_color(colors.text_muted).child("/"))
+                    .child(div().min_w_0().child(branch)),
+            )
+        })
         .when(remote_state.has_remote, |header| {
             header.child(
                 render_remote_operations(remote_state, weak)
@@ -1526,8 +1515,7 @@ fn render_commit_footer(
         )
 }
 
-fn render_empty_state(panel: WeakEntity<VersionControlPanel>, cx: &App) -> Div {
-    let colors = color::current(cx);
+fn centered_placeholder(cx: &App) -> Div {
     div()
         .size_full()
         .flex()
@@ -1535,25 +1523,34 @@ fn render_empty_state(panel: WeakEntity<VersionControlPanel>, cx: &App) -> Div {
         .items_center()
         .justify_center()
         .gap(scale::S6)
-        .text_color(colors.text_placeholder)
-        .child("没有 Git 仓库")
-        .child(
-            div()
-                .id("version-control-init")
-                .debug_selector(|| "version-control-init".into())
-                .p(scale::S6)
-                .rounded_md()
-                .border_1()
-                .border_color(colors.border)
-                .bg(colors.panel_background)
-                .text_color(colors.text)
-                .cursor_pointer()
-                .hover(|style| style.bg(colors.element_hover))
-                .child("初始化仓库")
-                .on_click(move |_, _, cx| {
-                    panel.update(cx, |panel, cx| panel.init_repository(cx)).ok();
-                }),
-        )
+        .text_color(color::current(cx).text_placeholder)
+}
+
+fn render_centered_message(message: impl Into<SharedString>, cx: &App) -> AnyElement {
+    centered_placeholder(cx)
+        .child(message.into())
+        .into_any_element()
+}
+
+fn render_empty_state(panel: WeakEntity<VersionControlPanel>, cx: &App) -> Div {
+    let colors = color::current(cx);
+    centered_placeholder(cx).child("没有 Git 仓库").child(
+        div()
+            .id("version-control-init")
+            .debug_selector(|| "version-control-init".into())
+            .p(scale::S6)
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border)
+            .bg(colors.panel_background)
+            .text_color(colors.text)
+            .cursor_pointer()
+            .hover(|style| style.bg(colors.element_hover))
+            .child("初始化仓库")
+            .on_click(move |_, _, cx| {
+                panel.update(cx, |panel, cx| panel.init_repository(cx)).ok();
+            }),
+    )
 }
 
 impl EventEmitter<PanelEvent> for VersionControlPanel {}

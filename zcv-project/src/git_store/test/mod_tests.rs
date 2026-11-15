@@ -81,6 +81,103 @@ fn scan_discovers_repository_and_reports_status(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn repository_discovery_precedes_status_loading(cx: &mut TestAppContext) {
+    use std::{cell::RefCell, rc::Rc};
+
+    let (root, _temp) = test_git_repo();
+    let git_store =
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
+    let status_at_discovery = Rc::new(RefCell::new(None));
+    let observed = status_at_discovery.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&git_store, move |store, event, cx| {
+            if matches!(event, GitStoreEvent::Repositories) {
+                let store = store.read(cx);
+                assert_eq!(store.repository_discovery(), &GitScanState::Ready(()));
+                assert!(store.active_repository_workdir().is_some());
+                *observed.borrow_mut() = Some(matches!(
+                    store.active_repository_status(),
+                    Some(GitScanState::Pending)
+                ));
+            }
+        })
+    });
+
+    assert_eq!(
+        cx.read_entity(&git_store, |store, _| store.repository_discovery().clone()),
+        GitScanState::Pending
+    );
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+
+    assert_eq!(*status_at_discovery.borrow(), Some(true));
+    cx.read_entity(&git_store, |store, _| {
+        assert!(matches!(
+            store.active_repository_status(),
+            Some(GitScanState::Ready(_))
+        ));
+        assert_eq!(store.current_branch(), Some("master"));
+    });
+}
+
+#[gpui::test]
+fn discovery_failure_is_distinct_from_confirmed_empty_roots(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = absolute(temp.path().to_path_buf());
+    let git_store =
+        cx.new(|cx| GitStore::new(vec![root.as_path().to_path_buf()], test_registry(), cx));
+    temp.close().expect("应删除临时项目目录");
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    cx.read_entity(&git_store, |store, _| {
+        assert!(matches!(
+            store.repository_discovery(),
+            GitScanState::Failed(_)
+        ));
+        assert!(!store.has_repositories());
+    });
+
+    cx.update_entity(&git_store, |store, cx| store.set_roots(Vec::new(), cx));
+    cx.run_until_parked();
+    cx.read_entity(&git_store, |store, _| {
+        assert_eq!(store.repository_discovery(), &GitScanState::Ready(()));
+        assert!(!store.has_repositories());
+    });
+}
+
+#[gpui::test]
+fn initial_status_failure_preserves_discovered_repository_and_can_recover(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().expect("应创建临时目录");
+    let root = temp.path();
+    fs::create_dir(root.join(".git")).expect("应创建缺少 Git 元数据的目录");
+    let git_store =
+        cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.to_path_buf()], test_registry(), cx)));
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+
+    cx.read_entity(&git_store, |store, _| {
+        assert_eq!(store.repository_discovery(), &GitScanState::Ready(()));
+        assert_eq!(store.repositories().count(), 1);
+        assert!(matches!(
+            store.active_repository_status(),
+            Some(GitScanState::Failed(_))
+        ));
+    });
+
+    run_git(root, &["init", "-q"]);
+    cx.update_entity(&git_store, |store, cx| {
+        store.refresh_statuses_for_paths(&[root.join(".git").join("HEAD")], cx);
+    });
+    cx.run_until_parked();
+    cx.read_entity(&git_store, |store, _| {
+        assert!(matches!(
+            store.active_repository_status(),
+            Some(GitScanState::Ready(_))
+        ));
+    });
+}
+
+#[gpui::test]
 fn failed_git_status_scan_keeps_last_valid_snapshot(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "已修改\n").expect("应修改文件");

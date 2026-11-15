@@ -1,11 +1,11 @@
 //! 状态栏后台活动指示器。
 
-use std::{rc::Rc, time::Duration};
+use std::rc::Rc;
 
-use gpui::{Animation, AnimationExt, MouseButton, Render, Subscription, Window, div, prelude::*};
+use gpui::{MouseButton, Render, Subscription, Window, div, prelude::*};
 use zcv_activity::{ActivityChanged, ActivityPhase, ActivitySource, BackgroundActivity};
 use zcv_theme::{color, scale};
-use zcv_ui::TooltipSpec;
+use zcv_ui::{ProgressIndicator, ProgressMode, TooltipSpec};
 
 use crate::{ItemHandle, StatusItemView};
 
@@ -61,31 +61,26 @@ impl Render for ActivityIndicator {
             lines.push("右键取消".into());
         }
 
+        let mut message = label;
+        if let Some(progress) = progress.and_then(|read| read()) {
+            message.push_str(" · ");
+            message.extend(progress.chars().take(72));
+        }
+        if remaining > 0 {
+            message.push_str(&format!("（另有 {remaining} 项）"));
+        }
         let mut indicator = div()
             .id("activity-indicator")
             .debug_selector(|| "workspace-background-task".into())
+            .flex()
+            .items_center()
+            .gap(scale::S6)
             .text_color(color::current(cx).text_muted)
-            .child(div().with_animation(
-                "background-activity-spinner",
-                Animation::new(Duration::from_millis(1000)).repeat(),
-                move |row, delta| {
-                    let frame =
-                        (delta * SPINNER_FRAMES.len() as f32) as usize % SPINNER_FRAMES.len();
-                    let mut message = label.clone();
-                    if let Some(progress) = progress.as_ref().and_then(|read| read()) {
-                        message.push_str(" · ");
-                        message.extend(progress.chars().take(72));
-                    }
-                    if remaining > 0 {
-                        message.push_str(&format!("（另有 {remaining} 项）"));
-                    }
-                    row.flex()
-                        .items_center()
-                        .gap(scale::S6)
-                        .child(SPINNER_FRAMES[frame])
-                        .child(message)
-                },
-            ));
+            .child(ProgressIndicator::new(
+                "activity-progress",
+                ProgressMode::Indeterminate,
+            ))
+            .child(message);
         if let Some(tooltip) = TooltipSpec::from_lines(lines).build() {
             indicator = indicator.tooltip(tooltip);
         }
@@ -105,6 +100,3 @@ fn activity_label(activity: &BackgroundActivity) -> String {
         ActivityPhase::Confirming => format!("正在确认{name}结果…"),
     }
 }
-
-/// Braille 点阵字符等宽，避免动画引起布局抖动。
-const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

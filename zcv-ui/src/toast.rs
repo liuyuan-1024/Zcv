@@ -1,4 +1,4 @@
-//! Toast —— 工作区内的提示（成功/错误/信息）。
+//! Toast —— 工作区内的成功、信息、警告和错误提示。
 //!
 //! 三段式形态：头部行（左侧语义图标，右侧复制/关闭）、内容主体（固定最大宽度内自动换行）、底部操作按钮。
 //! 由宿主窗口持有并叠加在根视图上，各条提示独立计时和关闭。
@@ -9,23 +9,30 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{Button, ButtonStyle, SvgIcon};
+use crate::{Button, ButtonStyle, ProgressIndicator, ProgressMode, SvgIcon};
 use gpui::{
     AlignItems, AnyElement, App, AsyncApp, Bounds, ClipboardItem, Context, Display, Element,
     ElementId, EntityId, FlexDirection, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, Render, ScrollHandle, SharedString, Style, Task, WeakEntity, Window, auto, div, point,
-    prelude::*, px, relative, size,
+    Pixels, Render, Rgba, ScrollHandle, SharedString, Style, Task, WeakEntity, Window, auto, div,
+    point, prelude::*, px, relative, size,
 };
-use zcv_theme::{color, scale};
+use zcv_theme::{
+    color::{self, ThemeColors},
+    scale,
+};
 
 /// 复制反馈的展示时长。
 const COPIED_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
-/// 恢复计时的最短剩余时长（避免鼠标快速进出悬浮导致 toast 立即消失）。
+/// 减少动态效果时，按较低频率刷新剩余时长。
+const REDUCED_MOTION_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+/// 恢复计时的最短剩余时长。
 const MINIMUM_RESUME_DURATION: Duration = Duration::from_millis(800);
 /// 新提示从下方进入的时长。
 const TOAST_ENTER_DURATION: Duration = Duration::from_millis(280);
 /// 内容主体的最大宽度，超长文本在此宽度内自动换行。
 const TOAST_MAX_WIDTH: f32 = 384.0;
+/// 常驻提示边框中语义色的混合权重。
+const PERSISTENT_BORDER_TINT: f32 = 0.65;
 
 type ToastClickHandler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
@@ -34,6 +41,7 @@ type ToastClickHandler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 pub enum ToastKind {
     Success,
     Info,
+    Warning,
     Error,
 }
 
@@ -72,10 +80,69 @@ struct ActiveToast {
     /// 复制后短暂展示"已复制"反馈。
     copied: bool,
     copy_feedback_task: Option<Task<()>>,
-    dismiss_task: Option<Task<()>>,
-    /// 自动消失的剩余时长；鼠标悬浮时暂停计时并记录。
-    dismiss_remaining: Option<Duration>,
-    dismiss_started_at: Option<Instant>,
+    countdown: Option<ToastCountdown>,
+}
+
+struct ToastCountdown {
+    total: Duration,
+    remaining: Duration,
+    running: Option<RunningCountdown>,
+}
+
+struct RunningCountdown {
+    started_at: Instant,
+    duration: Duration,
+    _task: Task<()>,
+}
+
+impl ToastCountdown {
+    fn remaining_at(&self, now: Instant) -> Duration {
+        let Some(running) = &self.running else {
+            return self.remaining;
+        };
+        let elapsed = now.saturating_duration_since(running.started_at);
+        if elapsed >= running.duration {
+            return Duration::ZERO;
+        }
+        // 恢复时保留最短阅读时间，但从暂停时的弧长继续。
+        if running.duration == self.remaining {
+            self.remaining - elapsed
+        } else {
+            self.remaining.mul_f64(
+                (running.duration - elapsed).as_secs_f64() / running.duration.as_secs_f64(),
+            )
+        }
+    }
+
+    fn fraction_at(&self, now: Instant) -> f32 {
+        if self.total.is_zero() {
+            0.0
+        } else {
+            self.remaining_at(now).as_secs_f32() / self.total.as_secs_f32()
+        }
+    }
+}
+
+impl ActiveToast {
+    fn appearance(&self, colors: &ThemeColors) -> (&'static str, Rgba, Rgba) {
+        let persistent = self.countdown.is_none();
+        let (icon, icon_color) = match self.kind {
+            ToastKind::Success => ("icons/check.svg", colors.status_success),
+            ToastKind::Info if persistent => ("icons/info.svg", colors.icon_accent),
+            ToastKind::Info => ("icons/clock.svg", colors.text_muted),
+            ToastKind::Warning => ("icons/warning.svg", colors.status_warning),
+            ToastKind::Error if persistent => ("icons/x_circle.svg", colors.status_error),
+            ToastKind::Error => ("icons/warning.svg", colors.status_error),
+        };
+        let border = if persistent {
+            colors
+                .border
+                .blend(icon_color.opacity(PERSISTENT_BORDER_TINT))
+        } else {
+            colors.border
+        };
+        (icon, icon_color, border)
+    }
 }
 
 /// 宿主窗口持有的提示层。
@@ -83,6 +150,7 @@ pub struct ToastLayer {
     toasts: Vec<ActiveToast>,
     next_id: u64,
     entering_toast: Option<ToastId>,
+    countdown_refresh: Option<Task<()>>,
     scroll_handle: ScrollHandle,
 }
 
@@ -240,6 +308,7 @@ impl Default for ToastLayer {
             toasts: Vec::new(),
             next_id: 0,
             entering_toast: None,
+            countdown_refresh: None,
             scroll_handle: ScrollHandle::new(),
         }
     }
@@ -267,64 +336,69 @@ impl ToastLayer {
             actions,
             copied: false,
             copy_feedback_task: None,
-            dismiss_task: None,
-            dismiss_remaining: dismiss_after,
-            dismiss_started_at: None,
+            countdown: dismiss_after.map(|total| ToastCountdown {
+                total,
+                remaining: total,
+                running: None,
+            }),
         });
         self.entering_toast = Some(id);
         self.scroll_handle.scroll_to_bottom();
-        self.start_dismiss_timer(id, cx);
+        self.start_dismiss_timer(id, Duration::ZERO, cx);
         cx.notify();
         id
     }
 
-    fn start_dismiss_timer(&mut self, id: ToastId, cx: &mut Context<Self>) {
-        let Some(toast) = self.toasts.iter_mut().find(|toast| toast.id == id) else {
-            return;
-        };
-        let Some(duration) = toast.dismiss_remaining else {
-            return;
-        };
-        toast.dismiss_started_at = Some(Instant::now());
-        let timer = cx.background_executor().timer(duration);
-        toast.dismiss_task = Some(cx.spawn(
-            move |this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
-                let mut cx = asynccx.clone();
-                async move {
-                    timer.await;
-                    if let Some(this) = this.upgrade() {
-                        this.update(&mut cx, |layer, cx| layer.hide(id, cx));
-                    }
-                }
-            },
-        ));
-    }
-
-    /// 暂停自动消失计时（鼠标悬浮常显）：扣减已流逝时长并取消计时任务。
-    fn pause_dismiss_timer(&mut self, id: ToastId) {
-        let Some(toast) = self.toasts.iter_mut().find(|toast| toast.id == id) else {
-            return;
-        };
-        let Some(started_at) = toast.dismiss_started_at.take() else {
-            return;
-        };
-        if let Some(remaining) = toast.dismiss_remaining.as_mut() {
-            *remaining = remaining.saturating_sub(started_at.elapsed());
-            if *remaining < MINIMUM_RESUME_DURATION {
-                *remaining = MINIMUM_RESUME_DURATION;
-            }
-        }
-        toast.dismiss_task = None;
-    }
-
-    /// 恢复自动消失计时（鼠标离开后）。
-    fn restart_dismiss_timer(&mut self, id: ToastId, cx: &mut Context<Self>) {
-        if self
+    fn start_dismiss_timer(
+        &mut self,
+        id: ToastId,
+        minimum_duration: Duration,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(countdown) = self
             .toasts
-            .iter()
-            .any(|toast| toast.id == id && toast.dismiss_started_at.is_none())
-        {
-            self.start_dismiss_timer(id, cx);
+            .iter_mut()
+            .find(|toast| toast.id == id)
+            .and_then(|toast| toast.countdown.as_mut())
+        else {
+            return;
+        };
+        if countdown.running.is_some() {
+            return;
+        }
+        let duration = countdown.remaining.max(minimum_duration);
+        let started_at = cx.background_executor().now();
+        let timer = cx.background_executor().timer(duration);
+        let task = cx.spawn(move |this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
+            let mut cx = asynccx.clone();
+            async move {
+                timer.await;
+                if let Some(this) = this.upgrade() {
+                    this.update(&mut cx, |layer, cx| layer.hide(id, cx));
+                }
+            }
+        });
+        countdown.running = Some(RunningCountdown {
+            started_at,
+            duration,
+            _task: task,
+        });
+        cx.notify();
+    }
+
+    fn pause_dismiss_timer(&mut self, id: ToastId, cx: &mut Context<Self>) {
+        let Some(countdown) = self
+            .toasts
+            .iter_mut()
+            .find(|toast| toast.id == id)
+            .and_then(|toast| toast.countdown.as_mut())
+        else {
+            return;
+        };
+        if countdown.running.is_some() {
+            countdown.remaining = countdown.remaining_at(cx.background_executor().now());
+            countdown.running = None;
+            cx.notify();
         }
     }
 
@@ -392,13 +466,36 @@ impl Render for ToastLayer {
             entering_toast: self.entering_toast.filter(|_| self.toasts.len() > 1),
         };
 
+        let now = cx.background_executor().now();
+        let reduce_motion = cx.reduce_motion();
+        let mut countdown_running = false;
         for toast in &self.toasts {
             let id = toast.id;
-            let (icon, icon_color) = match toast.kind {
-                ToastKind::Success => ("icons/check.svg", color::current(cx).status_success),
-                ToastKind::Info => ("icons/clock.svg", color::current(cx).text_muted),
-                ToastKind::Error => ("icons/warning.svg", color::current(cx).status_error),
-            };
+            let colors = color::current(cx);
+            let (icon, icon_color, border_color) = toast.appearance(colors);
+
+            let mut leading = div()
+                .flex()
+                .items_center()
+                .gap(scale::S6)
+                .child(SvgIcon::new(icon).color(icon_color).size(ui_size));
+            if let Some(countdown) = &toast.countdown {
+                let fraction = countdown.fraction_at(now);
+                countdown_running |= countdown.running.is_some() && fraction > 0.0;
+                let fraction = if reduce_motion {
+                    (fraction * 10.0).ceil() / 10.0
+                } else {
+                    fraction
+                };
+                leading = leading.child(
+                    div()
+                        .debug_selector(move || format!("toast-countdown-{}", id.sequence))
+                        .child(ProgressIndicator::new(
+                            "countdown",
+                            ProgressMode::Determinate(fraction),
+                        )),
+                );
+            }
 
             let message = toast.message.clone();
             let layer = cx.entity().clone();
@@ -444,12 +541,12 @@ impl Render for ToastLayer {
                 .rounded_lg()
                 .bg(color::current(cx).surface_background)
                 .border_1()
-                .border_color(color::current(cx).border)
+                .border_color(border_color)
                 .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
                     if *hovered {
-                        this.pause_dismiss_timer(id);
+                        this.pause_dismiss_timer(id, cx);
                     } else {
-                        this.restart_dismiss_timer(id, cx);
+                        this.start_dismiss_timer(id, MINIMUM_RESUME_DURATION, cx);
                     }
                 }))
                 .text_color(color::current(cx).text)
@@ -460,7 +557,7 @@ impl Render for ToastLayer {
                         .flex_row()
                         .items_center()
                         .justify_between()
-                        .child(SvgIcon::new(icon).color(icon_color).size(ui_size))
+                        .child(leading)
                         .child(
                             div()
                                 .flex()
@@ -514,6 +611,26 @@ impl Render for ToastLayer {
 
             content.bubbles.push(bubble.into_any_element());
             content.ids.push(id);
+        }
+
+        if reduce_motion && countdown_running {
+            if self.countdown_refresh.is_none() {
+                let timer = cx
+                    .background_executor()
+                    .timer(REDUCED_MOTION_REFRESH_INTERVAL);
+                self.countdown_refresh = Some(cx.spawn(async move |layer, cx| {
+                    timer.await;
+                    let _ = layer.update(cx, |layer, cx| {
+                        layer.countdown_refresh = None;
+                        cx.notify();
+                    });
+                }));
+            }
+        } else {
+            self.countdown_refresh = None;
+            if countdown_running {
+                window.request_animation_frame();
+            }
         }
 
         stack = stack.child(content);

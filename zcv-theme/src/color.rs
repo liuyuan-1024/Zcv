@@ -55,6 +55,8 @@ pub struct ThemeColors {
     pub icon_accent: Rgba,
     /// 成功状态颜色。
     pub status_success: Rgba,
+    /// 警告状态颜色。
+    pub status_warning: Rgba,
     /// 错误状态颜色。
     pub status_error: Rgba,
     /// 版本控制新增/未跟踪条目颜色。

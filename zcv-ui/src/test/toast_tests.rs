@@ -1,8 +1,96 @@
 use std::{cell::Cell, rc::Rc, thread, time::Duration};
 
 use gpui::{AppContext, TestAppContext};
+use zcv_theme::color;
 
-use super::{ToastAction, ToastKind, ToastLayer};
+use super::{MINIMUM_RESUME_DURATION, PERSISTENT_BORDER_TINT, ToastAction, ToastKind, ToastLayer};
+
+#[gpui::test]
+fn temporary_toast_countdown_pauses_and_resumes_without_jumping(cx: &mut TestAppContext) {
+    let (layer, cx) = cx.add_window_view(|_, _| ToastLayer::default());
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    let id = layer.update(cx, |layer, cx| {
+        let id = layer.show(
+            ToastKind::Info,
+            "临时提示",
+            vec![],
+            Some(Duration::from_secs(1)),
+            cx,
+        );
+        layer.show(ToastKind::Info, "常驻提示", vec![], None, cx);
+        id
+    });
+    assert!(cx.debug_bounds("toast-countdown-0").is_some());
+    assert!(cx.debug_bounds("toast-countdown-1").is_none());
+    let fraction = |layer: &ToastLayer, cx: &gpui::App| {
+        layer.toasts[0]
+            .countdown
+            .as_ref()
+            .expect("临时提示应有倒计时")
+            .fraction_at(cx.background_executor().now())
+    };
+
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(750));
+    assert_eq!(cx.read_entity(&layer, fraction), 0.25);
+    layer.update(cx, |layer, cx| layer.pause_dismiss_timer(id, cx));
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_secs(2));
+    assert_eq!(cx.read_entity(&layer, fraction), 0.25);
+
+    layer.update(cx, |layer, cx| {
+        layer.start_dismiss_timer(id, MINIMUM_RESUME_DURATION, cx)
+    });
+    assert_eq!(cx.read_entity(&layer, fraction), 0.25);
+    cx.run_until_parked();
+    cx.executor().advance_clock(MINIMUM_RESUME_DURATION / 2);
+    assert_eq!(cx.read_entity(&layer, fraction), 0.125);
+    cx.executor().advance_clock(MINIMUM_RESUME_DURATION / 2);
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("toast-countdown-0").is_none());
+    assert!(cx.debug_bounds("toast-1").is_some());
+}
+
+#[gpui::test]
+fn only_persistent_toasts_use_semantic_borders(cx: &mut TestAppContext) {
+    let layer = cx.new(|_| ToastLayer::default());
+    layer.update(cx, |layer, cx| {
+        for kind in [
+            ToastKind::Success,
+            ToastKind::Info,
+            ToastKind::Warning,
+            ToastKind::Error,
+        ] {
+            let temporary = layer.show(kind, "临时提示", vec![], Some(Duration::from_secs(8)), cx);
+            layer.pause_dismiss_timer(temporary, cx);
+            layer.show(kind, "常驻提示", vec![], None, cx);
+        }
+    });
+
+    cx.read_entity(&layer, |layer, cx| {
+        let colors = color::current(cx);
+        let expected = [
+            colors.status_success,
+            colors.icon_accent,
+            colors.status_warning,
+            colors.status_error,
+        ];
+        assert_eq!(layer.toasts.len(), expected.len() * 2);
+        for (toasts, status_color) in layer.toasts.chunks_exact(2).zip(expected) {
+            let (_, _, temporary_border) = toasts[0].appearance(colors);
+            let (_, icon_color, persistent_border) = toasts[1].appearance(colors);
+            assert_eq!(temporary_border, colors.border);
+            assert_eq!(icon_color, status_color);
+            assert_eq!(
+                persistent_border,
+                colors
+                    .border
+                    .blend(status_color.opacity(PERSISTENT_BORDER_TINT))
+            );
+            assert_ne!(persistent_border, temporary_border);
+        }
+    });
+}
 
 #[gpui::test]
 fn multiple_toasts_keep_independent_actions_and_lifetimes(cx: &mut TestAppContext) {
@@ -72,7 +160,7 @@ fn timed_toasts_expire_independently_and_persistent_toasts_remain(cx: &mut TestA
         (first, second, persistent)
     });
 
-    layer.update(cx, |layer, _| layer.pause_dismiss_timer(first));
+    layer.update(cx, |layer, cx| layer.pause_dismiss_timer(first, cx));
     cx.run_until_parked();
     cx.executor().advance_clock(Duration::from_secs(3));
     cx.run_until_parked();
@@ -83,7 +171,9 @@ fn timed_toasts_expire_independently_and_persistent_toasts_remain(cx: &mut TestA
         assert!(!layer.toasts.iter().any(|toast| toast.id == second));
     });
 
-    layer.update(cx, |layer, cx| layer.restart_dismiss_timer(first, cx));
+    layer.update(cx, |layer, cx| {
+        layer.start_dismiss_timer(first, super::MINIMUM_RESUME_DURATION, cx)
+    });
     cx.run_until_parked();
     cx.executor().advance_clock(Duration::from_secs(3));
     cx.run_until_parked();

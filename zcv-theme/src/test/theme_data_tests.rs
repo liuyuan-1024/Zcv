@@ -38,12 +38,9 @@ fn dark_theme_colors_match_migrated_values() {
         colors.editor_selection_background
     );
     assert_eq!(colors.scrollbar_thumb_active_background, rgba(0x363c46ff));
-    assert_eq!(colors.version_control_word_added, rgba(0x2EA04859));
-    assert_eq!(colors.version_control_word_deleted, rgba(0x78081bcc));
     assert_eq!(colors.version_control_added, rgba(0x27a657ff));
     assert_eq!(colors.version_control_modified, rgba(0xd3b020ff));
     assert_eq!(colors.version_control_deleted, rgba(0xe06c76ff));
-    assert_eq!(colors.status_conflict, rgba(0xdec184ff));
     assert_eq!(
         colors.editor_diff_added_background,
         rgba(0x27a657ff).opacity(0.12)
@@ -67,10 +64,6 @@ fn dark_theme_colors_match_migrated_values() {
     assert_eq!(
         colors.editor_diff_deleted_hollow_border,
         rgba(0xe06c76ff).opacity(0.36)
-    );
-    assert_ne!(
-        colors.version_control_word_added,
-        colors.editor_diff_added_background
     );
     assert_eq!(colors.terminal_ansi_red, rgba(0xe06c75ff));
     assert_eq!(colors.terminal_ansi_yellow, rgba(0xe5c07bff));
@@ -99,12 +92,9 @@ fn light_theme_colors_match_migrated_values() {
         colors.editor_selection_background
     );
     assert_eq!(colors.ghost_element_hover, rgba(0xc9c9caff));
-    assert_eq!(colors.version_control_word_added, rgba(0x2EA04859));
-    assert_eq!(colors.version_control_word_deleted, rgba(0xf85149cc));
     assert_eq!(colors.version_control_added, rgba(0x27a657ff));
     assert_eq!(colors.version_control_modified, rgba(0xd3b020ff));
     assert_eq!(colors.version_control_deleted, rgba(0xe06c76ff));
-    assert_eq!(colors.status_conflict, rgba(0xa48819ff));
     assert_eq!(
         colors.editor_diff_added_background,
         rgba(0x27a657ff).opacity(0.16)
@@ -129,12 +119,34 @@ fn light_theme_colors_match_migrated_values() {
         colors.editor_diff_deleted_hollow_border,
         rgba(0xe06c76ff).opacity(0.48)
     );
-    assert_ne!(
-        colors.version_control_word_added,
-        colors.editor_diff_added_background
-    );
     assert_eq!(colors.terminal_ansi_yellow, rgba(0xd2b67cff));
     assert_eq!(colors.terminal_ansi_blue, rgba(0x2f5af3ff));
+}
+
+#[test]
+fn ui_status_colors_are_shared_across_features() {
+    for theme in themes() {
+        let colors = theme.colors;
+        assert_eq!(colors.status_success, colors.version_control_added);
+        assert_eq!(colors.status_error, colors.version_control_deleted);
+        assert_eq!(colors.status_warning, colors.version_control_modified);
+        assert_eq!(colors.status_conflict, colors.status_warning);
+        for (base, word, line) in [
+            (
+                colors.version_control_added,
+                colors.version_control_word_added,
+                colors.editor_diff_added_background,
+            ),
+            (
+                colors.version_control_deleted,
+                colors.version_control_word_deleted,
+                colors.editor_diff_deleted_background,
+            ),
+        ] {
+            assert_eq!(word, base.opacity(word.a));
+            assert!(word.a > line.a && word.a < base.a);
+        }
+    }
 }
 
 #[test]
@@ -187,14 +199,9 @@ fn minimal_theme() -> String {
         "icon.muted" = "#888888ff"
         "icon.on_accent" = "#000000ff"
         "icon.accent" = "#555555ff"
-        success = "#00ff00ff"
-        error = "#ff0000ff"
-        "version_control.added" = "#00ff00ff"
-        "version_control.modified" = "#ffff00ff"
-        "version_control.deleted" = "#ff0000ff"
-        "version_control.word_added" = "#00ff00ff"
-        "version_control.word_deleted" = "#ff0000ff"
-        conflict = "#ff0000ff"
+        "status.green" = "#00ff00ff"
+        "status.yellow" = "#ffff00ff"
+        "status.red" = "#ff0000ff"
         "title_bar.background" = "#222222ff"
         "status_bar.background" = "#111111ff"
         "tab_bar.background" = "#222222ff"
@@ -255,7 +262,7 @@ fn minimal_theme_parses() {
 #[test]
 fn parse_theme_rejects_missing_color_key() {
     // 夹具行带 8 空格缩进；这里按 key 值定位，不绑定具体缩进。
-    let src = minimal_theme().replace("\"editor.cursor\" = \"#555555ff\"\n", "");
+    let src = minimal_theme().replace("\"status.yellow\" = \"#ffff00ff\"\n", "");
     assert!(parse_theme("test", &src).is_none());
 }
 

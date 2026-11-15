@@ -1080,7 +1080,7 @@ impl Workspace {
                 }
             });
             let id = self.show_toast(
-                ToastKind::Error,
+                ToastKind::Warning,
                 message,
                 vec![overwrite, restore],
                 None,

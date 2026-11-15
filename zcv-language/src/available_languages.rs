@@ -253,6 +253,32 @@ const COMMON_PAIRS: &[AutoClosePair] = &[
 ];
 
 const DEFAULT_INPUT_FOLLOWERS: &str = ";:.,=}])>";
+const BIBTEX_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+];
 const SHELL_INPUT_FOLLOWERS: &str = "}])";
 const JSON_INPUT_FOLLOWERS: &str = ",]}";
 const HTML_INPUT_FOLLOWERS: &str = ">})";
@@ -1746,6 +1772,19 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             line_comments: &["% "],
             ..LanguageInputConfig::empty()
         }),
+        LanguageSpec::tree_sitter(
+            "BibTeX",
+            LanguageMatcher {
+                suffixes: &["bib"],
+                first_line_pattern: None,
+            },
+            || tree_sitter_bibtex::LANGUAGE.into(),
+            file_language_queries!("bibtex")
+                .with_overrides(include_str!("../queries/bibtex/overrides.scm")),
+            None,
+            BIBTEX_PAIRS,
+            DEFAULT_INPUT_FOLLOWERS,
+        ),
         LanguageSpec::tree_sitter(
             "Markdown",
             LanguageMatcher {

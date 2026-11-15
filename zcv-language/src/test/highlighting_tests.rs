@@ -531,3 +531,39 @@ fn javascript_tagged_template_injects_css_highlights() {
             .any(|span| names[span.capture as usize].as_ref() == "property")
     );
 }
+
+#[test]
+fn bibtex_highlights_fields_and_recovers_from_an_incomplete_entry() {
+    let fixture = include_str!("../../tests/fixtures/references.bib");
+    for source in [fixture, fixture.trim_end_matches(['\n', ')'])] {
+        let (buffer, syntax) = parsed_syntax("references.bib", source);
+        let text = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let names = syntax.capture_names();
+        let spans = syntax.highlights(0..source.len(), &text, &HighlightCache::new());
+        for (fragment, capture) in [
+            ("@article", "keyword"),
+            ("zhang2026", "label"),
+            ("journal", "property"),
+            ("venue", "constant"),
+            ("#", "operator"),
+            ("增刊", "string"),
+            ("Tree-sitter", "string"),
+            ("2026,\n  doi", "number"),
+            ("@book", "keyword"),
+            ("li2025", "label"),
+            ("示例出版社", "string"),
+        ] {
+            let offset = source.find(fragment).unwrap();
+            assert!(
+                spans.iter().any(|span| {
+                    span.range.contains(&offset) && names[span.capture as usize].as_ref() == capture
+                }),
+                "{fragment} 应使用 {capture} 高亮"
+            );
+        }
+        if source == fixture {
+            assert!(!syntax.root_tree().unwrap().root_node().has_error());
+        }
+    }
+}

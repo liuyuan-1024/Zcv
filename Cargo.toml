@@ -41,7 +41,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.11.2"
+version = "0.11.3"
 edition = "2024"
 
 [workspace.lints.rust]
@@ -117,6 +117,7 @@ tree-sitter-swift = "0.7.3"
 tree-sitter-toml-ng = "0.7.0"
 tree-sitter-zig = "1.1.2"
 tree-sitter-md = { git = "https://github.com/tree-sitter-grammars/tree-sitter-markdown", rev = "9a23c1a96c0513d8fc6520972beedd419a973539" }
+tree-sitter-bibtex = { git = "https://github.com/latex-lsp/tree-sitter-bibtex", rev = "8d04ed27b3bc7929f14b7df9236797dab9f3fa66" }
 tree-sitter-latex = { package = "codebook-tree-sitter-latex", version = "0.6.1" }
 tree-sitter-json = "0.24"
 tree-sitter-yaml = "0.7.2"

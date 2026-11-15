@@ -3,7 +3,10 @@
 //! 配对来自语言注册的 `brackets.scm`；
 //! 模块只返回源文本范围，不负责自动闭合输入。
 
-use std::ops::Range;
+use std::{
+    collections::{BTreeMap, HashMap},
+    ops::Range,
+};
 
 use tree_sitter::StreamingIterator;
 use zcv_text::Snapshot;
@@ -38,6 +41,7 @@ impl SyntaxSnapshot {
             cursor.set_byte_range(range.clone());
             let mut matches =
                 cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
+            let mut scoped_delimiters = HashMap::<_, BTreeMap<_, _>>::new();
             while let Some(query_match) = matches.next() {
                 let newline_only = query
                     .property_settings(query_match.pattern_index)
@@ -45,19 +49,44 @@ impl SyntaxSnapshot {
                     .any(|property| property.key.as_ref() == "newline.only");
                 let mut open = None;
                 let mut close = None;
+                let mut scope = None;
                 for capture in query_match.captures {
                     match names.get(capture.index as usize).copied() {
                         Some("open") => open = Some(capture.node.byte_range()),
                         Some("close") => close = Some(capture.node.byte_range()),
+                        Some("scope") => scope = Some(capture.node),
                         _ => {}
                     }
                 }
-                if let (Some(open), Some(close)) = (open, close) {
+                if let Some(scope) = scope {
+                    let delimiters = scoped_delimiters
+                        .entry((query_match.pattern_index, scope.id(), newline_only))
+                        .or_default();
+                    for (range, is_open) in [(open, true), (close, false)] {
+                        if let Some(range) = range.filter(|range| !range.is_empty()) {
+                            delimiters.insert(range.start, (range.end, is_open));
+                        }
+                    }
+                } else if let (Some(open), Some(close)) = (open, close) {
                     pairs.push(BracketPair {
                         open,
                         close,
                         newline_only,
                     });
+                }
+            }
+            for ((_, _, newline_only), delimiters) in scoped_delimiters {
+                let mut opens = Vec::new();
+                for (start, (end, is_open)) in delimiters {
+                    if is_open {
+                        opens.push(start..end);
+                    } else if let Some(open) = opens.pop() {
+                        pairs.push(BracketPair {
+                            open,
+                            close: start..end,
+                            newline_only,
+                        });
+                    }
                 }
             }
         }

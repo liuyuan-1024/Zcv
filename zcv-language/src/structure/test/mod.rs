@@ -684,3 +684,45 @@ fn jsx_tag_close_does_not_guess_without_a_current_parse() {
         "插值树没有开放标签节点时不得凭旧文本猜测闭合标签"
     );
 }
+
+#[test]
+fn bibtex_pairs_nested_fields_at_the_cursor_and_folds_entries() {
+    let source = "@article{key,\n  title = {甲 {乙 {丙} {丁}} 戊},\n  note = \"{己}\"\n}\n";
+    let (buffer, syntax) = parsed_syntax("references.bib", source);
+    let text = buffer.snapshot();
+    let syntax = syntax.snapshot();
+
+    for group in [
+        "{甲 {乙 {丙} {丁}} 戊}",
+        "{乙 {丙} {丁}}",
+        "{丙}",
+        "{丁}",
+        "{己}",
+        "\"{己}\"",
+    ] {
+        let start = source.find(group).unwrap();
+        let close = start + group.len() - 1;
+        for offset in [start, close] {
+            let pairs = syntax.bracket_pairs(offset..offset + 1, &text);
+            assert_eq!(
+                pairs
+                    .iter()
+                    .filter(|pair| pair.open.start == start)
+                    .map(|pair| pair.close.start)
+                    .collect::<Vec<_>>(),
+                [close],
+                "{group}"
+            );
+        }
+    }
+
+    let newline = source.find('\n').unwrap();
+    let indent = syntax
+        .suggested_newline_indent(ByteOffset::new(newline), &text)
+        .unwrap();
+    assert_eq!(indent.additional_levels, 1);
+
+    let folds = resolve_folds(syntax.fold_ranges(0..source.len(), &text), &text);
+    assert_eq!(folds.len(), 1);
+    assert_eq!(folds[0].range.end, source.rfind('}').unwrap());
+}

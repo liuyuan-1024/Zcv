@@ -109,6 +109,10 @@ const FIXTURES: &[Fixture] = &[
         language: "LaTeX",
     },
     Fixture {
+        file: "references.bib",
+        language: "BibTeX",
+    },
+    Fixture {
         file: "markdown.md",
         language: "Markdown",
     },

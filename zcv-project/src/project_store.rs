@@ -21,8 +21,7 @@ use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::{ConflictChoice, FileStatus, parse_conflict_regions, resolve_conflict};
 use zcv_language::{LanguageBuffer, LanguageBufferEvent, LanguageRegistry};
 use zcv_path::{
-    AbsolutePathBuf, DisplayPath, ProjectPath, ProjectRootDisplay, ProjectRootId,
-    normalize_for_comparison,
+    AbsolutePathBuf, DisplayPath, ProjectRootDisplay, ProjectRootId, normalize_for_comparison,
 };
 use zcv_text::{ByteOffset, Edit, Snapshot, TextRange, TextResult, TransactionMetadata};
 
@@ -184,46 +183,47 @@ impl Project {
         let fs_task = Self::spawn_fs_task(&fs_watcher, cx);
 
         let mut pending_file_watcher_errors = Vec::new();
-        let mut root_watch_registrations = Vec::with_capacity(roots.len());
-        for root in &roots {
-            root_watch_registrations.push(match fs_watcher.add(root.as_path()) {
-                Ok(()) => true,
-                Err(error) => {
-                    pending_file_watcher_errors.push(FileWatcherError {
-                        operation: FileWatcherOperation::Add,
-                        path: root.as_path().to_path_buf(),
-                        error: format!("{error:#}"),
-                    });
-                    false
+        let worktrees: Vec<_> = roots
+            .into_iter()
+            .enumerate()
+            .map(|(index, root)| {
+                let watch_registered = match fs_watcher.add(root.as_path()) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        pending_file_watcher_errors.push(FileWatcherError {
+                            operation: FileWatcherOperation::Add,
+                            path: root.as_path().to_path_buf(),
+                            error: format!("{error:#}"),
+                        });
+                        false
+                    }
+                };
+                ProjectWorktree {
+                    id: ProjectRootId::new(index as u64 + 1),
+                    root: root.clone(),
+                    snapshot: Worktree::new(root),
+                    watch_registered,
                 }
-            });
-        }
+            })
+            .collect();
 
         let git_store = cx.new(|cx| {
             GitStore::new(
-                roots
+                worktrees
                     .iter()
-                    .map(|root| root.as_path().to_path_buf())
+                    .map(|worktree| worktree.root.as_path().to_path_buf())
                     .collect(),
                 Arc::clone(&languages),
                 cx,
             )
         });
-        git_store.update(cx, |store, cx| store.schedule_scan(cx));
+        if !worktrees.is_empty() {
+            git_store.update(cx, |store, cx| store.schedule_scan(cx));
+        }
 
-        let root_count = roots.len() as u64;
+        let next_root_id = worktrees.len() as u64 + 1;
         Self {
-            worktrees: roots
-                .into_iter()
-                .enumerate()
-                .zip(root_watch_registrations)
-                .map(|((index, root), watch_registered)| ProjectWorktree {
-                    id: ProjectRootId::new(index as u64 + 1),
-                    root: root.clone(),
-                    snapshot: Worktree::new(root),
-                    watch_registered,
-                })
-                .collect(),
+            worktrees,
             scan_exclusions: Vec::new(),
             git_store,
             buffer_store: BufferStore::new(Arc::clone(&languages)),
@@ -236,7 +236,7 @@ impl Project {
             next_reload_id: 0,
             language_registry: languages,
             pending_file_watcher_errors,
-            next_root_id: root_count + 1,
+            next_root_id,
             requested_expanded: HashSet::new(),
             scan_generation: 0,
             scan_in_flight: false,
@@ -250,29 +250,7 @@ impl Project {
         fs_watcher: Arc<dyn Watcher>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let git_store = cx.new(|cx| GitStore::new(Vec::new(), Arc::clone(&languages), cx));
-        let fs_task = Self::spawn_fs_task(&fs_watcher, cx);
-        Self {
-            worktrees: Vec::new(),
-            scan_exclusions: Vec::new(),
-            git_store,
-            buffer_store: BufferStore::new(Arc::clone(&languages)),
-            fs_watcher,
-            _fs_task: fs_task,
-            external_watch_counts: HashMap::new(),
-            external_buffer_watches: HashMap::new(),
-            buffer_subscriptions: HashMap::new(),
-            reload_tasks: HashMap::new(),
-            next_reload_id: 0,
-            language_registry: languages,
-            pending_file_watcher_errors: Vec::new(),
-            next_root_id: 1,
-            requested_expanded: HashSet::new(),
-            scan_generation: 0,
-            scan_in_flight: false,
-            scan_task: None,
-            worktree_invalidation_epoch: 0,
-        }
+        Self::new_with_normalized_roots(Vec::new(), fs_watcher, languages, cx)
     }
 
     fn spawn_fs_task(fs_watcher: &Arc<dyn Watcher>, cx: &mut Context<Self>) -> Task<()> {
@@ -331,27 +309,10 @@ impl Project {
             .map(|(index, _)| index)
     }
 
-    fn worktree_index_for_id(&self, id: ProjectRootId) -> Option<usize> {
-        self.worktrees.iter().position(|worktree| worktree.id == id)
-    }
-
-    /// 路径所属的稳定根 id；嵌套根命中多个时取最内层根。
-    pub fn root_id_for_path(&self, path: &Path) -> Option<ProjectRootId> {
-        self.worktree_index_for_path(path)
-            .map(|index| self.worktrees[index].id)
-    }
-
     /// 路径所属的工作区根；供展示层做相对化，嵌套根命中多个时取最内层根。
     pub fn root_for_path(&self, path: &Path) -> Option<&Path> {
         self.worktree_index_for_path(path)
             .map(|index| self.worktrees[index].root.as_path())
-    }
-
-    /// 路径在项目身份空间中的稳定坐标；路径不属于任何根或无法表示为相对路径时返回 None。
-    pub fn project_path_for_path(&self, path: &Path) -> Option<ProjectPath> {
-        let index = self.worktree_index_for_path(path)?;
-        let relative = self.worktrees[index].root.relative_path(path)?;
-        Some(ProjectPath::new(self.worktrees[index].id, relative))
     }
 
     /// 路径的面包屑/搜索结果显示投影；根标签由 Project 统一消歧。
@@ -359,21 +320,6 @@ impl Project {
         let index = self.worktree_index_for_path(path)?;
         let relative = self.worktrees[index].root.relative_path(path)?;
         Some(DisplayPath::new(self.root_display(index), relative))
-    }
-
-    /// 已知 ProjectPath 时取显示投影；根已移除时返回 None。
-    pub fn display_path_for_project_path(&self, path: &ProjectPath) -> Option<DisplayPath> {
-        let index = self.worktree_index_for_id(path.root())?;
-        Some(DisplayPath::new(
-            self.root_display(index),
-            path.relative().clone(),
-        ))
-    }
-
-    /// ProjectPath 对应的绝对物理路径；用于打开文件、复制绝对路径与文件操作。
-    pub fn absolute_path_for_project_path(&self, path: &ProjectPath) -> Option<AbsolutePathBuf> {
-        let index = self.worktree_index_for_id(path.root())?;
-        Some(self.worktrees[index].root.join_relative(path.relative()))
     }
 
     /// 路径相对其所属工作区根的展示形式；路径在所有根之外时返回 None。

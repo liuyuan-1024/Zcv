@@ -84,7 +84,7 @@ fn word_diff_background_has_character_geometry_inside_a_ligature() {
         None,
     );
     let backgrounds = LineBackgrounds {
-        diffs: vec![(start..start + 1, gpui::rgba(0x22aa4444))],
+        diffs: vec![(start..start + 1, rgba(0x22aa4444))],
         highlights: Vec::new(),
         runs: Vec::new(),
         selections: Vec::new(),
@@ -886,7 +886,7 @@ fn editor_width_soft_wrap_keeps_mixed_cjk_inside_text_bounds(cx: &mut TestAppCon
                     cx.update_entity(&map, |map, cx| map.set_wrap_width(wrap_width, font.clone(), font_size, window.text_system(), cx));
                     let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
                     let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
-                    let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+                    let viewport: Vec<_> = iter::from_fn(|| cursor.next()).collect();
                     if quarter_pixels == 720 {
                         assert!(viewport.len() > 1, "窄文本布局区应触发软换行");
                     }

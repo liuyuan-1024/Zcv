@@ -29,8 +29,8 @@ impl Buffer {
     }
 
     fn full_text(&self) -> TextResult<String> {
-        self.storage.slice_to_string(
-            TextRange::new(ByteOffset::ZERO, self.storage.len_bytes())
+        self.storage.read().slice_to_string(
+            TextRange::new(ByteOffset::ZERO, self.storage.read().len_bytes())
                 .expect("全文范围必须满足 start <= end"),
         )
     }

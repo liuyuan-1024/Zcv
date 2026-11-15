@@ -22,7 +22,7 @@ impl Buffer {
     ///
     /// Buffer 字段默认值变更只需改这一处。
     fn from_parts(storage: RopeyStorage, config: BufferConfig) -> Self {
-        let insertions = InsertionIndex::with_text(storage.len_bytes().get());
+        let insertions = InsertionIndex::with_text(storage.read().len_bytes().get());
         let mut buffer = Self {
             buffer_id: BufferId::next_local(),
             read_only: false,
@@ -71,7 +71,7 @@ impl Buffer {
     pub fn is_large_file(&self) -> bool {
         self.config
             .large_file
-            .is_large_byte_size(self.storage.len_bytes().get())
+            .is_large_byte_size(self.storage.read().len_bytes().get())
     }
 
     pub fn version(&self) -> BufferVersion {

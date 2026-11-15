@@ -76,9 +76,11 @@ fn only_persistent_toasts_use_semantic_borders(cx: &mut TestAppContext) {
             colors.status_error,
         ];
         assert_eq!(layer.toasts.len(), expected.len() * 2);
-        for (toasts, status_color) in layer.toasts.chunks_exact(2).zip(expected) {
-            let (_, _, temporary_border) = toasts[0].appearance(colors);
-            let (_, icon_color, persistent_border) = toasts[1].appearance(colors);
+        for ([temporary, persistent], status_color) in
+            layer.toasts.as_chunks::<2>().0.iter().zip(expected)
+        {
+            let (_, _, temporary_border) = temporary.appearance(colors);
+            let (_, icon_color, persistent_border) = persistent.appearance(colors);
             assert_eq!(temporary_border, colors.border);
             assert_eq!(icon_color, status_color);
             assert_eq!(

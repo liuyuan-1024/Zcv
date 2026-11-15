@@ -4,7 +4,8 @@
 //!
 //! `TextRead` 是跨文本算法（如项目搜索）消费只读视图的**跨 crate 协议**，`MultiBufferSnapshot` 实现它；
 //! 它同时约束 Buffer / Snapshot 门面的坐标系纪律（字节优先、zero-copy），不代表可插拔存储承诺：
-//! `RopeyStorage` / `RopeySnapshot` 仍是唯一存储后端，所有生产代码直接以具体类型持有存储。
+//! `RopeyStorage` 持有当前版本的文本和行索引，负责原子编辑。
+//! `Buffer` 借用其只读视图，`Snapshot` 持有写时复制的同版本视图，读取与坐标换算共用 `RopeySnapshot`。
 
 mod line_index;
 mod ropey;

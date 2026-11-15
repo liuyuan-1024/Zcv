@@ -349,19 +349,9 @@ impl PositionMap {
         results
     }
 
-    /// new byte position -> old byte position。
-    ///
-    /// map_old_position 的反向：把当前（新）文本坐标映射回旧版本坐标。
-    /// 插入产生的新内容没有唯一旧坐标，返回 Ambiguous 并吸附到插入点；
-    /// 纯删除在新文本里塌缩成一个点，按 Affinity 吸附到旧区间起点或终点。
-    pub fn map_new_position(&self, pos: ByteOffset) -> MappingResult<ByteOffset> {
-        self.map_new_position_with_affinity(pos, Affinity::default())
-    }
-
-    /// new byte position -> old byte position，显式指定纯删除点处的吸附方向。
-    ///
-    /// 旧→新映射在插入点上用 Affinity 消歧，本方法把同一语义补到反向的零宽新区间上，
-    /// 使两个方向在边界点的吸附结果对称。
+    /// 将新版本字节坐标映射到旧版本。
+    /// 插入产生的新内容没有唯一旧坐标，返回 Ambiguous。
+    /// 纯删除在新版本中缩成一个点，由 Affinity 决定吸附到旧区间的起点或终点。
     pub fn map_new_position_with_affinity(
         &self,
         pos: ByteOffset,

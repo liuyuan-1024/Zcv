@@ -57,9 +57,7 @@ fn validate_byte_range_in_rope(rope: &Rope, range: TextRange) -> TextResult<()> 
 /// 不把 `ropey::Rope` 暴露到 public API；外部仍然只看到 Buffer / Snapshot / ByteOffset。
 #[derive(Debug, Clone)]
 pub(crate) struct RopeyStorage {
-    rope: Rope,
-    /// 行摘要派生索引；与 rope 在同一次编辑中推进，供快照按行聚合区间摘要。
-    line_index: LineIndex,
+    text: RopeySnapshot,
 }
 
 /// `RopeyStorage` 已完成预检的替换坐标。
@@ -67,141 +65,41 @@ pub(crate) struct RopeyStorage {
 /// 这里保存 ropey 原生 char range，使事务提交阶段不再做任何可失败的
 /// byte 边界校验或 byte→char 坐标换算。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RopeyPreparedReplace {
+struct RopeyPreparedReplace {
     start_char: usize,
     end_char: usize,
 }
 
 impl RopeyStorage {
     pub(crate) fn new(text: String) -> Self {
-        let line_index = LineIndex::from_text(&text);
         Self {
-            rope: Rope::from_str(&text),
-            line_index,
+            text: RopeySnapshot {
+                rope: Rope::from_str(&text),
+                line_index: LineIndex::from_text(&text),
+            },
         }
     }
-}
 
-impl TextRead for RopeyStorage {
-    fn slice_text(&self, range: TextRange) -> TextResult<Cow<'_, str>> {
-        validate_byte_range_in_rope(&self.rope, range)?;
-        Ok(rope_byte_range_cow(&self.rope, range))
+    pub(crate) fn read(&self) -> &RopeySnapshot {
+        &self.text
     }
 
-    fn chunks(&self, range: TextRange) -> TextResult<impl Iterator<Item = &str> + '_> {
-        validate_byte_range_in_rope(&self.rope, range)?;
-        Ok(self
-            .rope
-            .byte_slice(range.start().get()..range.end().get())
-            .chunks())
-    }
-
-    fn len_bytes(&self) -> ByteOffset {
-        rope_len_bytes(&self.rope)
-    }
-
-    fn len_chars(&self) -> CharOffset {
-        CharOffset::new(self.rope.len_chars())
-    }
-
-    fn line_count(&self) -> usize {
-        self.rope.len_lines()
-    }
-
-    fn line_start(&self, line: Line) -> TextResult<ByteOffset> {
-        if line.get() >= self.rope.len_lines() {
-            return Err(CoordinateError::LineOutOfBounds(line).into());
-        }
-
-        Ok(ByteOffset::new(self.rope.line_to_byte(line.get())))
-    }
-
-    fn byte_to_position(&self, offset: ByteOffset) -> TextResult<Position> {
-        byte_to_position_in_rope(&self.rope, offset)
-    }
-
-    fn byte_to_line(&self, offset: ByteOffset) -> TextResult<Line> {
-        byte_to_line_in_rope(&self.rope, offset)
-    }
-
-    fn position_to_byte(&self, position: Position) -> TextResult<ByteOffset> {
-        position_to_byte_in_rope(&self.rope, position)
-    }
-
-    fn char_to_position(&self, offset: CharOffset) -> TextResult<Position> {
-        char_to_position_in_rope(&self.rope, offset)
-    }
-
-    fn position_to_char(&self, position: Position) -> TextResult<CharOffset> {
-        position_to_char_in_rope(&self.rope, position)
-    }
-
-    fn char_at(&self, offset: CharOffset) -> Option<char> {
-        char_at(&self.rope, offset.get())
-    }
-
-    fn char_at_byte(&self, offset: ByteOffset) -> Option<char> {
-        char_at_byte(&self.rope, offset.get())
-    }
-
-    fn byte_to_char(&self, offset: ByteOffset) -> TextResult<CharOffset> {
-        byte_to_char_in_rope(&self.rope, offset)
-    }
-
-    fn char_to_byte(&self, offset: CharOffset) -> TextResult<ByteOffset> {
-        char_to_byte_in_rope(&self.rope, offset)
-    }
-
-    fn byte_to_utf16_cu(&self, offset: ByteOffset) -> TextResult<Utf16Offset> {
-        byte_to_utf16_cu_in_rope(&self.rope, offset)
-    }
-
-    fn utf16_cu_to_byte(&self, offset: Utf16Offset) -> TextResult<ByteOffset> {
-        utf16_cu_to_byte_in_rope(&self.rope, offset)
-    }
-
-    fn is_grapheme_boundary(&self, offset: ByteOffset) -> TextResult<bool> {
-        is_grapheme_boundary_in_rope(&self.rope, offset)
-    }
-
-    fn previous_grapheme_boundary(&self, offset: ByteOffset) -> TextResult<ByteOffset> {
-        previous_grapheme_boundary_in_rope(&self.rope, offset)
-    }
-
-    fn next_grapheme_boundary(&self, offset: ByteOffset) -> TextResult<ByteOffset> {
-        next_grapheme_boundary_in_rope(&self.rope, offset)
-    }
-
-    fn line_ending_style(&self) -> LineEndingStyle {
-        detect_line_ending_style_in_rope(&self.rope)
-    }
-}
-
-impl RopeyStorage {
-    /// 创建基于 `Rope::clone()` 的低成本不可变快照。
+    /// 创建基于写时复制的不可变快照。
     pub(crate) fn snapshot(&self) -> RopeySnapshot {
-        RopeySnapshot {
-            rope: self.rope.clone(),
-            line_index: self.line_index.clone(),
-        }
+        self.text.clone()
     }
 
     /// 预检一次替换。`range` 端点必须落在 UTF-8 字符边界。
     ///
-    /// 所有可能失败的后端校验、坐标换算和容量预约都必须发生在这里，
-    /// 事务管线进入实际文本变异后只能调用不可失败的 `replace_prepared`。
-    pub(crate) fn prepare_replace(
-        &self,
-        range: TextRange,
-        _replacement: &str,
-    ) -> TextResult<RopeyPreparedReplace> {
-        validate_byte_range_in_rope(&self.rope, range)?;
+    /// 在修改文本前校验字节区间并转换成 Ropey 字符坐标。
+    fn prepare_replace(&self, range: TextRange) -> TextResult<RopeyPreparedReplace> {
+        validate_byte_range_in_rope(&self.text.rope, range)?;
 
         let start_byte = range.start().get();
         let end_byte = range.end().get();
         Ok(RopeyPreparedReplace {
-            start_char: self.rope.byte_to_char(start_byte),
-            end_char: self.rope.byte_to_char(end_byte),
+            start_char: self.text.rope.byte_to_char(start_byte),
+            end_char: self.text.rope.byte_to_char(end_byte),
         })
     }
 
@@ -210,13 +108,15 @@ impl RopeyStorage {
     /// 调用方必须按旧文本坐标的倒序应用 prepared edits，使每个 prepared range
     /// 在当前文本中仍指向同一段旧文本。该 primitive 不返回 `Result`，从而保护事务
     /// 提交阶段不会在半提交后才发现可恢复错误。
-    pub(crate) fn replace_prepared(&mut self, prepared: RopeyPreparedReplace, replacement: &str) {
+    fn replace_prepared(&mut self, prepared: RopeyPreparedReplace, replacement: &str) {
         if prepared.start_char != prepared.end_char {
-            self.rope.remove(prepared.start_char..prepared.end_char);
+            self.text
+                .rope
+                .remove(prepared.start_char..prepared.end_char);
         }
 
         if !replacement.is_empty() {
-            self.rope.insert(prepared.start_char, replacement);
+            self.text.rope.insert(prepared.start_char, replacement);
         }
     }
 
@@ -231,7 +131,7 @@ impl RopeyStorage {
             .map_err(|_| StorageError::OutOfMemory)?;
 
         for edit in edits.as_slice() {
-            prepared.push(self.prepare_replace(edit.range(), edit.replacement())?);
+            prepared.push(self.prepare_replace(edit.range())?);
         }
 
         for (edit, prepared) in edits
@@ -242,13 +142,13 @@ impl RopeyStorage {
         {
             // 行摘要必须与文本在同一次替换内推进：
             // 编辑按旧坐标倒序应用，因此每条 edit 的旧范围在此刻的文本中仍然有效。
-            let old_span = self.line_index.affected_span(edit.range());
+            let old_span = self.text.line_index.affected_span(edit.range());
             let prefix = edit.range().start().get() - old_span.start;
             let suffix = old_span.end - edit.range().end().get();
             self.replace_prepared(prepared, edit.replacement());
             let replacement_end = old_span.start + prefix + edit.replacement().len() + suffix;
 
-            let RopeyStorage { rope, line_index } = self;
+            let RopeySnapshot { rope, line_index } = &mut self.text;
             line_index.replace_span(
                 old_span.start..old_span.end,
                 rope.byte_slice(old_span.start..replacement_end).chars(),
@@ -272,7 +172,7 @@ pub(crate) struct RopeySnapshot {
 impl RopeySnapshot {
     /// 返回包含给定 byte offset 的 chunk 与该 chunk 在全文里的起点。
     ///
-    /// `offset` 越界视为指向末端：仍返回最后一段 chunk 与其起点，对应 `Rope::chunk_at_byte` 的语义。
+    /// 字节偏移必须落在 UTF-8 字符边界且不超过文末。
     /// chunk 边界落在 char boundary，但**不**保证 grapheme boundary——这是 tree-sitter `parse_with_options` 的契约：
     /// 调用方可以按任意 UTF-8 字节边界续读，parser 自己处理跨 chunk 拼接。
     pub(crate) fn chunk_at_byte(&self, offset: ByteOffset) -> TextResult<(&str, ByteOffset)> {

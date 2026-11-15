@@ -7,7 +7,7 @@ use super::Buffer;
 use crate::{storage::TextRead, storage::text_coordinate_gateway, types::CharOffset};
 
 impl Buffer {
-    text_coordinate_gateway!();
+    text_coordinate_gateway!(storage.read());
 }
 
 pub(super) fn is_crlf_middle<T: TextRead>(storage: &T, offset: CharOffset) -> bool {

@@ -119,7 +119,7 @@ fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
         .expect("测试窗口应保持可用");
 
     assert_eq!(
-        std::fs::read_to_string(path).expect("应读取已保存文件"),
+        fs::read_to_string(path).expect("应读取已保存文件"),
         "新内容\n"
     );
     cx.update(|cx| assert!(!item.is_dirty(cx)));

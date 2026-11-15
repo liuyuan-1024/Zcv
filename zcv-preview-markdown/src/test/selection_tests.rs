@@ -243,7 +243,7 @@ fn placeholder_mapping_maps_selection_to_render_ranges() {
 }
 
 fn shape_two_runs_with_gap(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut TestAppContext,
 ) -> (SelectionLayout, Bounds<gpui::Pixels>, Bounds<gpui::Pixels>) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     struct TestWindow;

@@ -21,7 +21,7 @@ impl Buffer {
         direction: MovementDirection,
         unit: MovementUnit,
     ) -> TextResult<CharOffset> {
-        movement_boundary_in_text(&self.storage, policy, offset, direction, unit)
+        movement_boundary_in_text(self.storage.read(), policy, offset, direction, unit)
     }
 
     /// 以 offset 为中心取连续同类字符范围（双击选词语义）。
@@ -34,7 +34,7 @@ impl Buffer {
         policy: WordBoundaryPolicy,
         offset: CharOffset,
     ) -> TextResult<(CharOffset, CharOffset)> {
-        surrounding_word_in_text(&self.storage, policy, offset)
+        surrounding_word_in_text(self.storage.read(), policy, offset)
     }
 
     /// 光标前后都是词字符时返回 true。
@@ -45,7 +45,7 @@ impl Buffer {
         policy: WordBoundaryPolicy,
         offset: CharOffset,
     ) -> TextResult<bool> {
-        is_inside_word_in_text(&self.storage, policy, offset)
+        is_inside_word_in_text(self.storage.read(), policy, offset)
     }
 }
 

@@ -135,23 +135,22 @@ pub trait TextRead {
 
 /// Buffer / Snapshot 共用的坐标门面批量转发宏。
 ///
-/// 两份门面（`Buffer::storage` 与 `Snapshot::storage` 都实现 `TextRead`）的方法签名与转发体逐行相同。
-/// 在这里把签名与实现写一次，两个 impl 各自展开，行为修复只需改这一处。
+/// 两个门面共用同一份只读存储实现。
 macro_rules! text_coordinate_gateway {
-    () => {
+    ($storage:ident $(.$read:ident())?) => {
         /// 总 Unicode scalar 数（边界投影）。
         pub fn len_chars(&self) -> $crate::CharOffset {
-            self.storage.len_chars()
+            self.$storage$(.$read())?.len_chars()
         }
 
         /// 文本 UTF-8 字节末端位置；等价于全文末尾的 `ByteOffset`。
         pub fn len_bytes(&self) -> $crate::ByteOffset {
-            self.storage.len_bytes()
+            self.$storage$(.$read())?.len_bytes()
         }
 
         /// 总行数。空文档也视为 1 行。
         pub fn line_count(&self) -> usize {
-            self.storage.line_count()
+            self.$storage$(.$read())?.line_count()
         }
 
         /// 指定行的起始 ByteOffset（深核接口）。
@@ -159,7 +158,7 @@ macro_rules! text_coordinate_gateway {
             &self,
             line: $crate::Line,
         ) -> $crate::TextResult<$crate::ByteOffset> {
-            self.storage.line_start(line)
+            self.$storage$(.$read())?.line_start(line)
         }
 
         /// ByteOffset -> line / logical column。
@@ -167,12 +166,12 @@ macro_rules! text_coordinate_gateway {
             &self,
             offset: $crate::ByteOffset,
         ) -> $crate::TextResult<$crate::Position> {
-            self.storage.byte_to_position(offset)
+            self.$storage$(.$read())?.byte_to_position(offset)
         }
 
         /// `byte_to_position` 的省列变体（宿主投影几何只关心行号时走这条路径）。
         pub fn byte_to_line(&self, offset: $crate::ByteOffset) -> $crate::TextResult<$crate::Line> {
-            self.storage.byte_to_line(offset)
+            self.$storage$(.$read())?.byte_to_line(offset)
         }
 
         /// line / logical column -> ByteOffset。
@@ -180,7 +179,7 @@ macro_rules! text_coordinate_gateway {
             &self,
             position: $crate::Position,
         ) -> $crate::TextResult<$crate::ByteOffset> {
-            self.storage.position_to_byte(position)
+            self.$storage$(.$read())?.position_to_byte(position)
         }
 
         /// CharOffset -> line / logical column（边界投影）。
@@ -188,7 +187,7 @@ macro_rules! text_coordinate_gateway {
             &self,
             offset: $crate::CharOffset,
         ) -> $crate::TextResult<$crate::Position> {
-            self.storage.char_to_position(offset)
+            self.$storage$(.$read())?.char_to_position(offset)
         }
 
         /// line / logical column -> CharOffset（边界投影）。
@@ -196,7 +195,7 @@ macro_rules! text_coordinate_gateway {
             &self,
             position: $crate::Position,
         ) -> $crate::TextResult<$crate::CharOffset> {
-            self.storage.position_to_char(position)
+            self.$storage$(.$read())?.position_to_char(position)
         }
 
         /// CharOffset -> ByteOffset（边界投影）。
@@ -204,7 +203,7 @@ macro_rules! text_coordinate_gateway {
             &self,
             offset: $crate::CharOffset,
         ) -> $crate::TextResult<$crate::ByteOffset> {
-            self.storage.char_to_byte(offset)
+            self.$storage$(.$read())?.char_to_byte(offset)
         }
 
         /// ByteOffset -> CharOffset（边界投影）。
@@ -212,7 +211,7 @@ macro_rules! text_coordinate_gateway {
             &self,
             offset: $crate::ByteOffset,
         ) -> $crate::TextResult<$crate::CharOffset> {
-            self.storage.byte_to_char(offset)
+            self.$storage$(.$read())?.byte_to_char(offset)
         }
 
         /// 全文 flat UTF-16 code unit 偏移：byte → utf16 cu（系统 IME 语义）。
@@ -220,7 +219,7 @@ macro_rules! text_coordinate_gateway {
             &self,
             offset: $crate::ByteOffset,
         ) -> $crate::TextResult<$crate::Utf16Offset> {
-            self.storage.byte_to_utf16_cu(offset)
+            self.$storage$(.$read())?.byte_to_utf16_cu(offset)
         }
 
         /// 全文 flat UTF-16 code unit 偏移：utf16 cu → byte。
@@ -228,12 +227,12 @@ macro_rules! text_coordinate_gateway {
             &self,
             offset: $crate::Utf16Offset,
         ) -> $crate::TextResult<$crate::ByteOffset> {
-            self.storage.utf16_cu_to_byte(offset)
+            self.$storage$(.$read())?.utf16_cu_to_byte(offset)
         }
 
         /// 判断 CharOffset 是否处在合法 grapheme cluster 边界。
         pub fn is_grapheme_boundary(&self, offset: $crate::CharOffset) -> $crate::TextResult<bool> {
-            self.storage.is_grapheme_boundary_char(offset)
+            self.$storage$(.$read())?.is_grapheme_boundary_char(offset)
         }
 
         /// 返回小于当前 CharOffset 的最近 grapheme cluster 边界。
@@ -241,7 +240,7 @@ macro_rules! text_coordinate_gateway {
             &self,
             offset: $crate::CharOffset,
         ) -> $crate::TextResult<$crate::CharOffset> {
-            self.storage.previous_grapheme_boundary_char(offset)
+            self.$storage$(.$read())?.previous_grapheme_boundary_char(offset)
         }
 
         /// 返回大于当前 CharOffset 的最近 grapheme cluster 边界。
@@ -249,12 +248,12 @@ macro_rules! text_coordinate_gateway {
             &self,
             offset: $crate::CharOffset,
         ) -> $crate::TextResult<$crate::CharOffset> {
-            self.storage.next_grapheme_boundary_char(offset)
+            self.$storage$(.$read())?.next_grapheme_boundary_char(offset)
         }
 
         /// 检测文本中实际出现的换行风格。
         pub fn line_ending_style(&self) -> $crate::LineEndingStyle {
-            self.storage.line_ending_style()
+            self.$storage$(.$read())?.line_ending_style()
         }
     };
 }

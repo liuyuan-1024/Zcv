@@ -115,32 +115,20 @@ fn project_paths_are_root_scoped_and_display_labels_disambiguate(cx: &mut TestAp
     });
     cx.read_entity(&project, |project, _| {
         assert!(project.has_multiple_roots());
-        let first_path = project
-            .project_path_for_path(&first_file)
-            .expect("文件应属于第一个根");
-        let second_path = project
-            .project_path_for_path(&second_file)
-            .expect("文件应属于第二个根");
-        assert_ne!(first_path.root(), second_path.root());
-        assert_eq!(first_path.relative(), second_path.relative());
-        assert_eq!(first_path.root(), ProjectRootId::new(1));
-        assert_eq!(second_path.root(), ProjectRootId::new(2));
-
         let first_display = project
-            .display_path_for_project_path(&first_path)
-            .expect("第一个根仍应存在");
+            .display_path_for_path(&first_file)
+            .expect("文件应属于第一个根");
         let second_display = project
-            .display_path_for_project_path(&second_path)
-            .expect("第二个根仍应存在");
+            .display_path_for_path(&second_file)
+            .expect("文件应属于第二个根");
+        assert_eq!(first_display.relative(), second_display.relative());
+        assert_eq!(first_display.root().id, ProjectRootId::new(1));
+        assert_eq!(second_display.root().id, ProjectRootId::new(2));
         assert_eq!(first_display.root().label(), "apps/frontend");
         assert_eq!(second_display.root().label(), "packages/frontend");
         assert_eq!(
             first_display.to_path_buf(),
             PathBuf::from("apps/frontend/src/main.rs")
-        );
-        assert_eq!(
-            project.absolute_path_for_project_path(&first_path),
-            Some(first_root.join_relative(first_path.relative()))
         );
     });
 
@@ -227,7 +215,9 @@ fn root_ids_are_not_reused_after_removal(cx: &mut TestAppContext) {
         .expect("添加工作区根应成功");
     cx.read_entity(&project, |project, _| {
         assert_eq!(
-            project.root_id_for_path(&second_root.join("file.rs")),
+            project
+                .display_path_for_path(&second_root.join("file.rs"))
+                .map(|path| path.root().id),
             Some(ProjectRootId::new(2))
         );
     });
@@ -244,7 +234,9 @@ fn root_ids_are_not_reused_after_removal(cx: &mut TestAppContext) {
         .expect("重新添加工作区根应成功");
     cx.read_entity(&project, |project, _| {
         assert_eq!(
-            project.root_id_for_path(&second_root.join("file.rs")),
+            project
+                .display_path_for_path(&second_root.join("file.rs"))
+                .map(|path| path.root().id),
             Some(ProjectRootId::new(3)),
             "移除后的根 id 不得复用"
         );
@@ -266,9 +258,10 @@ fn renaming_root_preserves_id_and_updates_display_label(cx: &mut TestAppContext)
     let project = test_project(old_root.clone(), cx);
     let root_id = cx.read_entity(&project, |project, _| {
         project
-            .project_path_for_path(&old_file)
+            .display_path_for_path(&old_file)
             .expect("文件应属于根")
             .root()
+            .id
     });
     let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = events.clone();
@@ -290,20 +283,12 @@ fn renaming_root_preserves_id_and_updates_display_label(cx: &mut TestAppContext)
     let new_file = new_root.join("same.txt");
     assert!(new_file.exists());
     cx.read_entity(&project, |project, _| {
-        assert_eq!(project.root_id_for_path(&new_file), Some(root_id));
-        let project_path = project
-            .project_path_for_path(&new_file)
+        let display_path = project
+            .display_path_for_path(&new_file)
             .expect("重命名后文件仍应属于根");
-        assert_eq!(project_path.root(), root_id);
-        assert_eq!(project_path.relative().as_str(), "same.txt");
-        assert_eq!(
-            project
-                .display_path_for_path(&new_file)
-                .expect("应生成显示路径")
-                .root()
-                .label(),
-            "new-root"
-        );
+        assert_eq!(display_path.root().id, root_id);
+        assert_eq!(display_path.relative().as_str(), "same.txt");
+        assert_eq!(display_path.root().label(), "new-root");
     });
     assert_eq!(events.borrow().as_slice(), &[root_id]);
 }

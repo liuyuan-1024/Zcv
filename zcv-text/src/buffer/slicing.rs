@@ -13,7 +13,10 @@ use crate::{
 impl Buffer {
     /// 按 byte range 读取文本。
     pub fn slice_text(&self, range: TextRange) -> TextResult<TextSlice<'_>> {
-        Ok(TextSlice::new(range, self.storage.slice_text(range)?))
+        Ok(TextSlice::new(
+            range,
+            self.storage.read().slice_text(range)?,
+        ))
     }
 
     /// 按 UTF-8 byte range 读取文本，主要用于文件 / 外部协议适配边界。
@@ -22,13 +25,13 @@ impl Buffer {
         start: ByteOffset,
         end: ByteOffset,
     ) -> TextResult<TextSlice<'_>> {
-        let range = text_range_for_byte_range(&self.storage, start, end)?;
+        let range = text_range_for_byte_range(self.storage.read(), start, end)?;
         self.slice_text(range)
     }
 
     /// 读取单个逻辑行；如果该行有换行符，返回文本会保留换行符。
     pub fn slice_line(&self, line: Line) -> TextResult<LineSlice<'_>> {
-        let range = text_range_for_line(&self.storage, line)?;
+        let range = text_range_for_line(self.storage.read(), line)?;
         Ok(LineSlice::new(line, self.slice_text(range)?))
     }
 }

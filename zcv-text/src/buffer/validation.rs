@@ -31,11 +31,16 @@ impl Buffer {
 
     /// 校验范围是否合法（字节区间），端点必须落在 UTF-8 字符边界。
     pub(super) fn validate_range(&self, range: TextRange) -> TextResult<()> {
-        let len_bytes = self.storage.len_bytes();
+        let len_bytes = self.storage.read().len_bytes();
         if range.end() > len_bytes {
             return Err(EditError::RangeOutOfBounds { range }.into());
         }
-        if self.storage.is_grapheme_boundary(range.start()).is_err() {
+        if self
+            .storage
+            .read()
+            .is_grapheme_boundary(range.start())
+            .is_err()
+        {
             // 不构成字符边界即视为越界
             return Err(EditError::RangeOutOfBounds { range }.into());
         }
@@ -45,14 +50,14 @@ impl Buffer {
     /// 校验编辑边界（字节偏移）是否合法：不越界，且是 UTF-8 字符边界。
     pub(super) fn validate_edit_boundary(&self, offset: ByteOffset) -> TextResult<()> {
         let value = offset.get();
-        let len_bytes = self.storage.len_bytes().get();
+        let len_bytes = self.storage.read().len_bytes().get();
 
         if value > len_bytes {
             return Err(CoordinateError::OutOfBounds(offset).into());
         }
 
         // 校验是否落在 UTF-8 字符边界：byte_to_char 对非字符边界返回 InvalidByteBoundary
-        if value < len_bytes && self.storage.byte_to_char(offset).is_err() {
+        if value < len_bytes && self.storage.read().byte_to_char(offset).is_err() {
             return Err(CoordinateError::InvalidByteBoundary(offset).into());
         }
 

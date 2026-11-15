@@ -443,7 +443,7 @@ impl GitStore {
         // 仓库的 working_directory 来自 canonicalize，roots 同样归一化，保证路径前缀匹配一致。
         let roots = roots
             .into_iter()
-            .map(|root| canonicalize_path(&root))
+            .map(|root| normalize_for_comparison(&root))
             .collect::<Result<Vec<_>, _>>()
             .expect("项目根路径必须可归一化");
         let background = cx.background_executor().clone();
@@ -462,18 +462,12 @@ impl GitStore {
                     let superseded = this.update(&mut cx, |store, _| {
                         store.is_superseded_job(scheduled.id, &job)
                     });
-                    if superseded {
-                        if let Some(tx) = operation_result_sender(&job) {
-                            let _ = tx.send(GitOperationOutcome::Cancelled).await;
-                        }
-                        this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
-                        continue;
-                    }
-                    // 排队期间取消：不启动进程，直接完成这个具体任务编号。
-                    if scheduled
-                        .cancellation
-                        .as_ref()
-                        .is_some_and(GitCancellation::is_cancelled)
+                    // 被替代或在排队期间取消的任务均未启动进程。
+                    if superseded
+                        || scheduled
+                            .cancellation
+                            .as_ref()
+                            .is_some_and(GitCancellation::is_cancelled)
                     {
                         if let Some(tx) = operation_result_sender(&job) {
                             let _ = tx.send(GitOperationOutcome::Cancelled).await;
@@ -759,7 +753,7 @@ impl GitStore {
                 {
                     return None;
                 }
-                let canonical_path = canonicalize_path(&path).ok()?;
+                let canonical_path = normalize_for_comparison(&path).ok()?;
                 if let Some(diff) = store.uncommitted_diff_for(&canonical_path, working.entity_id())
                 {
                     return Some(diff);
@@ -786,7 +780,7 @@ impl GitStore {
         path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<RevisionLoadResult> {
-        let path_key = canonicalize_path(path).expect("已确认 Git 仓库归属的路径应可规范化");
+        let path_key = normalize_for_comparison(path).expect("已确认 Git 仓库归属的路径应可规范化");
         if let Some(state) = self.revision_documents.get(&(revision, path_key)) {
             if let Some(load) = state.loading.active() {
                 return cx.spawn(async move |_, _| load.await);
@@ -808,7 +802,7 @@ impl GitStore {
         base_revision: GitRevision,
         cx: &mut Context<Self>,
     ) -> Entity<BufferDiff> {
-        let path = canonicalize_path(&input.path).expect("diff 输入路径必须可归一化");
+        let path = normalize_for_comparison(&input.path).expect("diff 输入路径必须可归一化");
         let key = (path, input.working.entity_id(), input.key);
         if let Some(diff) = self.shared_diffs.get(&key)
             && let Some(entity) = diff.entity.upgrade()
@@ -980,7 +974,7 @@ impl GitStore {
                 ),
                 GitHunkOperation::Stage | GitHunkOperation::Unstage => None,
             };
-            let path = canonicalize_path(diff_ref.path()).expect("diff 路径必须可归一化");
+            let path = normalize_for_comparison(diff_ref.path()).expect("diff 路径必须可归一化");
             (
                 path,
                 index_base,
@@ -1247,7 +1241,7 @@ impl GitStore {
         // 调用方传入的路径可能未 canonicalize，与归一化后的 root 比较前先归一化。
         let paths: BTreeSet<AbsolutePathBuf> = paths
             .iter()
-            .filter_map(|path| canonicalize_path(path).ok())
+            .filter_map(|path| normalize_for_comparison(path).ok())
             .filter(|path| self.is_workspace_path(path.as_path()))
             .map(|path| {
                 // `.git` 元数据的变化会影响整个仓库的状态；
@@ -1290,14 +1284,14 @@ impl GitStore {
     ///
     /// 状态索引内部按仓库工作目录（canonicalize 后）比较，调用方传入的路径可能未归一化。
     pub fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
-        let path = canonicalize_path(path).ok()?;
+        let path = normalize_for_comparison(path).ok()?;
         self.status_index.status_for_path(path.as_path())
     }
 
     /// 文件是否属于已发现的仓库且未被忽略。
     /// 干净文件没有 status 条目，因此不能用变更状态决定是否建立修订差异。
     pub fn has_diff_context_for_path(&self, path: &Path) -> bool {
-        let Ok(path) = canonicalize_path(path) else {
+        let Ok(path) = normalize_for_comparison(path) else {
             return false;
         };
         self.status_index
@@ -1495,7 +1489,7 @@ impl GitStore {
         path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<RevisionLoadResult> {
-        let path = match canonicalize_path(path) {
+        let path = match normalize_for_comparison(path) {
             Ok(path) => path,
             Err(error) => return Task::ready(Err(Arc::new(error.into()))),
         };
@@ -1737,7 +1731,7 @@ impl GitStore {
         path: &Path,
     ) -> Option<Entity<LanguageBuffer>> {
         self.revision_documents
-            .get(&(revision, canonicalize_path(path).ok()?))
+            .get(&(revision, normalize_for_comparison(path).ok()?))
             .and_then(|state| state.document.as_ref())
             .and_then(RevisionDocument::present)
     }
@@ -1751,7 +1745,7 @@ impl GitStore {
         path: &Path,
         cx: &mut Context<Self>,
     ) -> Option<Entity<LanguageBuffer>> {
-        let key = (revision, canonicalize_path(path).ok()?);
+        let key = (revision, normalize_for_comparison(path).ok()?);
         let language_registry = Arc::clone(&self.language_registry);
         let absolute_path = key.1.as_path().to_path_buf();
         match self.revision_documents.get_mut(&key)?.document.as_mut()? {
@@ -1780,7 +1774,7 @@ impl GitStore {
 
     /// diff 的 index 参照：确认缺失时以空文本参与暂存判定；尚未加载仍为 None。
     pub fn index_reference_text(&self, path: &Path, cx: &App) -> Option<Arc<str>> {
-        let key = (GitRevision::Index, canonicalize_path(path).ok()?);
+        let key = (GitRevision::Index, normalize_for_comparison(path).ok()?);
         match self.revision_documents.get(&key)?.document.as_ref()? {
             RevisionDocument::Present(document) => {
                 Some(Arc::from(snapshot_text(&document.read(cx).text_snapshot())))
@@ -1797,7 +1791,7 @@ impl GitStore {
 
     /// 该修订文档是否已经完成一次加载（缺失也算已加载）。
     pub fn revision_document_loaded(&self, revision: GitRevision, path: &Path) -> bool {
-        let Ok(path) = canonicalize_path(path) else {
+        let Ok(path) = normalize_for_comparison(path) else {
             return false;
         };
         self.revision_documents
@@ -1807,7 +1801,7 @@ impl GitStore {
 
     /// 已读取的修订内容不能作为文本组合进编辑器。
     pub fn revision_document_unsupported(&self, revision: GitRevision, path: &Path) -> bool {
-        let Ok(path) = canonicalize_path(path) else {
+        let Ok(path) = normalize_for_comparison(path) else {
             return false;
         };
         self.revision_documents
@@ -2088,13 +2082,6 @@ impl DiffOperations for GitDiffOperations {
             store.apply_hunk_edits(GitHunkOperation::Restore, diff, ranges, cx);
         });
     }
-}
-
-/// 路径归一化：把调用方可能未 canonicalize 的路径转换为可比较的绝对路径。
-///
-/// 路径及其祖先都已不存在等无法归一化的情况由调用方决定如何降级，这里不再静默保留原路径。
-pub(super) fn canonicalize_path(path: &Path) -> std::io::Result<AbsolutePathBuf> {
-    normalize_for_comparison(path)
 }
 
 /// 读取快照全文；修订文档派生文本的唯一转换点。

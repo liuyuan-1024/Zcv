@@ -232,7 +232,7 @@ impl Snapshot {
     }
 
     // 坐标查询门面（len / byte / char / UTF-16 / grapheme 系列）与 Buffer 共用一份实现。
-    text_coordinate_gateway!();
+    text_coordinate_gateway!(storage);
 
     /// `(行号, 行内 UTF-8 字节列)` 派生坐标。
     ///

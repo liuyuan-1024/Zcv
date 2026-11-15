@@ -51,7 +51,7 @@ fn refresh_paths_merge_ancestors_without_dropping_siblings() {
 impl GitStore {
     fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
         self.status_index
-            .status_for_directory(&canonicalize_path(path).expect("测试路径必须可归一化"))
+            .status_for_directory(&normalize_for_comparison(path).expect("测试路径必须可归一化"))
     }
 }
 
@@ -1441,7 +1441,7 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut TestAppContext) {
         cx.update(|cx| cx.new(|cx| GitStore::new(vec![root.clone()], test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
-    let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
+    let path = normalize_for_comparison(&root.join("tracked.txt")).expect("测试路径必须可归一化");
     let native_path = path.clone().into_path_buf();
     for revision in [GitRevision::Head, GitRevision::Index] {
         cx.update_entity(&git_store, |store, cx| {
@@ -1532,9 +1532,10 @@ fn diff_operations_stage_hunk_suppresses_source_and_marks_uncommitted_diff_pendi
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
-    let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
+    let path = normalize_for_comparison(&root.join("tracked.txt")).expect("测试路径必须可归一化");
     let native_path = path.clone().into_path_buf();
-    let other_path = canonicalize_path(&root.join("other.txt")).expect("测试路径必须可归一化");
+    let other_path =
+        normalize_for_comparison(&root.join("other.txt")).expect("测试路径必须可归一化");
     for revision in [GitRevision::Head, GitRevision::Index] {
         cx.update_entity(&git_store, |store, cx| {
             store.load_revision_document(revision, &path, cx)
@@ -1677,7 +1678,7 @@ fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut TestAp
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
-    let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
+    let path = normalize_for_comparison(&root.join("tracked.txt")).expect("测试路径必须可归一化");
     let native_path = path.clone().into_path_buf();
     cx.update_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Index, &path, cx)
@@ -1774,7 +1775,7 @@ fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut TestAppContex
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
-    let path = canonicalize_path(&root.join("two.txt")).expect("测试路径必须可归一化");
+    let path = normalize_for_comparison(&root.join("two.txt")).expect("测试路径必须可归一化");
     let native_path = path.clone().into_path_buf();
     cx.update_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Index, &path, cx)

@@ -413,7 +413,6 @@ fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     use std::path::PathBuf;
 
-    use zcv_language::LanguageBuffer;
     use zcv_text::{Buffer, BufferConfig};
 
     // 带语言的 Buffer：替换必须通知 LanguageBuffer 同步语法树并重新解析，

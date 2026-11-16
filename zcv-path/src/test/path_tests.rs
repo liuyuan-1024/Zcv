@@ -131,12 +131,13 @@ fn project_paths_keep_root_identity_and_display_paths_are_derived() {
     assert_eq!(first.relative().as_str(), "src/main.rs");
     assert_ne!(first, second, "相同相对路径在不同根下必须是不同身份");
 
+    let directory = tempfile::tempdir().expect("应创建临时项目根目录");
+    let full_path = AbsolutePathBuf::canonicalize(directory.path()).expect("项目根应可规范化");
     let display = DisplayPath::new(
         ProjectRootDisplay {
             id: first_root,
             label: std::sync::Arc::from("apps/frontend"),
-            full_path: AbsolutePathBuf::new(PathBuf::from("/work/apps/frontend"))
-                .expect("绝对路径应有效"),
+            full_path,
         },
         relative,
     );

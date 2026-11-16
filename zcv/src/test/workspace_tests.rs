@@ -77,6 +77,7 @@ fn opening_files_from_settings_window_uses_the_workspaces_pane(cx: &mut TestAppC
     cx.update(|cx| {
         init_test_settings(cx);
         zcv_editor::init(cx, languages.clone());
+        app_menus::install(cx);
     });
     let (workspace, _) = cx.add_window_view(|window, cx| {
         build_workspace(&[], languages.clone(), quiet_watcher(), window, cx)
@@ -112,18 +113,20 @@ fn opening_files_from_settings_window_uses_the_workspaces_pane(cx: &mut TestAppC
 #[gpui::test]
 fn unsupported_files_open_as_tabs_without_a_toast(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时目录");
-    let root = directory.path().canonicalize().expect("应获得临时目录路径");
-    let binary = root.join("binary.bin");
-    let invalid_utf8 = root.join("invalid.txt");
+    let root = zcv_path::AbsolutePathBuf::canonicalize(directory.path()).expect("项目根应可规范化");
+    let binary = root.as_path().join("binary.bin");
+    let invalid_utf8 = root.as_path().join("invalid.txt");
     fs::write(&binary, b"binary\0data").expect("应写入二进制文件");
     fs::write(&invalid_utf8, [0xff]).expect("应写入无效 UTF-8 文件");
     let languages = test_languages();
     cx.update(|cx| {
         init_test_settings(cx);
         zcv_editor::init(cx, languages.clone());
+        app_menus::install(cx);
     });
-    let (workspace, visual) = cx
-        .add_window_view(|window, cx| build_workspace(&[], languages, quiet_watcher(), window, cx));
+    let (workspace, visual) = cx.add_window_view(|window, cx| {
+        build_workspace(&[root], languages, quiet_watcher(), window, cx)
+    });
 
     for path in [&binary, &invalid_utf8, &binary] {
         workspace.update_in(visual, |workspace, window, cx| {
@@ -212,6 +215,7 @@ fn latex_preview_precedes_search_on_the_document_toolbar(cx: &mut TestAppContext
         init_test_settings(cx);
         zcv_editor::init(cx, languages.clone());
         zcv_preview_latex::init(cx);
+        app_menus::install(cx);
     });
     let (workspace, visual) = cx
         .add_window_view(|window, cx| build_workspace(&[], languages, quiet_watcher(), window, cx));
@@ -587,6 +591,7 @@ fn autosave_distinguishes_document_focus_from_window_deactivation(cx: &mut TestA
     cx.update(|cx| {
         init_test_settings(cx);
         cx.set_global(SettingsStore::new(settings.clone()));
+        app_menus::install(cx);
     });
     let directory = tempfile::tempdir().unwrap();
     let first = directory.path().join("first.txt");
@@ -654,7 +659,8 @@ fn closing_file_with_autosave_conflict_waits_for_discard(cx: &mut TestAppContext
     use zcv_settings::{AutosaveSetting, UserSettings};
 
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("conflict.txt");
+    let root = zcv_path::AbsolutePathBuf::canonicalize(directory.path()).expect("项目根应可规范化");
+    let path = root.as_path().join("conflict.txt");
     fs::write(&path, "原文\n").unwrap();
     let languages = test_languages();
     cx.update(|cx| {
@@ -664,9 +670,11 @@ fn closing_file_with_autosave_conflict_waits_for_discard(cx: &mut TestAppContext
             ..UserSettings::default()
         }));
         zcv_editor::init(cx, languages.clone());
+        app_menus::install(cx);
     });
-    let (workspace, visual) = cx
-        .add_window_view(|window, cx| build_workspace(&[], languages, quiet_watcher(), window, cx));
+    let (workspace, visual) = cx.add_window_view(|window, cx| {
+        build_workspace(&[root], languages, quiet_watcher(), window, cx)
+    });
     workspace.update_in(visual, |workspace, window, cx| {
         workspace.open_path(path.clone(), true, window, cx);
     });

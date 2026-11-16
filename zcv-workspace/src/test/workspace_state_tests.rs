@@ -11,7 +11,7 @@ use gpui::{
 };
 
 use super::{DockPosition, LAYOUT_SAVE_THROTTLE, Workspace};
-use crate::test_support::empty_workspace;
+use crate::test_support::{empty_project, empty_workspace};
 use crate::{
     Item, Panel,
     dock::{Dock, DockData},
@@ -190,6 +190,15 @@ fn saving_a_conflicted_item_shows_one_persistent_choice_toast(cx: &mut TestAppCo
 /// 测试用语言注册表；生产装配层创建应用级唯一实例，测试各自提供一份。
 fn test_languages() -> Arc<LanguageRegistry> {
     Arc::new(LanguageRegistry::new())
+}
+
+fn empty_workspace_with_layout(
+    layout_path: PathBuf,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Workspace {
+    let project = empty_project(test_languages(), cx);
+    Workspace::build(project, layout_path, window, cx)
 }
 
 struct TestPanel {
@@ -414,16 +423,13 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
     let directory = tempfile::tempdir().unwrap();
     let layout_path = directory.path().join("layout.json");
     let (workspace, cx) = cx.add_window_view(|window, cx| {
-        let mut workspace = empty_workspace(test_languages(), window, cx);
+        let mut workspace = empty_workspace_with_layout(layout_path.clone(), window, cx);
         let panel = cx.new(|cx| TestPanel {
             focus: cx.focus_handle(),
             activation_focus: cx.focus_handle(),
         });
         workspace.register_panel(panel, DockPosition::Left, window, cx);
         workspace
-    });
-    workspace.update(cx, |workspace, _| {
-        workspace.layout_path = layout_path.clone();
     });
     let focus = cx.read_entity(&workspace, |workspace, _| workspace.focus.clone());
     cx.update(|window, cx| window.focus(&focus, cx));
@@ -513,8 +519,10 @@ fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext)
 #[gpui::test]
 fn later_workspace_navigation_keeps_the_latest_focus(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时布局目录");
+    let layout_path = directory.path().join("layout.json");
     let (workspace, cx) = cx.add_window_view(|window, cx| {
-        let mut workspace = empty_workspace(test_languages(), window, cx);
+        let mut workspace = empty_workspace_with_layout(layout_path, window, cx);
         let panel = cx.new(|cx| TestPanel {
             focus: cx.focus_handle(),
             activation_focus: cx.focus_handle(),
@@ -538,13 +546,15 @@ fn later_workspace_navigation_keeps_the_latest_focus(cx: &mut TestAppContext) {
 #[gpui::test]
 fn closing_focused_panel_returns_focus_to_the_center_pane(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时布局目录");
+    let layout_path = directory.path().join("layout.json");
     let panel = cx.new(|cx| TestPanel {
         focus: cx.focus_handle(),
         activation_focus: cx.focus_handle(),
     });
     let panel_for_registration = panel.clone();
     let (workspace, cx) = cx.add_window_view(move |window, cx| {
-        let mut workspace = empty_workspace(test_languages(), window, cx);
+        let mut workspace = empty_workspace_with_layout(layout_path, window, cx);
         workspace.register_panel(panel_for_registration, DockPosition::Bottom, window, cx);
         workspace
     });

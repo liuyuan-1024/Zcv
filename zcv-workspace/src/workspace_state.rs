@@ -93,10 +93,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::build(project, window, cx)
+        let roots: Vec<PathBuf> = project.read(cx).roots().map(Path::to_path_buf).collect();
+        let layout_path = layout_state::path_for_workspace(&roots);
+        Self::build(project, layout_path, window, cx)
     }
 
-    fn build(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn build(
+        project: Entity<Project>,
+        layout_path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle();
         let focus_lost_subscription = cx.on_focus_lost(window, |workspace, window, cx| {
             let target = window
@@ -123,9 +130,6 @@ impl Workspace {
                 .ok();
         });
         pane.update(cx, |pane, _| pane.set_open_path(open_path));
-        let workspace_roots: Vec<PathBuf> =
-            project.read(cx).roots().map(Path::to_path_buf).collect();
-        let layout_path = layout_state::path_for_workspace(&workspace_roots);
         let restored_layout = layout_state::load(&layout_path).unwrap_or_default();
         let restored_pane = restored_layout.pane.clone();
         let restored_panels = restored_layout.panels.clone();

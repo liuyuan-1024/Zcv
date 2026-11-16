@@ -1,15 +1,15 @@
-//! LaTeX 预览的临时目录和产物发布。
+//! LaTeX 预览的构建入口和 PDF 发布。
 
 use std::{
-    fs::{self, File},
-    io,
+    fs, io,
     path::{Path, PathBuf},
-    process::Output,
 };
 
 use anyhow::{Context as _, Result};
 
-use super::toolchain::{self, Toolchain};
+use super::toolchain::Toolchain;
+
+const CACHE_DIRECTORY: &str = ".zcv-latex";
 
 pub(super) fn is_latex_path(path: &Path) -> bool {
     path.extension()
@@ -20,20 +20,16 @@ pub(super) fn compile(source: &Path) -> Result<PathBuf> {
     let parent = source.parent().context("源文件缺少所在目录")?;
     let file_name = source.file_name().context("源文件缺少名称")?;
     let toolchain = Toolchain::discover()?;
-    let directory = parent.join(".zcv-latex").join(file_name);
-    fs::create_dir_all(&directory)
-        .with_context(|| format!("创建编译目录失败：{}", directory.display()))?;
-    let staging = tempfile::tempdir_in(&directory).context("创建临时编译目录失败")?;
-
-    let output = toolchain.compile(parent, file_name, staging.path())?;
-    publish_preview(&directory, staging.path(), output)
+    let relative_cache = Path::new(CACHE_DIRECTORY);
+    let mut compiled = toolchain.compile(parent, file_name, relative_cache)?;
+    let directory = parent.join(relative_cache).join(file_name);
+    publish_preview(&directory, compiled.pdf())
 }
 
-fn publish_preview(directory: &Path, staging: &Path, output: Output) -> Result<PathBuf> {
-    toolchain::check_output(&output, "latexmk 编译失败")?;
-
+fn publish_preview(directory: &Path, mut pdf: impl io::Read) -> Result<PathBuf> {
     let preview = directory.join("preview.pdf");
-    let mut pdf = File::open(staging.join("preview.pdf")).context("编译结果缺少 PDF 文件")?;
+    fs::create_dir_all(directory)
+        .with_context(|| format!("创建预览目录失败：{}", directory.display()))?;
     let mut pending = tempfile::NamedTempFile::new_in(directory).context("创建预览文件失败")?;
     io::copy(&mut pdf, &mut pending).context("写入预览文件失败")?;
     pending.persist(&preview).context("替换预览文件失败")?;

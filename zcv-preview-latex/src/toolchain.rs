@@ -1,4 +1,4 @@
-//! 一次预览构建所使用的本地 TeX 工具和进程错误语义。
+//! 本地 TeX 工具的选择、编译和临时产物。
 
 mod platform;
 
@@ -6,11 +6,26 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     fmt,
+    fs::{self, File},
     path::{Path, PathBuf},
     process::{Command, Output},
 };
 
 use anyhow::{Context as _, Result};
+
+const PREVIEW_JOB_NAME: &str = "preview";
+
+pub(super) struct CompiledPdf {
+    // 先关闭 PDF，再清理编译目录。
+    pdf: File,
+    _directory: tempfile::TempDir,
+}
+
+impl CompiledPdf {
+    pub(super) fn pdf(&mut self) -> &mut File {
+        &mut self.pdf
+    }
+}
 
 pub(super) struct Toolchain {
     latexmk: PathBuf,
@@ -54,8 +69,8 @@ impl Toolchain {
         &self,
         parent: &Path,
         file_name: &OsStr,
-        staging: &Path,
-    ) -> Result<Output> {
+        relative_scratch_root: &Path,
+    ) -> Result<CompiledPdf> {
         let version = run(
             Command::new(&self.xelatex)
                 .env("PATH", &self.search_path)
@@ -65,17 +80,34 @@ impl Toolchain {
         )?;
         check_output(&version, "读取 XeLaTeX 版本失败")?;
         let version = String::from_utf8_lossy(&version.stdout);
-        run(
-            &mut self.latexmk_command(parent, file_name, staging, &version),
+
+        let scratch_root = parent.join(relative_scratch_root);
+        fs::create_dir_all(&scratch_root)
+            .with_context(|| format!("创建编译目录失败：{}", scratch_root.display()))?;
+        let directory = tempfile::tempdir_in(&scratch_root).context("创建临时编译目录失败")?;
+        // TeX Live 在 Windows 上可能无法把含中文的输出目录写入 TEXMF_OUTPUT_DIRECTORY。
+        let relative_staging = directory
+            .path()
+            .strip_prefix(parent)
+            .context("临时编译目录不在源文件所在目录下")?;
+        let output = run(
+            &mut self.latexmk_command(parent, file_name, relative_staging, &version),
             "启动 latexmk",
-        )
+        )?;
+        check_output(&output, "latexmk 编译失败")?;
+        let pdf = File::open(directory.path().join(format!("{PREVIEW_JOB_NAME}.pdf")))
+            .context("读取编译生成的 PDF 失败")?;
+        Ok(CompiledPdf {
+            pdf,
+            _directory: directory,
+        })
     }
 
     fn latexmk_command(
         &self,
         parent: &Path,
         file_name: &OsStr,
-        staging: &Path,
+        relative_staging: &Path,
         version: &str,
     ) -> Command {
         // MiKTeX 的 BibTeX 0.99e 可能在解析参考文献样式时崩溃，参见 MiKTeX/miktex#1769。
@@ -85,7 +117,7 @@ impl Toolchain {
             "bibtex"
         };
         let mut outdir = OsString::from("-outdir=");
-        outdir.push(staging);
+        outdir.push(relative_staging);
         let mut command = Command::new(&self.latexmk);
         command
             .env("PATH", &self.search_path)
@@ -97,9 +129,9 @@ impl Toolchain {
                 "-interaction=nonstopmode",
                 "-halt-on-error",
                 "-file-line-error",
-                "-jobname=preview",
-                "-e",
             ])
+            .arg(format!("-jobname={PREVIEW_JOB_NAME}"))
+            .arg("-e")
             .arg(format!("$bibtex = q{{{bibtex} %O %S}};"))
             .arg(outdir)
             .arg(Path::new(".").join(file_name));
@@ -116,7 +148,7 @@ fn run(command: &mut Command, operation: &str) -> Result<Output> {
     })
 }
 
-pub(super) fn check_output(output: &Output, failure: &str) -> Result<()> {
+fn check_output(output: &Output, failure: &str) -> Result<()> {
     if output.status.success() {
         return Ok(());
     }

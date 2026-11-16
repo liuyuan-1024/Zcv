@@ -2205,11 +2205,48 @@ fn one_source_edit_updates_all_visible_excerpts_incrementally(cx: &mut TestAppCo
     );
 }
 
+impl MultiBufferSnapshot {
+    fn check_diff_transform_invariants(&self) {
+        assert_eq!(
+            self.diff_transforms.summary().input,
+            self.excerpts.summary().text
+        );
+        let mut input = 0;
+        let mut previous_hunks = None;
+        for transform in self.diff_transforms.iter() {
+            match transform {
+                DiffTransform::BufferContent { summary, hunks } => {
+                    assert!(previous_hunks != Some(hunks), "相邻同构内容节点必须合并");
+                    assert_eq!(summary.input, summary.output);
+                    let end = input + summary.input.len;
+                    assert_eq!(
+                        summary.input,
+                        input_range_summary(
+                            &self.excerpts,
+                            &self.excerpt_sources,
+                            ExcerptOffset::new(input),
+                            ExcerptOffset::new(end),
+                        ),
+                    );
+                    input = end;
+                    previous_hunks = Some(hunks);
+                }
+                DiffTransform::DeletedHunk { summary, .. } => {
+                    assert_eq!(summary.input, MBTextSummary::default());
+                    previous_hunks = None;
+                }
+            }
+        }
+    }
+}
+
 fn assert_projection_patch_replays_snapshot(
     before: &MultiBufferSnapshot,
     after: &MultiBufferSnapshot,
     changes: &TextChangeBatch,
 ) {
+    before.check_diff_transform_invariants();
+    after.check_diff_transform_invariants();
     let mut replayed = before.text_bytes();
     let updated = after.text_bytes();
     let edits = changes.patch().edits();
@@ -2450,6 +2487,97 @@ fn diff_incremental_edits_keep_output_coordinates_and_patch_replay(cx: &mut Test
 }
 
 #[gpui::test]
+fn diff_incremental_multi_window_edits_preserve_projection(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let path = "src/a.rs";
+    let working = singleton(path, "前\nnew\nkeep\nhidden\n保持\nnext\n尾", cx);
+    let tail = singleton("src/b.rs", "", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    let diff = test_diff_entity(
+        working.clone(),
+        path,
+        Some("前\nold\nkeep\nhidden\n保持\ndeleted\nnext\n尾"),
+        None,
+        cx,
+    );
+    cx.run_until_parked();
+    combined.update(cx, |buffer, cx| {
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.add_diff(
+            DiffFile {
+                diff: diff.clone(),
+                display_path: PathBuf::from(path),
+                excerpt_ranges: DiffExcerptRanges::Windows(vec![0..3, 4..7]),
+            },
+            cx,
+        );
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(tail, 0..1, cx)], cx);
+    });
+
+    let (subscription, mut before) =
+        combined.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+    let mut seed = 0x4ec2_914bu64;
+    let mut random = |limit: usize| {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (seed >> 32) as usize % limit
+    };
+    for step in 0..100 {
+        working.update(cx, |source, cx| {
+            let text = source.text_snapshot();
+            let text = text
+                .slice_byte_range(ByteOffset::ZERO, text.len_bytes())
+                .unwrap();
+            let boundaries = text
+                .as_str()
+                .char_indices()
+                .map(|(byte, _)| ByteOffset::new(byte))
+                .chain(iter::once(ByteOffset::new(text.as_str().len())))
+                .collect::<Vec<_>>();
+            let edits = if boundaries.len() >= 4 {
+                let mid = boundaries.len() / 2;
+                let first_start = random(mid - 1);
+                let first_end = first_start + 1 + random(mid - first_start - 1);
+                let second_start = mid + random(boundaries.len() - mid);
+                let second_end = second_start + random(boundaries.len() - second_start);
+                vec![
+                    Edit::replace(
+                        TextRange::new(boundaries[first_start], boundaries[first_end]).unwrap(),
+                        ["", "界", "左\n"][random(3)],
+                    ),
+                    Edit::replace(
+                        TextRange::new(boundaries[second_start], boundaries[second_end]).unwrap(),
+                        ["x", "🙂", "\n右"][random(3)],
+                    ),
+                ]
+            } else {
+                vec![Edit::insert(ByteOffset::ZERO, "前\n中\n尾").unwrap()]
+            };
+            source
+                .edit(edits, TransactionMetadata::default(), cx)
+                .unwrap();
+        });
+
+        let immediate = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert_projection_patch_replays_snapshot(&before, &immediate, &subscription.consume());
+        assert_output_coordinates(&immediate);
+        if step % 9 == 0 {
+            diff.update(cx, |diff, cx| {
+                let base = [
+                    "前\nOLD\nkeep\nhidden\n保持\nnext\n尾",
+                    "前\nold\nhidden\ndeleted\n尾",
+                ][random(2)];
+                diff.set_revisions(Some(Arc::from(base)), None, cx);
+            });
+        }
+        cx.run_until_parked();
+        let refreshed = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert_projection_patch_replays_snapshot(&immediate, &refreshed, &subscription.consume());
+        assert_output_coordinates(&refreshed);
+        before = refreshed;
+    }
+}
+
+#[gpui::test]
 fn excerpt_matches_use_updated_output_coordinates_after_path_insertion(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let first = singleton("src/a.rs", "甲", cx);
@@ -2686,6 +2814,90 @@ fn dropping_a_middle_excerpt_publishes_a_single_output_edit(cx: &mut TestAppCont
         changes.patch().edits()[0].new_range(),
         TextRange::new(ByteOffset::new(3), ByteOffset::new(3)).unwrap()
     );
+}
+
+#[gpui::test]
+fn removing_excerpt_preserves_deleted_hunk_at_next_excerpt_start(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    for remaining in ["remaining\n", ""] {
+        let first = singleton("src/a.rs", "first", cx);
+        let working = singleton("src/b.rs", remaining, cx);
+        let diff = test_diff_entity(
+            working,
+            "src/b.rs",
+            Some(&format!("deleted\n{remaining}")),
+            None,
+            cx,
+        );
+        cx.run_until_parked();
+        let combined = cx.new(MultiBuffer::empty);
+        combined.update(cx, |buffer, cx| {
+            buffer.set_diff_hunks_expanded_by_default(true, cx);
+            buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first, 0..1, cx)], cx);
+            buffer.add_diff(
+                DiffFile {
+                    diff,
+                    display_path: PathBuf::from("src/b.rs"),
+                    excerpt_ranges: DiffExcerptRanges::FullFile,
+                },
+                cx,
+            );
+        });
+        let (subscription, before) =
+            combined.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+        assert_eq!(
+            before.text_bytes(),
+            format!("first\ndeleted\n{remaining}").as_bytes()
+        );
+
+        let after = combined.update(cx, |buffer, cx| {
+            assert!(buffer.remove_excerpts_for_path(Path::new("src/a.rs"), cx));
+            buffer.snapshot(cx)
+        });
+        assert_eq!(
+            after.text_bytes(),
+            format!("deleted\n{remaining}").as_bytes()
+        );
+        assert_projection_patch_replays_snapshot(&before, &after, &subscription.consume());
+    }
+}
+
+#[gpui::test]
+fn diff_hunk_at_shared_source_boundary_belongs_to_following_excerpt(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let path = "src/a.rs";
+    let working = singleton(path, "keep\nlater\n", cx);
+    let diff = test_diff_entity(working, path, Some("keep\ndeleted\nlater\n"), None, cx);
+    cx.run_until_parked();
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.add_diff(
+            DiffFile {
+                diff,
+                display_path: PathBuf::from(path),
+                excerpt_ranges: DiffExcerptRanges::Windows(vec![0..1, 1..2]),
+            },
+            cx,
+        );
+    });
+    let (subscription, before) =
+        combined.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+    assert_eq!(before.excerpts().count(), 2);
+    assert_eq!(before.text_bytes(), b"keep\n\ndeleted\nlater\n");
+
+    let after = combined.update(cx, |buffer, cx| {
+        buffer.toggle_diff_hunk_at(0, cx);
+        buffer.snapshot(cx)
+    });
+    assert_eq!(after.text_bytes(), b"keep\n\nlater\n");
+    assert_projection_patch_replays_snapshot(&before, &after, &subscription.consume());
+    let expanded = combined.update(cx, |buffer, cx| {
+        buffer.toggle_diff_hunk_at(0, cx);
+        buffer.snapshot(cx)
+    });
+    assert_eq!(expanded.text_bytes(), before.text_bytes());
+    assert_projection_patch_replays_snapshot(&after, &expanded, &subscription.consume());
 }
 
 #[gpui::test]
@@ -4202,9 +4414,9 @@ fn base_text_change_with_same_hunk_geometry_updates_materialized_old_side(cx: &m
         );
     });
     cx.run_until_parked();
-    assert!(combined.update(cx, |buffer, cx| {
-        String::from_utf8_lossy(&buffer.snapshot(cx).text_bytes()).contains("old")
-    }));
+    let (subscription, before) =
+        combined.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+    assert_eq!(before.text_bytes(), b"a\nold\nnew\nz\n");
 
     diff.update(cx, |diff, cx| {
         diff.set_revisions(Some(Arc::from("a\nOLD\nz\n")), None, cx)
@@ -4216,7 +4428,13 @@ fn base_text_change_with_same_hunk_geometry_updates_materialized_old_side(cx: &m
         assert!(text.contains("OLD"), "旧侧内容必须跟随新基线：{text:?}");
         assert!(!text.contains("old"));
         assert_eq!(snapshot.resolved_diff_hunks().len(), 1);
+        assert_projection_patch_replays_snapshot(&before, &snapshot, &subscription.consume());
     });
+    assert_eq!(
+        before.text_bytes(),
+        b"a\nold\nnew\nz\n",
+        "旧快照应保留旧基线"
+    );
 }
 
 /// 回归：外部整体替换后，显示 hunk 必须从新工作区快照重算，旧 Git 操作 hunk 不得复用。

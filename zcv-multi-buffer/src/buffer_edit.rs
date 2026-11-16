@@ -7,10 +7,7 @@ use super::*;
 impl MultiBuffer {
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.assert_no_active_transaction("MultiBuffer::clear");
-        let before = self.projection_trees();
-        let old_version = self.state.projection_version;
         self.replace_all_excerpts(Vec::new(), cx);
-        self.publish_projection_edit(&before, old_version);
     }
 
     /// 将 MultiBuffer 坐标中的编辑拆分到各个底层 Buffer。
@@ -192,8 +189,6 @@ impl MultiBuffer {
     /// 源文件路径变化后，按各源当前路径重建映射项（低频操作，允许整体重排）。
     pub(crate) fn rebuild_display(&mut self, cx: &mut Context<Self>) {
         self.state.topology_version = self.state.topology_version.wrapping_add(1);
-        let before = self.projection_trees();
-        let old_version = self.state.projection_version;
         let mut path_keys = mem::take(&mut self.state.path_keys);
         let mut path_key_indices = mem::take(&mut self.state.path_key_indices);
         let mut entries = self.state.excerpts.iter().cloned().collect::<Vec<_>>();
@@ -223,8 +218,8 @@ impl MultiBuffer {
         self.state.path_keys = path_keys;
         self.state.path_key_indices = path_key_indices;
         self.state.excerpts = SumTree::from_iter(entries, ());
-        self.rebuild_all_diff_transforms(cx);
-        self.publish_projection_edit(&before, old_version);
+        let output = self.rebuild_all_diff_transforms(cx);
+        self.publish_projection_edits(output);
         self.emit_projection_changed(cx);
     }
 

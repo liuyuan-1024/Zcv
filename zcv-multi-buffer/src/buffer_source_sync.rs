@@ -2,6 +2,7 @@
 //!
 //! 本文件的类型与字段仍定义在 crate 根模块 `multi_buffer.rs`。
 
+use super::diff_transform_sync::{DiffChangeKind, OutputEdit};
 use super::*;
 
 impl MultiBuffer {
@@ -160,10 +161,6 @@ impl MultiBuffer {
         else {
             return;
         };
-        let before = self.projection_trees();
-        let old_text = self.state.sources[self.state.source_indices[&source_id]]
-            .text
-            .clone();
         let snapshot = source.read(cx).snapshot();
         // capture 表只在源语法捕获集合变化时重建；纯文本编辑保持已有全局索引不变。
         let captures_changed = self
@@ -194,10 +191,14 @@ impl MultiBuffer {
         let records =
             self.splice_source_path(source_id, source_position_map, expanded_excerpts, cx);
         let edits = self.source_input_edits(source_change, &records);
-        let output_edits =
-            self.sync_diff_transforms(&before, edits, Some((source_id, &old_text)), cx);
+        let output_edits = self.sync_diff_transforms(edits, DiffChangeKind::BufferEdited, cx);
         self.publish_projection_change(SourceIncremental {
-            batch: source_change.projected_from(output_edits),
+            batch: source_change.projected_from(
+                output_edits
+                    .into_iter()
+                    .map(OutputEdit::into_text_ranges)
+                    .collect(),
+            ),
         });
         self.emit_text_changed(cx);
     }

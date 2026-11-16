@@ -632,13 +632,7 @@ impl DiffTransform {
         }
     }
 
-    fn buffer_content(
-        excerpt: &Excerpt,
-        content: MBTextSummary,
-        completes_excerpt: bool,
-        hunks: Vec<DiffTransformHunkInfo>,
-    ) -> Self {
-        let text = text_with_separator(content, completes_excerpt && excerpt.adds_newline);
+    fn content(text: MBTextSummary, hunks: Vec<DiffTransformHunkInfo>) -> Self {
         Self::BufferContent {
             summary: DiffTransformSummary {
                 input: text,
@@ -1206,31 +1200,20 @@ fn intern_path(
     index
 }
 
-type ProjectionTrees = (SumTree<Excerpt>, SumTree<DiffTransform>);
-
 /// 比较源文本片段而非物理节点边界：hunk 装饰拆分内容节点不产生文本编辑。
 fn matching_projection_text(
     old: &OutputRegion,
     old_offset: usize,
     new: &OutputRegion,
     new_offset: usize,
-    reverse: bool,
 ) -> usize {
     if old.path != new.path || old.buffer_id != new.buffer_id {
         return 0;
     }
     let old_len = old.text_summary.len;
     let new_len = new.text_summary.len;
-    let old_newline = if reverse {
-        old_offset > old_len
-    } else {
-        old_offset == old_len
-    };
-    let new_newline = if reverse {
-        new_offset > new_len
-    } else {
-        new_offset == new_len
-    };
+    let old_newline = old_offset == old_len;
+    let new_newline = new_offset == new_len;
     if old_newline || new_newline {
         return usize::from(old_newline && new_newline && old.adds_newline && new.adds_newline);
     }
@@ -1241,28 +1224,21 @@ fn matching_projection_text(
     {
         return 0;
     }
-    if reverse {
-        old_offset.min(new_offset)
-    } else {
-        (old_len - old_offset).min(new_len - new_offset)
-    }
+    (old_len - old_offset).min(new_len - new_offset)
 }
 
 /// 判断一次局部变换重算是否真的改变了组合文本，而不把 hunk 元数据变化当作编辑。
 fn projection_text_equal_in_ranges(
-    before: &ProjectionTrees,
-    after: &ProjectionTrees,
-    sources: Sources<'_>,
-    old_range: TextRange,
-    new_range: TextRange,
+    old_cursor: &mut MultiBufferCursor<'_>,
+    new_cursor: &mut MultiBufferCursor<'_>,
+    old_range: MultiBufferRange,
+    new_range: MultiBufferRange,
 ) -> bool {
     if old_range.len() != new_range.len() {
         return false;
     }
-    let mut old_cursor = MultiBufferCursor::new(&before.0, &before.1, sources);
-    let mut new_cursor = MultiBufferCursor::new(&after.0, &after.1, sources);
-    old_cursor.seek(old_range.start(), Bias::Right);
-    new_cursor.seek(new_range.start(), Bias::Right);
+    old_cursor.seek(old_range.start().into(), Bias::Right);
+    new_cursor.seek(new_range.start().into(), Bias::Right);
     let mut old_offset = old_range
         .start()
         .get()
@@ -1289,8 +1265,7 @@ fn projection_text_equal_in_ranges(
             new_offset = 0;
             continue;
         }
-        let matched =
-            matching_projection_text(&old, old_offset, &new, new_offset, false).min(remaining);
+        let matched = matching_projection_text(&old, old_offset, &new, new_offset).min(remaining);
         if matched == 0 {
             return false;
         }
@@ -1301,96 +1276,6 @@ fn projection_text_equal_in_ranges(
     true
 }
 
-/// 沿变换树比较同版本源片段的公共文本前后缀，不物化全文。
-/// 源内部编辑由 TextChangeBatch 投影；结构同步只发布实际插入／移除的文本。
-fn projection_changed_ranges(
-    before: &ProjectionTrees,
-    after: &ProjectionTrees,
-    sources: Sources<'_>,
-) -> (TextRange, TextRange) {
-    let old_len = before.1.summary().output.len;
-    let new_len = after.1.summary().output.len;
-    let limit = old_len.min(new_len);
-    let mut old_cursor = MultiBufferCursor::new(&before.0, &before.1, sources);
-    let mut new_cursor = MultiBufferCursor::new(&after.0, &after.1, sources);
-    old_cursor.seek_transform_index(0);
-    new_cursor.seek_transform_index(0);
-    let mut prefix = 0;
-    let mut old_offset = 0;
-    let mut new_offset = 0;
-    while prefix < limit {
-        let Some((old, _)) = old_cursor.item_counts() else {
-            break;
-        };
-        let Some((new, _)) = new_cursor.item_counts() else {
-            break;
-        };
-        if old_offset == old.text_summary.len + usize::from(old.adds_newline) {
-            old_cursor.next();
-            old_offset = 0;
-            continue;
-        }
-        if new_offset == new.text_summary.len + usize::from(new.adds_newline) {
-            new_cursor.next();
-            new_offset = 0;
-            continue;
-        }
-        let matched =
-            matching_projection_text(&old, old_offset, &new, new_offset, false).min(limit - prefix);
-        if matched == 0 {
-            break;
-        }
-        prefix += matched;
-        old_offset += matched;
-        new_offset += matched;
-    }
-
-    old_cursor.seek(ByteOffset::new(old_len), Bias::Left);
-    new_cursor.seek(ByteOffset::new(new_len), Bias::Left);
-    let mut old_remaining = old_cursor.item_counts().map_or(0, |(region, _)| {
-        region.text_summary.len + usize::from(region.adds_newline)
-    });
-    let mut new_remaining = new_cursor.item_counts().map_or(0, |(region, _)| {
-        region.text_summary.len + usize::from(region.adds_newline)
-    });
-    let mut suffix = 0;
-    while prefix + suffix < limit {
-        while old_remaining == 0 && old_cursor.item_counts().is_some() {
-            old_cursor.prev();
-            old_remaining = old_cursor.item_counts().map_or(0, |(region, _)| {
-                region.text_summary.len + usize::from(region.adds_newline)
-            });
-        }
-        while new_remaining == 0 && new_cursor.item_counts().is_some() {
-            new_cursor.prev();
-            new_remaining = new_cursor.item_counts().map_or(0, |(region, _)| {
-                region.text_summary.len + usize::from(region.adds_newline)
-            });
-        }
-        let Some((old, _)) = old_cursor.item_counts() else {
-            break;
-        };
-        let Some((new, _)) = new_cursor.item_counts() else {
-            break;
-        };
-        let matched = matching_projection_text(&old, old_remaining, &new, new_remaining, true)
-            .min(limit - prefix - suffix);
-        if matched == 0 {
-            break;
-        }
-        suffix += matched;
-        old_remaining -= matched;
-        new_remaining -= matched;
-    }
-    (
-        TextRange::new(ByteOffset::new(prefix), ByteOffset::new(old_len - suffix))
-            .expect("旧投影文本范围必须正序"),
-        TextRange::new(ByteOffset::new(prefix), ByteOffset::new(new_len - suffix))
-            .expect("新投影文本范围必须正序"),
-    )
-}
-
-/// 输出变换节点序号，与逻辑窗口序号分离。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct TransformIndex(usize);
 

@@ -1,11 +1,11 @@
-use std::{fs, process::Command, slice, sync::Arc};
+use std::{fs, process::Command, slice, sync::Arc, time::Duration};
 
 use gpui::{Entity, TestAppContext};
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
+use zcv_fs_watch::{FsEventStream, Watcher};
 use zcv_git::{FileStatus, GitRevision};
 use zcv_language::LanguageRegistry;
 use zcv_multi_buffer::ResolvedDiffHunk;
-use zcv_path::AbsolutePathBuf;
 use zcv_settings::{SettingsStore, UserSettings};
 
 use super::*;
@@ -46,6 +46,23 @@ fn run_git(root: &Path, args: &[&str]) {
     );
 }
 
+/// Git 状态由测试显式刷新，文件监听流只需保持打开。
+struct TestWatcher;
+
+impl Watcher for TestWatcher {
+    fn add(&self, _path: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn remove(&self, _path: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn watch(&self, _latency: Duration) -> FsEventStream {
+        Box::pin(futures_lite::stream::pending())
+    }
+}
+
 fn project_with_repo(cx: &mut TestAppContext) -> (tempfile::TempDir, PathBuf, Entity<Project>) {
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = directory.path().canonicalize().expect("应规范化仓库路径");
@@ -57,11 +74,13 @@ fn project_with_repo(cx: &mut TestAppContext) -> (tempfile::TempDir, PathBuf, En
     run_git(&root, &["add", "tracked.txt", ".gitignore"]);
     run_git(&root, &["commit", "-q", "-m", "initial"]);
     let project = cx.new(|cx| {
-        Project::new(
-            vec![AbsolutePathBuf::canonicalize(&root).unwrap()],
+        Project::new_with_watcher(
+            vec![root.clone()],
+            Arc::new(TestWatcher),
             Arc::new(LanguageRegistry::new()),
             cx,
         )
+        .expect("应创建测试项目")
     });
     cx.run_until_parked();
     (directory, root, project)

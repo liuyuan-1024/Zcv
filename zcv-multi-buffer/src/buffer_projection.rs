@@ -2,6 +2,7 @@
 //!
 //! 本文件的类型与字段仍定义在 crate 根模块 `multi_buffer.rs`。
 
+use super::diff_transform_sync::{InputEdit, OutputEdit};
 use super::*;
 
 impl MultiBuffer {
@@ -93,32 +94,12 @@ impl MultiBuffer {
         }
     }
 
-    /// 用编辑前冻结的投影树与当前投影树按游标推导结构变化范围，并发布增量批次。
-    ///
-    /// 结构变化不物化组合文本：前后两棵树按同版本源片段比对公共前后缀，不把 hunk 装饰造成的节点拆分当成文本编辑。
-    /// 源内部编辑由 TextChangeBatch 单独投影。
-    pub(crate) fn publish_projection_edit(
-        &mut self,
-        before: &ProjectionTrees,
-        old_version: BufferVersion,
-    ) {
-        let after = self.projection_trees();
-        let (old_range, new_range) = projection_changed_ranges(
-            before,
-            &after,
-            Sources::Workspace(self.state.sources.as_slice()),
-        );
-        let batch =
-            TextChangeBatch::from_edits(old_version, old_version, vec![(old_range, new_range)]);
+    /// 结构同步与 hunk 更新直接发布同步器产生的旧、新输出范围。
+    pub(super) fn publish_projection_edits(&mut self, edits: Vec<OutputEdit>) {
+        let version = self.state.projection_version;
+        let edits = edits.into_iter().map(OutputEdit::into_text_ranges);
+        let batch = TextChangeBatch::from_edits(version, version, edits.collect());
         self.publish_projection_change(SourceIncremental { batch });
-    }
-
-    /// 冻结当前输入/输出投影树；供结构变化前保存旧坐标、变化后推导增量范围。
-    pub(crate) fn projection_trees(&self) -> ProjectionTrees {
-        (
-            self.state.excerpts.clone(),
-            self.state.diff_transforms.clone(),
-        )
     }
 
     /// 把源版本化编辑投影到稳定逻辑 excerpts 的输入坐标。
@@ -126,7 +107,7 @@ impl MultiBuffer {
         &self,
         source_change: &TextChangeBatch,
         records: &SourceEditRecords,
-    ) -> Vec<diff_transform_sync::InputEdit> {
+    ) -> Vec<InputEdit> {
         let mut edits = Vec::new();
         for (old, new) in records.old.iter().zip(&records.new) {
             for edit in source_change.patch().edits() {
@@ -149,10 +130,10 @@ impl MultiBuffer {
                 if old_range.is_empty() && new_range.is_empty() {
                     continue;
                 }
-                edits.push(diff_transform_sync::InputEdit::new(old_range, new_range));
+                edits.push(InputEdit::new(old_range, new_range));
             }
         }
-        diff_transform_sync::merge_input_edits(edits)
+        edits
     }
 
     /// 结构变更（excerpt 增删、diff 展开折叠）必须在文本事务之外进行。

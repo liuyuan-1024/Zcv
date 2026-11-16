@@ -2,6 +2,7 @@
 //!
 //! 本文件的类型与字段仍定义在 crate 根模块 `multi_buffer.rs`。
 
+use super::diff_transform_sync::{DiffChangeKind, InputEdit, OutputEdit};
 use super::*;
 
 impl MultiBuffer {
@@ -61,7 +62,6 @@ impl MultiBuffer {
         let ExcerptState {
             source_subscriptions,
             excerpts: authoritative_excerpts,
-            diff_transforms,
             sources,
             source_indices,
             path_keys,
@@ -194,7 +194,6 @@ impl MultiBuffer {
 
         *source_subscriptions = next_source_subscriptions;
         *authoritative_excerpts = SumTree::from_iter(next_excerpts, ());
-        *diff_transforms = SumTree::new(());
         *sources = next_sources;
         *source_indices = sources
             .iter()
@@ -202,7 +201,8 @@ impl MultiBuffer {
             .map(|(index, source)| (source.entity.entity_id(), index))
             .collect();
         *composite_capture_names = rebuild_capture_table(sources);
-        self.rebuild_all_diff_transforms(cx);
+        let output = self.rebuild_all_diff_transforms(cx);
+        self.publish_projection_edits(output);
         self.emit_projection_changed(cx);
     }
 
@@ -347,9 +347,14 @@ impl MultiBuffer {
     }
 
     /// 显式替换一个路径的逻辑 excerpts，并把结构编辑交给统一变换同步器。
-    fn splice_excerpt_entries(&mut self, path: &PathKey, entries: Vec<Excerpt>, cx: &App) {
-        let before = self.projection_trees();
-        let mut cursor = before.0.cursor::<ExcerptSummary>(());
+    fn splice_excerpt_entries(
+        &mut self,
+        path: &PathKey,
+        entries: Vec<Excerpt>,
+        cx: &App,
+    ) -> Vec<OutputEdit> {
+        let before = self.state.excerpts.clone();
+        let mut cursor = before.cursor::<ExcerptSummary>(());
         let mut next = cursor.slice(path, Bias::Left);
         let old_start = cursor.start().text.len;
         cursor.seek(path, Bias::Right);
@@ -359,11 +364,11 @@ impl MultiBuffer {
         next.extend(entries, ());
         next.append(suffix, ());
         let mut separator_edits = Vec::new();
-        let old_tail = before.0.last();
+        let old_tail = before.last();
         // 追加路径时，原文档尾获得一个结构分隔符。
         if let Some(old_tail) = old_tail
             && old_tail.path < *path
-            && next.summary().count > before.0.summary().count
+            && next.summary().count > before.summary().count
         {
             let mut cursor = next.cursor::<ExcerptSummary>(());
             let mut prefix = cursor.slice(&old_tail.path, Bias::Left);
@@ -376,17 +381,17 @@ impl MultiBuffer {
             prefix.append(previous_path, ());
             prefix.append(suffix, ());
             next = prefix;
-            separator_edits.push(diff_transform_sync::InputEdit::new(
+            separator_edits.push(InputEdit::new(
                 footer_start..footer_start,
                 footer_start..footer_start + 1,
             ));
         }
         // 移除尾路径时，新的文档尾释放原有分隔符。
         if next.last().is_some_and(|entry| entry.adds_newline) {
-            let old_footer = before.0.summary().text.len - (old_end - old_start) - 1;
+            let old_footer = before.summary().text.len - (old_end - old_start) - 1;
             let new_footer = next.summary().text.len - 1;
             next.update_last(|entry| entry.adds_newline = false, ());
-            separator_edits.push(diff_transform_sync::InputEdit::new(
+            separator_edits.push(InputEdit::new(
                 old_footer..old_footer + 1,
                 new_footer..new_footer,
             ));
@@ -398,11 +403,12 @@ impl MultiBuffer {
         cursor.seek(path, Bias::Right);
         let new_end = cursor.start().text.len;
         drop(cursor);
-        separator_edits.push(diff_transform_sync::InputEdit::new(
-            old_start..old_end,
-            new_start..new_end,
-        ));
-        self.sync_diff_transforms(&before, separator_edits, None, cx);
+        separator_edits.push(InputEdit::new(old_start..old_end, new_start..new_end));
+        self.sync_diff_transforms(
+            separator_edits,
+            DiffChangeKind::ExcerptsChanged(&before),
+            cx,
+        )
     }
 
     /// 从当前映射树派生组合坐标下的搜索匹配范围。
@@ -479,11 +485,9 @@ impl MultiBuffer {
         if !removed {
             return false;
         }
-        let before = self.projection_trees();
-        let old_version = self.state.projection_version;
         self.state.topology_version = self.state.topology_version.wrapping_add(1);
-        self.splice_excerpt_entries(&path_key, Vec::new(), cx);
-        self.publish_projection_edit(&before, old_version);
+        let output = self.splice_excerpt_entries(&path_key, Vec::new(), cx);
+        self.publish_projection_edits(output);
         self.emit_projection_changed(cx);
         true
     }
@@ -611,7 +615,7 @@ impl MultiBuffer {
     ) -> AppendedExcerpts {
         self.assert_no_active_transaction("MultiBuffer::append_excerpts_for_paths");
         self.sync_pending_sources(cx);
-        let before = self.projection_trees();
+        let before = self.state.excerpts.clone();
         let base_version = self.state.projection_version;
         let mut previous_path = self.state.excerpts.last().map(|entry| entry.path.clone());
         let mut new_sources = Vec::new();
@@ -673,24 +677,20 @@ impl MultiBuffer {
         }
         entries.last_mut().expect("追加的片段必须有效").adds_newline = false;
         self.state.topology_version = self.state.topology_version.wrapping_add(1);
-        let old_len = before.0.summary().text.len;
-        let mut next = before.0.clone();
+        let old_len = before.summary().text.len;
+        let mut next = before.clone();
         if next.last().is_some() {
             next.update_last(|entry| entry.adds_newline = true, ());
         }
         next.extend(entries, ());
         let new_len = next.summary().text.len;
         self.state.excerpts = next;
-        self.sync_diff_transforms(
-            &before,
-            vec![diff_transform_sync::InputEdit::new(
-                old_len..old_len,
-                old_len..new_len,
-            )],
-            None,
+        let output = self.sync_diff_transforms(
+            vec![InputEdit::new(old_len..old_len, old_len..new_len)],
+            DiffChangeKind::ExcerptsChanged(&before),
             cx,
         );
-        self.publish_projection_edit(&before, base_version);
+        self.publish_projection_edits(output);
         if self.projection_sync.is_none() {
             cx.emit(MultiBufferEvent::ProjectionAppended);
             cx.notify();
@@ -713,8 +713,6 @@ impl MultiBuffer {
         excerpts: Vec<ExcerptRange>,
         cx: &mut Context<Self>,
     ) -> Vec<TextRange> {
-        let before = self.projection_trees();
-        let old_version = self.state.projection_version;
         self.state.topology_version = self.state.topology_version.wrapping_add(1);
         let (start_index, old_count) = {
             let mut cursor = self.state.excerpts.cursor::<ExcerptSummary>(());
@@ -725,9 +723,9 @@ impl MultiBuffer {
         };
         let total = self.state.excerpts.summary().count - old_count + excerpts.len();
         let entries = self.build_entries_for_excerpts(excerpts, start_index, total);
-        self.splice_excerpt_entries(&path, entries, cx);
+        let output = self.splice_excerpt_entries(&path, entries, cx);
         let match_ranges = self.match_ranges_for_path(&path);
-        self.publish_projection_edit(&before, old_version);
+        self.publish_projection_edits(output);
         self.emit_projection_changed(cx);
         match_ranges
     }

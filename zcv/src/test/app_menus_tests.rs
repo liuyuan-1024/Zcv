@@ -11,7 +11,7 @@ fn application_menus_expose_existing_editor_commands(cx: &mut TestAppContext) {
             .iter()
             .map(|menu| menu.name.as_ref())
             .collect::<Vec<_>>();
-        assert_eq!(names, ["Zcv", "文件", "编辑", "视图", "转到", "窗口"]);
+        assert_eq!(names, ["Zcv", "文件", "编辑", "视图", "转到", "Window"]);
 
         let action_names = |menu_index: usize| {
             menus[menu_index]

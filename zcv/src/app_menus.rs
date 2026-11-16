@@ -48,7 +48,7 @@ pub(crate) fn install(cx: &App) {
             MenuItem::action("在文件中替换", DeployReplace),
             MenuItem::action("搜索项目内容…", DeployProjectSearch),
         ]),
-        Menu::new("窗口").items([
+        Menu::new("Window").items([
             MenuItem::action("最小化", MinimizeWindow),
             MenuItem::action("最大化或恢复", ToggleMaximizeWindow),
         ]),

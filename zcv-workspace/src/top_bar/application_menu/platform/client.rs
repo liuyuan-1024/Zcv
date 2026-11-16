@@ -227,7 +227,7 @@ impl Render for ApplicationMenuView {
                     this.hover_menu(menu_index, *entered, window, cx)
                 }));
             if expanded && self.active_menu == menu_index {
-                slot = slot.bg(color::current(cx).element_selected);
+                slot = slot.bg(color::current(cx).element_highlight);
                 if let Some(menu) = self.menu.clone() {
                     let view = cx.entity();
                     let on_outside =

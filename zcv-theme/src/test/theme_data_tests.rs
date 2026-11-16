@@ -20,6 +20,7 @@ fn dark_theme_colors_match_migrated_values() {
     let theme = theme_by_id("dark").expect("内置深色主题应存在");
     let colors = theme.colors;
     assert_eq!(colors.background, rgba(0x3b414dff));
+    assert_eq!(colors.element_highlight, rgba(0x363c46ff));
     assert_eq!(colors.status_bar_background, rgba(0x3b414dff));
     assert_eq!(colors.panel_background, rgba(0x2f343eff));
     assert_eq!(colors.editor_background, rgba(0x282c33ff));
@@ -91,7 +92,7 @@ fn light_theme_colors_match_migrated_values() {
         colors.editor_document_highlight_bracket_background,
         colors.editor_selection_background
     );
-    assert_eq!(colors.ghost_element_hover, rgba(0xc9c9caff));
+    assert_eq!(colors.element_highlight, rgba(0xd5d5d6ff));
     assert_eq!(colors.version_control_added, rgba(0x27a657ff));
     assert_eq!(colors.version_control_modified, rgba(0xd3b020ff));
     assert_eq!(colors.version_control_deleted, rgba(0xe06c76ff));
@@ -185,9 +186,7 @@ fn minimal_theme() -> String {
         background = "#000000ff"
         "surface.background" = "#111111ff"
         "elevated_surface.background" = "#222222ff"
-        "ghost_element.hover" = "#333333ff"
-        "element.hover" = "#333333ff"
-        "element.selected" = "#333333ff"
+        "element.highlight" = "#333333ff"
         border = "#444444ff"
         "border.variant" = "#444444ff"
         "border.focused" = "#555555ff"

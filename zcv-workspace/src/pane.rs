@@ -944,7 +944,7 @@ fn render_tab(
         .drag_over::<DraggedTab>(
             move |mut tab: StyleRefinement, dragged: &DraggedTab, _, cx| {
                 if ix != dragged.ix {
-                    tab.background = Some(Fill::from(color::current(cx).element_hover));
+                    tab.background = Some(Fill::from(color::current(cx).element_highlight));
                 }
                 tab
             },
@@ -970,7 +970,7 @@ fn render_tab_bar_drop_target(
         .id("tab-bar-drop-target")
         .flex_grow(1.0)
         .drag_over::<DraggedTab>(|mut tab: StyleRefinement, _dragged: &DraggedTab, _, cx| {
-            tab.background = Some(Fill::from(color::current(cx).element_hover));
+            tab.background = Some(Fill::from(color::current(cx).element_highlight));
             tab
         })
         .on_drop(move |dragged: &DraggedTab, window, cx| {

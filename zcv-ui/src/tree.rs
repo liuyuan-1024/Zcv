@@ -57,7 +57,7 @@ impl TreeRowFrame {
     /// 渲染可交互树行的公共外壳。
     ///
     /// 选择框、拖拽和具体点击动作仍由树形消费方叠加；
-    /// 这里仅统一行身份、指针和悬停背景。
+    /// 这里统一行身份、指针和悬停背景。
     pub fn interactive(
         self,
         id: impl Into<ElementId>,
@@ -67,7 +67,7 @@ impl TreeRowFrame {
         self.render(window, cx)
             .id(id)
             .cursor_pointer()
-            .hover(|style| style.bg(color::current(cx).element_hover))
+            .hover(|style| style.bg(color::current(cx).element_highlight))
     }
 
     pub fn render(self, window: &Window, cx: &App) -> Div {

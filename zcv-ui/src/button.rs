@@ -9,7 +9,7 @@ use gpui::{
 };
 use zcv_theme::{color, scale, typography};
 
-use crate::{ButtonLike, ButtonStyle, SvgIcon, TooltipSpec};
+use crate::{ButtonLike, ButtonStyle, SvgIcon, TooltipSpec, button_like::keyboard_focus};
 
 /// 按钮尺寸：内边距与圆角随尺寸档位缩放，高度 = UI 字号 + 上下内边距。
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -61,6 +61,7 @@ pub struct Button {
     size: ButtonSize,
     color: Option<Rgba>,
     wrap_text: bool,
+    keyboard_focusable: bool,
 }
 
 impl Button {
@@ -93,6 +94,7 @@ impl Button {
             size: ButtonSize::Compact,
             color: None,
             wrap_text: false,
+            keyboard_focusable: false,
         }
     }
 
@@ -117,6 +119,12 @@ impl Button {
     /// 设置尺寸（默认紧凑）。
     pub fn size(mut self, size: ButtonSize) -> Self {
         self.size = size;
+        self
+    }
+
+    /// 按钮是否加入所在窗口的键盘焦点顺序。
+    pub fn keyboard_focusable(mut self) -> Self {
+        self.keyboard_focusable = true;
         self
     }
 
@@ -167,7 +175,8 @@ impl RenderOnce for Button {
         let ui_size = window.rem_size();
         let ui_line = typography::ui_line_at(ui_size, cx);
         let colors = *color::current(cx);
-        let color = if self.base.is_disabled() {
+        let disabled = self.base.is_disabled();
+        let color = if disabled {
             colors.text_disabled
         } else {
             self.color.unwrap_or(colors.text)
@@ -193,6 +202,9 @@ impl RenderOnce for Button {
                 .text_size(ui_size)
                 .line_height(ui_line),
         );
+        let element = element.when(self.keyboard_focusable && !disabled, |element| {
+            keyboard_focus(element, colors.border_focused)
+        });
         // 内容形态；图标统一经 SvgIcon 渲染。
         element.child(match self.content {
             ButtonContent::Icon(path) => SvgIcon::new(path)

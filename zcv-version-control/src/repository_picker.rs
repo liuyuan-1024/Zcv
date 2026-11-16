@@ -144,7 +144,7 @@ impl PickerDelegate for RepositoryPickerDelegate {
         &self,
         index: usize,
         selected: bool,
-        _cx: &mut Context<Picker<Self>>,
+        cx: &mut Context<Picker<Self>>,
     ) -> gpui::AnyElement {
         let choice = &self.repositories[self.filtered[index]];
         let is_active = self
@@ -159,7 +159,7 @@ impl PickerDelegate for RepositoryPickerDelegate {
             item.end_slot(
                 SvgIcon::new("icons/check.svg")
                     .size(gpui::px(12.0))
-                    .color(color::current(_cx).icon_accent),
+                    .color(color::current(cx).icon_accent),
             )
             .into_any_element()
         } else {

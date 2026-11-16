@@ -5,9 +5,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, CursorStyle, DefiniteLength, Div, ElementId, IntoElement,
-    MouseButton, MouseUpEvent, ParentElement, RenderOnce, Stateful, ViewElement, Window, div,
-    prelude::*,
+    AnyElement, App, BoxShadow, ClickEvent, CursorStyle, DefiniteLength, Div, ElementId,
+    IntoElement, MouseButton, MouseUpEvent, ParentElement, Pixels, RenderOnce, Rgba, Stateful,
+    ViewElement, Window, div, prelude::*, px,
 };
 use zcv_theme::{color, scale};
 
@@ -144,7 +144,7 @@ impl IntoElement for ButtonLike {
 impl ButtonLike {
     pub(crate) fn render_root(self, cx: &App) -> Stateful<Div> {
         let interactive = self.on_click.is_some() || self.on_right_click.is_some();
-        let colors = *color::current(cx);
+        let colors = color::current(cx);
         let mut element = div()
             .id(self.id)
             .flex_none()
@@ -164,10 +164,7 @@ impl ButtonLike {
             element = element.cursor(cursor);
         }
         if !self.disabled {
-            let hover = match self.style {
-                ButtonStyle::Ghost => colors.ghost_element_hover,
-                ButtonStyle::Solid => colors.element_hover,
-            };
+            let hover = colors.element_highlight;
             element = element.hover(move |style| style.bg(hover));
             if interactive {
                 element = element.active(move |style| style.bg(hover));
@@ -210,6 +207,16 @@ impl RenderOnce for ButtonLike {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         self.render_root(cx)
     }
+}
+
+pub(crate) fn keyboard_focus(element: Stateful<Div>, ring: Rgba) -> Stateful<Div> {
+    element.tab_index(0).focus_visible(move |style| {
+        style.shadow(vec![
+            BoxShadow::new(Pixels::ZERO, Pixels::ZERO, ring.into())
+                .spread_radius(px(1.0))
+                .inset(),
+        ])
+    })
 }
 
 #[cfg(test)]

@@ -434,19 +434,28 @@ impl QuickAccess {
     fn select_next(&mut self, _: &PickerSelectNext, _: &mut Window, cx: &mut Context<Self>) {
         let count = self.results.len();
         if count > 0 {
-            self.selected_index = (self.selected_index + 1) % count;
-            self.list_state.scroll_to_reveal_item(self.selected_index);
-            cx.notify();
+            let index = (self.selected_index + 1) % count;
+            self.select_result(index, true, cx);
         }
     }
 
     fn select_prev(&mut self, _: &PickerSelectPrev, _: &mut Window, cx: &mut Context<Self>) {
         let count = self.results.len();
         if count > 0 {
-            self.selected_index = (self.selected_index + count - 1) % count;
-            self.list_state.scroll_to_reveal_item(self.selected_index);
-            cx.notify();
+            let index = (self.selected_index + count - 1) % count;
+            self.select_result(index, true, cx);
         }
+    }
+
+    fn select_result(&mut self, index: usize, reveal: bool, cx: &mut Context<Self>) {
+        if self.selected_index == index && !reveal {
+            return;
+        }
+        self.selected_index = index;
+        if reveal {
+            self.list_state.scroll_to_reveal_item(index);
+        }
+        cx.notify();
     }
 
     fn editor_move_down(&mut self, _: &MoveDown, window: &mut Window, cx: &mut Context<Self>) {
@@ -506,24 +515,24 @@ impl QuickAccess {
         cx: &mut Context<Self>,
         input_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     ) -> impl IntoElement {
-        let entity = cx.entity();
         let query = self.input.text(cx);
         let width = scale::to_pixels(SEARCH_WIDTH, window);
         let result_list = list(
             self.list_state.clone(),
-            cx.processor(move |search, index, _, _| {
-                let entity = entity.clone();
+            cx.processor(move |search, index, _, cx| {
                 let command_marker = SvgIcon::new("icons/chevron_right.svg");
                 div()
                     .id(("quick-access-result", index))
+                    .debug_selector(move || format!("quick-access-result-{index}"))
                     .w(width)
-                    .on_click(move |_, window, cx| {
-                        entity.update(cx, |search, cx| {
-                            search.selected_index = index;
-                            search.confirm(&PickerConfirm, window, cx);
-                        });
+                    .on_mouse_move(cx.listener(move |search, _, _, cx| {
+                        search.select_result(index, false, cx);
+                    }))
+                    .on_click(cx.listener(move |search, _, window, cx| {
+                        search.select_result(index, false, cx);
+                        search.confirm(&PickerConfirm, window, cx);
                         cx.stop_propagation();
-                    })
+                    }))
                     .child(match &search.results[index] {
                         SearchResult::Command(command) => {
                             ListItem::new(("quick-access-command", index))

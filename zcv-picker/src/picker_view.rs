@@ -33,7 +33,7 @@ pub trait PickerDelegate: 'static + Sized {
     fn confirm(&mut self, window: &mut Window, cx: &mut App);
     fn dismissed(&mut self);
 
-    /// 渲染第 `ix` 行。
+    /// 渲染第 `ix` 行。使用 `selected` 标记鼠标与键盘共享的当前项。
     ///
     /// `cx` 是 Picker 自身的 context：行内需要回调 delegate 的交互（例如删除按钮）通过 `cx.listener` 绑定到 Picker 再访问 delegate。
     fn render_match(&self, ix: usize, selected: bool, cx: &mut Context<Picker<Self>>)
@@ -178,9 +178,7 @@ impl<D: PickerDelegate> Picker<D> {
             return;
         }
         let next = (self.delegate.selected_index() + 1) % count;
-        self.delegate.set_selected_index(next);
-        self.list_state.scroll_to_reveal_item(next);
-        cx.notify();
+        self.select_match(next, true, cx);
     }
 
     fn select_prev(&mut self, _: &PickerSelectPrev, _: &mut Window, cx: &mut Context<Self>) {
@@ -189,8 +187,17 @@ impl<D: PickerDelegate> Picker<D> {
             return;
         }
         let prev = (self.delegate.selected_index() + count - 1) % count;
-        self.delegate.set_selected_index(prev);
-        self.list_state.scroll_to_reveal_item(prev);
+        self.select_match(prev, true, cx);
+    }
+
+    fn select_match(&mut self, index: usize, reveal: bool, cx: &mut Context<Self>) {
+        if self.delegate.selected_index() == index && !reveal {
+            return;
+        }
+        self.delegate.set_selected_index(index);
+        if reveal {
+            self.list_state.scroll_to_reveal_item(index);
+        }
         cx.notify();
     }
 
@@ -253,24 +260,23 @@ impl<D: PickerDelegate> Render for Picker<D> {
 
         // 列表项允许多行，使用可变行高虚拟列表；ListState 按需测量并缓存可见行高度。
         // 结果视口负责裁剪内容，ListState 只负责虚拟化和滚动状态。
-        let entity = cx.entity();
         let width = self.width;
         let list = list(
             self.list_state.clone(),
             cx.processor(move |picker, index, _window, cx| {
-                let entity = entity.clone();
                 div()
                     .id(("picker-match", index))
                     // Infer 首次测量尚无视口宽度；换行必须使用与最终布局相同的选择器宽度。
                     .w(width)
                     .debug_selector(move || format!("picker-match-{index}"))
-                    .on_click(move |_, window, cx| {
-                        entity.update(cx, |picker, cx| {
-                            picker.delegate.set_selected_index(index);
-                            picker.confirm_selection(window, cx);
-                        });
+                    .on_mouse_move(cx.listener(move |picker, _, _, cx| {
+                        picker.select_match(index, false, cx);
+                    }))
+                    .on_click(cx.listener(move |picker, _, window, cx| {
+                        picker.select_match(index, false, cx);
+                        picker.confirm_selection(window, cx);
                         cx.stop_propagation();
-                    })
+                    }))
                     .child(picker.delegate.render_match(
                         index,
                         index == picker.delegate.selected_index(),

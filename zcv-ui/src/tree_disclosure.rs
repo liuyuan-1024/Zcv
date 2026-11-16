@@ -59,7 +59,7 @@ impl RenderOnce for TreeDisclosure {
             .justify_center()
             .rounded_sm()
             .cursor_pointer()
-            .hover(move |style| style.bg(colors.ghost_element_hover))
+            .hover(move |style| style.bg(colors.element_highlight))
             .when_some(TooltipSpec::from_lines([label]).build(), |el, build| {
                 el.tooltip(build)
             })

@@ -28,6 +28,7 @@ pub(crate) enum ContextMenuItem {
 ///
 /// `handler` 的第一个参数是菜单打开时的焦点上下文：
 /// 确认前先把焦点归还给该上下文，保证 action 在打开菜单前的焦点链上派发。
+#[derive(Clone)]
 pub struct ContextMenuEntry {
     label: SharedString,
     end_slot_text: Option<SharedString>,
@@ -198,13 +199,22 @@ impl ContextMenu {
         if let Some(ix) = self.items.iter().position(Self::is_selectable) {
             self.select_index(ix, cx);
         }
-        cx.notify();
+    }
+
+    pub(crate) fn select_checked_or_first(mut self) -> Self {
+        self.selected_index = self
+            .items
+            .iter()
+            .position(|item| {
+                matches!(item, ContextMenuItem::Entry(entry) if entry.checked && !entry.disabled)
+            })
+            .or_else(|| self.items.iter().position(Self::is_selectable));
+        self
     }
 
     fn handle_select_last(&mut self, _: &SelectLast, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self.items.iter().rposition(Self::is_selectable) {
             self.select_index(ix, cx);
-            cx.notify();
         }
     }
 
@@ -219,7 +229,6 @@ impl ContextMenu {
                 .map(|(ix, _)| ix)
         {
             self.select_index(next, cx);
-            cx.notify();
             return;
         }
         self.select_first(&SelectFirst, window, cx);
@@ -242,15 +251,16 @@ impl ContextMenu {
                 .map(|(ix, _)| ix)
         {
             self.select_index(previous, cx);
-            cx.notify();
             return;
         }
         self.handle_select_last(&SelectLast, window, cx);
     }
 
     fn select_index(&mut self, ix: usize, cx: &mut Context<Self>) {
-        self.selected_index = Some(ix);
-        cx.notify();
+        if self.selected_index != Some(ix) {
+            self.selected_index = Some(ix);
+            cx.notify();
+        }
     }
 
     /// 单个菜单项的行内容：名称靠左、行尾说明贴行尾。
@@ -276,6 +286,7 @@ impl ContextMenu {
         };
 
         let row = ListItem::new(("context-menu-item", ix))
+            .rounded()
             .disabled(*disabled)
             .toggle_state(Some(ix) == self.selected_index)
             .when(has_toggles, |row| {
@@ -314,9 +325,11 @@ impl ContextMenu {
             .id(("context-menu-row", ix))
             .debug_selector(move || format!("context-menu-item-{ix}"))
             .when(!*disabled, |row| {
-                row.on_click(cx.listener(move |this, _, window, cx| {
-                    // 点击与键盘确认共用一条路径。
-                    this.selected_index = Some(ix);
+                row.on_mouse_move(cx.listener(move |this, _, _, cx| {
+                    this.select_index(ix, cx);
+                }))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.select_index(ix, cx);
                     this.confirm(&Confirm, window, cx);
                 }))
             })
@@ -340,7 +353,7 @@ impl Render for ContextMenu {
             // test cfg 下注册 debug bounds，供面板布局断言使用。
             .debug_selector(|| "context-menu-rows".into())
             .max_h(max_height)
-            .py(scale::S4)
+            .min_h_0()
             .overflow_y_scroll();
 
         for (ix, item) in self.items.iter().enumerate() {
@@ -362,6 +375,10 @@ impl Render for ContextMenu {
 
         div()
             .id("context-menu")
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .p(scale::S4)
             .occlude()
             .track_focus(&self.focus_handle)
             .key_context("menu")

@@ -9,6 +9,7 @@ mod checkbox;
 mod confirm;
 mod context_menu;
 mod contrast;
+mod dropdown_menu;
 mod icon;
 mod input;
 mod input_shell;
@@ -20,6 +21,8 @@ mod replace_input;
 mod scrollbar;
 mod search_input;
 mod selection_shape;
+mod stepper;
+mod switch;
 mod tab;
 mod tab_bar;
 mod toast;
@@ -36,6 +39,7 @@ pub use checkbox::Checkbox;
 pub use confirm::{ConfirmAnswer, ConfirmOverlay};
 pub use context_menu::{ContextMenu, ContextMenuEntry};
 pub use contrast::ensure_minimum_contrast;
+pub use dropdown_menu::DropdownMenu;
 pub use icon::SvgIcon;
 pub use input::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
 pub use list_item::ListItem;
@@ -50,6 +54,8 @@ pub use selection_shape::{
     SelectionSegmentShape, TOP_LEFT, TOP_RIGHT, paint_selection_segment, selection_corner_radius,
     selection_line_end_overshoot, selection_segment_shapes,
 };
+pub use stepper::Stepper;
+pub use switch::Switch;
 pub use tab::Tab;
 pub use tab_bar::TabBar;
 pub use toast::{ToastAction, ToastId, ToastKind, ToastLayer};

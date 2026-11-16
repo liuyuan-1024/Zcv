@@ -227,7 +227,7 @@ fn entry_card(cx: &App) -> Div {
         .px(scale::S6)
         .h(typography::ui_line(cx))
         .rounded_xs()
-        .bg(color::current(cx).element_selected)
+        .bg(color::current(cx).element_highlight)
 }
 
 /// 选中条目的图标：目录/文件按本地 metadata 实时判断（后景层每帧至多 2 次，开销可忽略）。

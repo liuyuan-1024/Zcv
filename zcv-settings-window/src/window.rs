@@ -2,12 +2,13 @@
 
 use std::{
     num::{NonZeroU64, NonZeroUsize},
+    ops::RangeInclusive,
     time::Duration,
 };
 
 use gpui::{
-    AnyElement, App, Context, Div, ElementId, Entity, FocusHandle, Focusable, IntoElement, Render,
-    ScrollHandle, Subscription, Window, div, prelude::*, px,
+    AnyElement, App, Context, Div, ElementId, Entity, FocusHandle, Focusable, IntoElement,
+    Modifiers, Render, ScrollHandle, Subscription, Window, div, prelude::*, px,
 };
 use zcv_actions::OpenSettingsFile;
 use zcv_settings::{
@@ -16,9 +17,10 @@ use zcv_settings::{
 };
 use zcv_theme::{ThemeChoice, color, scale, typography};
 use zcv_title_bar::TitleBar;
-use zcv_ui::{Button, ButtonStyle, Checkbox, SvgIcon, ToastKind, ToastLayer};
-
-type WindowAction = Box<dyn Fn(&mut SettingsWindow, &mut Context<SettingsWindow>)>;
+use zcv_ui::{
+    Button, ContextMenuEntry, DropdownMenu, PopoverLayer, Stepper, SvgIcon, Switch, ToastKind,
+    ToastLayer,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsPage {
@@ -62,6 +64,7 @@ pub struct SettingsWindow {
     active_page: SettingsPage,
     toast_layer: Entity<ToastLayer>,
     title_bar: TitleBar,
+    popovers: PopoverLayer,
     /// 手工编辑 settings.jsonc 后由设置 global 通知窗口重新渲染。
     _settings_subscription: Subscription,
     _typography_subscription: Subscription,
@@ -81,6 +84,7 @@ impl SettingsWindow {
             active_page: SettingsPage::Appearance,
             toast_layer: cx.new(|_| ToastLayer::default()),
             title_bar: TitleBar::default(),
+            popovers: PopoverLayer::default(),
             _settings_subscription: settings_subscription,
             _typography_subscription: typography_subscription,
         }
@@ -134,6 +138,7 @@ impl SettingsWindow {
         div()
             .flex()
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .child(self.render_sidebar(cx))
             .child(self.render_settings_page(cx))
@@ -160,8 +165,7 @@ impl SettingsWindow {
                     .py(scale::S4)
                     .rounded_sm()
                     .cursor_pointer()
-                    .when(selected, |element| element.bg(colors.element_selected))
-                    .hover(|style| style.bg(colors.ghost_element_hover))
+                    .when(selected, |element| element.bg(colors.element_highlight))
                     .on_click(move |_, _window, cx| {
                         settings_window.update(cx, |settings_window, cx| {
                             settings_window.set_active_page(page, cx)
@@ -225,55 +229,43 @@ impl SettingsWindow {
                         "theme",
                         "主题",
                         "跟随系统外观，或固定使用深色、浅色主题。",
-                        render_theme_segments(theme, cx),
+                        render_setting_dropdown(
+                            "theme",
+                            "主题",
+                            theme,
+                            ThemeChoice::available().map(|choice| (choice, theme_label(choice))),
+                            |content, value| content.theme = Some(value),
+                            &self.popovers,
+                            cx,
+                        ),
                         ui_size,
                         cx,
                     ),
                     render_number_row(
                         "ui-font-size",
                         "界面字号",
-                        "窗口、标签与菜单等界面文字的字号（像素）。",
-                        Stepper {
-                            value: format!("{:.0}", ui_font_size_setting),
-                            can_decrease: ui_font_size_setting > 11.0,
-                            can_increase: ui_font_size_setting < 24.0,
-                            decrease: Box::new(move |settings_window, cx| {
-                                let value = stepped(ui_font_size_setting, -1.0, 11.0, 24.0);
-                                settings_window.update_setting(cx, "界面字号", |content| {
-                                    content.ui_font_size = Some(value);
-                                });
-                            }),
-                            increase: Box::new(move |settings_window, cx| {
-                                let value = stepped(ui_font_size_setting, 1.0, 11.0, 24.0);
-                                settings_window.update_setting(cx, "界面字号", |content| {
-                                    content.ui_font_size = Some(value);
-                                });
-                            }),
-                        },
+                        "窗口、标签与菜单等界面文字的字号。",
+                        NumberAdjustment::stepped(
+                            ui_font_size_setting,
+                            format!("{ui_font_size_setting:.0} px"),
+                            1.0,
+                            11.0..=24.0,
+                            |content, value| content.ui_font_size = Some(value),
+                        ),
                         ui_size,
                         cx,
                     ),
                     render_number_row(
                         "content-font-size",
                         "内容字号",
-                        "编辑器与预览共用的正文字号（像素）。",
-                        Stepper {
-                            value: format!("{:.0}", content_font_size),
-                            can_decrease: content_font_size > 10.0,
-                            can_increase: content_font_size < 32.0,
-                            decrease: Box::new(move |settings_window, cx| {
-                                let value = stepped(content_font_size, -1.0, 10.0, 32.0);
-                                settings_window.update_setting(cx, "内容字号", |content| {
-                                    content.content_font_size = Some(value);
-                                });
-                            }),
-                            increase: Box::new(move |settings_window, cx| {
-                                let value = stepped(content_font_size, 1.0, 10.0, 32.0);
-                                settings_window.update_setting(cx, "内容字号", |content| {
-                                    content.content_font_size = Some(value);
-                                });
-                            }),
-                        },
+                        "编辑器与预览共用的正文字号。",
+                        NumberAdjustment::stepped(
+                            content_font_size,
+                            format!("{content_font_size:.0} px"),
+                            1.0,
+                            10.0..=32.0,
+                            |content, value| content.content_font_size = Some(value),
+                        ),
                         ui_size,
                         cx,
                     ),
@@ -281,23 +273,13 @@ impl SettingsWindow {
                         "content-line-height",
                         "内容行高",
                         "正文行高相对字号的倍数。",
-                        Stepper {
-                            value: format!("{:.1}", content_line_height),
-                            can_decrease: content_line_height > 1.0,
-                            can_increase: content_line_height < 3.0,
-                            decrease: Box::new(move |settings_window, cx| {
-                                let value = stepped(content_line_height, -0.1, 1.0, 3.0);
-                                settings_window.update_setting(cx, "内容行高", |content| {
-                                    content.content_line_height = Some(value);
-                                });
-                            }),
-                            increase: Box::new(move |settings_window, cx| {
-                                let value = stepped(content_line_height, 0.1, 1.0, 3.0);
-                                settings_window.update_setting(cx, "内容行高", |content| {
-                                    content.content_line_height = Some(value);
-                                });
-                            }),
-                        },
+                        NumberAdjustment::stepped(
+                            content_line_height,
+                            format!("{content_line_height:.1} ×"),
+                            0.1,
+                            1.0..=3.0,
+                            |content, value| content.content_line_height = Some(value),
+                        ),
                         ui_size,
                         cx,
                     ),
@@ -309,74 +291,17 @@ impl SettingsWindow {
             SettingsPage::Editor => render_section(
                 "编辑器",
                 vec![
-                    render_setting_row(
-                        "autosave",
-                        "自动保存",
-                        "停止输入、离开文档或切离窗口时保存未保存的文件。",
-                        render_autosave_segments(autosave, cx),
-                        ui_size,
-                        cx,
-                    ),
-                    render_number_row(
-                        "autosave-delay",
-                        "自动保存延迟",
-                        "仅在延迟保存模式下生效，单位为毫秒。",
-                        autosave_delay_stepper(autosave),
-                        ui_size,
-                        cx,
-                    ),
-                    render_setting_row(
-                        "soft-wrap",
-                        "软换行",
-                        "超长行是水平滚动，还是按编辑器宽度或目标行宽换行。",
-                        render_soft_wrap_segments(soft_wrap, cx),
-                        ui_size,
-                        cx,
-                    ),
-                    render_number_row(
-                        "preferred-line-length",
-                        "目标行宽",
-                        "soft_wrap 为“固定行宽”时使用的目标列数。",
-                        Stepper {
-                            value: preferred_line_length.to_string(),
-                            can_decrease: preferred_line_length > 20,
-                            can_increase: preferred_line_length < 300,
-                            decrease: Box::new(move |settings_window, cx| {
-                                let value = preferred_line_length.saturating_sub(10).max(20);
-                                settings_window.update_setting(cx, "目标行宽", |content| {
-                                    content.preferred_line_length = Some(value);
-                                });
-                            }),
-                            increase: Box::new(move |settings_window, cx| {
-                                let value = preferred_line_length.saturating_add(10).min(300);
-                                settings_window.update_setting(cx, "目标行宽", |content| {
-                                    content.preferred_line_length = Some(value);
-                                });
-                            }),
-                        },
-                        ui_size,
-                        cx,
-                    ),
+                    self.render_autosave_group(autosave, ui_size, cx),
+                    self.render_wrapping_group(soft_wrap, preferred_line_length, ui_size, cx),
                     render_number_row(
                         "tab-size",
                         "Tab 宽度",
                         "制表符的视觉列宽，也是一级缩进宽度。",
-                        Stepper {
-                            value: tab_size.to_string(),
-                            can_decrease: tab_size > 1,
-                            can_increase: tab_size < 8,
-                            decrease: Box::new(move |settings_window, cx| {
-                                let value = tab_size.saturating_sub(1).max(1);
-                                settings_window.update_setting(cx, "Tab 宽度", |content| {
-                                    content.tab_size = NonZeroUsize::new(value);
-                                });
-                            }),
-                            increase: Box::new(move |settings_window, cx| {
-                                let value = tab_size.saturating_add(1).min(8);
-                                settings_window.update_setting(cx, "Tab 宽度", |content| {
-                                    content.tab_size = NonZeroUsize::new(value);
-                                });
-                            }),
+                        NumberAdjustment {
+                            value: format!("{tab_size} 列"),
+                            decrease: (tab_size > 1).then(|| tab_size.saturating_sub(1).max(1)),
+                            increase: (tab_size < 8).then(|| tab_size.saturating_add(1).min(8)),
+                            write: |content, value| content.tab_size = NonZeroUsize::new(value),
                         },
                         ui_size,
                         cx,
@@ -385,16 +310,12 @@ impl SettingsWindow {
                         "insert-spaces",
                         "空格缩进",
                         "使用空格代替真实的 Tab 字符进行缩进。",
-                        render_checkbox(
+                        render_switch(
                             "insert-spaces",
+                            "空格缩进",
                             insert_spaces,
+                            |content, enabled| content.insert_spaces = Some(enabled),
                             cx,
-                            move |settings_window, cx| {
-                                let value = !insert_spaces;
-                                settings_window.update_setting(cx, "空格缩进", |content| {
-                                    content.insert_spaces = Some(value);
-                                });
-                            },
                         ),
                         ui_size,
                         cx,
@@ -403,16 +324,12 @@ impl SettingsWindow {
                         "indent-guides",
                         "缩进参考线",
                         "显示编辑器中的缩进层级参考线。",
-                        render_checkbox(
+                        render_switch(
                             "indent-guides",
+                            "缩进参考线",
                             indent_guides_enabled,
+                            |content, enabled| update_indent_guides(content, Some(enabled), None),
                             cx,
-                            move |settings_window, cx| {
-                                let enabled = !indent_guides_enabled;
-                                settings_window.update_setting(cx, "缩进参考线", |content| {
-                                    update_indent_guides(content, Some(enabled), None);
-                                });
-                            },
                         ),
                         ui_size,
                         cx,
@@ -420,23 +337,16 @@ impl SettingsWindow {
                     render_number_row(
                         "indent-guide-width",
                         "参考线宽度",
-                        "缩进参考线的像素宽度（1 到 10）。",
-                        Stepper {
-                            value: indent_guide_width.to_string(),
-                            can_decrease: indent_guide_width > 1,
-                            can_increase: indent_guide_width < 10,
-                            decrease: Box::new(move |settings_window, cx| {
-                                let value = indent_guide_width.saturating_sub(1).max(1);
-                                settings_window.update_setting(cx, "参考线宽度", |content| {
-                                    update_indent_guides(content, None, Some(value));
-                                });
-                            }),
-                            increase: Box::new(move |settings_window, cx| {
-                                let value = indent_guide_width.saturating_add(1).min(10);
-                                settings_window.update_setting(cx, "参考线宽度", |content| {
-                                    update_indent_guides(content, None, Some(value));
-                                });
-                            }),
+                        "缩进参考线的宽度（1 到 10 px）。",
+                        NumberAdjustment {
+                            value: format!("{indent_guide_width} px"),
+                            decrease: (indent_guide_width > 1)
+                                .then(|| indent_guide_width.saturating_sub(1).max(1)),
+                            increase: (indent_guide_width < 10)
+                                .then(|| indent_guide_width.saturating_add(1).min(10)),
+                            write: |content, value| {
+                                update_indent_guides(content, None, Some(value))
+                            },
                         },
                         ui_size,
                         cx,
@@ -445,7 +355,20 @@ impl SettingsWindow {
                         "cursor-shape",
                         "光标形状",
                         "编辑器中文本光标的形状。",
-                        render_cursor_segments(cursor_shape, cx),
+                        render_setting_dropdown(
+                            "cursor-shape",
+                            "光标形状",
+                            cursor_shape,
+                            [
+                                (CursorShape::Bar, "竖线"),
+                                (CursorShape::Block, "实心方块"),
+                                (CursorShape::Underline, "下划线"),
+                                (CursorShape::Hollow, "空心方块"),
+                            ],
+                            |content, value| content.cursor_shape = Some(value),
+                            &self.popovers,
+                            cx,
+                        ),
                         ui_size,
                         cx,
                     ),
@@ -453,16 +376,12 @@ impl SettingsWindow {
                         "cursor-blink",
                         "光标闪烁",
                         "编辑器聚焦时是否闪烁光标。",
-                        render_checkbox(
+                        render_switch(
                             "cursor-blink",
+                            "光标闪烁",
                             cursor_blink,
+                            |content, enabled| content.cursor_blink = Some(enabled),
                             cx,
-                            move |settings_window, cx| {
-                                let value = !cursor_blink;
-                                settings_window.update_setting(cx, "光标闪烁", |content| {
-                                    content.cursor_blink = Some(value);
-                                });
-                            },
                         ),
                         ui_size,
                         cx,
@@ -478,24 +397,14 @@ impl SettingsWindow {
                     render_number_row(
                         "terminal-font-size",
                         "终端字号",
-                        "终端正文的字号（像素）。",
-                        Stepper {
-                            value: format!("{:.0}", terminal_font_size),
-                            can_decrease: terminal_font_size > 10.0,
-                            can_increase: terminal_font_size < 32.0,
-                            decrease: Box::new(move |settings_window, cx| {
-                                let value = stepped(terminal_font_size, -1.0, 10.0, 32.0);
-                                settings_window.update_setting(cx, "终端字号", |content| {
-                                    content.terminal_font_size = Some(value);
-                                });
-                            }),
-                            increase: Box::new(move |settings_window, cx| {
-                                let value = stepped(terminal_font_size, 1.0, 10.0, 32.0);
-                                settings_window.update_setting(cx, "终端字号", |content| {
-                                    content.terminal_font_size = Some(value);
-                                });
-                            }),
-                        },
+                        "终端正文的字号。",
+                        NumberAdjustment::stepped(
+                            terminal_font_size,
+                            format!("{terminal_font_size:.0} px"),
+                            1.0,
+                            10.0..=32.0,
+                            |content, value| content.terminal_font_size = Some(value),
+                        ),
                         ui_size,
                         cx,
                     ),
@@ -503,23 +412,13 @@ impl SettingsWindow {
                         "terminal-line-height",
                         "终端行高",
                         "终端行高相对字号的倍数。",
-                        Stepper {
-                            value: format!("{:.1}", terminal_line_height),
-                            can_decrease: terminal_line_height > 1.0,
-                            can_increase: terminal_line_height < 3.0,
-                            decrease: Box::new(move |settings_window, cx| {
-                                let value = stepped(terminal_line_height, -0.1, 1.0, 3.0);
-                                settings_window.update_setting(cx, "终端行高", |content| {
-                                    content.terminal_line_height = Some(value);
-                                });
-                            }),
-                            increase: Box::new(move |settings_window, cx| {
-                                let value = stepped(terminal_line_height, 0.1, 1.0, 3.0);
-                                settings_window.update_setting(cx, "终端行高", |content| {
-                                    content.terminal_line_height = Some(value);
-                                });
-                            }),
-                        },
+                        NumberAdjustment::stepped(
+                            terminal_line_height,
+                            format!("{terminal_line_height:.1} ×"),
+                            0.1,
+                            1.0..=3.0,
+                            |content, value| content.terminal_line_height = Some(value),
+                        ),
                         ui_size,
                         cx,
                     ),
@@ -527,7 +426,20 @@ impl SettingsWindow {
                         "terminal-cursor-shape",
                         "终端光标形状",
                         "终端光标使用的形状。",
-                        render_terminal_cursor_segments(terminal_cursor_shape, cx),
+                        render_setting_dropdown(
+                            "terminal-cursor-shape",
+                            "终端光标形状",
+                            terminal_cursor_shape,
+                            [
+                                (TerminalCursorShape::Bar, "竖线"),
+                                (TerminalCursorShape::Block, "实心方块"),
+                                (TerminalCursorShape::Underline, "下划线"),
+                                (TerminalCursorShape::Hollow, "空心方块"),
+                            ],
+                            |content, value| content.terminal_cursor_shape = Some(value),
+                            &self.popovers,
+                            cx,
+                        ),
                         ui_size,
                         cx,
                     ),
@@ -549,6 +461,7 @@ impl SettingsWindow {
         let body = div()
             .id("settings-scroll")
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle)
@@ -558,6 +471,119 @@ impl SettingsWindow {
             .gap(scale::S16)
             .child(override_note);
         body.child(page).into_any_element()
+    }
+
+    fn render_autosave_group(
+        &self,
+        autosave: AutosaveSetting,
+        ui_size: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let delay = match autosave {
+            AutosaveSetting::AfterDelay { milliseconds } => Some(milliseconds),
+            _ => None,
+        };
+        let choices = [
+            (AutosaveSetting::Off, "关闭"),
+            (
+                AutosaveSetting::AfterDelay {
+                    milliseconds: delay
+                        .unwrap_or(NonZeroU64::new(1000).expect("初始延迟必须大于零")),
+                },
+                "延迟保存",
+            ),
+            (AutosaveSetting::OnFocusChange, "离开文档时"),
+            (AutosaveSetting::OnWindowChange, "离开窗口时"),
+        ];
+        let mut rows = vec![render_setting_row(
+            "autosave",
+            "自动保存",
+            "选择何时保存未保存的文件。",
+            render_setting_dropdown(
+                "autosave",
+                "自动保存",
+                autosave,
+                choices,
+                |content, value| content.autosave = Some(value),
+                &self.popovers,
+                cx,
+            ),
+            ui_size,
+            cx,
+        )];
+
+        if let Some(milliseconds) = delay {
+            rows.push(
+                render_setting_row(
+                    "autosave-delay",
+                    "保存延迟",
+                    "从停止输入开始计时。",
+                    render_stepper(
+                        "autosave-delay",
+                        "保存延迟",
+                        autosave_delay_stepper(milliseconds),
+                        cx,
+                    ),
+                    ui_size,
+                    cx,
+                )
+                .pl(scale::S12)
+                .border_t_1()
+                .border_color(color::current(cx).border),
+            );
+        }
+        render_section("保存", rows, ui_size, cx).mt(scale::S8)
+    }
+
+    fn render_wrapping_group(
+        &self,
+        soft_wrap: SoftWrapMode,
+        preferred_line_length: usize,
+        ui_size: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let mut rows = vec![render_setting_row(
+            "soft-wrap",
+            "软换行",
+            "选择长行的显示方式。",
+            render_setting_dropdown(
+                "soft-wrap",
+                "软换行",
+                soft_wrap,
+                [
+                    (SoftWrapMode::None, "不换行"),
+                    (SoftWrapMode::EditorWidth, "按编辑器宽度"),
+                    (SoftWrapMode::Bounded, "按目标行宽"),
+                ],
+                |content, value| content.soft_wrap = Some(value),
+                &self.popovers,
+                cx,
+            ),
+            ui_size,
+            cx,
+        )];
+
+        if soft_wrap == SoftWrapMode::Bounded {
+            rows.push(
+                render_setting_row(
+                    "preferred-line-length",
+                    "目标行宽",
+                    "在目标行宽与编辑器宽度的较小值处换行。",
+                    render_stepper(
+                        "preferred-line-length",
+                        "目标行宽",
+                        preferred_line_length_stepper(preferred_line_length),
+                        cx,
+                    ),
+                    ui_size,
+                    cx,
+                )
+                .pl(scale::S12)
+                .border_t_1()
+                .border_color(color::current(cx).border),
+            );
+        }
+        render_section("换行", rows, ui_size, cx).mt(scale::S8)
     }
 }
 
@@ -579,6 +605,26 @@ impl Render for SettingsWindow {
             .line_height(typography.ui_line())
             .text_size(typography.ui_size())
             .track_focus(&self.focus)
+            .on_key_down(|event, window, cx| {
+                let stroke = &event.keystroke;
+                if stroke.key == "tab"
+                    && let Modifiers {
+                        shift,
+                        control: false,
+                        alt: false,
+                        platform: false,
+                        function: false,
+                    } = stroke.modifiers
+                {
+                    if shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            })
             .bg(colors.panel_background)
             .child(self.render_top_bar(window, cx))
             .child(
@@ -621,18 +667,23 @@ fn render_setting_row(
     description: &'static str,
     control: AnyElement,
     ui_size: gpui::Pixels,
-    cx: &mut Context<SettingsWindow>,
+    cx: &App,
 ) -> Div {
-    let colors = *color::current(cx);
+    let colors = color::current(cx);
     div()
         .debug_selector(move || format!("settings-row-{key}"))
         .flex()
-        .flex_col()
-        .gap(scale::S4)
-        .px(scale::S6)
-        .py(scale::S4)
+        .flex_wrap()
+        .items_center()
+        .gap_x(scale::S8)
+        .gap_y(scale::S4)
+        .mx(scale::S6)
+        .py(scale::S6)
         .child(
             div()
+                .debug_selector(move || format!("settings-label-{key}"))
+                .flex_1()
+                .min_w(scale::structural(104.0))
                 .flex()
                 .flex_col()
                 .gap(scale::S2)
@@ -644,399 +695,173 @@ fn render_setting_row(
                         .child(description),
                 ),
         )
-        .child(control)
+        .child(
+            div()
+                .debug_selector(move || format!("settings-control-{key}"))
+                .ml_auto()
+                .flex_none()
+                .child(control),
+        )
 }
 
-struct Stepper {
+struct NumberAdjustment<T> {
     value: String,
-    can_decrease: bool,
-    can_increase: bool,
-    decrease: WindowAction,
-    increase: WindowAction,
+    decrease: Option<T>,
+    increase: Option<T>,
+    write: fn(&mut UserSettingsContent, T),
 }
 
-fn render_number_row(
+impl NumberAdjustment<f32> {
+    fn stepped(
+        current: f32,
+        value: String,
+        step: f32,
+        range: RangeInclusive<f32>,
+        write: fn(&mut UserSettingsContent, f32),
+    ) -> Self {
+        let (min, max) = range.into_inner();
+        Self {
+            value,
+            decrease: (current > min).then(|| stepped(current, -step, min, max)),
+            increase: (current < max).then(|| stepped(current, step, min, max)),
+            write,
+        }
+    }
+}
+
+fn render_number_row<T: Copy + 'static>(
     key: &'static str,
     title: &'static str,
     description: &'static str,
-    stepper: Stepper,
+    stepper: NumberAdjustment<T>,
     ui_size: gpui::Pixels,
-    cx: &mut Context<SettingsWindow>,
+    cx: &Context<SettingsWindow>,
 ) -> Div {
     render_setting_row(
         key,
         title,
         description,
-        render_stepper(key, stepper, cx),
+        render_stepper(key, title, stepper, cx),
         ui_size,
         cx,
     )
 }
 
-fn render_stepper(
+fn render_stepper<T: Copy + 'static>(
     key: &'static str,
-    stepper: Stepper,
-    cx: &mut Context<SettingsWindow>,
+    title: &'static str,
+    adjustment: NumberAdjustment<T>,
+    cx: &Context<SettingsWindow>,
 ) -> AnyElement {
-    let Stepper {
+    let NumberAdjustment {
         value,
-        can_decrease,
-        can_increase,
         decrease,
         increase,
-    } = stepper;
-    let colors = *color::current(cx);
-    let decrease_entity = cx.entity();
-    let increase_entity = cx.entity();
-    div()
-        .flex()
-        .items_center()
-        .gap(scale::S2)
-        .child(
-            Button::icon(
-                ElementId::Name(format!("settings-{key}-decrease").into()),
-                "icons/dash.svg",
-            )
-            .disabled(!can_decrease)
-            .label("减小")
-            .on_click(move |_, _, cx| {
-                decrease_entity.update(cx, |settings_window, cx| decrease(settings_window, cx));
-            }),
-        )
-        .child(
-            div()
-                .min_w(scale::S12)
-                .text_center()
-                .text_color(colors.text)
-                .child(value),
-        )
-        .child(
-            Button::icon(
-                ElementId::Name(format!("settings-{key}-increase").into()),
-                "icons/plus.svg",
-            )
-            .disabled(!can_increase)
-            .label("增大")
-            .on_click(move |_, _, cx| {
-                increase_entity.update(cx, |settings_window, cx| increase(settings_window, cx));
-            }),
-        )
+        write,
+    } = adjustment;
+    let window = cx.entity().downgrade();
+    let update = move |value| {
+        let window = window.clone();
+        move |_: &mut Window, cx: &mut App| {
+            window
+                .update(cx, |settings, cx| {
+                    settings.update_setting(cx, title, |content| write(content, value));
+                })
+                .ok();
+        }
+    };
+
+    Stepper::new(key, title, value)
+        .when_some(decrease, |stepper, value| {
+            stepper.on_decrease(update(value))
+        })
+        .when_some(increase, |stepper, value| {
+            stepper.on_increase(update(value))
+        })
         .into_any_element()
 }
 
-fn render_checkbox(
+fn render_switch(
     key: &'static str,
+    title: &'static str,
     checked: bool,
-    cx: &mut Context<SettingsWindow>,
-    change: impl Fn(&mut SettingsWindow, &mut Context<SettingsWindow>) + 'static,
+    write: fn(&mut UserSettingsContent, bool),
+    cx: &Context<SettingsWindow>,
 ) -> AnyElement {
-    let entity = cx.entity();
-    div()
-        .flex()
-        .items_center()
-        .child(
-            Checkbox::new(
-                ElementId::Name(format!("settings-{key}-checkbox").into()),
-                checked,
-            )
-            .tooltip(if checked {
-                "已开启，点击关闭"
-            } else {
-                "已关闭，点击开启"
+    let window = cx.entity().downgrade();
+    Switch::new(key, checked, move |enabled, _, cx| {
+        window
+            .update(cx, |settings, cx| {
+                settings.update_setting(cx, title, |content| write(content, enabled));
             })
-            .on_click(move |_window, cx| {
-                entity.update(cx, |settings_window, cx| change(settings_window, cx));
-            }),
-        )
-        .into_any_element()
+            .ok();
+    })
+    .into_any_element()
 }
 
-fn render_theme_segments(selected: ThemeChoice, cx: &mut Context<SettingsWindow>) -> AnyElement {
-    let segments = ThemeChoice::available()
-        .map(|choice| {
-            let label = theme_label(choice);
-            let selected = selected == choice;
-            let action: WindowAction = Box::new(move |settings_window, cx| {
-                settings_window.update_setting(cx, "主题", |content| {
-                    content.theme = Some(choice);
-                });
-            });
-            (format!("theme-{}", choice.id()), label, selected, action)
+fn autosave_delay_stepper(milliseconds: NonZeroU64) -> NumberAdjustment<NonZeroU64> {
+    let delay = milliseconds.get();
+    NumberAdjustment {
+        value: format!("{delay} ms"),
+        decrease: (delay > 1)
+            .then(|| NonZeroU64::new(delay.saturating_sub(250)).unwrap_or(NonZeroU64::MIN)),
+        increase: (delay < u64::MAX).then(|| milliseconds.saturating_add(250)),
+        write: |content, delay| {
+            if let Some(AutosaveSetting::AfterDelay { milliseconds }) = &mut content.autosave {
+                *milliseconds = delay;
+            }
+        },
+    }
+}
+
+fn preferred_line_length_stepper(length: usize) -> NumberAdjustment<usize> {
+    NumberAdjustment {
+        value: format!("{length} 列"),
+        decrease: (length > 20).then(|| length.saturating_sub(10).max(20)),
+        increase: (length < 300).then(|| length.saturating_add(10).min(300)),
+        write: |content, value| content.preferred_line_length = Some(value),
+    }
+}
+
+fn render_setting_dropdown<T: Copy + PartialEq + 'static>(
+    key: &'static str,
+    title: &'static str,
+    current: T,
+    choices: impl IntoIterator<Item = (T, &'static str)>,
+    write: fn(&mut UserSettingsContent, T),
+    layer: &PopoverLayer,
+    cx: &mut Context<SettingsWindow>,
+) -> AnyElement {
+    let entity = cx.entity().downgrade();
+    let mut current_label = None;
+    let entries = choices
+        .into_iter()
+        .map(|(value, label)| {
+            let checked = value == current;
+            if checked {
+                current_label = Some(label);
+            }
+            let entity = entity.clone();
+            ContextMenuEntry::new(label)
+                .checked(checked)
+                .handler(move |_, _, cx| {
+                    if !checked {
+                        entity
+                            .update(cx, |settings, cx| {
+                                settings.update_setting(cx, title, |content| write(content, value));
+                            })
+                            .ok();
+                    }
+                })
         })
         .collect();
-    render_segments("theme", segments, cx)
-}
-
-fn render_autosave_segments(
-    selected: AutosaveSetting,
-    cx: &mut Context<SettingsWindow>,
-) -> AnyElement {
-    let delay = match selected {
-        AutosaveSetting::AfterDelay { milliseconds } => milliseconds,
-        _ => NonZeroU64::new(1000).expect("初始延迟必须大于零"),
-    };
-    let segments = [
-        ("off", "关闭", AutosaveSetting::Off),
-        (
-            "delay",
-            "延迟",
-            AutosaveSetting::AfterDelay {
-                milliseconds: delay,
-            },
-        ),
-        ("focus", "文档失焦", AutosaveSetting::OnFocusChange),
-        ("window", "窗口失焦", AutosaveSetting::OnWindowChange),
-    ]
-    .into_iter()
-    .map(|(id, label, mode)| {
-        let action: WindowAction = Box::new(move |window, cx| {
-            window.update_setting(cx, "自动保存", |content| content.autosave = Some(mode));
-        });
-        (id.to_string(), label, mode == selected, action)
-    })
-    .collect();
-    render_segments("autosave", segments, cx)
-}
-
-fn autosave_delay_stepper(setting: AutosaveSetting) -> Stepper {
-    let delay = match setting {
-        AutosaveSetting::AfterDelay { milliseconds } => Some(milliseconds.get()),
-        _ => None,
-    };
-    Stepper {
-        value: delay.map_or_else(|| "—".to_string(), |delay| delay.to_string()),
-        can_decrease: delay.is_some_and(|value| value > 1),
-        can_increase: delay.is_some_and(|value| value < u64::MAX),
-        decrease: autosave_delay_action(
-            delay.and_then(|value| NonZeroU64::new(value.saturating_sub(250).max(1))),
-        ),
-        increase: autosave_delay_action(
-            delay.and_then(|value| NonZeroU64::new(value.saturating_add(250))),
-        ),
-    }
-}
-
-fn autosave_delay_action(milliseconds: Option<NonZeroU64>) -> WindowAction {
-    Box::new(move |window, cx| {
-        if let Some(milliseconds) = milliseconds {
-            window.update_setting(cx, "自动保存延迟", |content| {
-                content.autosave = Some(AutosaveSetting::AfterDelay { milliseconds });
-            });
-        }
-    })
-}
-
-fn render_soft_wrap_segments(
-    selected: SoftWrapMode,
-    cx: &mut Context<SettingsWindow>,
-) -> AnyElement {
-    render_segments(
-        "soft-wrap",
-        vec![
-            (
-                "none".to_string(),
-                "不换行",
-                selected == SoftWrapMode::None,
-                Box::new(
-                    move |settings_window: &mut SettingsWindow,
-                          cx: &mut Context<SettingsWindow>| {
-                        settings_window.update_setting(cx, "软换行", |content| {
-                            content.soft_wrap = Some(SoftWrapMode::None);
-                        });
-                    },
-                ),
-            ),
-            (
-                "editor-width".to_string(),
-                "编辑器宽度",
-                selected == SoftWrapMode::EditorWidth,
-                Box::new(
-                    move |settings_window: &mut SettingsWindow,
-                          cx: &mut Context<SettingsWindow>| {
-                        settings_window.update_setting(cx, "软换行", |content| {
-                            content.soft_wrap = Some(SoftWrapMode::EditorWidth);
-                        });
-                    },
-                ),
-            ),
-            (
-                "bounded".to_string(),
-                "固定行宽",
-                selected == SoftWrapMode::Bounded,
-                Box::new(
-                    move |settings_window: &mut SettingsWindow,
-                          cx: &mut Context<SettingsWindow>| {
-                        settings_window.update_setting(cx, "软换行", |content| {
-                            content.soft_wrap = Some(SoftWrapMode::Bounded);
-                        });
-                    },
-                ),
-            ),
-        ],
-        cx,
+    DropdownMenu::new(
+        key,
+        current_label.expect("下拉选项必须包含当前设置值"),
+        entries,
+        layer.clone(),
     )
-}
-
-fn render_cursor_segments(selected: CursorShape, cx: &mut Context<SettingsWindow>) -> AnyElement {
-    render_segments(
-        "cursor-shape",
-        vec![
-            (
-                "bar".to_string(),
-                "竖线",
-                selected == CursorShape::Bar,
-                Box::new(
-                    move |settings_window: &mut SettingsWindow,
-                          cx: &mut Context<SettingsWindow>| {
-                        settings_window.update_setting(cx, "光标形状", |content| {
-                            content.cursor_shape = Some(CursorShape::Bar);
-                        });
-                    },
-                ),
-            ),
-            (
-                "block".to_string(),
-                "方块",
-                selected == CursorShape::Block,
-                Box::new(
-                    move |settings_window: &mut SettingsWindow,
-                          cx: &mut Context<SettingsWindow>| {
-                        settings_window.update_setting(cx, "光标形状", |content| {
-                            content.cursor_shape = Some(CursorShape::Block);
-                        });
-                    },
-                ),
-            ),
-            (
-                "underline".to_string(),
-                "下划线",
-                selected == CursorShape::Underline,
-                Box::new(
-                    move |settings_window: &mut SettingsWindow,
-                          cx: &mut Context<SettingsWindow>| {
-                        settings_window.update_setting(cx, "光标形状", |content| {
-                            content.cursor_shape = Some(CursorShape::Underline);
-                        });
-                    },
-                ),
-            ),
-            (
-                "hollow".to_string(),
-                "空心方块",
-                selected == CursorShape::Hollow,
-                Box::new(
-                    move |settings_window: &mut SettingsWindow,
-                          cx: &mut Context<SettingsWindow>| {
-                        settings_window.update_setting(cx, "光标形状", |content| {
-                            content.cursor_shape = Some(CursorShape::Hollow);
-                        });
-                    },
-                ),
-            ),
-        ],
-        cx,
-    )
-}
-
-fn render_terminal_cursor_segments(
-    selected: TerminalCursorShape,
-    cx: &mut Context<SettingsWindow>,
-) -> AnyElement {
-    render_segments(
-        "terminal-cursor-shape",
-        vec![
-            (
-                "block".to_string(),
-                "方块",
-                selected == TerminalCursorShape::Block,
-                Box::new(
-                    move |settings_window: &mut SettingsWindow,
-                          cx: &mut Context<SettingsWindow>| {
-                        settings_window.update_setting(cx, "终端光标形状", |content| {
-                            content.terminal_cursor_shape = Some(TerminalCursorShape::Block);
-                        });
-                    },
-                ),
-            ),
-            (
-                "underline".to_string(),
-                "下划线",
-                selected == TerminalCursorShape::Underline,
-                Box::new(
-                    move |settings_window: &mut SettingsWindow,
-                          cx: &mut Context<SettingsWindow>| {
-                        settings_window.update_setting(cx, "终端光标形状", |content| {
-                            content.terminal_cursor_shape = Some(TerminalCursorShape::Underline);
-                        });
-                    },
-                ),
-            ),
-            (
-                "bar".to_string(),
-                "竖线",
-                selected == TerminalCursorShape::Bar,
-                Box::new(
-                    move |settings_window: &mut SettingsWindow,
-                          cx: &mut Context<SettingsWindow>| {
-                        settings_window.update_setting(cx, "终端光标形状", |content| {
-                            content.terminal_cursor_shape = Some(TerminalCursorShape::Bar);
-                        });
-                    },
-                ),
-            ),
-            (
-                "hollow".to_string(),
-                "空心方块",
-                selected == TerminalCursorShape::Hollow,
-                Box::new(
-                    move |settings_window: &mut SettingsWindow,
-                          cx: &mut Context<SettingsWindow>| {
-                        settings_window.update_setting(cx, "终端光标形状", |content| {
-                            content.terminal_cursor_shape = Some(TerminalCursorShape::Hollow);
-                        });
-                    },
-                ),
-            ),
-        ],
-        cx,
-    )
-}
-
-fn render_segments(
-    key: &'static str,
-    segments: Vec<(String, &'static str, bool, WindowAction)>,
-    cx: &mut Context<SettingsWindow>,
-) -> AnyElement {
-    let colors = *color::current(cx);
-    let entity = cx.entity();
-    let mut row = div()
-        .id(ElementId::Name(format!("settings-{key}-segments").into()))
-        .flex()
-        .flex_wrap()
-        .gap(scale::S2);
-    for (id, label, selected, action) in segments {
-        let entity = entity.clone();
-        row = row.child(
-            Button::text(
-                ElementId::Name(format!("settings-{key}-{id}").into()),
-                label,
-            )
-            .style(if selected {
-                ButtonStyle::Solid
-            } else {
-                ButtonStyle::Ghost
-            })
-            .color(if selected {
-                colors.icon_accent
-            } else {
-                colors.text
-            })
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |settings_window, cx| action(settings_window, cx));
-            }),
-        );
-    }
-    row.into_any_element()
+    .into_any_element()
 }
 
 fn theme_label(choice: ThemeChoice) -> &'static str {

@@ -1,6 +1,6 @@
 //! `ListItem` —— 通用列表项组件。
 //!
-//! hover、选中、间距样式。可用于 picker 列表、菜单列表等。
+//! 列表行的选中样式和内容布局。
 
 use gpui::{
     AnyElement, App, CursorStyle, ElementId, IntoElement, RenderOnce, ViewElement, Window, div,
@@ -17,7 +17,8 @@ fn cursor_for_state(disabled: bool) -> Option<CursorStyle> {
 pub struct ListItem {
     id: ElementId,
     disabled: bool,
-    toggle_state: bool,
+    selected: bool,
+    rounded: bool,
     start_slot: Option<AnyElement>,
     child: Option<AnyElement>,
     subtitle: Option<AnyElement>,
@@ -29,7 +30,8 @@ impl ListItem {
         Self {
             id: id.into(),
             disabled: false,
-            toggle_state: false,
+            selected: false,
+            rounded: false,
             start_slot: None,
             child: None,
             subtitle: None,
@@ -37,9 +39,15 @@ impl ListItem {
         }
     }
 
-    /// 禁用态：不显示悬停背景、不使用可点击光标；内容置灰由调用方负责。
+    /// 禁用时使用默认光标，内容置灰由调用方负责。
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// 行的高亮背景使用小圆角。
+    pub(crate) fn rounded(mut self) -> Self {
+        self.rounded = true;
         self
     }
 
@@ -49,9 +57,9 @@ impl ListItem {
         self
     }
 
-    /// 选中态（高亮背景）。
+    /// 由所在列表决定当前项，并据此绘制行高亮。
     pub fn toggle_state(mut self, selected: bool) -> Self {
-        self.toggle_state = selected;
+        self.selected = selected;
         self
     }
 
@@ -86,8 +94,6 @@ impl RenderOnce for ListItem {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let ui_size = window.rem_size();
         let ui_line = typography::ui_line_at(ui_size, cx);
-        // hover 闭包只有 style 参数，先取色再 move 进闭包
-        let hover_bg = color::current(cx).element_hover;
         let disabled = self.disabled;
         let mut row = div()
             .id(self.id)
@@ -98,17 +104,14 @@ impl RenderOnce for ListItem {
             .justify_between()
             .gap(scale::S6)
             .p(scale::S6)
+            .when(self.rounded, |row| row.rounded_sm())
             // test cfg 下注册 debug bounds，供行高断言使用。
             .debug_selector(|| "list-item".into());
         if let Some(cursor) = cursor_for_state(disabled) {
             row = row.cursor(cursor);
         }
-        if !disabled {
-            row = row.hover(move |style| style.bg(hover_bg));
-        }
-
-        if self.toggle_state {
-            row = row.bg(color::current(cx).element_selected);
+        if self.selected {
+            row = row.bg(color::current(cx).element_highlight);
         }
 
         // 首部插槽

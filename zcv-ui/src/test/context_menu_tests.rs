@@ -80,6 +80,33 @@ fn confirm_dispatches_action_and_emits_dismiss(cx: &mut TestAppContext) {
     assert!(dismissed.get(), "确认后应发出 DismissEvent");
 }
 
+#[gpui::test]
+fn dropdown_initially_selects_the_checked_choice(cx: &mut TestAppContext) {
+    let confirmed = Rc::new(Cell::new(false));
+    let target = confirmed.clone();
+    let (menu, visual) = open_menu(cx, move |menu, _, _| {
+        menu.entry(ContextMenuEntry::new("浅色"))
+            .entry(
+                ContextMenuEntry::new("深色")
+                    .checked(true)
+                    .handler(move |_, _, _| {
+                        target.set(true);
+                    }),
+            )
+            .select_checked_or_first()
+    });
+
+    assert_eq!(
+        visual.read_entity(&menu, |menu, _| menu.selected_index()),
+        Some(1),
+        "展开时应高亮已勾选的选项",
+    );
+    menu.update_in(visual, |menu, window, cx| {
+        menu.confirm(&menu::Confirm, window, cx)
+    });
+    assert!(confirmed.get(), "展开后可直接确认当前高亮项");
+}
+
 /// 键盘导航跳过分隔线与禁用项，并在首尾环绕。
 #[gpui::test]
 fn navigation_skips_separators_disabled_and_wraps(cx: &mut TestAppContext) {
@@ -103,6 +130,52 @@ fn navigation_skips_separators_disabled_and_wraps(cx: &mut TestAppContext) {
         menu.select_previous(&menu::SelectPrevious, window, cx);
         assert_eq!(menu.selected_index(), Some(3), "首项之前应环绕到末项");
     });
+}
+
+#[gpui::test]
+fn mouse_and_keyboard_share_the_highlight_and_confirmation(cx: &mut TestAppContext) {
+    let confirmed = Rc::new(Cell::new(false));
+    let target = confirmed.clone();
+    let (menu, visual) = open_menu(cx, move |menu, _, _| {
+        menu.entry(ContextMenuEntry::new("甲").checked(true))
+            .entry(ContextMenuEntry::new("乙").disabled(true))
+            .entry(ContextMenuEntry::new("丙").handler(move |_, _, _| target.set(true)))
+            .entry(ContextMenuEntry::new("丁"))
+            .select_checked_or_first()
+    });
+    visual.update(|window, cx| window.focus(&menu.focus_handle(cx), cx));
+
+    let pointer = visual
+        .debug_bounds("context-menu-item-2")
+        .expect("第三项应显示")
+        .center();
+    visual.simulate_mouse_move(pointer, None, gpui::Modifiers::default());
+    assert_eq!(
+        visual.read_entity(&menu, |menu, _| menu.selected_index()),
+        Some(2)
+    );
+    assert!(!confirmed.get(), "移动鼠标只改变高亮");
+
+    visual.dispatch_action(menu::SelectNext);
+    assert_eq!(
+        visual.read_entity(&menu, |menu, _| menu.selected_index()),
+        Some(3),
+        "方向键从鼠标选中的项继续移动高亮",
+    );
+
+    let disabled = visual
+        .debug_bounds("context-menu-item-1")
+        .expect("禁用项应显示")
+        .center();
+    visual.simulate_mouse_move(disabled, None, gpui::Modifiers::default());
+    assert_eq!(
+        visual.read_entity(&menu, |menu, _| menu.selected_index()),
+        Some(3),
+        "禁用项不可被鼠标选中",
+    );
+    visual.simulate_mouse_move(pointer, None, gpui::Modifiers::default());
+    visual.dispatch_action(menu::Confirm);
+    assert!(confirmed.get(), "确认应执行鼠标选中的项");
 }
 
 /// 取消与无选中项的确认都只关闭菜单，不执行任何条目。

@@ -570,6 +570,31 @@ fn results_start_at_the_top_bar_input_bottom(cx: &mut TestAppContext) {
 
     visual.simulate_click(results.center(), Modifiers::default());
     visual.read_entity(&search, |search, _| assert!(search.host.is_open()));
+
+    search.update(visual, |search, cx| {
+        search.state.set_files(
+            vec![
+                PathBuf::from("/project/main-one.rs"),
+                PathBuf::from("/project/main-two.rs"),
+            ],
+            &[PathBuf::from("/project")],
+        );
+        search.input.set_text("main-", cx);
+        search.refresh_results(cx);
+    });
+    let row = visual
+        .debug_bounds("quick-access-result-1")
+        .expect("第二个搜索结果应可见");
+    visual.simulate_mouse_move(row.center(), None, Modifiers::default());
+    visual.read_entity(&search, |search, _| {
+        assert!(search.host.is_open(), "移过候选项不应执行确认");
+        assert_eq!(search.selected_index, 1);
+    });
+    visual.dispatch_action(PickerSelectNext);
+    visual.read_entity(&search, |search, _| {
+        assert_eq!(search.selected_index, 0, "键盘应从鼠标选中项继续导航");
+    });
+
     visual.simulate_click(point(px(20.0), px(20.0)), Modifiers::default());
     visual.run_until_parked();
     visual.read_entity(&search, |search, _| assert!(!search.host.is_open()));

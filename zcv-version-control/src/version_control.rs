@@ -1265,7 +1265,7 @@ fn render_row(
                 ))
                 .text_color(color::current(cx).text_muted)
                 .cursor_pointer()
-                .hover(|style| style.bg(color::current(cx).element_hover))
+                .hover(|style| style.bg(color::current(cx).element_highlight))
                 // 整行点击折叠/展开。
                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                     if let Some(panel) = weak.upgrade() {
@@ -1546,7 +1546,7 @@ fn render_empty_state(panel: WeakEntity<VersionControlPanel>, cx: &App) -> Div {
             .bg(colors.panel_background)
             .text_color(colors.text)
             .cursor_pointer()
-            .hover(|style| style.bg(colors.element_hover))
+            .hover(|style| style.bg(colors.element_highlight))
             .child("初始化仓库")
             .on_click(move |_, _, cx| {
                 panel.update(cx, |panel, cx| panel.init_repository(cx)).ok();

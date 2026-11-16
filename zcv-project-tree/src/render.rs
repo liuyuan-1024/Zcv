@@ -176,7 +176,7 @@ pub(super) fn render_blank_area(
             move |mut style: StyleRefinement, dragged: &TreeDrag, _, cx| {
                 let droppable = resolve_internal_drop(dragged, &root, true, &roots).is_some();
                 if droppable {
-                    style.background = Some(Fill::from(color::current(cx).element_hover));
+                    style.background = Some(Fill::from(color::current(cx).element_highlight));
                 }
                 style
             }
@@ -184,7 +184,7 @@ pub(super) fn render_blank_area(
         .drag_over::<ExternalPaths>(
             move |mut style: StyleRefinement, dragged: &ExternalPaths, _, cx| {
                 if !dragged.paths().is_empty() {
-                    style.background = Some(Fill::from(color::current(cx).element_hover));
+                    style.background = Some(Fill::from(color::current(cx).element_highlight));
                 }
                 style
             },
@@ -327,14 +327,13 @@ pub(super) fn render_row(
         .into(),
     );
 
+    let highlight = color::current(cx).element_highlight;
     TreeNodeRow::new(depth, &row.path, is_dir, row.expanded, content)
         .frame(window, cx)
         .interactive(row_id, window, cx)
-        // 多选标记用选中背景；活动文件标记用更弱的悬停背景，两者不同色——用户据此区分「选区成员」与「编辑器当前打开的文件」，避免把后者误当作选区参与拖拽。
-        .when(visual.marked, |el| el.bg(color::current(cx).element_hover))
-        .when(visual.in_set, |el| {
-            el.bg(color::current(cx).element_selected)
-        })
+        // 当前打开的文件使用更淡的标记，以区分编辑器活动文件与树中的操作选区。
+        .when(visual.marked, |el| el.bg(highlight.opacity(0.5)))
+        .when(visual.in_set, |el| el.bg(highlight))
         .when(visual.selected && visual.focused, |el| {
             el.child(selection_border(window, cx))
         })
@@ -359,7 +358,7 @@ pub(super) fn render_row(
             move |mut style: StyleRefinement, dragged: &TreeDrag, _, cx| {
                 let droppable = resolve_internal_drop(dragged, &path, is_dir, &roots).is_some();
                 if droppable {
-                    style.background = Some(Fill::from(color::current(cx).element_hover));
+                    style.background = Some(Fill::from(color::current(cx).element_highlight));
                 }
                 style
             }
@@ -368,7 +367,7 @@ pub(super) fn render_row(
             let path = path.clone();
             move |mut style: StyleRefinement, dragged: &ExternalPaths, _, cx| {
                 if !dragged.paths().is_empty() && drop_target_dir(&path, is_dir).is_some() {
-                    style.background = Some(Fill::from(color::current(cx).element_hover));
+                    style.background = Some(Fill::from(color::current(cx).element_highlight));
                 }
                 style
             }

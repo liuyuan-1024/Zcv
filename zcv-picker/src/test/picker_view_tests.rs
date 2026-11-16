@@ -266,7 +266,7 @@ impl PickerDelegate for ConfirmDelegate {
 }
 
 #[gpui::test]
-fn navigation_and_confirm_work_while_search_editor_is_focused(cx: &mut TestAppContext) {
+fn mouse_and_keyboard_share_selection_while_search_editor_is_focused(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     init(cx);
     let confirmed = Rc::new(Cell::new(false));
@@ -298,8 +298,15 @@ fn navigation_and_confirm_work_while_search_editor_is_focused(cx: &mut TestAppCo
         window.focus(&focus, cx);
     });
 
-    cx.simulate_keystrokes("down");
+    let row = cx
+        .debug_bounds("picker-match-1")
+        .expect("第二个候选项应可见");
+    cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
     assert_eq!(selected_index.get(), 1);
+    assert!(!confirmed.get(), "移动鼠标应只切换当前项");
+
+    cx.simulate_keystrokes("down");
+    assert_eq!(selected_index.get(), 0, "键盘应从鼠标选中项继续导航");
 
     cx.simulate_keystrokes("enter");
     assert!(confirmed.get());
@@ -355,7 +362,7 @@ impl PickerDelegate for ScrollDelegate {
         &self,
         index: usize,
         selected: bool,
-        _: &mut Context<Picker<Self>>,
+        _cx: &mut Context<Picker<Self>>,
     ) -> AnyElement {
         ListItem::new(index)
             .toggle_state(selected)

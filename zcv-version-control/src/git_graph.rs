@@ -991,8 +991,7 @@ fn render_graph_row(
         .flex()
         .items_center()
         .cursor_pointer()
-        .when(selected, |row| row.bg(colors.element_selected))
-        .hover(|style| style.bg(colors.element_hover))
+        .when(selected, |row| row.bg(colors.element_highlight))
         .on_click(move |_event, _window, cx| {
             if let Some(view) = click_weak.upgrade() {
                 view.update(cx, |view, cx| {

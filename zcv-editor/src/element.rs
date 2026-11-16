@@ -1019,7 +1019,7 @@ fn buffer_header_element(
                         .items_center()
                         .gap(scale::S2)
                         .cursor_pointer()
-                        .hover(move |style| style.bg(colors.element_hover))
+                        .hover(move |style| style.bg(colors.element_highlight))
                         .on_click(move |_event, _window, cx| {
                             editor_for_path.update(cx, |editor, cx| {
                                 editor.open_excerpt(&open_from_path, false, cx)

@@ -75,7 +75,7 @@ fn button(control: Control, enabled: bool, cx: &App) -> impl gpui::IntoElement {
             if matches!(control, Control::Close) {
                 button.hover(|style| style.bg(gpui::rgb(0xe81123)).text_color(gpui::white()))
             } else {
-                button.hover(|style| style.bg(colors.ghost_element_hover))
+                button.hover(|style| style.bg(colors.element_highlight))
             }
         })
         .child(symbol)

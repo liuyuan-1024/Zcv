@@ -2,6 +2,7 @@
 
 use std::ops::Range;
 
+use anyhow::Context as _;
 use gpui::{
     App, Bounds, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     IntoElement, KeyContext, KeyDownEvent, Pixels, Render, ScrollEvent, SharedString, Subscription,
@@ -375,10 +376,10 @@ impl Item for TerminalView {
         Some(SharedString::from("icons/terminal.svg"))
     }
 
-    fn close(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(error) = self.terminal.update(cx, |terminal, _| terminal.close()) {
-            cx.emit(ItemEvent::Error(format!("关闭终端失败：{error:#}")));
-        }
+    fn close(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        self.terminal
+            .update(cx, |terminal, _| terminal.close())
+            .context("关闭终端失败")
     }
 }
 

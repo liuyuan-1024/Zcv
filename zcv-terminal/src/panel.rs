@@ -28,11 +28,7 @@ pub struct TerminalPanel {
     workspace: WeakEntity<Workspace>,
     pane: Entity<Pane>,
     focus: FocusHandle,
-    _subscriptions: Vec<Subscription>,
-    /// 首次渲染时注册带 window 的订阅（构造函数中没有 Window）。
-    initialized: bool,
-    /// 恢复会话进行中：抑制清空终端触发的 PaneEvent::Remove（防面板误折叠）。
-    restoring: bool,
+    _pane_subscription: Subscription,
 }
 
 impl EventEmitter<PanelEvent> for TerminalPanel {}
@@ -43,18 +39,17 @@ impl TerminalPanel {
         workspace: WeakEntity<Workspace>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let pane = cx.new(Pane::new);
+        let pane = cx.new(|cx| Pane::new(project.clone(), cx));
         let focus = cx.focus_handle();
         let weak = cx.weak_entity();
         let workspace_for_button = workspace.clone();
-        let pane_for_button = pane.clone();
         pane.update(cx, |pane, _| {
-            pane.set_tab_bar_trailing(move |_cx: &App| {
+            pane.set_tab_bar_trailing(move |cx: &App| {
                 let weak_for_click = weak.clone();
                 let workspace_for_click = workspace_for_button.clone();
                 Button::icon(("terminal-new-terminal", 0usize), "icons/plus.svg")
                     .label("新建终端")
-                    .shortcut(zcv_keymap::display_shortcut(&NewTerminal, _cx))
+                    .shortcut(zcv_keymap::display_shortcut(&NewTerminal, cx))
                     .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                         if let Some(panel) = weak_for_click.upgrade() {
                             let created =
@@ -69,14 +64,23 @@ impl TerminalPanel {
                     .into_any_element()
             });
         });
+        let pane_subscription = cx.subscribe(&pane, |panel, pane, event, cx| match event {
+            PaneEvent::AddItem { .. } => cx.emit(PanelEvent::StateChanged),
+            PaneEvent::RemovedItem { .. } => {
+                cx.emit(PanelEvent::StateChanged);
+                if pane.read(cx).tabs().is_empty() {
+                    cx.emit(PanelEvent::Close);
+                }
+            }
+            PaneEvent::ItemError { message } => panel.report_error(message.clone(), cx),
+            PaneEvent::ActivateItem { .. } => {}
+        });
         TerminalPanel {
             project,
             workspace,
-            pane: pane_for_button,
+            pane,
             focus,
-            _subscriptions: Vec::new(),
-            initialized: false,
-            restoring: false,
+            _pane_subscription: pane_subscription,
         }
     }
 
@@ -155,11 +159,10 @@ impl Panel for TerminalPanel {
     }
 
     fn activation_focus_handle(&self, cx: &App) -> FocusHandle {
-        self.pane
-            .read(cx)
-            .active_item()
+        let pane = self.pane.read(cx);
+        pane.active_item()
             .map(|item| item.item_focus_handle(cx))
-            .unwrap_or_else(|| self.pane.read(cx).focus_handle())
+            .unwrap_or_else(|| pane.focus_handle())
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -199,9 +202,7 @@ impl Panel for TerminalPanel {
         let Ok(items) = serde_json::from_value::<Vec<SerializedTerminal>>(state) else {
             return;
         };
-        self.restoring = true;
-        // 记录恢复前已存在的终端（dock 恢复可见性时懒创建的），重建后清理。
-        // 先重建再清理：清理时 tabs 非空，不会触发 PaneEvent::Remove 误折叠面板（事件异步分发，同步的 restoring 标志无法抑制）。
+        // 先恢复会话，成功后再移除 Dock 激活时懒创建的终端。
         let preexisting: Vec<EntityId> = self
             .pane
             .read(cx)
@@ -210,25 +211,25 @@ impl Panel for TerminalPanel {
             .map(|item| item.item_id())
             .collect();
         let was_empty = items.is_empty();
-        let mut restored = 0;
+        let mut restored = false;
         let mut first_error = None;
         let mut failures = 0;
         for item in items {
             match self.new_terminal_with_cwd(item.cwd, window, cx) {
-                Ok(()) => restored += 1,
+                Ok(()) => restored = true,
                 Err(error) => {
                     failures += 1;
                     first_error.get_or_insert(error);
                 }
             }
         }
-        if restored > 0 || was_empty {
-            for id in preexisting {
-                self.pane
-                    .update(cx, |pane, cx| pane.close_tab(id, window, cx));
-            }
+        if restored || was_empty {
+            self.pane.update(cx, |pane, cx| {
+                for id in preexisting {
+                    pane.remove_tab(id, window, cx);
+                }
+            });
         }
-        self.restoring = false;
         if let Some(error) = first_error {
             self.report_error(format!("恢复 {failures} 个终端会话失败：{error:#}"), cx);
         }
@@ -236,32 +237,7 @@ impl Panel for TerminalPanel {
 }
 
 impl Render for TerminalPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 首次渲染注册带 window 的订阅（构造函数中没有 Window）。
-        if !self.initialized {
-            self.initialized = true;
-            let subscription = cx.subscribe_in(
-                &self.pane,
-                window,
-                |this, _, event: &PaneEvent, _window, cx| {
-                    // 会话增删时通知宿主保存布局（恢复期间不触发，避免恢复过程反复落盘）。
-                    if !this.restoring
-                        && matches!(
-                            event,
-                            PaneEvent::AddItem { .. } | PaneEvent::RemovedItem { .. }
-                        )
-                    {
-                        cx.emit(PanelEvent::StateChanged);
-                    }
-                    // 最后一个终端关闭（Pane 请求移除自身）时请求关闭面板；
-                    // 宿主订阅 PanelEvent::Close 统一折叠（恢复期间不触发）。
-                    if matches!(event, PaneEvent::Remove) && !this.restoring {
-                        cx.emit(PanelEvent::Close);
-                    }
-                },
-            );
-            self._subscriptions.push(subscription);
-        }
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .track_focus(&self.focus)
             .size_full()

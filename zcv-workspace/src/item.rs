@@ -85,8 +85,10 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
 
     fn rename_path(&mut self, _from: &Path, _to: &Path, _cx: &mut Context<Self>) {}
 
-    /// 在 Pane 移除 Item 前释放其拥有的外部资源。
-    fn close(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+    /// 在 Pane 移除 Item 前释放其拥有的外部资源，由 Pane 转交关闭错误。
+    fn close(&mut self, _cx: &mut Context<Self>) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     /// Item 对应的编辑器文档模型；非文本 Item 返回 None。
     fn multi_buffer(&self, _cx: &App) -> Option<Entity<MultiBuffer>> {
@@ -201,7 +203,7 @@ pub trait ItemHandle: Send + 'static {
     fn serialized_pane_item(&self, cx: &App) -> Option<SerializedPaneItem>;
     fn active_path(&self, cx: &App) -> Option<PathBuf>;
     fn rename_path(&self, from: &Path, to: &Path, cx: &mut App);
-    fn close(&self, window: &mut Window, cx: &mut App);
+    fn close(&self, cx: &mut App) -> anyhow::Result<()>;
     fn multi_buffer(&self, cx: &App) -> Option<Entity<MultiBuffer>>;
     fn navigate_to_byte_range(&self, range: Range<usize>, cx: &mut App) -> bool;
     fn visible_source_anchor(&self, cx: &mut App) -> Option<MultiBufferAnchor>;
@@ -295,8 +297,8 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.update(cx, |item, cx| item.rename_path(from, to, cx));
     }
 
-    fn close(&self, window: &mut Window, cx: &mut App) {
-        self.update(cx, |item, cx| item.close(window, cx));
+    fn close(&self, cx: &mut App) -> anyhow::Result<()> {
+        self.update(cx, |item, cx| item.close(cx))
     }
 
     fn multi_buffer(&self, cx: &App) -> Option<Entity<MultiBuffer>> {

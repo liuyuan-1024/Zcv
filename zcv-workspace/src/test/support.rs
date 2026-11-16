@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use gpui::{AppContext as _, Context, Window};
+use gpui::{App, AppContext as _, Context, Entity, Window};
 
 use zcv_fs_watch::FsWatcher;
 use zcv_language::LanguageRegistry;
@@ -16,7 +16,10 @@ pub(crate) fn empty_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Workspace {
-    let project =
-        cx.new(|cx| Project::empty_with_watcher(languages, Arc::new(FsWatcher::new()), cx));
+    let project = empty_project(languages, cx);
     Workspace::new_with_project(project, window, cx)
+}
+
+pub(crate) fn empty_project(languages: Arc<LanguageRegistry>, cx: &mut App) -> Entity<Project> {
+    cx.new(|cx| Project::empty_with_watcher(languages, Arc::new(FsWatcher::new()), cx))
 }

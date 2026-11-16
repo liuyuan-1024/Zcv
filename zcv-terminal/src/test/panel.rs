@@ -1,8 +1,9 @@
-//! 终端面板行为测试：项目工作目录与终端启动失败。
+//! 终端面板行为测试：启动、标签与焦点。
 
 use std::{path::Path, sync::Arc};
 
 use gpui::{AppContext as _, TestAppContext};
+use zcv_actions::CloseTab;
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::LanguageRegistry;
 use zcv_project::Project;
@@ -131,4 +132,63 @@ fn opening_hidden_terminal_panel_focuses_the_active_terminal(cx: &mut TestAppCon
         );
     });
     assert!(cx.read_entity(&terminal, |terminal, _| terminal.term.lock().is_focused));
+}
+
+#[gpui::test]
+fn closing_terminal_tabs_activates_the_remaining_tab_then_hides_the_panel(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let project = cx.new(|cx| {
+        Project::empty_with_watcher(
+            Arc::new(LanguageRegistry::new()),
+            Arc::new(PassiveWatcher::new()),
+            cx,
+        )
+    });
+    let (workspace, cx) = cx.add_window_view({
+        let project = project.clone();
+        move |window, cx| Workspace::new_with_project(project, window, cx)
+    });
+    let panel = cx.new(|cx| TerminalPanel::new(project, workspace.downgrade(), cx));
+    let pane = cx.read_entity(&panel, |panel, _| panel.pane.clone());
+    let [first, second] = std::array::from_fn(|_| {
+        let terminal = cx.new(|cx| display_only_terminal(&TerminalBuilder::new(), cx));
+        cx.new(|cx| TerminalView::new(terminal, cx))
+    });
+    let first_id = first.entity_id();
+
+    workspace.update_in(cx, |workspace, window, cx| {
+        pane.update(cx, |pane, cx| {
+            pane.open_item(Box::new(first), false, window, cx);
+            pane.open_item(Box::new(second), false, window, cx);
+        });
+        workspace.register_panel(panel, DockPosition::Bottom, window, cx);
+        assert!(workspace.open_panel("terminal", window, cx));
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    cx.dispatch_action(CloseTab);
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        let pane = pane.read(cx);
+        assert_eq!(pane.tabs().len(), 1);
+        let active = pane.active_item().expect("应激活剩余终端");
+        assert_eq!(active.item_id(), first_id);
+        assert!(active.item_focus_handle(cx).is_focused(window));
+        assert!(
+            workspace
+                .read(cx)
+                .dock(DockPosition::Bottom)
+                .read(cx)
+                .is_open()
+        );
+    });
+
+    cx.dispatch_action(CloseTab);
+    cx.run_until_parked();
+
+    assert!(cx.read_entity(&pane, |pane, _| pane.tabs().is_empty()));
+    assert!(cx.read_entity(&workspace, |workspace, cx| {
+        !workspace.dock(DockPosition::Bottom).read(cx).is_open()
+    }));
 }

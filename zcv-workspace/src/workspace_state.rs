@@ -15,8 +15,8 @@ use std::{
 
 use gpui::{
     Action, AnyView, App, AsyncApp, Context, Div, DragMoveEvent, Entity, EntityId, FocusHandle,
-    Focusable, PromptLevel, Render, SharedString, Stateful, Subscription, Task, WeakEntity, Window,
-    div, prelude::*,
+    Focusable, Render, SharedString, Stateful, Subscription, Task, WeakEntity, Window, div,
+    prelude::*,
 };
 use zcv_actions::{
     FocusOrHidePanel, MinimizeWindow, QuitWindow, Save, ToggleBottomDock, ToggleLeftDock,
@@ -113,7 +113,7 @@ impl Workspace {
             settings.content_line_height,
         );
 
-        let pane = cx.new(Pane::new);
+        let pane = cx.new(|cx| Pane::new(project.clone(), cx));
         let workspace = cx.weak_entity();
         let open_path: OpenPathCallback = Rc::new(move |path, window, cx| {
             workspace
@@ -138,7 +138,6 @@ impl Workspace {
                         this.observe_autosave_item(item_id, window, cx)
                     }
                     PaneEvent::RemovedItem { item_id } => this.remove_autosave_item(item_id),
-                    PaneEvent::CloseRequested { item_id } => this.close_item(item_id, window, cx),
                     _ => {}
                 }
                 if let PaneEvent::RemovedItem { item_id } = event
@@ -1226,43 +1225,6 @@ impl Workspace {
             );
             self.autosave_error_toasts.insert(*buffer_id, id);
         }
-    }
-
-    fn close_item(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        let buffers = self
-            .pane
-            .read(cx)
-            .tabs()
-            .iter()
-            .find(|item| item.item_id() == id)
-            .and_then(|item| item.multi_buffer(cx))
-            .map_or_else(Vec::new, |buffer| buffer.read(cx).file_buffers(cx));
-        if self
-            .project
-            .update(cx, |project, cx| project.autosave_file_buffers(buffers, cx))
-        {
-            self.pane
-                .update(cx, |pane, cx| pane.close_tab(id, window, cx));
-            return;
-        }
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            "自动保存未完成",
-            Some("保留标签页以处理保存问题，或放弃未保存编辑并关闭。"),
-            &["保留标签页", "放弃编辑"],
-            cx,
-        );
-        cx.spawn_in(window, async move |this, cx| {
-            if answer.await == Ok(1) {
-                this.update_in(cx, |workspace, window, cx| {
-                    workspace
-                        .pane
-                        .update(cx, |pane, cx| pane.close_tab(id, window, cx));
-                })
-                .ok();
-            }
-        })
-        .detach();
     }
 
     /// 启用自动保存后，窗口关闭须等脏文件成功写盘。

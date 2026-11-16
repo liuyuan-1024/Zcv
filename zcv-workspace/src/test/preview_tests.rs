@@ -232,7 +232,6 @@ impl Render for TestView {
 /// 独立预览显示面包屑行但没有「返回源码」，源码派生预览才显示该按钮。
 #[gpui::test]
 fn preview_controls_follow_preview_items(cx: &mut TestAppContext) {
-    let pane = cx.new(Pane::new);
     let project = cx.new(|cx| {
         Project::empty_with_watcher(
             Arc::new(zcv_language::LanguageRegistry::new()),
@@ -240,6 +239,7 @@ fn preview_controls_follow_preview_items(cx: &mut TestAppContext) {
             cx,
         )
     });
+    let pane = cx.new(|cx| Pane::new(project.clone(), cx));
     let breadcrumbs = cx.new(|cx| Breadcrumbs::new(project, cx));
     let button = cx.new(|_| PreviewButton::new(pane.downgrade()));
     cx.add_window_view(|window, cx| {

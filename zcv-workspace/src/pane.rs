@@ -11,9 +11,10 @@ use std::{
 
 use gpui::{
     AnyElement, App, Context, Entity, EntityId, EventEmitter, Fill, FocusHandle, IntoElement,
-    Pixels, Render, ScrollHandle, StyleRefinement, Window, div, prelude::*, px,
+    Pixels, PromptLevel, Render, ScrollHandle, StyleRefinement, Window, div, prelude::*, px,
 };
 use zcv_actions::{CloseTab, NextTab, PrevTab, TogglePreview};
+use zcv_project::Project;
 use zcv_theme::{FileIcons, color};
 use zcv_ui::{Button, SvgIcon, Tab, TabBar};
 
@@ -36,9 +37,6 @@ pub enum PaneEvent {
     ActivateItem {
         item_id: EntityId,
     },
-    CloseRequested {
-        item_id: EntityId,
-    },
     /// 标签页被关闭。
     RemovedItem {
         item_id: EntityId,
@@ -46,8 +44,6 @@ pub enum PaneEvent {
     ItemError {
         message: String,
     },
-    /// 标签全部关闭后请求移除 Pane 自身；宿主据此关闭面板。
-    Remove,
 }
 
 impl EventEmitter<PaneEvent> for Pane {}
@@ -101,6 +97,7 @@ type TabBarTrailing = Rc<dyn Fn(&App) -> AnyElement>;
 
 /// 单个编辑区 Pane。
 pub struct Pane {
+    project: Entity<Project>,
     focus: FocusHandle,
     tabs: Vec<Box<dyn ItemHandle>>,
     active: Option<EntityId>,
@@ -117,8 +114,9 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         Self {
+            project,
             focus: cx.focus_handle(),
             tabs: Vec::new(),
             active: None,
@@ -443,10 +441,10 @@ impl Pane {
             return None;
         }
         if let Some(preview_id) = preview_id {
-            self.close_tab(preview_id, window, cx);
+            self.remove_tab(preview_id, window, cx);
         }
         if let Some(source_id) = source_id {
-            self.close_tab(source_id, window, cx);
+            self.remove_tab(source_id, window, cx);
         }
         Some(insertion_index)
     }
@@ -554,9 +552,8 @@ impl Pane {
                 open_path.strip_prefix(path).is_ok().then(|| item.item_id())
             })
             .collect();
-        // close_tab 逐个发射 Removed，订阅方（项目树高亮）自动刷新。
         for item_id in closed {
-            self.close_tab(item_id, window, cx);
+            self.remove_tab(item_id, window, cx);
         }
     }
 
@@ -613,15 +610,43 @@ impl Pane {
         self.update_toolbar(window, cx);
     }
 
-    /// 关闭指定 tab，激活原位置的下一个；统一在此发射 `Removed` 事件。
-    ///
-    /// 关闭的是最后一项时激活新的最后一项；
-    /// 所有关闭路径（快捷键、关闭按钮、删除文件）都收敛到本方法，订阅方只需监听 Pane 事件。
-    pub fn close_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+    /// 用户关闭标签前，委托 Project 按当前自动保存策略处理其文件文档。
+    fn close_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = self.tabs.iter().find(|item| item.item_id() == item_id) else {
+            return;
+        };
+        let saved = item.multi_buffer(cx).is_none_or(|buffer| {
+            let buffers = buffer.read(cx).file_buffers(cx);
+            self.project
+                .update(cx, |project, cx| project.autosave_file_buffers(buffers, cx))
+        });
+        if saved {
+            self.remove_tab(item_id, window, cx);
+            return;
+        }
+
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "自动保存未完成",
+            Some("保留标签页以处理保存问题，或放弃未保存编辑并关闭。"),
+            &["保留标签页", "放弃编辑"],
+            cx,
+        );
+        cx.spawn_in(window, async move |pane, cx| {
+            if answer.await == Ok(1) {
+                pane.update_in(cx, |pane, window, cx| pane.remove_tab(item_id, window, cx))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// 直接移除标签，释放资源并通知宿主。会话替换等程序操作可直接调用。
+    pub fn remove_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(pos) = self.tabs.iter().position(|item| item.item_id() == item_id) else {
             return;
         };
-        // 关闭前记录焦点归属：仅当 Pane 或其 item 持有焦点时归还，避免抢占别处焦点（恢复会话、后台清理等非用户路径关闭时不触发）。
+        // 后台移除也会走这里，只有当前焦点属于该 Pane 才归还焦点。
         let had_focus = self.has_focus(window, cx);
         if self.transient_source_item_id == Some(item_id) {
             self.transient_source_item_id = None;
@@ -629,7 +654,11 @@ impl Pane {
         if self.transient_preview_item_id == Some(item_id) {
             self.transient_preview_item_id = None;
         }
-        self.tabs[pos].close(window, cx);
+        if let Err(error) = self.tabs[pos].close(cx) {
+            cx.emit(PaneEvent::ItemError {
+                message: format!("{error:#}"),
+            });
+        }
         self.tabs.remove(pos);
         if self.active == Some(item_id) {
             self.active = self
@@ -648,10 +677,6 @@ impl Pane {
             window.focus(&focus, cx);
         }
         cx.emit(PaneEvent::RemovedItem { item_id });
-        // 空 Pane 请求移除自身。
-        if self.tabs.is_empty() {
-            cx.emit(PaneEvent::Remove);
-        }
         cx.notify();
     }
 
@@ -732,10 +757,9 @@ impl Pane {
 // ═══ Action handler ═════════════════════════════════════════════
 
 impl Pane {
-    /// 关闭活动标签；焦点归还在 `close_tab` 内统一处理（快捷键在 Pane 上下文触发，焦点必在 Pane 内）。
-    fn handle_close_tab(&mut self, _: &CloseTab, _: &mut Window, cx: &mut Context<Self>) {
+    fn handle_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(item_id) = self.active {
-            cx.emit(PaneEvent::CloseRequested { item_id });
+            self.close_tab(item_id, window, cx);
         }
     }
 
@@ -1005,8 +1029,8 @@ fn close_button(pane_entity: &Entity<Pane>, item_id: EntityId, cx: &App) -> impl
         .no_occlude()
         .label("关闭")
         .shortcut(zcv_keymap::display_shortcut(&CloseTab, cx))
-        .on_click(move |_: &gpui::ClickEvent, _, cx: &mut App| {
-            entity.update(cx, |_, cx| cx.emit(PaneEvent::CloseRequested { item_id }));
+        .on_click(move |_: &gpui::ClickEvent, window, cx: &mut App| {
+            entity.update(cx, |pane, cx| pane.close_tab(item_id, window, cx));
         })
 }
 

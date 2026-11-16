@@ -647,3 +647,54 @@ fn autosave_distinguishes_document_focus_from_window_deactivation(cx: &mut TestA
     cx.run_until_parked();
     assert_eq!(fs::read_to_string(&second).unwrap(), "新二\n");
 }
+
+#[gpui::test]
+fn closing_file_with_autosave_conflict_waits_for_discard(cx: &mut TestAppContext) {
+    use zcv_actions::CloseTab;
+    use zcv_settings::{AutosaveSetting, UserSettings};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("conflict.txt");
+    fs::write(&path, "原文\n").unwrap();
+    let languages = test_languages();
+    cx.update(|cx| {
+        init_test_settings(cx);
+        cx.set_global(SettingsStore::new(UserSettings {
+            autosave: AutosaveSetting::OnWindowChange,
+            ..UserSettings::default()
+        }));
+        zcv_editor::init(cx, languages.clone());
+    });
+    let (workspace, visual) = cx
+        .add_window_view(|window, cx| build_workspace(&[], languages, quiet_watcher(), window, cx));
+    workspace.update_in(visual, |workspace, window, cx| {
+        workspace.open_path(path.clone(), true, window, cx);
+    });
+    visual.run_until_parked();
+    visual.simulate_input("编辑");
+    visual.run_until_parked();
+    fs::write(&path, "外部修改\n").unwrap();
+
+    visual.dispatch_action(CloseTab);
+    visual.run_until_parked();
+    assert_eq!(visual.pending_prompt().unwrap().0, "自动保存未完成");
+    visual.simulate_prompt_answer("保留标签页");
+    visual.run_until_parked();
+    assert!(visual.read_entity(&workspace, |workspace, cx| {
+        workspace
+            .pane()
+            .read(cx)
+            .active_item()
+            .unwrap()
+            .is_dirty(cx)
+    }));
+
+    visual.dispatch_action(CloseTab);
+    visual.run_until_parked();
+    visual.simulate_prompt_answer("放弃编辑");
+    visual.run_until_parked();
+    assert!(visual.read_entity(&workspace, |workspace, cx| {
+        workspace.pane().read(cx).tabs().is_empty()
+    }));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "外部修改\n");
+}

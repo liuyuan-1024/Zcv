@@ -7,6 +7,29 @@ use alacritty_terminal::{
 use super::*;
 
 #[test]
+fn unbracketed_paste_sends_one_enter_per_line_break_in_order() {
+    for text in ["first\nsecond", "first\r\nsecond", "first\rsecond"] {
+        assert_eq!(paste_bytes(text, Modes::NONE), b"first\rsecond");
+    }
+    assert_eq!(
+        paste_bytes("first\n\r\nsecond\n", Modes::NONE),
+        b"first\r\rsecond\r"
+    );
+}
+
+#[test]
+fn bracketed_paste_preserves_line_breaks_and_blocks_embedded_delimiters() {
+    assert_eq!(
+        paste_bytes("first\n\r\nsecond", Modes::BRACKETED_PASTE),
+        b"\x1b[200~first\n\r\nsecond\x1b[201~"
+    );
+    assert_eq!(
+        paste_bytes("first\x1b[201~\nsecond", Modes::BRACKETED_PASTE),
+        b"\x1b[200~first[201~\nsecond\x1b[201~"
+    );
+}
+
+#[test]
 fn wheel_pixels_accumulate_into_lines_across_events() {
     let mut remainder = Pixels::ZERO;
     let height = Pixels::from(20.);

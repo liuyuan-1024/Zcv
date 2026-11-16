@@ -844,6 +844,11 @@ impl Terminal {
         cx.notify();
     }
 
+    /// 按前台程序声明的粘贴模式发送文本。
+    pub(crate) fn paste(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.write_input(paste_bytes(text, self.last_content.mode), cx);
+    }
+
     // ── 滚动 ──
 
     pub(crate) fn scroll_lines(&mut self, lines: i32, cx: &mut Context<Self>) {
@@ -1065,18 +1070,6 @@ impl Terminal {
         }
     }
 
-    /// 把剪贴板内容粘贴进终端（bracketed paste 时加包裹）。
-    pub(crate) fn paste(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            let bytes = if self.last_content.mode.contains(Modes::BRACKETED_PASTE) {
-                format!("\x1b[200~{text}\x1b[201~").into_bytes()
-            } else {
-                text.into_bytes()
-            };
-            self.write_input(bytes, cx);
-        }
-    }
-
     /// 清空屏幕与滚动回看。
     pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
         alacritty::clear(&mut self.term.lock());
@@ -1164,6 +1157,17 @@ fn to_vte_rgb(rgba: gpui::Rgba) -> Rgb {
         r: (rgba.r * 255.) as u8,
         g: (rgba.g * 255.) as u8,
         b: (rgba.b * 255.) as u8,
+    }
+}
+
+fn paste_bytes(text: &str, mode: Modes) -> Vec<u8> {
+    if mode.contains(Modes::BRACKETED_PASTE) {
+        // 清除 ESC，确保正文无法提前结束括号粘贴。
+        let text = text.replace('\x1b', "");
+        format!("\x1b[200~{text}\x1b[201~").into_bytes()
+    } else {
+        // 普通粘贴把每处换行作为一次 Enter 发送，CRLF 也只发送一个 CR。
+        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
     }
 }
 

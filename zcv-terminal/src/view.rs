@@ -158,9 +158,11 @@ impl TerminalView {
     }
 
     /// 粘贴剪贴板内容到终端（复用 editor::Paste 动作名）。
-    fn handle_paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        self.terminal
-            .update(cx, |terminal, cx| terminal.paste(window, cx));
+    fn handle_paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.terminal
+                .update(cx, |terminal, cx| terminal.paste(&text, cx));
+        }
     }
 
     /// 清空屏幕与滚动回看。

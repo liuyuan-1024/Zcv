@@ -38,7 +38,9 @@ Windows 版启动时自动把当前 Zcv.exe 注册为本地文件的候选打开
 
 打开 `.tex` 源文件后，编辑器工具栏会显示「编译并预览 LaTeX」。点击后，Zcv 保存当前文档，用本机的 `latexmk` 和 XeLaTeX 编译，并用系统默认的 PDF 阅读器打开结果。当前文件须能独立编译。相对路径以源文件所在目录为基准。
 
-需要在本机安装含 `latexmk` 和 XeLaTeX 的 TeX 发行版，并将工具加入 `PATH`。macOS 也会搜索 MacTeX 的标准工具目录 `/Library/TeX/texbin`。成功生成的 PDF 位于源文件旁的 `.zcv-latex/<文件名>.tex/preview.pdf`。编译失败时可从错误提示复制编译输出，上次成功生成的 PDF 仍可查看。
+需要在本机安装含 `latexmk` 和 XeLaTeX 的 TeX 发行版，并把同时包含两者的目录加入 `PATH`。Zcv 优先使用找到的第一套工具，macOS 也会搜索 MacTeX 的标准目录 `/Library/TeX/texbin`。成功生成的 PDF 位于源文件旁的 `.zcv-latex/<文件名>.tex/preview.pdf`。编译失败时可从错误提示复制编译输出，上次成功生成的 PDF 仍可查看。
+
+参考文献由 `latexmk` 调度。Zcv 根据实际使用的 XeLaTeX 自动选择工具。MiKTeX 使用其 Unicode 版 BibTeX（`miktex-bibtexu`），TeX Live（包括 MacTeX）使用 `bibtex`。使用 MiKTeX 编译含 BibTeX 参考文献的文档时，需要安装其 BibTeX8bit 组件。
 
 ## 开发与运行
 
@@ -64,6 +66,12 @@ cargo rd
 ```
 
 等价于 `cargo run -p Zcv`。Cargo 默认使用 dev 配置，无需 `--debug` 参数；项目已为开发构建配置部分优化。
+
+如果 Windows 上的检出目录带有低完整性标签，仓库内构建的 `Zcv.exe` 会继承该标签，启动后可能无法写入 MiKTeX 等外部工具的用户数据。在普通 PowerShell 中进入项目根目录，把本次构建产物放到仓库外的本地应用数据目录：
+
+```powershell
+cargo run -p Zcv --target-dir "$env:LOCALAPPDATA\zcv-target"
+```
 
 启动发布构建（release 配置）：
 

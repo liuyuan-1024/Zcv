@@ -1,6 +1,7 @@
 //! LaTeX 编译命令及工作区反馈。
 
 mod build;
+mod toolchain;
 
 use std::{
     path::{Path, PathBuf},
@@ -142,15 +143,14 @@ fn compile_preview(
             workspace.update(cx, |workspace, cx| match result {
                 Ok(path) => cx.open_with_system(&path),
                 Err(error) => {
-                    let actions = error.downcast_ref::<build::CompilerError>().map_or_else(
-                        Vec::new,
-                        |error| {
+                    let actions = error
+                        .downcast_ref::<toolchain::CompilerError>()
+                        .map_or_else(Vec::new, |error| {
                             let output = error.output.clone();
                             vec![ToastAction::new("复制编译输出", move |_, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(output.clone()));
                             })]
-                        },
-                    );
+                        });
                     workspace.show_toast(
                         ToastKind::Error,
                         format!("编译并预览 LaTeX 失败：{error:#}"),

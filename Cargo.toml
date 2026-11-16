@@ -41,7 +41,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.11.8"
+version = "0.11.9"
 edition = "2024"
 
 [workspace.lints.rust]
@@ -203,6 +203,9 @@ zcv-editor = { opt-level = 3 }
 zcv-language = { opt-level = 3 }
 zcv-theme = { opt-level = 3 }
 tree-sitter = { opt-level = 3 }
+# MSVC 在为这两个解析器生成调试记录时可能报 D8050。
+tree-sitter-bibtex = { debug = 0 }
+codebook-tree-sitter-latex = { debug = 0 }
 tree-sitter-bash = { opt-level = 3 }
 tree-sitter-batch = { opt-level = 3 }
 tree-sitter-powershell = { opt-level = 3 }

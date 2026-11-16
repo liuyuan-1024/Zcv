@@ -1,6 +1,7 @@
 use std::process::ExitStatus;
 
 use super::*;
+use crate::toolchain::CompilerError;
 
 #[test]
 fn failed_build_preserves_the_last_successful_preview() -> Result<()> {

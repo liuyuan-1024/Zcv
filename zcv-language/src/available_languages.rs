@@ -1763,7 +1763,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 first_line_pattern: None,
             },
             || tree_sitter_latex::LANGUAGE.into(),
-            file_language_queries!("latex"),
+            file_language_queries!("latex")
+                .with_outline(include_str!("../queries/latex/outline.scm")),
             None,
             COMMON_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,

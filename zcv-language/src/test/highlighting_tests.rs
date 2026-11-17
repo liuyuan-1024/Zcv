@@ -28,6 +28,148 @@ fn capture_names_for(path: &str, source: &str) -> BTreeSet<String> {
 }
 
 #[test]
+fn latex_highlights_counter_and_length_arguments() {
+    let source = r"\ctexset{section={number=\chinese{section},indent=0pt}}
+\arabic{subsection}
+\setcounter{secnumdepth}{3}
+\setlength{\parindent}{2em}
+正文中的 2em 与 a=b
+\other{indent=0pt}
+";
+    let (buffer, syntax) = parsed_syntax("report.tex", source);
+    let snapshot = buffer.snapshot();
+    let syntax = syntax.snapshot();
+    let names = syntax.capture_names();
+    let spans = syntax.highlights(0..source.len(), &snapshot, &HighlightCache::new());
+    let arguments: Vec<_> = spans
+        .iter()
+        .filter_map(|span| {
+            let capture = names[span.capture as usize].as_ref();
+            matches!(capture, "variable.parameter" | "number" | "property")
+                .then(|| (capture, &source[span.range.clone()]))
+        })
+        .collect();
+
+    assert_eq!(
+        arguments,
+        [
+            ("property", "section"),
+            ("property", "number"),
+            ("variable.parameter", "section"),
+            ("property", "indent"),
+            ("number", "0pt"),
+            ("variable.parameter", "subsection"),
+            ("variable.parameter", "secnumdepth"),
+            ("number", "3"),
+            ("variable.parameter", r"\parindent"),
+            ("number", "2em"),
+        ]
+    );
+}
+
+#[test]
+fn latex_highlights_common_reference_and_declaration_arguments() {
+    let source = r"\documentclass{ctexart}
+\usepackage[margin=2cm]{geometry,hyperref}
+\title{开题报告}
+\newcommand{\mycmd}[1]{#1}
+\newenvironment{sample}{}{}
+\begin{document}
+正文 \label{sec:main} \cref{sec:main,sec:other}。
+\citep[见][第 2 页]{salvador2025led,stepniak2022volterra}。
+\href{https://example.org}{链接}
+\input{sections/intro}
+\addbibresource{references.bib}
+\begin{verbatim}
+literal()
+\end{verbatim}
+\end{document}
+";
+    let (buffer, syntax) = parsed_syntax("report.tex", source);
+    let snapshot = buffer.snapshot();
+    let syntax = syntax.snapshot();
+    let names = syntax.capture_names();
+    let spans = syntax.highlights(
+        0..snapshot.len_bytes().get(),
+        &snapshot,
+        &HighlightCache::new(),
+    );
+    let captures: Vec<_> = spans
+        .iter()
+        .map(|span| {
+            (
+                names[span.capture as usize].as_ref(),
+                &source[span.range.clone()],
+            )
+        })
+        .collect();
+
+    let references: Vec<_> = captures
+        .iter()
+        .filter_map(|&(capture, text)| (capture == "text.reference").then_some(text))
+        .collect();
+    assert_eq!(
+        references,
+        [
+            "sec:main",
+            "sec:other",
+            "salvador2025led",
+            "stepniak2022volterra"
+        ]
+    );
+    for expected in [
+        ("function", r"\citep"),
+        ("label", "sec:main"),
+        ("text.title", "{开题报告}"),
+        ("string", "ctexart"),
+        ("string", "geometry"),
+        ("string", "hyperref"),
+        ("string", "sections/intro"),
+        ("string", "references.bib"),
+        ("property", "margin"),
+        ("text.uri", "https://example.org"),
+        ("markup.link.text", "{链接}"),
+        ("function.definition", r"\mycmd"),
+        ("type", "sample"),
+    ] {
+        assert!(captures.contains(&expected), "缺少高亮 {expected:?}");
+    }
+    assert!(
+        captures
+            .iter()
+            .any(|&(capture, text)| { capture == "text.literal" && text.trim() == "literal()" })
+    );
+    let body = source.find("正文").unwrap();
+    assert!(spans.iter().all(|span| !span.range.contains(&body)));
+}
+
+#[test]
+fn latex_title_highlights_stop_at_the_title_argument() {
+    let source = r"\section{选题依据}
+
+\subsection{研究背景、目的和意义}
+
+可见光通信（VLC）通过调制 LED 发射光强传递信息\citep{komine2004vlc}。
+";
+    let (buffer, syntax) = parsed_syntax("report.tex", source);
+    let snapshot = buffer.snapshot();
+    let syntax = syntax.snapshot();
+    let names = syntax.capture_names();
+    let spans = syntax.highlights(
+        0..snapshot.len_bytes().get(),
+        &snapshot,
+        &HighlightCache::new(),
+    );
+    let headings: Vec<_> = spans
+        .iter()
+        .filter(|span| names[span.capture as usize].as_ref() == "text.title")
+        .map(|span| &source[span.range.clone()])
+        .collect();
+
+    assert_eq!(headings, ["{选题依据}", "{研究背景、目的和意义}"]);
+}
+
+#[test]
 fn jsonc_reference_parses_comments_before_and_inside_root() {
     let source = "// 配置参考\n{\n  // 用户可覆盖\n  \"theme\": \"system\"\n}\n";
     let (buffer, syntax) = parsed_syntax("settings.reference.jsonc", source);

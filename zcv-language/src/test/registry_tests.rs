@@ -223,6 +223,7 @@ fn outline_queries_are_optional_and_use_the_declared_capture_contract() {
         ("main.c", false),
         ("main.cpp", false),
         ("README.md", true),
+        ("main.tex", true),
         ("index.html", true),
         ("notes.txt", false),
     ] {

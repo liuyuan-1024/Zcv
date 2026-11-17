@@ -145,6 +145,66 @@ fn outline_preserves_nested_same_named_unicode_definitions() {
 }
 
 #[test]
+fn latex_outline_preserves_section_hierarchy_and_title_locations() {
+    let source = r"
+\begin{document}
+% \section{注释}
+\part{上篇}
+\chapter{第一章}
+\section[短标题]{一、\textbf{选题依据}}
+\subsection*{研究背景、目的和意义}
+\subsubsection{研究背景}
+\paragraph{背景说明}
+\subparagraph{补充说明}
+正文
+\section*{参考文献}
+\end{document}
+";
+    let (buffer, syntax) = parsed_syntax("report.tex", source);
+    let snapshot = buffer.snapshot();
+    let items = syntax.snapshot().outline(
+        0..snapshot.len_bytes().get(),
+        &snapshot,
+        &HighlightCache::new(),
+    );
+    let expected = [
+        ("{上篇}", 0),
+        ("{第一章}", 1),
+        (r"{一、\textbf{选题依据}}", 2),
+        ("{研究背景、目的和意义}", 3),
+        ("{研究背景}", 4),
+        ("{背景说明}", 5),
+        ("{补充说明}", 6),
+        ("{参考文献}", 2),
+    ];
+
+    assert_eq!(items.len(), expected.len());
+    for (item, (title, depth)) in items.iter().zip(expected) {
+        assert_eq!(item.text, title);
+        assert_eq!(item.depth, depth, "{title}");
+        let start = item.name_range.start.resolve_in(&snapshot).unwrap().get();
+        let end = item.name_range.end.resolve_in(&snapshot).unwrap().get();
+        assert_eq!(start, source.find(title).unwrap());
+        assert_eq!(&source[start..end], title);
+        assert!(
+            item.highlight_ranges
+                .iter()
+                .any(|(range, capture)| range.start == 0 && capture.as_ref() == "text.title"),
+            "{title} 应使用标题高亮"
+        );
+    }
+    let formatted_title = &items[2];
+    assert!(
+        formatted_title
+            .highlight_ranges
+            .iter()
+            .any(|(range, capture)| {
+                capture.as_ref() == "function" && &formatted_title.text[range.clone()] == r"\textbf"
+            })
+    );
+}
+
+#[test]
 fn outline_text_captures_relative_name_and_highlights() {
     let source = "pub struct DockData {\n    pub visible: bool,\n}\n";
     let (buffer, syntax) = parsed_syntax("outline.rs", source);

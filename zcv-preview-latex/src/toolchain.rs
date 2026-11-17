@@ -13,8 +13,6 @@ use std::{
 
 use anyhow::{Context as _, Result};
 
-const PREVIEW_JOB_NAME: &str = "preview";
-
 pub(super) struct CompiledPdf {
     // 先关闭 PDF，再清理编译目录。
     pdf: File,
@@ -70,6 +68,7 @@ impl Toolchain {
         parent: &Path,
         file_name: &OsStr,
         relative_scratch_root: &Path,
+        pdf_name: &Path,
     ) -> Result<CompiledPdf> {
         let version = run(
             Command::new(&self.xelatex)
@@ -95,8 +94,9 @@ impl Toolchain {
             "启动 latexmk",
         )?;
         check_output(&output, "latexmk 编译失败")?;
-        let pdf = File::open(directory.path().join(format!("{PREVIEW_JOB_NAME}.pdf")))
-            .context("读取编译生成的 PDF 失败")?;
+        let pdf_path = directory.path().join(pdf_name);
+        let pdf = File::open(&pdf_path)
+            .with_context(|| format!("读取编译生成的 PDF 失败：{}", pdf_path.display()))?;
         Ok(CompiledPdf {
             pdf,
             _directory: directory,
@@ -130,7 +130,6 @@ impl Toolchain {
                 "-halt-on-error",
                 "-file-line-error",
             ])
-            .arg(format!("-jobname={PREVIEW_JOB_NAME}"))
             .arg("-e")
             .arg(format!("$bibtex = q{{{bibtex} %O %S}};"))
             .arg(outdir)

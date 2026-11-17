@@ -1,10 +1,10 @@
+use std::fs;
+
 use super::*;
-#[cfg(windows)]
 use crate::toolchain::CompilerError;
 
 #[test]
-#[cfg(windows)]
-#[ignore = "需要在 PATH 中安装 Windows TeX Live 和 BibTeX"]
+#[ignore = "需要安装 latexmk、XeLaTeX 和 BibTeX"]
 fn builds_preview_for_chinese_file_and_directory() -> Result<()> {
     let root = tempfile::tempdir()?;
     let directory = root.path().join("测试 文档");
@@ -33,10 +33,7 @@ fn builds_preview_for_chinese_file_and_directory() -> Result<()> {
             error
         }
     })?;
-    assert_eq!(
-        preview,
-        directory.join(".zcv-latex/开题报告.tex/preview.pdf")
-    );
+    assert_eq!(preview, directory.join(".zcv-latex/开题报告.pdf"));
     let pdf = fs::read(&preview)?;
     assert!(pdf.starts_with(b"%PDF-"));
 
@@ -46,7 +43,7 @@ fn builds_preview_for_chinese_file_and_directory() -> Result<()> {
     let cached_entries = fs::read_dir(directory.join(".zcv-latex"))?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<io::Result<Vec<_>>>()?;
-    assert_eq!(cached_entries, [directory.join(".zcv-latex/开题报告.tex")]);
+    assert_eq!(cached_entries, [preview]);
     Ok(())
 }
 
@@ -61,15 +58,17 @@ fn failed_publication_preserves_the_last_successful_preview() -> Result<()> {
     }
 
     let directory = tempfile::tempdir()?;
+    let pdf_name = Path::new("开题报告.pdf");
 
-    let preview = publish_preview(directory.path(), &b"%PDF-1.5 first"[..])?;
+    let preview = publish_preview(directory.path(), pdf_name, &b"%PDF-1.5 first"[..])?;
+    assert_eq!(preview, directory.path().join("开题报告.pdf"));
     assert_eq!(fs::read(&preview)?, b"%PDF-1.5 first");
 
-    assert!(publish_preview(directory.path(), UnreadablePdf).is_err());
+    assert!(publish_preview(directory.path(), pdf_name, UnreadablePdf).is_err());
     assert_eq!(fs::read(&preview)?, b"%PDF-1.5 first");
 
     assert_eq!(
-        publish_preview(directory.path(), &b"%PDF-1.5 second"[..])?,
+        publish_preview(directory.path(), pdf_name, &b"%PDF-1.5 second"[..])?,
         preview
     );
     assert_eq!(fs::read(&preview)?, b"%PDF-1.5 second");

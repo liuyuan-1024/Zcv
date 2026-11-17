@@ -2,10 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use gpui::{
-    App, AppContext as _, Focusable as _, PromptLevel, TitlebarOptions, WindowBounds,
-    WindowOptions, px, size,
-};
+use gpui::{App, AppContext as _, Focusable as _, PromptLevel};
 use zcv_actions::{OpenSettings, OpenSettingsFile};
 use zcv_language::LanguageRegistry;
 use zcv_settings_window::SettingsWindow;
@@ -55,27 +52,19 @@ fn open(cx: &mut App) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(960.0), px(720.0)), cx)),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Zcv — 设置".into()),
-                appears_transparent: true,
-                traffic_light_position: None,
-            }),
-            focus: true,
-            show: true,
-            window_min_size: Some(size(px(680.0), px(520.0))),
-            ..Default::default()
-        },
-        |window, cx| {
-            crate::appearance::observe_window(window);
-            let settings = cx.new(|cx| SettingsWindow::new(window, cx));
-            let focus = settings.read(cx).focus_handle(cx);
-            window.focus(&focus, cx);
-            settings
-        },
-    )?;
+    let display_id = match cx.active_window() {
+        Some(active) => active.update(cx, |_, window, cx| {
+            window.display(cx).map(|display| display.id())
+        })?,
+        None => None,
+    };
+    cx.open_window(SettingsWindow::options(display_id, cx), |window, cx| {
+        crate::appearance::observe_window(window);
+        let settings = cx.new(|cx| SettingsWindow::new(window, cx));
+        let focus = settings.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        settings
+    })?;
     Ok(())
 }
 

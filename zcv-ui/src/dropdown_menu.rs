@@ -113,9 +113,7 @@ impl RenderOnce for DropdownMenu {
             .child(
                 div()
                     .flex()
-                    .min_w(scale::structural(104.0))
                     .items_center()
-                    .justify_between()
                     .gap(scale::S8)
                     .child(div().text_color(colors.text).child(self.value))
                     .child(

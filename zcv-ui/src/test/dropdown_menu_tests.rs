@@ -49,6 +49,26 @@ fn press_enter(cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
+fn trigger_width_follows_the_current_label(cx: &mut TestAppContext) {
+    let (example, visual) = cx.add_window_view(|_, _| DropdownExample {
+        layer: PopoverLayer::default(),
+        chosen: Rc::new(Cell::new(0)),
+        trigger_y: px(16.0),
+    });
+    let width = |visual: &mut VisualTestContext| {
+        visual.debug_bounds("dropdown-trigger").unwrap().size.width
+    };
+    let short = width(visual);
+
+    example.update(visual, |example, cx| {
+        example.chosen.set(1);
+        cx.notify();
+    });
+
+    assert!(width(visual) > short, "较长的当前值应撑宽按钮");
+}
+
+#[gpui::test]
 fn navigation_starts_at_current_value_and_only_confirmation_commits(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.bind_keys([

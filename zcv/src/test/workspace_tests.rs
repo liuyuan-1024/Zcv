@@ -24,45 +24,65 @@ fn prompt_remains_answerable_until_dismissed(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn open_settings_opens_a_single_settings_window(cx: &mut TestAppContext) {
+fn open_settings_centers_on_active_display_and_reuses_window(cx: &mut TestAppContext) {
+    use gpui::{Bounds, WindowBounds, WindowOptions, point, px, size};
+    use zcv_settings_window::SettingsWindow;
+
     cx.update(|cx| {
         init_test_settings(cx);
         zcv_editor::init(cx, test_languages());
         app_menus::install(cx);
         crate::settings_window::install(cx, test_languages(), quiet_watcher_factory());
     });
-    let (_workspace, visual) = cx.add_window_view(|window, cx| {
-        build_workspace(&[], test_languages(), quiet_watcher(), window, cx)
+    let main_bounds = Bounds::new(point(px(200.0), px(90.0)), size(px(1200.0), px(900.0)));
+    let owner = cx.update(|cx| {
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(main_bounds)),
+                ..Default::default()
+            },
+            |window, cx| {
+                cx.new(|cx| build_workspace(&[], test_languages(), quiet_watcher(), window, cx))
+            },
+        )
+        .expect("应创建工作区窗口")
     });
+    let mut visual = gpui::VisualTestContext::from_window(owner.into(), cx);
+    let display_center = visual.update(|window, cx| {
+        window.activate_window();
+        window
+            .display(cx)
+            .expect("活动窗口应有显示器")
+            .visible_bounds()
+            .center()
+    });
+    assert_ne!(display_center, main_bounds.center());
 
     visual.dispatch_action(OpenSettings);
     visual.run_until_parked();
 
-    let count = visual.update(|_, cx| {
-        cx.windows()
-            .into_iter()
-            .filter(|window| {
-                window
-                    .downcast::<zcv_settings_window::SettingsWindow>()
-                    .is_some()
-            })
-            .count()
-    });
-    assert_eq!(count, 1, "打开设置应创建独立设置窗口");
+    let settings = cx
+        .windows()
+        .into_iter()
+        .find_map(|window| window.downcast::<SettingsWindow>())
+        .expect("应创建独立设置窗口");
+    let bounds = settings.update(cx, |_, window, _| window.bounds()).unwrap();
+    assert_eq!(bounds.size, size(px(900.0), px(680.0)));
+    assert_eq!(bounds.center(), display_center, "应在活动显示器居中");
 
+    let resized = size(px(760.0), px(570.0));
+    visual.simulate_window_resize(settings.into(), resized);
     visual.dispatch_action(OpenSettings);
     visual.run_until_parked();
     let count = visual.update(|_, cx| {
         cx.windows()
             .into_iter()
-            .filter(|window| {
-                window
-                    .downcast::<zcv_settings_window::SettingsWindow>()
-                    .is_some()
-            })
+            .filter(|window| window.downcast::<SettingsWindow>().is_some())
             .count()
     });
     assert_eq!(count, 1, "重复打开设置应复用已有窗口");
+    let bounds = settings.update(cx, |_, window, _| window.bounds()).unwrap();
+    assert_eq!(bounds.size, resized, "应保留用户调整后的尺寸");
 }
 
 #[gpui::test]

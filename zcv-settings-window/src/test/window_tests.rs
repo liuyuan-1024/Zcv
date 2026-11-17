@@ -75,6 +75,66 @@ fn open_settings_page(
 }
 
 #[gpui::test]
+fn sidebar_width_follows_ui_font_and_preserves_content_space(cx: &mut gpui::TestAppContext) {
+    let visual = open_settings_page(cx, 14.0, SettingsPage::Appearance);
+    let sidebar_width = |visual: &mut gpui::VisualTestContext| {
+        visual.debug_bounds("settings-sidebar").unwrap().size.width
+    };
+    assert_eq!(sidebar_width(visual), px(160.0));
+
+    visual.update(|_, cx| typography::set_base_typography(cx, None, Some(17.0), None));
+    assert!((px(160.0)..px(200.0)).contains(&sidebar_width(visual)));
+
+    visual.update(|_, cx| typography::set_base_typography(cx, None, Some(24.0), None));
+    assert_eq!(sidebar_width(visual), px(200.0));
+}
+
+#[gpui::test]
+fn sidebar_highlights_hover_and_selects_a_page_on_click(cx: &mut gpui::TestAppContext) {
+    let visual = open_settings_page(cx, 14.0, SettingsPage::Appearance);
+    let selected = visual.debug_bounds("settings-nav-appearance").unwrap();
+    let hovered = visual.debug_bounds("settings-nav-terminal").unwrap();
+    let paints_highlight = |visual: &mut gpui::VisualTestContext, row: gpui::Bounds<_>| {
+        visual.update(|window, cx| {
+            let row = row.scale(window.scale_factor());
+            let highlight = color::current(cx).element_highlight.into();
+            window
+                .painted_quads()
+                .iter()
+                .any(|quad| quad.bounds == row && quad.background == highlight)
+        })
+    };
+    assert!(paints_highlight(visual, selected));
+    assert!(!paints_highlight(visual, hovered));
+
+    visual.simulate_mouse_move(hovered.center(), None, Modifiers::default());
+    assert!(paints_highlight(visual, hovered));
+    assert!(paints_highlight(visual, selected));
+    assert!(visual.debug_bounds("settings-row-theme").is_some());
+
+    visual.simulate_mouse_move(
+        gpui::point(px(500.0), px(100.0)),
+        None,
+        Modifiers::default(),
+    );
+    assert!(!paints_highlight(visual, hovered));
+
+    visual.simulate_click(hovered.center(), Modifiers::default());
+    visual.simulate_mouse_move(
+        gpui::point(px(500.0), px(100.0)),
+        None,
+        Modifiers::default(),
+    );
+    assert!(paints_highlight(visual, hovered));
+    assert!(!paints_highlight(visual, selected));
+    assert!(
+        visual
+            .debug_bounds("settings-row-terminal-cursor-shape")
+            .is_some()
+    );
+}
+
+#[gpui::test]
 fn dependent_rows_follow_the_applied_setting_modes(cx: &mut gpui::TestAppContext) {
     let visual = open_settings_page(cx, 14.0, SettingsPage::Editor);
     let delay_row = "settings-row-autosave-delay";
@@ -93,6 +153,18 @@ fn dependent_rows_follow_the_applied_setting_modes(cx: &mut gpui::TestAppContext
     });
     assert!(visual.debug_bounds(delay_row).is_some());
     assert!(visual.debug_bounds(line_width_row).is_some());
+    for (parent, child) in [
+        ("settings-label-autosave", "settings-label-autosave-delay"),
+        (
+            "settings-label-soft-wrap",
+            "settings-label-preferred-line-length",
+        ),
+    ] {
+        assert!(
+            visual.debug_bounds(child).unwrap().left()
+                > visual.debug_bounds(parent).unwrap().left()
+        );
+    }
 
     visual.update(|_, cx| {
         cx.update_global::<SettingsStore, _>(|store, _| {

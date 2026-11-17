@@ -7,20 +7,27 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, App, Context, Div, ElementId, Entity, FocusHandle, Focusable, IntoElement,
-    Modifiers, Render, ScrollHandle, Subscription, Window, div, prelude::*, px,
+    AnyElement, App, Bounds, Context, DisplayId, Div, Entity, FocusHandle, Focusable, IntoElement,
+    Modifiers, Pixels, Render, ScrollHandle, Size, Subscription, TitlebarOptions, Window,
+    WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use zcv_actions::OpenSettingsFile;
 use zcv_settings::{
     AutosaveSetting, CursorShape, IndentGuideSettingsContent, SettingsStore, SoftWrapMode,
     TerminalCursorShape, UserSettingsContent, update_user_settings,
 };
-use zcv_theme::{ThemeChoice, color, scale, typography};
+use zcv_theme::{ThemeChoice, color, fixed, scale, typography};
 use zcv_title_bar::TitleBar;
 use zcv_ui::{
     Button, ContextMenuEntry, DropdownMenu, PopoverLayer, Stepper, SvgIcon, Switch, ToastKind,
     ToastLayer,
 };
+
+const DEFAULT_SIZE: Size<Pixels> = size(px(900.0), px(680.0));
+const MIN_SIZE: Size<Pixels> = size(px(680.0), px(520.0));
+
+const SIDEBAR_BASE_WIDTH: f32 = 160.0;
+const SIDEBAR_MAX_WIDTH: f32 = 200.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsPage {
@@ -71,6 +78,23 @@ pub struct SettingsWindow {
 }
 
 impl SettingsWindow {
+    pub fn options(display_id: Option<DisplayId>, cx: &App) -> WindowOptions {
+        let bounds = Bounds::centered(display_id, DEFAULT_SIZE, cx);
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            display_id,
+            titlebar: Some(TitlebarOptions {
+                title: Some("Zcv — 设置".into()),
+                appears_transparent: true,
+                traffic_light_position: None,
+            }),
+            focus: true,
+            show: true,
+            window_min_size: Some(MIN_SIZE.min(&bounds.size)),
+            ..Default::default()
+        }
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_rem_size(typography::current(cx).ui_size());
         let settings_subscription = cx.observe_global::<SettingsStore>(|_, cx| cx.notify());
@@ -115,6 +139,7 @@ impl SettingsWindow {
 
     fn set_active_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
         self.active_page = page;
+        self.scroll_handle.set_offset(Default::default());
         cx.notify();
     }
 
@@ -134,72 +159,75 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_body(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .flex_1()
             .min_w_0()
             .min_h_0()
-            .child(self.render_sidebar(cx))
+            .child(self.render_sidebar(window, cx))
             .child(self.render_settings_page(cx))
-            .into_any_element()
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let colors = *color::current(cx);
-        let settings_window = cx.entity();
-        let mut nav = div().flex().flex_col().gap(scale::S2).p(scale::S6);
-
-        for page in SettingsPage::ALL {
+        let width = scale::to_pixels(scale::structural(SIDEBAR_BASE_WIDTH), window)
+            .clamp(px(SIDEBAR_BASE_WIDTH), px(SIDEBAR_MAX_WIDTH));
+        let rows = SettingsPage::ALL.map(|page| {
+            let id = format!("settings-nav-{}", page.key());
             let selected = self.active_page == page;
-            let settings_window = settings_window.clone();
-            nav = nav.child(
-                div()
-                    .id(ElementId::Name(
-                        format!("settings-nav-{}", page.key()).into(),
-                    ))
-                    .flex()
-                    .items_center()
-                    .gap(scale::S6)
-                    .px(scale::S6)
-                    .py(scale::S4)
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .when(selected, |element| element.bg(colors.element_highlight))
-                    .on_click(move |_, _window, cx| {
-                        settings_window.update(cx, |settings_window, cx| {
-                            settings_window.set_active_page(page, cx)
-                        });
-                    })
-                    .child(SvgIcon::new(page.icon()).size(px(14.0)).color(if selected {
-                        colors.icon_accent
-                    } else {
-                        colors.icon_muted
-                    }))
-                    .child(
-                        div()
-                            .text_color(if selected {
-                                colors.text
-                            } else {
-                                colors.text_muted
-                            })
-                            .child(page.label()),
-                    ),
-            );
-        }
+            div()
+                .id(id.clone())
+                .debug_selector(move || id)
+                .flex()
+                .items_center()
+                .gap(scale::S6)
+                .px(scale::S6)
+                .py(scale::S4)
+                .rounded_sm()
+                .cursor_pointer()
+                .hover(move |row| row.bg(colors.element_highlight))
+                .when(selected, |row| row.bg(colors.element_highlight))
+                .child(
+                    SvgIcon::new(page.icon())
+                        .size(window.rem_size())
+                        .color(if selected {
+                            colors.icon_accent
+                        } else {
+                            colors.icon_muted
+                        }),
+                )
+                .child(
+                    div()
+                        .text_color(if selected {
+                            colors.text
+                        } else {
+                            colors.text_muted
+                        })
+                        .child(page.label()),
+                )
+                .on_click(cx.listener(move |settings, _, _, cx| settings.set_active_page(page, cx)))
+        });
 
         div()
-            .w(px(220.0))
+            .debug_selector(|| "settings-sidebar".into())
+            .w(width)
             .flex_shrink_0()
             .h_full()
             .border_r_1()
             .border_color(colors.border)
             .bg(colors.surface_background)
-            .child(nav)
-            .into_any_element()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(scale::S2)
+                    .p(scale::S6)
+                    .children(rows),
+            )
     }
 
-    fn render_settings_page(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_settings_page(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let settings = SettingsStore::get(cx);
         let overrides = SettingsStore::user_settings_content(cx);
         let colors = *color::current(cx);
@@ -208,9 +236,6 @@ impl SettingsWindow {
         let ui_font_size_setting = settings.ui_font_size;
         let content_font_size = settings.content_font_size;
         let content_line_height = settings.content_line_height;
-        let soft_wrap = settings.soft_wrap;
-        let autosave = settings.autosave;
-        let preferred_line_length = settings.preferred_line_length;
         let tab_size = settings.tab.tab_size();
         let insert_spaces = settings.tab.insert_spaces;
         let indent_guides_enabled = settings.indent_guides.enabled;
@@ -221,78 +246,78 @@ impl SettingsWindow {
         let terminal_line_height = settings.terminal_line_height;
         let terminal_cursor_shape = settings.terminal_cursor_shape;
 
-        let page = match self.active_page {
-            SettingsPage::Appearance => render_section(
-                "外观",
-                vec![
-                    render_setting_row(
+        let rows = match self.active_page {
+            SettingsPage::Appearance => vec![
+                render_setting_row(
+                    "theme",
+                    "主题",
+                    "跟随系统外观，或固定使用深色、浅色主题。",
+                    render_setting_dropdown(
                         "theme",
                         "主题",
-                        "跟随系统外观，或固定使用深色、浅色主题。",
-                        render_setting_dropdown(
-                            "theme",
-                            "主题",
-                            theme,
-                            ThemeChoice::available().map(|choice| (choice, theme_label(choice))),
-                            |content, value| content.theme = Some(value),
-                            &self.popovers,
-                            cx,
-                        ),
-                        ui_size,
+                        theme,
+                        ThemeChoice::available().map(|choice| (choice, theme_label(choice))),
+                        |content, value| content.theme = Some(value),
+                        &self.popovers,
                         cx,
                     ),
-                    render_number_row(
-                        "ui-font-size",
-                        "界面字号",
-                        "窗口、标签与菜单等界面文字的字号。",
-                        NumberAdjustment::stepped(
-                            ui_font_size_setting,
-                            format!("{ui_font_size_setting:.0} px"),
-                            1.0,
-                            11.0..=24.0,
-                            |content, value| content.ui_font_size = Some(value),
-                        ),
-                        ui_size,
-                        cx,
+                    ui_size,
+                    cx,
+                ),
+                render_number_row(
+                    "ui-font-size",
+                    "界面字号",
+                    "窗口、标签与菜单等界面文字的字号。",
+                    NumberAdjustment::stepped(
+                        ui_font_size_setting,
+                        format!("{ui_font_size_setting:.0} px"),
+                        1.0,
+                        11.0..=24.0,
+                        |content, value| content.ui_font_size = Some(value),
                     ),
-                    render_number_row(
-                        "content-font-size",
-                        "内容字号",
-                        "编辑器与预览共用的正文字号。",
-                        NumberAdjustment::stepped(
-                            content_font_size,
-                            format!("{content_font_size:.0} px"),
-                            1.0,
-                            10.0..=32.0,
-                            |content, value| content.content_font_size = Some(value),
-                        ),
-                        ui_size,
-                        cx,
+                    ui_size,
+                    cx,
+                ),
+                render_number_row(
+                    "content-font-size",
+                    "内容字号",
+                    "编辑器与预览共用的正文字号。",
+                    NumberAdjustment::stepped(
+                        content_font_size,
+                        format!("{content_font_size:.0} px"),
+                        1.0,
+                        10.0..=32.0,
+                        |content, value| content.content_font_size = Some(value),
                     ),
-                    render_number_row(
-                        "content-line-height",
-                        "内容行高",
-                        "正文行高相对字号的倍数。",
-                        NumberAdjustment::stepped(
-                            content_line_height,
-                            format!("{content_line_height:.1} ×"),
-                            0.1,
-                            1.0..=3.0,
-                            |content, value| content.content_line_height = Some(value),
-                        ),
-                        ui_size,
-                        cx,
+                    ui_size,
+                    cx,
+                ),
+                render_number_row(
+                    "content-line-height",
+                    "内容行高",
+                    "正文行高相对字号的倍数。",
+                    NumberAdjustment::stepped(
+                        content_line_height,
+                        format!("{content_line_height:.1} ×"),
+                        0.1,
+                        1.0..=3.0,
+                        |content, value| content.content_line_height = Some(value),
                     ),
-                ],
-                ui_size,
-                cx,
-            ),
+                    ui_size,
+                    cx,
+                ),
+            ],
 
-            SettingsPage::Editor => render_section(
-                "编辑器",
-                vec![
-                    self.render_autosave_group(autosave, ui_size, cx),
-                    self.render_wrapping_group(soft_wrap, preferred_line_length, ui_size, cx),
+            SettingsPage::Editor => self
+                .render_autosave_group(settings.autosave, ui_size, cx)
+                .into_iter()
+                .chain(self.render_wrapping_group(
+                    settings.soft_wrap,
+                    settings.preferred_line_length,
+                    ui_size,
+                    cx,
+                ))
+                .chain([
                     render_number_row(
                         "tab-size",
                         "Tab 宽度",
@@ -386,67 +411,60 @@ impl SettingsWindow {
                         ui_size,
                         cx,
                     ),
-                ],
-                ui_size,
-                cx,
-            ),
+                ])
+                .collect(),
 
-            SettingsPage::Terminal => render_section(
-                "终端",
-                vec![
-                    render_number_row(
-                        "terminal-font-size",
-                        "终端字号",
-                        "终端正文的字号。",
-                        NumberAdjustment::stepped(
-                            terminal_font_size,
-                            format!("{terminal_font_size:.0} px"),
-                            1.0,
-                            10.0..=32.0,
-                            |content, value| content.terminal_font_size = Some(value),
-                        ),
-                        ui_size,
-                        cx,
+            SettingsPage::Terminal => vec![
+                render_number_row(
+                    "terminal-font-size",
+                    "终端字号",
+                    "终端正文的字号。",
+                    NumberAdjustment::stepped(
+                        terminal_font_size,
+                        format!("{terminal_font_size:.0} px"),
+                        1.0,
+                        10.0..=32.0,
+                        |content, value| content.terminal_font_size = Some(value),
                     ),
-                    render_number_row(
-                        "terminal-line-height",
-                        "终端行高",
-                        "终端行高相对字号的倍数。",
-                        NumberAdjustment::stepped(
-                            terminal_line_height,
-                            format!("{terminal_line_height:.1} ×"),
-                            0.1,
-                            1.0..=3.0,
-                            |content, value| content.terminal_line_height = Some(value),
-                        ),
-                        ui_size,
-                        cx,
+                    ui_size,
+                    cx,
+                ),
+                render_number_row(
+                    "terminal-line-height",
+                    "终端行高",
+                    "终端行高相对字号的倍数。",
+                    NumberAdjustment::stepped(
+                        terminal_line_height,
+                        format!("{terminal_line_height:.1} ×"),
+                        0.1,
+                        1.0..=3.0,
+                        |content, value| content.terminal_line_height = Some(value),
                     ),
-                    render_setting_row(
+                    ui_size,
+                    cx,
+                ),
+                render_setting_row(
+                    "terminal-cursor-shape",
+                    "终端光标形状",
+                    "终端光标使用的形状。",
+                    render_setting_dropdown(
                         "terminal-cursor-shape",
                         "终端光标形状",
-                        "终端光标使用的形状。",
-                        render_setting_dropdown(
-                            "terminal-cursor-shape",
-                            "终端光标形状",
-                            terminal_cursor_shape,
-                            [
-                                (TerminalCursorShape::Bar, "竖线"),
-                                (TerminalCursorShape::Block, "实心方块"),
-                                (TerminalCursorShape::Underline, "下划线"),
-                                (TerminalCursorShape::Hollow, "空心方块"),
-                            ],
-                            |content, value| content.terminal_cursor_shape = Some(value),
-                            &self.popovers,
-                            cx,
-                        ),
-                        ui_size,
+                        terminal_cursor_shape,
+                        [
+                            (TerminalCursorShape::Bar, "竖线"),
+                            (TerminalCursorShape::Block, "实心方块"),
+                            (TerminalCursorShape::Underline, "下划线"),
+                            (TerminalCursorShape::Hollow, "空心方块"),
+                        ],
+                        |content, value| content.terminal_cursor_shape = Some(value),
+                        &self.popovers,
                         cx,
                     ),
-                ],
-                ui_size,
-                cx,
-            ),
+                    ui_size,
+                    cx,
+                ),
+            ],
         };
 
         let override_note = div()
@@ -470,15 +488,15 @@ impl SettingsWindow {
             .flex_col()
             .gap(scale::S16)
             .child(override_note);
-        body.child(page).into_any_element()
+        body.child(div().flex().flex_col().gap(scale::S4).children(rows))
     }
 
     fn render_autosave_group(
         &self,
         autosave: AutosaveSetting,
-        ui_size: gpui::Pixels,
+        ui_size: Pixels,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Vec<Div> {
         let delay = match autosave {
             AutosaveSetting::AfterDelay { milliseconds } => Some(milliseconds),
             _ => None,
@@ -513,7 +531,7 @@ impl SettingsWindow {
         )];
 
         if let Some(milliseconds) = delay {
-            rows.push(
+            rows.push(render_dependent_row(
                 render_setting_row(
                     "autosave-delay",
                     "保存延迟",
@@ -526,22 +544,20 @@ impl SettingsWindow {
                     ),
                     ui_size,
                     cx,
-                )
-                .pl(scale::S12)
-                .border_t_1()
-                .border_color(color::current(cx).border),
-            );
+                ),
+                cx,
+            ));
         }
-        render_section("保存", rows, ui_size, cx).mt(scale::S8)
+        rows
     }
 
     fn render_wrapping_group(
         &self,
         soft_wrap: SoftWrapMode,
         preferred_line_length: usize,
-        ui_size: gpui::Pixels,
+        ui_size: Pixels,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Vec<Div> {
         let mut rows = vec![render_setting_row(
             "soft-wrap",
             "软换行",
@@ -564,7 +580,7 @@ impl SettingsWindow {
         )];
 
         if soft_wrap == SoftWrapMode::Bounded {
-            rows.push(
+            rows.push(render_dependent_row(
                 render_setting_row(
                     "preferred-line-length",
                     "目标行宽",
@@ -577,13 +593,11 @@ impl SettingsWindow {
                     ),
                     ui_size,
                     cx,
-                )
-                .pl(scale::S12)
-                .border_t_1()
-                .border_color(color::current(cx).border),
-            );
+                ),
+                cx,
+            ));
         }
-        render_section("换行", rows, ui_size, cx).mt(scale::S8)
+        rows
     }
 }
 
@@ -633,32 +647,22 @@ impl Render for SettingsWindow {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(self.render_body(cx))
+                    .child(self.render_body(window, cx))
                     .child(self.toast_layer.clone()),
             )
     }
 }
 
-fn render_section(
-    title: &'static str,
-    rows: Vec<Div>,
-    ui_size: gpui::Pixels,
-    cx: &mut Context<SettingsWindow>,
-) -> Div {
-    let colors = *color::current(cx);
-    div()
-        .flex()
-        .flex_col()
-        .gap(scale::S4)
-        .child(
-            div()
-                .px(scale::S6)
-                .text_size(ui_size * 0.85)
-                .text_color(colors.text_muted)
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(title),
-        )
-        .children(rows)
+fn render_dependent_row(row: Div, cx: &App) -> Div {
+    row.relative().pl(scale::S12).child(
+        div()
+            .absolute()
+            .left_0()
+            .top(scale::S4)
+            .bottom(scale::S4)
+            .w(fixed::HAIRLINE)
+            .bg(color::current(cx).border),
+    )
 }
 
 fn render_setting_row(
@@ -666,7 +670,7 @@ fn render_setting_row(
     title: &'static str,
     description: &'static str,
     control: AnyElement,
-    ui_size: gpui::Pixels,
+    ui_size: Pixels,
     cx: &App,
 ) -> Div {
     let colors = color::current(cx);
@@ -734,7 +738,7 @@ fn render_number_row<T: Copy + 'static>(
     title: &'static str,
     description: &'static str,
     stepper: NumberAdjustment<T>,
-    ui_size: gpui::Pixels,
+    ui_size: Pixels,
     cx: &Context<SettingsWindow>,
 ) -> Div {
     render_setting_row(

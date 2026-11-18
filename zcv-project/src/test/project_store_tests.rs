@@ -1668,7 +1668,7 @@ fn adding_root_transfers_external_file_watch_ownership(cx: &mut TestAppContext) 
         "文档关闭后项目根仍须保持监听"
     );
     project.read_with(cx, |project, _| {
-        assert!(project.external_buffer_watches.is_empty());
+        assert!(project.external_document_watches.is_empty());
         assert!(project.external_watch_counts.is_empty());
     });
 }
@@ -1701,7 +1701,7 @@ fn removing_root_returns_live_file_to_external_watch(cx: &mut TestAppContext) {
         "仍打开的文档必须接管目录监听"
     );
     project.read_with(cx, |project, _| {
-        assert_eq!(project.external_buffer_watches.len(), 1);
+        assert_eq!(project.external_document_watches.len(), 1);
         assert_eq!(project.external_watch_counts.len(), 1);
     });
 
@@ -1731,7 +1731,7 @@ fn failed_root_watch_does_not_claim_external_file_registration(cx: &mut TestAppC
         })
         .expect("监听失败仍应保留项目根并发出错误事件");
     project.read_with(cx, |project, _| {
-        assert_eq!(project.external_buffer_watches.len(), 1);
+        assert_eq!(project.external_document_watches.len(), 1);
     });
     project
         .update(cx, |project, cx| {

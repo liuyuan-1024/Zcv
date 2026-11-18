@@ -1,6 +1,34 @@
-use gpui::TestAppContext;
+use std::sync::Arc;
+
+use gpui::{Entity, TestAppContext};
+use zcv_fs_watch::{FsEventStream, Watcher};
+use zcv_language::LanguageRegistry;
+use zcv_project::Project;
 
 use super::*;
+
+/// 无事件监听器：避免真实 OS 监听线程在测试调度器上投递事件。
+struct TestWatcher;
+
+impl Watcher for TestWatcher {
+    fn add(&self, _path: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn remove(&self, _path: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn watch(&self, _latency: std::time::Duration) -> FsEventStream {
+        Box::pin(futures::stream::pending())
+    }
+}
+
+fn test_project(cx: &mut TestAppContext) -> Entity<Project> {
+    cx.new(|cx| {
+        Project::empty_with_watcher(Arc::new(LanguageRegistry::new()), Arc::new(TestWatcher), cx)
+    })
+}
 
 #[gpui::test]
 fn image_preview_loads_a_png_in_the_background(cx: &mut TestAppContext) {
@@ -18,22 +46,23 @@ fn image_preview_loads_a_png_in_the_background(cx: &mut TestAppContext) {
     )
     .expect("应写入测试图片");
 
-    let view = cx.new(|cx| ImagePreviewView::new(path, cx));
-    cx.read_entity(&view, |view, _| {
-        assert!(matches!(view.state, ImagePreviewState::Loading));
-        assert!(view.load_task.is_some());
-    });
+    let project = test_project(cx);
+    let view = cx.new(|cx| ImagePreviewView::new(path, project, cx));
     cx.run_until_parked();
-    cx.read_entity(&view, |view, _| {
-        assert!(matches!(view.state, ImagePreviewState::Ready(_)));
-        assert!(view.load_task.is_none());
+    cx.read_entity(&view, |view, cx| {
+        let document = view.image.as_ref().expect("应打开图片文档");
+        assert!(
+            document.read(cx).image().is_some(),
+            "后台加载完成后应持有解码后的图片"
+        );
     });
 }
 
 #[gpui::test]
 fn image_preview_provides_breadcrumbs_without_a_source_item(cx: &mut TestAppContext) {
     let path = PathBuf::from("/project/assets/icon.png");
-    let view = cx.new(|cx| ImagePreviewView::new(path, cx));
+    let project = test_project(cx);
+    let view = cx.new(|cx| ImagePreviewView::new(path, project, cx));
     cx.read(|cx| {
         let preview = view
             .read(cx)

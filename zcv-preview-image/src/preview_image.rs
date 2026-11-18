@@ -1,7 +1,7 @@
 //! 栅格图片文件预览。
 //!
 //! 图片是二进制文件，不能由文本编辑器提供源码 Item；
-//! 本 crate 通过独立的 `PreviewProvider` 创建图片 Item，并在后台读取和解码文件。
+//! 本 crate 通过 `PreviewProvider` 创建图片预览 Item，图片内容由 `Project` 的 `ImageDocument` 在后台读取和解码。
 
 mod provider;
 mod view;

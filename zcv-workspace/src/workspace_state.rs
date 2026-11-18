@@ -538,7 +538,13 @@ impl Workspace {
                 };
                 standalone_items.push((
                     index,
-                    provider.create(PreviewDocument::Standalone { path }, cx),
+                    provider.create(
+                        PreviewDocument::Standalone {
+                            path,
+                            project: project.clone(),
+                        },
+                        cx,
+                    ),
                 ));
                 continue;
             }
@@ -760,8 +766,13 @@ impl Workspace {
                 }
             };
             if let Some(provider) = standalone_provider_for(&path, cx) {
-                let preview =
-                    provider.create(PreviewDocument::Standalone { path: path.clone() }, cx);
+                let preview = provider.create(
+                    PreviewDocument::Standalone {
+                        path: path.clone(),
+                        project: self.project.clone(),
+                    },
+                    cx,
+                );
                 if !multiple {
                     let focus = self.pane.update(cx, |pane, cx| {
                         pane.open_item(preview, !focus_opened_item, window, cx)

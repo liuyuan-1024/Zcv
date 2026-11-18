@@ -19,6 +19,7 @@ use gpui::{
 };
 use zcv_actions::TogglePreview;
 use zcv_multi_buffer::MultiBuffer;
+use zcv_project::Project;
 use zcv_theme::color;
 use zcv_ui::Button;
 
@@ -339,9 +340,13 @@ pub enum PreviewDocument {
         multi_buffer: Entity<MultiBuffer>,
         /// 预览内容请求打开工作区文件时使用的宿主回调。
         open_path: Option<OpenPathCallback>,
+        /// 预览解析图片等文件文档所需的项目宿主。
+        project: Entity<Project>,
     },
     Standalone {
         path: PathBuf,
+        /// 独立预览打开文件文档所需的项目宿主。
+        project: Entity<Project>,
     },
 }
 

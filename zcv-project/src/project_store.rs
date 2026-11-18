@@ -32,6 +32,8 @@ use crate::search::SearchQuery;
 mod autosave;
 mod platform;
 
+use crate::image_store::{ImageDocument, ImageStore};
+
 use super::{
     buffer_store::{BufferStore, load_buffer},
     git_store::{GitStatusSnapshot, GitStore},
@@ -123,11 +125,13 @@ pub struct Project {
     /// git store 属于 Project 而非 worktree，无 worktree 时以无根状态存在（仓库查询与 git job 为空操作）。
     git_store: Entity<GitStore>,
     buffer_store: BufferStore,
+    image_store: ImageStore,
     fs_watcher: Arc<dyn Watcher>,
     _fs_task: Task<()>,
     external_watch_counts: HashMap<AbsolutePathBuf, usize>,
-    external_buffer_watches: HashMap<EntityId, AbsolutePathBuf>,
+    external_document_watches: HashMap<EntityId, AbsolutePathBuf>,
     buffer_subscriptions: HashMap<EntityId, (Subscription, Subscription)>,
+    image_subscriptions: HashMap<EntityId, Subscription>,
     reload_tasks: HashMap<EntityId, (u64, Task<()>)>,
     autosave_tasks: HashMap<EntityId, Task<()>>,
     disk_text_hashes: HashMap<EntityId, [u8; 32]>,
@@ -254,11 +258,13 @@ impl Project {
             scan_exclusions: Vec::new(),
             git_store,
             buffer_store: BufferStore::new(Arc::clone(&languages)),
+            image_store: ImageStore::new(),
             fs_watcher,
             _fs_task: fs_task,
             external_watch_counts: HashMap::new(),
-            external_buffer_watches: HashMap::new(),
+            external_document_watches: HashMap::new(),
             buffer_subscriptions: HashMap::new(),
+            image_subscriptions: HashMap::new(),
             reload_tasks: HashMap::new(),
             autosave_tasks: HashMap::new(),
             disk_text_hashes: HashMap::new(),
@@ -462,7 +468,7 @@ impl Project {
         self.cancel_worktree_scan();
         if watch_registered {
             let covered_buffers = self
-                .external_buffer_watches
+                .external_document_watches
                 .iter()
                 .filter(|(_, parent)| parent.as_path().starts_with(root.as_path()))
                 .map(|(id, _)| *id)
@@ -503,8 +509,24 @@ impl Project {
         }
         // 根移除后其下已打开的文档不再被根监听覆盖：提升为外部文档监听。
         let open_buffers = self.buffer_store.buffers_under_path(&root);
-        for buffer in &open_buffers {
-            self.watch_external_buffer(buffer.entity_id(), buffer, cx);
+        let buffer_paths = open_buffers
+            .iter()
+            .filter_map(|buffer| {
+                self.buffer_store
+                    .path_for_buffer(buffer)
+                    .map(|path| (buffer.entity_id(), path))
+            })
+            .collect::<Vec<_>>();
+        for (id, path) in buffer_paths {
+            self.watch_external_document(id, path.as_path(), cx);
+        }
+        let open_images = self.image_store.images_under_path(&root);
+        let image_paths = open_images
+            .iter()
+            .map(|image| (image.entity_id(), image.read(cx).path().to_path_buf()))
+            .collect::<Vec<_>>();
+        for (id, path) in image_paths {
+            self.watch_external_document(id, &path, cx);
         }
         self.sync_git_roots(cx);
         cx.emit(ProjectEvent::WorktreeRemoved {
@@ -828,6 +850,44 @@ impl Project {
         Ok(buffer)
     }
 
+    /// 打开图片文件文档；同一路径复用仍然存活的文档实体。
+    ///
+    /// 图片和文本一样由 `Project` 拥有文档生命周期：
+    /// 这里只负责取用并登记监听，内容加载与重载由 `ImageDocument` 承担。
+    pub fn open_image(
+        &mut self,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Entity<ImageDocument>> {
+        let image = self.image_store.open_image(path, cx)?;
+        self.subscribe_to_image(&image, cx);
+        Ok(image)
+    }
+
+    /// 通知一批图片文档核对磁盘并重载已变化的内容。
+    ///
+    /// 文件监听是变化提示而不是内容本身：文档自己比较磁盘状态，未变化时不做任何工作。
+    pub fn reload_images(&self, images: Vec<Entity<ImageDocument>>, cx: &mut Context<Self>) {
+        for image in images {
+            image.update(cx, |image, cx| image.file_changed_on_disk(cx));
+        }
+    }
+
+    fn subscribe_to_image(&mut self, image: &Entity<ImageDocument>, cx: &mut Context<Self>) {
+        let id = image.entity_id();
+        let path = image.read(cx).path().to_path_buf();
+        self.watch_external_document(id, &path, cx);
+        if self.image_subscriptions.contains_key(&id) {
+            return;
+        }
+        let release = cx.observe_release(image, move |project, _, cx| {
+            project.release_external_watch(id, cx);
+            project.image_store.release_image(id);
+            project.image_subscriptions.remove(&id);
+        });
+        self.image_subscriptions.insert(id, release);
+    }
+
     fn subscribe_to_buffer(
         &mut self,
         buffer: &Entity<LanguageBuffer>,
@@ -835,7 +895,9 @@ impl Project {
         cx: &mut Context<Self>,
     ) {
         let id = buffer.entity_id();
-        self.watch_external_buffer(id, buffer, cx);
+        if let Some(path) = self.buffer_store.path_for_buffer(buffer) {
+            self.watch_external_document(id, path.as_path(), cx);
+        }
         if self.buffer_subscriptions.contains_key(&id) {
             return;
         }
@@ -864,27 +926,22 @@ impl Project {
             .insert(id, (subscription, release));
     }
 
-    fn watch_external_buffer(
-        &mut self,
-        id: EntityId,
-        buffer: &Entity<LanguageBuffer>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.external_buffer_watches.contains_key(&id) {
+    /// 为一个不在工作区根覆盖范围内的存活文档注册父目录监听。
+    ///
+    /// 缓冲区与图片文档共用同一套外部监听引用计数：同一父目录只注册一次，最后一个文档释放时才撤销。
+    fn watch_external_document(&mut self, id: EntityId, path: &Path, cx: &mut Context<Self>) {
+        if self.external_document_watches.contains_key(&id) {
             return;
         }
-        let Some(path) = self.buffer_store.path_for_buffer(buffer) else {
+        if self.is_worktree_path(path) {
+            return;
+        }
+        let Some(parent) = path.parent() else {
             return;
         };
-        if self.is_worktree_path(path.as_path()) {
+        let Ok(parent) = AbsolutePathBuf::new(parent.to_path_buf()) else {
             return;
-        }
-        let parent = AbsolutePathBuf::new(
-            path.parent()
-                .expect("绝对文件路径必须有父目录")
-                .to_path_buf(),
-        )
-        .expect("文件索引的父目录必须是绝对路径");
+        };
         if !self.external_watch_counts.contains_key(&parent)
             && let Err(error) = self.fs_watcher.add(parent.as_path())
         {
@@ -899,11 +956,11 @@ impl Project {
             .external_watch_counts
             .entry(parent.clone())
             .or_default() += 1;
-        self.external_buffer_watches.insert(id, parent);
+        self.external_document_watches.insert(id, parent);
     }
 
     fn release_external_watch(&mut self, id: EntityId, cx: &mut Context<Self>) {
-        let Some(parent) = self.external_buffer_watches.remove(&id) else {
+        let Some(parent) = self.external_document_watches.remove(&id) else {
             return;
         };
         let count = self
@@ -1265,6 +1322,8 @@ impl Project {
         fs::rename(&from, &to)?;
         self.buffer_store
             .rename_path(indexed_from.as_path(), &indexed_to);
+        self.image_store
+            .rename_path(indexed_from.as_path(), &indexed_to);
 
         if from.as_path() == self.worktrees[index].root.as_path() {
             let new_root = AbsolutePathBuf::canonicalize(&to)?;
@@ -1556,6 +1615,7 @@ impl Project {
             .filter(|event| {
                 self.is_worktree_path(event.path.as_path())
                     || !self.buffer_store.buffers_under_path(&event.path).is_empty()
+                    || !self.image_store.images_under_path(&event.path).is_empty()
             })
             .collect();
         if events.is_empty() {
@@ -1574,6 +1634,18 @@ impl Project {
                 }
             }
         }
+
+        // 图片文档同样按路径接收磁盘变化提示；是否真正重载由文档自己核对磁盘状态。
+        let mut notified_images = HashSet::new();
+        let mut changed_images = Vec::new();
+        for event in &events {
+            for image in self.image_store.images_under_path(&event.path) {
+                if notified_images.insert(image.entity_id()) {
+                    changed_images.push(image);
+                }
+            }
+        }
+        self.reload_images(changed_images, cx);
 
         // git 状态刷新：删除/失步走全量扫描（涉及条目消失），文件变化走增量。
         // `.git/` 内只放行影响 git 状态的路径（HEAD/refs/index/packed-refs）：

@@ -1,11 +1,36 @@
 use std::{path::PathBuf, sync::Arc};
 
-use gpui::{TestAppContext, px, size};
+use gpui::{Entity, TestAppContext, px, size};
 use zcv_editor::Editor;
+use zcv_fs_watch::{FsEventStream, Watcher};
 use zcv_language::LanguageRegistry;
+use zcv_project::Project;
 
 use super::*;
 use zcv_settings::{SettingsStore, UserSettings};
+
+/// 无事件监听器：避免真实 OS 监听线程在测试调度器上投递事件。
+struct TestWatcher;
+
+impl Watcher for TestWatcher {
+    fn add(&self, _path: &std::path::Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn remove(&self, _path: &std::path::Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn watch(&self, _latency: std::time::Duration) -> FsEventStream {
+        Box::pin(futures::stream::pending())
+    }
+}
+
+fn test_project(cx: &mut TestAppContext) -> Entity<Project> {
+    cx.new(|cx| {
+        Project::empty_with_watcher(Arc::new(LanguageRegistry::new()), Arc::new(TestWatcher), cx)
+    })
+}
 
 #[test]
 fn small_svg_gets_a_readable_initial_display_size() {
@@ -36,6 +61,7 @@ fn preview_starts_loading_and_installs_background_result(cx: &mut TestAppContext
         editor.set_file_path(PathBuf::from("icon.svg"), cx);
     });
     let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let project = test_project(cx);
     let view = cx.new(|cx| {
         SvgPreviewView::new(
             PreviewDocument::Source {
@@ -43,6 +69,7 @@ fn preview_starts_loading_and_installs_background_result(cx: &mut TestAppContext
                 source_item: Box::new(editor),
                 multi_buffer,
                 open_path: None,
+                project: project.clone(),
             },
             cx,
         )
@@ -72,6 +99,7 @@ fn preview_keeps_its_identity_and_exposes_source_explicitly(cx: &mut TestAppCont
         editor.set_file_path(PathBuf::from("icon.svg"), cx);
     });
     let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let project = test_project(cx);
     let view = cx.new(|cx| {
         SvgPreviewView::new(
             PreviewDocument::Source {
@@ -79,6 +107,7 @@ fn preview_keeps_its_identity_and_exposes_source_explicitly(cx: &mut TestAppCont
                 source_item: Box::new(editor),
                 multi_buffer,
                 open_path: None,
+                project: project.clone(),
             },
             cx,
         )

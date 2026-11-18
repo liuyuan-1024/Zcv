@@ -3,6 +3,7 @@
 
 mod buffer_store;
 mod git_store;
+mod image_store;
 mod project_store;
 mod search;
 mod text_file;
@@ -19,6 +20,7 @@ pub use git_store::{
     GitOperationOutcome, GitScanState, GitStore, GitStoreEvent, RemoteOperationState,
     RepositorySnapshot, RevisionLoadResult, StatusEntry,
 };
+pub use image_store::{ImageDocument, ImageDocumentEvent, image_format_for_path};
 pub use project_store::{
     FileSaveConflictPolicy, FileWatcherError, FileWatcherOperation, Project, ProjectEvent,
 };

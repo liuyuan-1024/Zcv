@@ -1,6 +1,7 @@
-use std::{cell::RefCell, fs, rc::Rc, sync::Arc};
+use std::{cell::RefCell, fs, rc::Rc, sync::Arc, time::Duration};
 
 use gpui::{AppContext as _, Empty, TestAppContext};
+use zcv_fs_watch::{FsEventStream, Watcher};
 use zcv_language::LanguageRegistry;
 use zcv_multi_buffer::ExcerptRange;
 use zcv_path::AbsolutePathBuf;
@@ -9,6 +10,23 @@ use zcv_settings::{SettingsStore, UserSettings};
 use zcv_workspace::ItemHandle;
 
 use super::*;
+
+/// 无事件监听器：文件变化由测试显式通知，避免真实 OS 监听线程在测试调度器上投递事件。
+struct TestWatcher;
+
+impl Watcher for TestWatcher {
+    fn add(&self, _path: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn remove(&self, _path: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn watch(&self, _latency: Duration) -> FsEventStream {
+        Box::pin(futures_lite::stream::pending())
+    }
+}
 
 /// 编辑、脏状态与路径变化必须映射为各自的 ItemEvent。
 #[test]
@@ -86,7 +104,15 @@ fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
     let root = AbsolutePathBuf::canonicalize(directory.path()).expect("临时目录应可规范化");
     let path = root.join("source.txt");
     fs::write(&path, "旧内容\n").expect("应创建源文件");
-    let project = cx.new(|cx| Project::new(vec![root], Arc::new(LanguageRegistry::new()), cx));
+    let project = cx.new(|cx| {
+        Project::new_with_watcher(
+            vec![root.to_path_buf()],
+            Arc::new(TestWatcher),
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+        .expect("应创建测试项目")
+    });
     let source = project.update(cx, |project, cx| {
         project.open_buffer(&path, cx).expect("应打开源文件")
     });
@@ -132,7 +158,15 @@ fn saving_clean_singleton_applies_save_format(cx: &mut TestAppContext) {
     let root = AbsolutePathBuf::canonicalize(directory.path()).expect("临时目录应可规范化");
     let path = root.join("document.txt");
     fs::write(&path, "内容  ").expect("应创建文件");
-    let project = cx.new(|cx| Project::new(vec![root], Arc::new(LanguageRegistry::new()), cx));
+    let project = cx.new(|cx| {
+        Project::new_with_watcher(
+            vec![root.to_path_buf()],
+            Arc::new(TestWatcher),
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+        .expect("应创建测试项目")
+    });
     let source = project
         .update(cx, |project, cx| project.open_buffer(&path, cx))
         .expect("应打开文件");
@@ -163,7 +197,15 @@ fn editor_item_exposes_conflict_and_restores_the_same_source_document(cx: &mut T
     let root = AbsolutePathBuf::canonicalize(directory.path()).expect("临时目录应可规范化");
     let path = root.join("source.txt");
     fs::write(&path, "原内容").expect("应创建源文件");
-    let project = cx.new(|cx| Project::new(vec![root], Arc::new(LanguageRegistry::new()), cx));
+    let project = cx.new(|cx| {
+        Project::new_with_watcher(
+            vec![root.to_path_buf()],
+            Arc::new(TestWatcher),
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+        .expect("应创建测试项目")
+    });
     let source = project
         .update(cx, |project, cx| project.open_buffer(&path, cx))
         .expect("应打开源文件");
@@ -219,7 +261,15 @@ fn rename_then_save_writes_to_new_path(cx: &mut TestAppContext) {
     let new_path = root.join("bar.rs");
     fs::write(&old_path, "旧内容").expect("应创建测试文件");
 
-    let project = cx.new(|cx| Project::new(vec![root], Arc::new(LanguageRegistry::new()), cx));
+    let project = cx.new(|cx| {
+        Project::new_with_watcher(
+            vec![root.to_path_buf()],
+            Arc::new(TestWatcher),
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+        .expect("应创建测试项目")
+    });
     // open_buffer 返回已承载规范路径的 LanguageBuffer（与 item_provider 同路径包装成组合文档）。
     let language_buffer = project.update(cx, |project, cx| {
         project.open_buffer(&old_path, cx).expect("应打开测试文件")

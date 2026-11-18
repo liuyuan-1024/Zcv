@@ -9,12 +9,17 @@ path = "src/preview_image.rs"
 
 [dependencies]
 gpui.workspace = true
+zcv-project.workspace = true
 zcv-theme.workspace = true
 zcv-workspace.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+zcv-fs-watch.workspace = true
+zcv-language.workspace = true
 
 [lints]
 workspace = true

@@ -1,16 +1,19 @@
 use std::{
     cell::RefCell,
+    collections::HashMap,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
 };
 
 use gpui::{
-    AppContext, Context, Focusable, IntoElement, Modifiers, Render, StyledText, TestAppContext,
-    TextAlign, TextLayout, Window, div, point, px, size,
+    AppContext, Context, Entity, Focusable, IntoElement, Modifiers, Render, StyledText,
+    TestAppContext, TextAlign, TextLayout, Window, div, point, px, size,
 };
 use zcv_actions::{SelectLeft, SelectRight};
 use zcv_editor::Editor;
+use zcv_fs_watch::{FsEventStream, Watcher};
+use zcv_project::Project;
 use zcv_theme::typography;
 use zcv_workspace::{Item, PreviewDocument};
 
@@ -26,6 +29,29 @@ use super::{
 };
 use zcv_language::{HighlightSpan, LanguageRegistry, SnippetHighlightCancellation};
 use zcv_settings::{SettingsStore, UserSettings};
+
+/// 无事件监听器：避免真实 OS 监听线程在测试调度器上投递事件。
+struct TestWatcher;
+
+impl Watcher for TestWatcher {
+    fn add(&self, _path: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn remove(&self, _path: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn watch(&self, _latency: std::time::Duration) -> FsEventStream {
+        Box::pin(futures::stream::pending())
+    }
+}
+
+fn test_project(cx: &mut TestAppContext) -> Entity<Project> {
+    cx.new(|cx| {
+        Project::empty_with_watcher(Arc::new(LanguageRegistry::new()), Arc::new(TestWatcher), cx)
+    })
+}
 
 fn plain(text: &str) -> Inline {
     Inline {
@@ -103,6 +129,7 @@ fn navigating_to_a_heading_reveals_it_in_preview(cx: &mut TestAppContext) {
     let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
     let target_start = source.find("# 目标标题").expect("源文档应包含目标标题");
     let target_end = target_start + "# 目标标题".len();
+    let project = test_project(cx);
     let (view, cx) = cx.add_window_view({
         let source_item: Box<dyn zcv_workspace::ItemHandle> = Box::new(editor.clone());
         move |_, cx| {
@@ -112,6 +139,7 @@ fn navigating_to_a_heading_reveals_it_in_preview(cx: &mut TestAppContext) {
                     source_item,
                     multi_buffer,
                     open_path: None,
+                    project: project.clone(),
                 },
                 cx,
             )
@@ -333,6 +361,7 @@ fn preview_rebuilds_when_source_document_changes(cx: &mut TestAppContext) {
         editor.set_file_path(PathBuf::from("README.md"), cx);
     });
     let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let project = test_project(cx);
     let view = cx.new(|cx| {
         MarkdownPreviewView::new(
             PreviewDocument::Source {
@@ -340,6 +369,7 @@ fn preview_rebuilds_when_source_document_changes(cx: &mut TestAppContext) {
                 source_item: Box::new(editor.clone()),
                 multi_buffer,
                 open_path: None,
+                project: project.clone(),
             },
             cx,
         )
@@ -380,6 +410,7 @@ fn preview_coalesces_rapid_document_changes(cx: &mut TestAppContext) {
         editor.set_file_path(PathBuf::from("README.md"), cx);
     });
     let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let project = test_project(cx);
     let view = cx.new(|cx| {
         MarkdownPreviewView::new(
             PreviewDocument::Source {
@@ -387,6 +418,7 @@ fn preview_coalesces_rapid_document_changes(cx: &mut TestAppContext) {
                 source_item: Box::new(editor.clone()),
                 multi_buffer,
                 open_path: None,
+                project: project.clone(),
             },
             cx,
         )
@@ -422,6 +454,7 @@ fn preview_exposes_associated_editor(cx: &mut TestAppContext) {
         editor.set_file_path(PathBuf::from("README.md"), cx);
     });
     let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let project = test_project(cx);
     let view = cx.new(|cx| {
         MarkdownPreviewView::new(
             PreviewDocument::Source {
@@ -429,6 +462,7 @@ fn preview_exposes_associated_editor(cx: &mut TestAppContext) {
                 source_item: Box::new(editor),
                 multi_buffer,
                 open_path: None,
+                project: project.clone(),
             },
             cx,
         )
@@ -461,6 +495,7 @@ fn line_column_navigation_updates_source_selection_and_reveals_preview(cx: &mut 
         editor.set_file_path(PathBuf::from("README.md"), cx);
     });
     let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let project = test_project(cx);
     let view = cx.new(|cx| {
         MarkdownPreviewView::new(
             PreviewDocument::Source {
@@ -468,6 +503,7 @@ fn line_column_navigation_updates_source_selection_and_reveals_preview(cx: &mut 
                 source_item: Box::new(editor.clone()),
                 multi_buffer,
                 open_path: None,
+                project: project.clone(),
             },
             cx,
         )
@@ -520,8 +556,9 @@ fn inline_math_reserves_width_in_the_text_flow(cx: &mut TestAppContext) {
                 size: math_size,
             }),
         );
+        let image_documents = HashMap::new();
         let render_context = MarkdownRenderContext {
-            source_directory: None,
+            image_documents: &image_documents,
             type_scale,
             math_images: &math_images,
             mermaid_images: &Default::default(),
@@ -626,8 +663,9 @@ fn list_marker_height_matches_the_first_line_of_a_wrapped_item(cx: &mut TestAppC
             selection_layout
                 .borrow_mut()
                 .begin_frame(selectable.segments());
+            let image_documents = HashMap::new();
             let render_context = MarkdownRenderContext {
-                source_directory: None,
+                image_documents: &image_documents,
                 type_scale,
                 math_images: &math_images,
                 mermaid_images: &Default::default(),
@@ -696,8 +734,9 @@ fn inline_math_paints_on_the_wrapped_line_where_the_placeholder_starts(cx: &mut 
                 );
             }
             let selection_layout: Rc<RefCell<SelectionLayout>> = Rc::default();
+            let image_documents = HashMap::new();
             let render_context = MarkdownRenderContext {
-                source_directory: None,
+                image_documents: &image_documents,
                 type_scale,
                 math_images: &math_images,
                 mermaid_images: &Default::default(),
@@ -779,6 +818,7 @@ fn selection_survives_renders_and_presentation_updates(cx: &mut TestAppContext) 
         editor.set_file_path(PathBuf::from("README.md"), cx);
     });
     let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let project = test_project(cx);
     let (view, cx) = cx.add_window_view({
         let source_item: Box<dyn zcv_workspace::ItemHandle> = Box::new(editor.clone());
         move |_, cx| {
@@ -788,6 +828,7 @@ fn selection_survives_renders_and_presentation_updates(cx: &mut TestAppContext) 
                     source_item,
                     multi_buffer,
                     open_path: None,
+                    project: project.clone(),
                 },
                 cx,
             )
@@ -847,6 +888,7 @@ fn keyboard_actions_extend_selection_from_click_anchor(cx: &mut TestAppContext) 
         editor.set_file_path(PathBuf::from("README.md"), cx);
     });
     let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let project = test_project(cx);
     let (view, cx) = cx.add_window_view({
         let source_item: Box<dyn zcv_workspace::ItemHandle> = Box::new(editor.clone());
         move |_, cx| {
@@ -856,6 +898,7 @@ fn keyboard_actions_extend_selection_from_click_anchor(cx: &mut TestAppContext) 
                     source_item,
                     multi_buffer,
                     open_path: None,
+                    project: project.clone(),
                 },
                 cx,
             )
@@ -911,6 +954,7 @@ fn table_cell_click_hits_the_clicked_cell(cx: &mut TestAppContext) {
         editor.set_file_path(PathBuf::from("TABLE.md"), cx);
     });
     let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let project = test_project(cx);
     let (view, cx) = cx.add_window_view({
         let editor = editor.clone();
         move |_, cx| {
@@ -921,6 +965,7 @@ fn table_cell_click_hits_the_clicked_cell(cx: &mut TestAppContext) {
                     source_item,
                     multi_buffer,
                     open_path: None,
+                    project: project.clone(),
                 },
                 cx,
             )
@@ -965,6 +1010,7 @@ fn clicking_file_link_in_preview_opens_the_path(cx: &mut TestAppContext) {
     });
     let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
     let opened_path = Rc::new(RefCell::new(None));
+    let project = test_project(cx);
     let (view, cx) = cx.add_window_view({
         let editor = editor.clone();
         let opened_path = opened_path.clone();
@@ -982,6 +1028,7 @@ fn clicking_file_link_in_preview_opens_the_path(cx: &mut TestAppContext) {
                     source_item,
                     multi_buffer,
                     open_path: Some(open_path),
+                    project: project.clone(),
                 },
                 cx,
             )
@@ -998,5 +1045,73 @@ fn clicking_file_link_in_preview_opens_the_path(cx: &mut TestAppContext) {
     // 链接命中优先于选择：点击不落下光标。
     view.update(cx, |view, _| {
         assert!(!view.selection.has_anchor(), "点链接不应落下光标");
+    });
+}
+
+const SMALL_IMAGE_SVG: &[u8] =
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"></svg>"#;
+const LARGE_IMAGE_SVG: &[u8] =
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30"></svg>"#;
+
+#[gpui::test]
+fn local_markdown_images_resolve_to_reloadable_project_documents(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let image_path = directory.path().join("img.svg");
+    std::fs::write(&image_path, SMALL_IMAGE_SVG).expect("应写入图片");
+    let document_path = directory.path().join("doc.md");
+
+    let editor = cx.new(|cx| Editor::auto_height(1, None, Arc::new(LanguageRegistry::new()), cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_text("![图](img.svg)\n", cx);
+        editor.set_file_path(document_path, cx);
+    });
+    let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+    let project = test_project(cx);
+    let view = cx.new(|cx| {
+        MarkdownPreviewView::new(
+            PreviewDocument::Source {
+                path: directory.path().join("doc.md"),
+                source_item: Box::new(editor.clone()),
+                multi_buffer,
+                open_path: None,
+                project: project.clone(),
+            },
+            cx,
+        )
+    });
+    cx.run_until_parked();
+
+    let document = cx.read_entity(&view, |view, _| {
+        view.image_documents
+            .get("img.svg")
+            .cloned()
+            .expect("本地图片应解析为项目图片文档")
+    });
+    let first_width = cx.read_entity(&document, |document, _| {
+        document.image().expect("图片应已加载").size(0).width
+    });
+
+    std::fs::write(&image_path, LARGE_IMAGE_SVG).expect("应覆盖图片内容");
+    project.update(cx, |project, cx| {
+        project.reload_images(vec![document.clone()], cx)
+    });
+    cx.run_until_parked();
+
+    let second_width = cx.read_entity(&document, |document, _| {
+        document.image().expect("图片应已加载").size(0).width
+    });
+    assert!(
+        second_width > first_width,
+        "图片文件变化后，预览持有的文档应完成重载"
+    );
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(
+            view.image_documents
+                .get("img.svg")
+                .map(|document| document.entity_id()),
+            Some(document.entity_id()),
+            "预览应继续持有同一图片文档实体"
+        );
     });
 }

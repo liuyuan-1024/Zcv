@@ -1,34 +1,29 @@
 //! 栅格图片预览 Item。
+//!
+//! 图片内容由 `Project` 拥有的 `ImageDocument` 承担；
+//! 本视图只订阅文档重载事件并渲染其内容句柄。
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Image, ObjectFit, Render,
-    RenderImage, SharedString, Size, Task, Window, div, img, prelude::*,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, ObjectFit, Render, SharedString,
+    Size, Subscription, Window, div, img, prelude::*,
 };
+use zcv_project::{ImageDocument, ImageDocumentEvent, Project};
 use zcv_theme::color;
 use zcv_workspace::{
     Item, ItemEvent, PreviewItem, PreviewItemHandle, PreviewViewport, PreviewViewportOptions,
     SerializedPaneItem,
 };
 
-use crate::provider::image_format_for_path;
-
-enum ImagePreviewState {
-    Loading,
-    Ready(Arc<RenderImage>),
-    Error(String),
-}
-
 pub(crate) struct ImagePreviewView {
     path: PathBuf,
+    project: Entity<Project>,
     focus: FocusHandle,
-    state: ImagePreviewState,
+    image: Option<Entity<ImageDocument>>,
+    error: Option<String>,
     viewport: PreviewViewport,
-    load_task: Option<Task<()>>,
+    _subscription: Option<Subscription>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,48 +32,26 @@ pub(crate) enum ImagePreviewEvent {
 }
 
 impl ImagePreviewView {
-    pub(crate) fn new(path: PathBuf, cx: &mut Context<Self>) -> Self {
-        let mut view = Self {
+    pub(crate) fn new(path: PathBuf, project: Entity<Project>, cx: &mut Context<Self>) -> Self {
+        let (image, error, subscription) =
+            match project.update(cx, |project, cx| project.open_image(&path, cx)) {
+                Ok(image) => {
+                    let subscription = cx.subscribe(&image, |_, _, _: &ImageDocumentEvent, cx| {
+                        cx.notify();
+                    });
+                    (Some(image), None, Some(subscription))
+                }
+                Err(error) => (None, Some(format!("打开图片失败：{error:#}")), None),
+            };
+        Self {
             path,
+            project,
             focus: cx.focus_handle(),
-            state: ImagePreviewState::Loading,
+            image,
+            error,
             viewport: PreviewViewport::new(),
-            load_task: None,
-        };
-        view.start_load(cx);
-        view
-    }
-
-    fn start_load(&mut self, cx: &mut Context<Self>) {
-        let path = self.path.clone();
-        let Some(format) = image_format_for_path(&path) else {
-            self.state = ImagePreviewState::Error("不支持的图片格式".to_owned());
-            self.load_task = None;
-            cx.notify();
-            return;
-        };
-        let renderer = cx.svg_renderer();
-        let load = cx.background_spawn(async move {
-            let bytes = std::fs::read(&path).map_err(|error| format!("读取图片失败：{error}"))?;
-            let image = Image::from_bytes(format, bytes);
-            image
-                .to_image_data(renderer)
-                .map_err(|error| format!("解码图片失败：{error:#}"))
-        });
-        self.state = ImagePreviewState::Loading;
-        self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = load.await;
-            let _ = this.update(cx, |view, cx| {
-                view.load_task = None;
-                view.state = match result {
-                    Ok(image) => ImagePreviewState::Ready(image),
-                    Err(error) => ImagePreviewState::Error(error),
-                };
-                view.viewport.invalidate_centering();
-                cx.notify();
-            });
-        }));
-        cx.notify();
+            _subscription: subscription,
+        }
     }
 }
 
@@ -93,14 +66,19 @@ impl Focusable for ImagePreviewView {
 impl Render for ImagePreviewView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted_text_color = color::current(cx).text_muted;
-        let (content_size, image, error) = match &self.state {
-            ImagePreviewState::Loading => (None, None, None),
-            ImagePreviewState::Ready(image) => (
-                Some(image.size(0).to_pixels(window.scale_factor())),
-                Some(image.clone()),
-                None,
-            ),
-            ImagePreviewState::Error(error) => (None, None, Some(error.clone())),
+        let (content_size, image, error) = if let Some(document) = &self.image {
+            let document = document.read(cx);
+            match (document.image(), document.error()) {
+                (Some(image), _) => (
+                    Some(image.size(0).to_pixels(window.scale_factor())),
+                    Some(image),
+                    None,
+                ),
+                (None, Some(error)) => (None, None, Some(error.to_owned())),
+                (None, None) => (None, None, None),
+            }
+        } else {
+            (None, None, self.error.clone())
         };
 
         self.viewport.render(
@@ -195,6 +173,22 @@ impl Item for ImagePreviewView {
     fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
         if let Ok(relative) = self.path.strip_prefix(from) {
             self.path = to.join(relative);
+            match self
+                .project
+                .update(cx, |project, cx| project.open_image(&self.path, cx))
+            {
+                Ok(image) => {
+                    self._subscription =
+                        Some(cx.subscribe(&image, |_, _, _: &ImageDocumentEvent, cx| cx.notify()));
+                    self.image = Some(image);
+                    self.error = None;
+                }
+                Err(error) => {
+                    self.image = None;
+                    self._subscription = None;
+                    self.error = Some(format!("打开图片失败：{error:#}"));
+                }
+            }
             cx.emit(ImagePreviewEvent::PathChanged);
             cx.notify();
         }

@@ -283,6 +283,7 @@ impl Pane {
                 source_item: item,
                 multi_buffer,
                 open_path: self.open_path.clone(),
+                project: self.project.clone(),
             },
             cx,
         );
@@ -337,6 +338,7 @@ impl Pane {
                 source_item,
                 multi_buffer,
                 open_path: self.open_path.clone(),
+                project: self.project.clone(),
             },
             cx,
         );
@@ -367,6 +369,7 @@ impl Pane {
                 source_item,
                 multi_buffer,
                 open_path: self.open_path.clone(),
+                project: self.project.clone(),
             },
             cx,
         );

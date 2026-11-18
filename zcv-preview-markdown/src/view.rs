@@ -3,7 +3,7 @@
 use std::{
     any::TypeId,
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
@@ -13,13 +13,13 @@ use std::{
 
 use gpui::{
     AnyElement, AnyEntity, App, Bounds, ClipboardItem, Context, Corners, CursorStyle,
-    DispatchPhase, Element, ElementId, Entity, EventEmitter, FocusHandle, Focusable, FontStyle,
-    FontWeight, GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, Image, ImageFormat,
-    InspectorElementId, InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ObjectFit, Pixels, Render, RenderImage, Rgba, SMOOTH_SVG_SCALE_FACTOR,
-    ScrollHandle, SharedString, Size, StatefulInteractiveElement, StrikethroughStyle, StyledImage,
-    StyledText, Subscription, SvgRenderer, Task, TextAlign, TextLayout, UnderlineStyle, Window,
-    canvas, div, fill, img, point, prelude::*, px, size,
+    DispatchPhase, Element, ElementId, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
+    FontStyle, FontWeight, GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, Image,
+    ImageFormat, InspectorElementId, InteractiveText, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, Render, RenderImage, Rgba,
+    SMOOTH_SVG_SCALE_FACTOR, ScrollHandle, SharedString, Size, StatefulInteractiveElement,
+    StrikethroughStyle, StyledImage, StyledText, Subscription, SvgRenderer, Task, TextAlign,
+    TextLayout, UnderlineStyle, Window, canvas, div, fill, img, point, prelude::*, px, size,
 };
 use pulldown_cmark::Alignment;
 use zcv_actions::{Copy, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp};
@@ -29,7 +29,7 @@ use zcv_language::{
     highlight_snippet_with_cancellation,
 };
 use zcv_multi_buffer::{MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot};
-use zcv_project::Project;
+use zcv_project::{ImageDocument, ImageDocumentEvent, Project};
 use zcv_text::Affinity;
 use zcv_theme::{color, fixed, scale, syntax, typography};
 use zcv_ui::{
@@ -79,7 +79,8 @@ struct PreviewLayout {
 }
 
 struct MarkdownRenderContext<'a> {
-    source_directory: Option<&'a Path>,
+    /// 本地图片源字符串到图片文档的解析结果；渲染只读取文档内容句柄。
+    image_documents: &'a HashMap<String, Entity<ImageDocument>>,
     type_scale: typography::Typography,
     math_images: &'a MathImages,
     mermaid_images: &'a MermaidImages,
@@ -95,6 +96,8 @@ struct MarkdownRenderContext<'a> {
 pub(crate) struct MarkdownPreviewView {
     source_item: Box<dyn ItemHandle>,
     multi_buffer: Entity<MultiBuffer>,
+    /// 预览解析图片文件文档所需的项目宿主。
+    project: Entity<Project>,
     /// 代码围栏高亮使用的语言注册表；与源码 MultiBuffer 共享同一份。
     language_registry: Arc<LanguageRegistry>,
     open_path: Option<OpenPathCallback>,
@@ -136,6 +139,10 @@ pub(crate) struct MarkdownPreviewView {
     mermaid_images: Arc<MermaidImages>,
     mermaid_render_task: Option<Task<()>>,
     mermaid_render_generation: u64,
+    /// 预览引用的图片文档，按 Markdown 图片源字符串索引；渲染只消费文档句柄。
+    image_documents: HashMap<String, Entity<ImageDocument>>,
+    /// 图片文档重载订阅；随引用集合变化维护，避免重复订阅。
+    image_subscriptions: HashMap<EntityId, Subscription>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +156,7 @@ impl MarkdownPreviewView {
             source_item,
             multi_buffer,
             open_path,
+            project,
             ..
         } = document
         else {
@@ -192,6 +200,7 @@ impl MarkdownPreviewView {
         let mut view = Self {
             source_item,
             multi_buffer,
+            project,
             language_registry,
             open_path,
             focus: cx.focus_handle(),
@@ -224,6 +233,8 @@ impl MarkdownPreviewView {
             mermaid_images: Arc::new(HashMap::new()),
             mermaid_render_task: None,
             mermaid_render_generation: 0,
+            image_documents: HashMap::new(),
+            image_subscriptions: HashMap::new(),
         };
         // 闪烁翻转驱动重绘；订阅与视图同生命周期。
         cx.observe(&view.blink_manager, |_, _, cx| cx.notify())
@@ -263,6 +274,7 @@ impl MarkdownPreviewView {
         self.blocks = Arc::new(parse(&text));
         self.selectable = SelectableText::from_blocks(&self.blocks);
         self.heading_anchors = collect_heading_anchors(&self.blocks, &snapshot);
+        self.refresh_images(cx);
         self.ensure_mermaid_render(cx);
         self.math_render_generation = self.math_render_generation.wrapping_add(1);
         self.math_content_size = None;
@@ -293,6 +305,66 @@ impl MarkdownPreviewView {
             });
         }));
         cx.notify();
+    }
+
+    /// 把预览引用的本地图片解析为项目拥有的图片文档。
+    ///
+    /// 远程/data 图片仍交给 GPUI 直接加载；本地图片一律经 `Project::open_image`
+    /// 复用同一文档，预览不持有按路径的字节缓存。
+    fn refresh_images(&mut self, cx: &mut Context<Self>) {
+        let source_directory = self
+            .source_item
+            .item_path(cx)
+            .and_then(|path| path.parent().map(Path::to_path_buf));
+        let mut sources = Vec::new();
+        collect_image_sources(&self.blocks, &mut sources);
+
+        let mut documents = HashMap::new();
+        for source in sources {
+            if source.starts_with("http://")
+                || source.starts_with("https://")
+                || source.starts_with("data:")
+            {
+                continue;
+            }
+            let path = Path::new(&source);
+            let path = if path.is_absolute() {
+                Some(path.to_path_buf())
+            } else {
+                source_directory
+                    .as_ref()
+                    .map(|directory| directory.join(path))
+            };
+            let Some(path) = path else {
+                continue;
+            };
+            if let Ok(document) = self
+                .project
+                .update(cx, |project, cx| project.open_image(&path, cx))
+            {
+                documents.insert(source, document);
+            }
+        }
+
+        let active: HashSet<EntityId> = documents
+            .values()
+            .map(|document| document.entity_id())
+            .collect();
+        self.image_subscriptions
+            .retain(|id, _subscription| active.contains(id));
+        for document in documents.values() {
+            let id = document.entity_id();
+            if self.image_subscriptions.contains_key(&id) {
+                continue;
+            }
+            let subscription = cx.subscribe(document, |_, _, event: &ImageDocumentEvent, cx| {
+                if matches!(event, ImageDocumentEvent::Reloaded) {
+                    cx.notify();
+                }
+            });
+            self.image_subscriptions.insert(id, subscription);
+        }
+        self.image_documents = documents;
     }
 
     fn ensure_mermaid_render(&mut self, cx: &mut Context<Self>) {
@@ -439,7 +511,7 @@ impl Render for MarkdownPreviewView {
             .map(|offset| offset.get());
         self.layout.blocks.borrow_mut().clear();
         let render_context = MarkdownRenderContext {
-            source_directory: source_directory.as_deref(),
+            image_documents: &self.image_documents,
             type_scale,
             math_images: &self.math_images,
             mermaid_images: &self.mermaid_images,
@@ -800,6 +872,29 @@ impl MarkdownPreviewView {
     }
 }
 
+/// 收集预览中所有本地图片的源字符串，供按文档解析去重。
+fn collect_image_sources(blocks: &[Block], sources: &mut Vec<String>) {
+    fn visit(blocks: &[Block], sources: &mut Vec<String>) {
+        for block in blocks {
+            match &block.kind {
+                BlockKind::Image { source, .. } => {
+                    if !sources.iter().any(|existing| existing == source) {
+                        sources.push(source.clone());
+                    }
+                }
+                BlockKind::Quote(children) => visit(children, sources),
+                BlockKind::List { items, .. } => {
+                    for item in items {
+                        visit(item, sources);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    visit(blocks, sources);
+}
+
 /// 收集标题 slug 到源码锚点的映射，供预览内部 #slug 锚点定位。
 ///
 /// 锚点在解析时按当前快照生成，源码随后变化时由快照重新解析，不保存裸偏移。
@@ -874,7 +969,6 @@ fn render_block(
     namespace: usize,
     render_context: &MarkdownRenderContext<'_>,
 ) -> AnyElement {
-    let source_directory = render_context.source_directory;
     let type_scale = render_context.type_scale;
     let math_images = render_context.math_images;
     let cx = render_context.cx;
@@ -1072,7 +1166,9 @@ fn render_block(
             }
             table.into_any_element()
         }
-        BlockKind::Image { source, alt } => render_image(source, alt, source_directory, cx),
+        BlockKind::Image { source, alt } => {
+            render_image(source, alt, render_context.image_documents, cx)
+        }
         BlockKind::Math { source, display } => {
             render_math_block(source, *display, key, math_images, cx)
         }
@@ -1136,35 +1232,55 @@ fn list_marker_char_count(start: Option<u64>, item_count: usize) -> usize {
     })
 }
 
-fn render_image(source: &str, alt: &str, source_directory: Option<&Path>, cx: &App) -> AnyElement {
+fn render_image(
+    source: &str,
+    alt: &str,
+    image_documents: &HashMap<String, Entity<ImageDocument>>,
+    cx: &App,
+) -> AnyElement {
     let fallback_alt = alt.to_owned();
     let muted = color::current(cx).text_muted;
-    let loading_muted = muted;
-    let image = if source.starts_with("http://") || source.starts_with("https://") {
+    let image: AnyElement = if source.starts_with("http://")
+        || source.starts_with("https://")
+        || source.starts_with("data:")
+    {
         img(source.to_owned())
-    } else {
-        let path = Path::new(source);
-        let path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            source_directory.map_or_else(|| path.to_path_buf(), |directory| directory.join(path))
-        };
-        img(path)
-    }
-    .max_w_full()
-    .object_fit(ObjectFit::Contain)
-    .with_loading(move || {
-        div()
-            .text_color(loading_muted)
-            .child("正在加载图片…")
+            .max_w_full()
+            .object_fit(ObjectFit::Contain)
+            .with_fallback({
+                let fallback_alt = fallback_alt.clone();
+                move || {
+                    div()
+                        .text_color(muted)
+                        .child(format!("无法加载图片：{fallback_alt}"))
+                        .into_any_element()
+                }
+            })
             .into_any_element()
-    })
-    .with_fallback(move || {
+    } else if let Some(document) = image_documents.get(source) {
+        let document = document.read(cx);
+        if let Some(image) = document.image() {
+            img(image)
+                .max_w_full()
+                .object_fit(ObjectFit::Contain)
+                .into_any_element()
+        } else if let Some(error) = document.error() {
+            div()
+                .text_color(muted)
+                .child(format!("无法加载图片：{fallback_alt}（{error}）"))
+                .into_any_element()
+        } else {
+            div()
+                .text_color(muted)
+                .child("正在加载图片…")
+                .into_any_element()
+        }
+    } else {
         div()
             .text_color(muted)
             .child(format!("无法加载图片：{fallback_alt}"))
             .into_any_element()
-    });
+    };
     div()
         .w_full()
         .flex()

@@ -165,7 +165,7 @@ impl TerminalView {
         }
     }
 
-    /// 清空屏幕与滚动回看。
+    /// 清屏。
     fn handle_clear(&mut self, _: &Clear, _window: &mut Window, cx: &mut Context<Self>) {
         self.terminal.update(cx, |terminal, cx| terminal.clear(cx));
     }

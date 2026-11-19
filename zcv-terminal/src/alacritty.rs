@@ -11,12 +11,12 @@ use alacritty_terminal::{
     event::{Event as AlacTermEvent, EventListener, Notify, WindowSize},
     event_loop::{EventLoop, Msg, Notifier},
     grid::{Dimensions, Scroll as AlacScroll},
-    index::{Column, Direction, Line, Point as AlacPoint},
+    index::{Direction, Point as AlacPoint},
     selection::{Selection as AlacSelection, SelectionType as AlacSelectionType},
     sync::FairMutex,
     term::{Config, Osc52, SEMANTIC_ESCAPE_CHARS, Term, TermMode, cell::Cell as AlacCell},
     tty,
-    vte::ansi::{ClearMode, CursorShape, CursorStyle, Handler, NamedPrivateMode, PrivateMode},
+    vte::ansi::{CursorShape, CursorStyle, Handler, NamedPrivateMode, PrivateMode},
 };
 use anyhow::Context as _;
 use async_channel::Sender;
@@ -217,22 +217,6 @@ pub(super) fn update_selection(
     selection.update(point.to_alacritty(), side.to_alacritty());
     term.selection = Some(selection);
     true
-}
-
-/// 清除滚动回看，保留光标行（prompt）并移到屏幕顶部。
-pub(super) fn clear(term: &mut AlacrittyTerm) {
-    term.clear_screen(ClearMode::Saved);
-    let cursor = term.grid().cursor.point;
-    term.grid_mut().reset_region(..cursor.line);
-    let line = term.grid()[cursor.line][..Column(term.grid().columns())].to_vec();
-    for (index, cell) in line.into_iter().enumerate() {
-        term.grid_mut()[Line(0)][Column(index)] = cell;
-    }
-    term.grid_mut().cursor.point = AlacPoint::new(Line(0), cursor.column);
-    let new_cursor = term.grid().cursor.point;
-    if (new_cursor.line.0 as usize) < term.screen_lines() - 1 {
-        term.grid_mut().reset_region((new_cursor.line + 1)..);
-    }
 }
 
 /// 生成渲染快照：一次性读取网格、光标、模式与选择状态。

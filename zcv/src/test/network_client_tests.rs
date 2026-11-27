@@ -1,9 +1,6 @@
 use super::*;
 
-use std::{
-    io::{BufRead as _, BufReader, Write as _},
-    net::TcpListener,
-};
+use std::net::TcpListener;
 
 #[test]
 fn follows_redirects_and_streams_response() {
@@ -35,7 +32,7 @@ fn follows_redirects_and_streams_response() {
     });
 
     // 本地测试服务器必须直连，避免系统代理接管 127.0.0.1 请求。
-    let client = build_client(reqwest::Client::builder().no_proxy()).unwrap();
+    let client = build_client(true).unwrap();
     let mut response = futures::executor::block_on(client.get(
         &format!("http://{address}/start"),
         AsyncBody::empty(),

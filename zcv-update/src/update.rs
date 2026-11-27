@@ -7,6 +7,7 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read as _,
     path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -14,10 +15,9 @@ use std::{
 use anyhow::{Context as _, Result, ensure};
 use async_zip::base::read::mem::ZipFileReader;
 use base64::Engine as _;
-use ring::signature;
+use ring::{digest, signature};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 mod helper;
 mod platform;
 
@@ -122,10 +122,23 @@ pub fn verify_and_parse_manifest(
 pub fn sha256_file(path: &Path) -> Result<String> {
     let mut file =
         fs::File::open(path).with_context(|| format!("无法打开更新产物 {}", path.display()))?;
-    let mut digest = Sha256::new();
-    std::io::copy(&mut file, &mut digest)
-        .with_context(|| format!("无法读取更新产物 {}", path.display()))?;
-    Ok(format!("{:x}", digest.finalize()))
+    let mut context = digest::Context::new(&digest::SHA256);
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("无法读取更新产物 {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        context.update(&buffer[..read]);
+    }
+    Ok(context
+        .finish()
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 pub fn verify_downloaded_asset(path: &Path, asset: &ReleaseAsset) -> Result<()> {

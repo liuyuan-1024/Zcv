@@ -41,7 +41,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.11.18"
+version = "0.11.19"
 edition = "2024"
 
 [workspace.lints.rust]
@@ -138,7 +138,7 @@ schemars = "1.0"
 toml = "0.8.23"
 base64 = "0.22.1"
 semver = { version = "1.0.28", features = ["serde"] }
-sha2 = "0.10.9"
+sha2 = "0.11"
 ring = "0.17.14"
 
 # ---- 桌面 UI ----
@@ -148,9 +148,7 @@ url = "2.5.8"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "f73feed9de36c5e3eb82aa89baa8eaef5ffc9c98" }
 gpui_util = { git = "https://github.com/zed-industries/zed", rev = "f73feed9de36c5e3eb82aa89baa8eaef5ffc9c98" }
 gpui-platform = { package = "gpui_platform", git = "https://github.com/zed-industries/zed", rev = "f73feed9de36c5e3eb82aa89baa8eaef5ffc9c98", features = ["font-kit"] }
-reqwest = { package = "zed-reqwest", version = "=0.12.15-zed", default-features = false, features = ["http2", "macos-system-configuration", "rustls-tls-native-roots", "stream"] }
 rust-embed = { version = "8.11", features = ["include-exclude"] }
-tokio = { version = "1", features = ["rt-multi-thread"] }
 
 # ---- 终端 ----
 alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "4c129667ce56611becdc82de6e28218c80e2e88f" }
@@ -159,12 +157,25 @@ sysinfo = "0.37.0"
 
 # ---- 文件监听 ----
 notify = "7"
-async-channel = "1.9"
+async-channel = "2.5"
 crossbeam-channel = "0.5"
 
 # ---- Markdown 渲染 ----
 pulldown-cmark = { version = "0.13", default-features = false }
-merman = { version = "=0.8.0", default-features = false, features = ["all-diagrams", "layout-cytoscape", "svg"] }
+merman = { version = "=0.8.0", default-features = false, features = [
+    "diagram-flowchart",
+    "diagram-sequence",
+    "diagram-class",
+    "diagram-state",
+    "diagram-er",
+    "diagram-gantt",
+    "diagram-pie",
+    "diagram-git-graph",
+    "diagram-mindmap",
+    "diagram-timeline",
+    "diagram-xychart",
+    "svg",
+] }
 
 # ---- 数学公式渲染（Markdown preview KaTeX 兼容） ----
 ratex-parser = "0.1.12"
@@ -173,7 +184,7 @@ ratex-svg = { version = "0.1.12", features = ["standalone", "embed-fonts"] }
 ratex-types = "0.1.12"
 
 # ---- SVG 预览 ----
-resvg = { version = "0.45.1", default-features = false, features = ["text", "system-fonts"] }
+resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts"] }
 
 # ---- 平台特定 ----
 libc = "0.2"
@@ -232,3 +243,17 @@ tree-sitter-yaml = { opt-level = 3 }
 tree-sitter-zig = { opt-level = 3 }
 ropey = { opt-level = 3 }
 serde_json = { opt-level = 3 }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.release.package]
+# 编辑与语法解析热路径保持最高优化级别。
+zcv-text = { opt-level = 3 }
+zcv-editor = { opt-level = 3 }
+zcv-language = { opt-level = 3 }
+zcv-multi-buffer = { opt-level = 3 }

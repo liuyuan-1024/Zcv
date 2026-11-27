@@ -30,7 +30,11 @@ fn declared_size_and_digest_are_both_required() {
     let content = b"zcv";
     let mut digest = Sha256::new();
     digest.update(content);
-    let digest = format!("{:x}", digest.finalize());
+    let digest = digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let asset = zcv_update::ReleaseAsset {
         url: "https://example.com/Zcv.zip".to_owned(),
         size: content.len() as u64,

@@ -1,8 +1,9 @@
+use std::path::PathBuf;
+
 use anyhow::{Context as _, Result};
 use gpui::BackgroundExecutor;
 #[cfg(windows)]
 use gpui_util::new_std_command;
-use sysinfo::Pid;
 
 #[derive(Clone, Copy)]
 pub(crate) struct ProcessIdGetter {
@@ -25,25 +26,107 @@ impl ProcessIdGetter {
         Self { fallback_pid }
     }
 
-    pub(super) fn fallback_pid(&self) -> Pid {
-        Pid::from_u32(self.fallback_pid)
+    pub(super) fn fallback_pid(&self) -> u32 {
+        self.fallback_pid
     }
 
     #[cfg(unix)]
-    pub(super) fn foreground_pid(&self) -> Option<Pid> {
+    pub(super) fn foreground_pid(&self) -> Option<u32> {
         let pid = unsafe { libc::tcgetpgrp(self.handle) };
         if pid > 0 {
-            Some(Pid::from_u32(pid as u32))
+            Some(pid as u32)
         } else if self.fallback_pid > 0 {
-            Some(self.fallback_pid())
+            Some(self.fallback_pid)
         } else {
             None
         }
     }
 
     #[cfg(windows)]
-    pub(super) fn foreground_pid(&self) -> Option<Pid> {
-        (self.fallback_pid > 0).then(|| self.fallback_pid())
+    pub(super) fn foreground_pid(&self) -> Option<u32> {
+        (self.fallback_pid > 0).then_some(self.fallback_pid)
+    }
+}
+
+pub(super) struct ProcessCwdReader {
+    #[cfg(windows)]
+    system: sysinfo::System,
+    #[cfg(windows)]
+    refresh_kind: sysinfo::ProcessRefreshKind,
+    #[cfg(windows)]
+    last_pid: Option<sysinfo::Pid>,
+}
+
+impl ProcessCwdReader {
+    pub(super) fn new() -> Self {
+        Self {
+            #[cfg(windows)]
+            system: sysinfo::System::new(),
+            #[cfg(windows)]
+            refresh_kind: sysinfo::ProcessRefreshKind::nothing()
+                .with_cwd(sysinfo::UpdateKind::Always)
+                .without_tasks(),
+            #[cfg(windows)]
+            last_pid: None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn read_cwd(&mut self, pid: u32) -> Option<PathBuf> {
+        use std::{
+            ffi::{OsStr, c_void},
+            mem::{MaybeUninit, size_of, size_of_val},
+            os::unix::ffi::OsStrExt as _,
+        };
+
+        let mut info = MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
+        let buffer_size = size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDVNODEPATHINFO,
+                0,
+                info.as_mut_ptr().cast::<c_void>(),
+                buffer_size,
+            )
+        };
+        if written != buffer_size {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        let raw_bytes = unsafe {
+            std::slice::from_raw_parts(
+                info.pvi_cdir.vip_path.as_ptr().cast::<u8>(),
+                size_of_val(&info.pvi_cdir.vip_path),
+            )
+        };
+        let end = raw_bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(raw_bytes.len());
+        if end == 0 {
+            return None;
+        }
+        Some(PathBuf::from(OsStr::from_bytes(&raw_bytes[..end])))
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub(super) fn read_cwd(&mut self, pid: u32) -> Option<PathBuf> {
+        std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+    }
+
+    #[cfg(windows)]
+    pub(super) fn read_cwd(&mut self, pid: u32) -> Option<PathBuf> {
+        let pid = sysinfo::Pid::from_u32(pid);
+        if self.last_pid.replace(pid) != Some(pid) {
+            self.system = sysinfo::System::new();
+        }
+        self.system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            self.refresh_kind,
+        );
+        self.system.process(pid)?.cwd().map(PathBuf::from)
     }
 }
 

@@ -4,6 +4,28 @@ use gpui::{Context, TestAppContext, div};
 
 use super::*;
 
+fn filter_query(delegate: &mut BranchPickerDelegate, query: String) {
+    delegate.query = query;
+    delegate.do_filter();
+}
+
+fn confirm_delegate(delegate: BranchPickerDelegate, cx: &mut TestAppContext) {
+    cx.set_global(zcv_settings::SettingsStore::new(
+        zcv_settings::UserSettings::default(),
+    ));
+    cx.update(|cx| {
+        zcv_editor::init(
+            cx,
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+        )
+    });
+    let (picker, visual) =
+        cx.add_window_view(|window, cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
+    let input = visual.read_entity(&picker, |picker, _| picker.search_input().clone());
+    visual.update(|window, cx| window.focus(&input.focus_handle(cx), cx));
+    visual.dispatch_action(zcv_actions::PickerConfirm);
+}
+
 #[derive(Default)]
 struct TestView;
 
@@ -83,7 +105,7 @@ fn delete_shortcut_reports_selected_branch_to_workspace(cx: &mut TestAppContext)
     );
     let window = cx.add_window(|_, _| TestView);
 
-    delegate.update_matches("current".into());
+    filter_query(&mut delegate, "current".into());
     assert_eq!(delegate.filtered, vec![1]);
     window
         .update(cx, |_, window, cx| delegate.delete_selected(window, cx))
@@ -93,7 +115,7 @@ fn delete_shortcut_reports_selected_branch_to_workspace(cx: &mut TestAppContext)
         Some(GitBranchAction::Delete(name)) if name == "current"
     ));
 
-    delegate.update_matches(String::new());
+    filter_query(&mut delegate, String::new());
     delegate.set_selected_index(0);
     window
         .update(cx, |_, window, cx| delegate.delete_selected(window, cx))
@@ -103,7 +125,7 @@ fn delete_shortcut_reports_selected_branch_to_workspace(cx: &mut TestAppContext)
         Some(GitBranchAction::Delete(name)) if name == "other"
     ));
 
-    delegate.update_matches("new-branch".into());
+    filter_query(&mut delegate, "new-branch".into());
     assert!(delegate.filtered.is_empty());
     window
         .update(cx, |_, window, cx| delegate.delete_selected(window, cx))
@@ -114,7 +136,7 @@ fn delete_shortcut_reports_selected_branch_to_workspace(cx: &mut TestAppContext)
 #[test]
 fn query_ranks_fuzzy_matches_and_keeps_create_action() {
     let mut delegate = test_delegate();
-    delegate.update_matches("ftr".into());
+    filter_query(&mut delegate, "ftr".into());
     assert_eq!(delegate.filtered, vec![1]);
     assert!(delegate.create_row_visible());
     assert_eq!(delegate.match_count(), 2);
@@ -123,7 +145,7 @@ fn query_ranks_fuzzy_matches_and_keeps_create_action() {
 #[test]
 fn exact_branch_name_hides_create_action() {
     let mut delegate = test_delegate();
-    delegate.update_matches("feature".into());
+    filter_query(&mut delegate, "feature".into());
     assert_eq!(delegate.filtered, vec![1]);
     assert!(!delegate.create_row_visible());
 }
@@ -131,7 +153,7 @@ fn exact_branch_name_hides_create_action() {
 #[test]
 fn no_match_shows_create_row() {
     let mut delegate = test_delegate();
-    delegate.update_matches("zzz".into());
+    filter_query(&mut delegate, "zzz".into());
     assert!(delegate.create_row_visible());
     // 只显示"创建分支"虚拟行，且默认选中它。
     assert_eq!(delegate.match_count(), 1);
@@ -146,12 +168,9 @@ fn confirm_create_invokes_callback(cx: &mut TestAppContext) {
         Rc::new(move |action, _window, _cx| triggered.set(Some(action)))
     };
     let mut delegate = BranchPickerDelegate::new(Vec::new(), on_select);
-    delegate.update_matches("new-feat".into());
+    filter_query(&mut delegate, "new-feat".into());
 
-    let window = cx.add_window(|_window, _cx| TestView);
-    let _ = window.update(cx, |_, window, cx| {
-        delegate.confirm(window, cx);
-    });
+    confirm_delegate(delegate, cx);
     assert!(matches!(
         triggered.take(),
         Some(GitBranchAction::Create(name)) if name == "new-feat"
@@ -172,13 +191,10 @@ fn confirm_create_row_works_alongside_fuzzy_matches(cx: &mut TestAppContext) {
         }],
         on_select,
     );
-    delegate.update_matches("ftr".into());
+    filter_query(&mut delegate, "ftr".into());
     delegate.selected_index = delegate.filtered.len();
 
-    let window = cx.add_window(|_window, _cx| TestView);
-    window
-        .update(cx, |_, window, cx| delegate.confirm(window, cx))
-        .expect("测试窗口应可更新");
+    confirm_delegate(delegate, cx);
     assert!(matches!(
         triggered.take(),
         Some(GitBranchAction::Create(name)) if name == "ftr"
@@ -192,7 +208,7 @@ fn confirm_checkout_invokes_callback(cx: &mut TestAppContext) {
         let triggered = triggered.clone();
         Rc::new(move |action, _window, _cx| triggered.set(Some(action)))
     };
-    let mut delegate = BranchPickerDelegate::new(
+    let delegate = BranchPickerDelegate::new(
         vec![Branch {
             name: "feature".into(),
             is_head: false,
@@ -200,10 +216,7 @@ fn confirm_checkout_invokes_callback(cx: &mut TestAppContext) {
         on_select,
     );
 
-    let window = cx.add_window(|_window, _cx| TestView);
-    let _ = window.update(cx, |_, window, cx| {
-        delegate.confirm(window, cx);
-    });
+    confirm_delegate(delegate, cx);
     assert!(matches!(
         triggered.take(),
         Some(GitBranchAction::Checkout(name)) if name == "feature"
@@ -213,7 +226,7 @@ fn confirm_checkout_invokes_callback(cx: &mut TestAppContext) {
 #[test]
 fn reload_replaces_branches_and_keeps_query() {
     let mut delegate = test_delegate();
-    delegate.update_matches("feat".into());
+    filter_query(&mut delegate, "feat".into());
     delegate.reload(vec![
         Branch {
             name: "feat-x".into(),
@@ -232,7 +245,7 @@ fn reload_replaces_branches_and_keeps_query() {
 #[test]
 fn reload_without_match_shows_create_row() {
     let mut delegate = test_delegate();
-    delegate.update_matches("feat".into());
+    filter_query(&mut delegate, "feat".into());
     delegate.reload(vec![Branch {
         name: "master".into(),
         is_head: true,

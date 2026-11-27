@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use gpui::{App, Context, Entity, Render, Subscription, Window, div, prelude::*};
+use gpui::{App, Context, DismissEvent, Entity, Render, Subscription, Window, div, prelude::*};
 use zcv_actions::{DeleteGitBranch, SelectGitBranch};
 use zcv_fuzzy::Matcher;
 use zcv_git::Branch;
@@ -117,12 +117,12 @@ impl PickerDelegate for BranchPickerDelegate {
         self.selected_index = ix;
     }
 
-    fn update_matches(&mut self, query: String) {
+    fn update_matches(&mut self, query: String, _cx: &mut Context<Picker<Self>>) {
         self.query = query;
         self.do_filter();
     }
 
-    fn confirm(&mut self, window: &mut Window, cx: &mut App) {
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
         if self.match_count() == 0 {
             return;
         }
@@ -134,9 +134,8 @@ impl PickerDelegate for BranchPickerDelegate {
             let cb = self.on_select.clone();
             cb(GitBranchAction::Checkout(branch.name.clone()), window, cx);
         }
+        cx.emit(DismissEvent);
     }
-
-    fn dismissed(&mut self) {}
 
     fn render_match(
         &self,
@@ -202,6 +201,7 @@ pub(crate) struct BranchPicker {
     picker: Entity<Picker<BranchPickerDelegate>>,
     git_store: Entity<GitStore>,
     _git_subscription: Subscription,
+    _dismiss_subscription: Subscription,
 }
 
 /// 按钮显示名：分支名 → 8 位短 SHA（detached HEAD）。
@@ -223,9 +223,10 @@ impl BranchPicker {
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
         let host = PopoverHost::new(cx.focus_handle(), picker_layer);
-        picker.update(cx, |picker, _| {
-            picker.set_on_dismiss(host.on_dismiss_handler())
-        });
+        let dismiss_subscription =
+            cx.subscribe_in(&picker, window, |host, _, _: &DismissEvent, window, cx| {
+                host.host.dismiss(window, cx);
+            });
 
         let git_subscription =
             cx.subscribe(&git_store, |picker, store, _event: &GitStoreEvent, cx| {
@@ -248,6 +249,7 @@ impl BranchPicker {
             picker,
             git_store,
             _git_subscription: git_subscription,
+            _dismiss_subscription: dismiss_subscription,
         }
     }
 

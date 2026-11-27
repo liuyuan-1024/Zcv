@@ -35,11 +35,9 @@ impl PickerDelegate for TallDelegate {
         self.selected.set(ix);
     }
 
-    fn update_matches(&mut self, _: String) {}
+    fn update_matches(&mut self, _: String, _: &mut Context<Picker<Self>>) {}
 
-    fn confirm(&mut self, _: &mut Window, _: &mut App) {}
-
-    fn dismissed(&mut self) {}
+    fn confirm(&mut self, _: &mut Window, _: &mut Context<Picker<Self>>) {}
 
     fn render_match(
         &self,
@@ -195,13 +193,11 @@ impl PickerDelegate for TestDelegate {
 
     fn set_selected_index(&mut self, _: usize) {}
 
-    fn update_matches(&mut self, query: String) {
+    fn update_matches(&mut self, query: String, _: &mut Context<Picker<Self>>) {
         self.query = query;
     }
 
-    fn confirm(&mut self, _: &mut Window, _: &mut App) {}
-
-    fn dismissed(&mut self) {}
+    fn confirm(&mut self, _: &mut Window, _: &mut Context<Picker<Self>>) {}
 
     fn render_match(&self, _: usize, _: bool, _: &mut Context<Picker<Self>>) -> AnyElement {
         div().into_any_element()
@@ -252,13 +248,11 @@ impl PickerDelegate for ConfirmDelegate {
         self.selected_index.set(index);
     }
 
-    fn update_matches(&mut self, _: String) {}
+    fn update_matches(&mut self, _: String, _: &mut Context<Picker<Self>>) {}
 
-    fn confirm(&mut self, _: &mut Window, _: &mut App) {
+    fn confirm(&mut self, _: &mut Window, _: &mut Context<Picker<Self>>) {
         self.confirmed.set(true);
     }
-
-    fn dismissed(&mut self) {}
 
     fn render_match(&self, _: usize, _: bool, _: &mut Context<Picker<Self>>) -> AnyElement {
         div().child("项目").into_any_element()
@@ -352,11 +346,9 @@ impl PickerDelegate for ScrollDelegate {
         self.selected_index.set(ix);
     }
 
-    fn update_matches(&mut self, _: String) {}
+    fn update_matches(&mut self, _: String, _: &mut Context<Picker<Self>>) {}
 
-    fn confirm(&mut self, _: &mut Window, _: &mut App) {}
-
-    fn dismissed(&mut self) {}
+    fn confirm(&mut self, _: &mut Window, _: &mut Context<Picker<Self>>) {}
 
     fn render_match(
         &self,
@@ -764,11 +756,9 @@ impl PickerDelegate for LargeDelegate {
 
     fn set_selected_index(&mut self, _: usize) {}
 
-    fn update_matches(&mut self, _: String) {}
+    fn update_matches(&mut self, _: String, _: &mut Context<Picker<Self>>) {}
 
-    fn confirm(&mut self, _: &mut Window, _: &mut App) {}
-
-    fn dismissed(&mut self) {}
+    fn confirm(&mut self, _: &mut Window, _: &mut Context<Picker<Self>>) {}
 
     fn render_match(&self, index: usize, _: bool, _: &mut Context<Picker<Self>>) -> AnyElement {
         self.rendered.set(self.rendered.get() + 1);

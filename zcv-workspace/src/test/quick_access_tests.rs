@@ -1,15 +1,14 @@
 use super::*;
 use crate::test_support::empty_workspace;
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::Cell, fs, rc::Rc};
+use zcv_actions::{PickerCancel, PickerConfirm, PickerSelectNext};
 
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, Modifiers, SharedString,
-    TestAppContext, point, size,
+    TestAppContext, point, px, size,
 };
 use zcv_language::LanguageRegistry;
 use zcv_settings::{SettingsStore, UserSettings};
-
-struct TestView;
 
 struct NavigableItem {
     focus: FocusHandle,
@@ -76,12 +75,6 @@ impl Render for NavigableItem {
     }
 }
 
-impl Render for TestView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
-
 struct FocusHost {
     search: Entity<QuickAccess>,
     _workspace: Entity<Workspace>,
@@ -132,20 +125,18 @@ fn escape_restores_the_focus_before_quick_access(cx: &mut TestAppContext) {
 
     cx.update(|window, cx| window.focus(&previous, cx));
     search.update_in(cx, |search, window, cx| search.focus(window, cx));
-    let input_focus = cx.read_entity(&search, |search, cx| search.input.focus_handle(cx));
+    let input_focus = cx.read_entity(&search, |search, cx| {
+        search.picker.read(cx).search_input().focus_handle(cx)
+    });
     cx.update(|window, _| assert!(input_focus.is_focused(window)));
 
     search.update_in(cx, |search, window, cx| search.focus(window, cx));
-    search.update_in(cx, |search, window, cx| {
-        search.cancel(&PickerCancel, window, cx)
-    });
+    cx.dispatch_action(PickerCancel);
     cx.update(|window, _| assert!(previous.is_focused(window)));
 
     search.update_in(cx, |search, window, cx| search.focus(window, cx));
     cx.update(|window, cx| window.focus(&other, cx));
-    search.update_in(cx, |search, window, cx| {
-        search.cancel(&PickerCancel, window, cx)
-    });
+    cx.dispatch_action(PickerCancel);
     cx.update(|window, _| assert!(other.is_focused(window)));
 }
 
@@ -179,11 +170,11 @@ fn clicking_quick_access_records_the_focus_before_the_input_takes_it(cx: &mut Te
     cx.update(|window, cx| window.focus(&previous, cx));
     cx.simulate_click(point(px(10.0), px(10.0)), Modifiers::default());
     cx.run_until_parked();
-    let input_focus = cx.read_entity(&search, |search, cx| search.input.focus_handle(cx));
-    cx.update(|window, _| assert!(input_focus.is_focused(window)));
-    search.update_in(cx, |search, window, cx| {
-        search.cancel(&PickerCancel, window, cx)
+    let input_focus = cx.read_entity(&search, |search, cx| {
+        search.picker.read(cx).search_input().focus_handle(cx)
     });
+    cx.update(|window, _| assert!(input_focus.is_focused(window)));
+    cx.dispatch_action(PickerCancel);
     cx.update(|window, _| assert!(previous.is_focused(window)));
 }
 
@@ -225,6 +216,9 @@ fn line_column_entry_reuses_input_and_normal_search_does_not_offer_navigation(
             host.other.clone(),
         )
     });
+    let original_input = cx.read_entity(&search, |search, cx| {
+        search.picker.read(cx).search_input().clone()
+    });
     workspace.update_in(cx, |workspace, window, cx| {
         let target = workspace
             .pane()
@@ -237,52 +231,214 @@ fn line_column_entry_reuses_input_and_normal_search_does_not_offer_navigation(
         });
     });
     search.update_in(cx, |search, _, cx| {
-        assert!(matches!(search.mode, AccessMode::LineColumn(_)));
-        search.input.set_text("1", cx);
-        search.refresh_results(cx);
-        assert_eq!(
-            search.results,
-            vec![SearchResult::LineColumn { line: 0, column: 0 }]
-        );
-        search.input.set_text("阿斯顿佛12南山大佛34还有56", cx);
-        search.refresh_results(cx);
-        assert_eq!(
-            search.results,
-            vec![SearchResult::LineColumn {
-                line: 11,
-                column: 33
-            }]
-        );
+        search.picker.update(cx, |picker, cx| {
+            assert!(matches!(picker.delegate().mode, AccessMode::LineColumn(_)));
+            picker.set_query("1", cx);
+            assert_eq!(
+                picker.delegate().results,
+                vec![SearchResult::LineColumn { line: 0, column: 0 }]
+            );
+            picker.set_query("阿斯顿佛12南山大佛34还有56", cx);
+            assert_eq!(
+                picker.delegate().results,
+                vec![SearchResult::LineColumn {
+                    line: 11,
+                    column: 33
+                }]
+            );
+        });
     });
     cx.run_until_parked();
     cx.simulate_click(point(px(10.0), px(10.0)), Modifiers::default());
     cx.run_until_parked();
     search.update_in(cx, |search, _, cx| {
-        assert!(matches!(search.mode, AccessMode::LineColumn(_)));
-        search.input.set_text("sad分12阿斯顿发记录4", cx);
-        search.refresh_results(cx);
-        assert_eq!(
-            search.results,
-            vec![SearchResult::LineColumn {
-                line: 11,
-                column: 3
-            }]
-        );
+        search.picker.update(cx, |picker, cx| {
+            assert!(matches!(picker.delegate().mode, AccessMode::LineColumn(_)));
+            picker.set_query("sad分12阿斯顿发记录4", cx);
+            assert_eq!(
+                picker.delegate().results,
+                vec![SearchResult::LineColumn {
+                    line: 11,
+                    column: 3
+                }]
+            );
+        });
     });
     cx.update(|window, cx| window.focus(&other, cx));
     cx.run_until_parked();
     cx.simulate_click(point(px(10.0), px(10.0)), Modifiers::default());
     cx.run_until_parked();
     search.update_in(cx, |search, _, cx| {
-        search.input.set_text("1", cx);
-        search.refresh_results(cx);
-        assert!(matches!(search.mode, AccessMode::Mixed));
+        search.picker.update(cx, |picker, cx| {
+            assert!(Arc::ptr_eq(&original_input, picker.search_input()));
+            picker.set_query("1", cx);
+            assert!(matches!(picker.delegate().mode, AccessMode::Mixed));
+            assert!(
+                !picker
+                    .delegate()
+                    .results
+                    .iter()
+                    .any(|result| matches!(result, SearchResult::LineColumn { .. }))
+            );
+        });
+    });
+}
+
+struct CommandDispatchHost {
+    search: Entity<QuickAccess>,
+    _workspace: Entity<Workspace>,
+    previous: FocusHandle,
+    observed: Rc<Cell<Option<(bool, bool)>>>,
+}
+
+impl Render for CommandDispatchHost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .on_action(cx.listener(|host, _: &zcv_actions::Save, window, cx| {
+                host.observed.set(Some((
+                    host.previous.is_focused(window),
+                    !host.search.read(cx).host.is_open(),
+                )));
+            }))
+            .child(div().track_focus(&self.previous))
+            .child(self.search.clone())
+    }
+}
+
+#[gpui::test]
+fn command_confirmation_closes_picker_and_restores_focus_before_dispatch(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages.clone()));
+    let observed = Rc::new(Cell::new(None));
+    let (host, visual) = cx.add_window_view(|window, cx| {
+        let workspace = cx.new(|cx| empty_workspace(languages, window, cx));
+        CommandDispatchHost {
+            search: cx.new(|cx| {
+                QuickAccess::new(
+                    workspace.read(cx).project().clone(),
+                    workspace.downgrade(),
+                    PopoverLayer::default(),
+                    window,
+                    cx,
+                )
+            }),
+            _workspace: workspace,
+            previous: cx.focus_handle(),
+            observed: observed.clone(),
+        }
+    });
+    let (search, previous) = visual.read_entity(&host, |host, _| {
+        (host.search.clone(), host.previous.clone())
+    });
+    visual.update(|window, cx| window.focus(&previous, cx));
+    search.update_in(visual, |search, window, cx| {
+        search.focus(window, cx);
+        search
+            .picker
+            .update(cx, |picker, cx| picker.set_query("> workspace::Save", cx));
+    });
+    visual.dispatch_action(PickerConfirm);
+    visual.run_until_parked();
+    assert_eq!(
+        observed.get(),
+        Some((true, true)),
+        "命令应在关闭浮层并归还焦点后分发"
+    );
+}
+
+#[gpui::test]
+fn confirming_an_empty_query_keeps_quick_access_open(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages.clone()));
+    let (search, visual) = cx.add_window_view(|window, cx| {
+        let workspace = cx.new(|cx| empty_workspace(languages, window, cx));
+        QuickAccess::new(
+            workspace.read(cx).project().clone(),
+            workspace.downgrade(),
+            PopoverLayer::default(),
+            window,
+            cx,
+        )
+    });
+    search.update_in(visual, |search, window, cx| search.focus(window, cx));
+    visual.dispatch_action(PickerConfirm);
+    visual.run_until_parked();
+    visual.read_entity(&search, |search, cx| {
+        assert!(search.host.is_open());
+        assert_eq!(search.picker.read(cx).delegate().match_count(), 0);
+    });
+}
+
+struct QuietWatcher;
+
+impl zcv_fs_watch::Watcher for QuietWatcher {
+    fn add(&self, _: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn remove(&self, _: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn watch(&self, _: std::time::Duration) -> zcv_fs_watch::FsEventStream {
+        Box::pin(futures::stream::pending())
+    }
+}
+
+#[gpui::test]
+fn asynchronous_files_refresh_current_picker_query_and_keep_single_input(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages.clone()));
+    let directory = tempfile::tempdir().expect("应能创建项目目录");
+    let file = directory.path().join("second.rs");
+    fs::write(directory.path().join("first.rs"), "first").unwrap();
+    fs::write(&file, "second").unwrap();
+    let file = file.canonicalize().expect("测试路径应可规范化");
+    let (search, visual) = cx.add_window_view(|window, cx| {
+        let workspace = cx.new(|cx| empty_workspace(languages.clone(), window, cx));
+        let project = cx.new(|cx| {
+            Project::new_with_watcher(
+                vec![directory.path().to_path_buf()],
+                Arc::new(QuietWatcher),
+                languages,
+                cx,
+            )
+            .expect("应能创建项目")
+        });
+        QuickAccess::new(
+            project,
+            workspace.downgrade(),
+            PopoverLayer::default(),
+            window,
+            cx,
+        )
+    });
+    let input = visual.read_entity(&search, |search, cx| {
+        search.picker.read(cx).search_input().clone()
+    });
+    search.update_in(visual, |search, window, cx| {
+        search.focus(window, cx);
+        search.picker.update(cx, |picker, cx| {
+            picker.set_query("first", cx);
+            picker.set_query("second", cx);
+        });
+    });
+    visual.run_until_parked();
+    visual.read_entity(&search, |search, cx| {
+        let picker = search.picker.read(cx);
+        assert!(Arc::ptr_eq(&input, picker.search_input()));
+        assert_eq!(picker.search_input().text(cx), "second");
         assert!(
-            !search
-                .results
-                .iter()
-                .any(|result| matches!(result, SearchResult::LineColumn { .. }))
+            picker.delegate().state.load_state == FileLoadState::Ready,
+            "后台扫描应已完成"
         );
+        assert!(picker.delegate().results.iter().any(
+            |result| matches!(result, SearchResult::File(candidate) if candidate.path == file)
+        ));
+        assert!(!picker.delegate().results.iter().any(
+            |result| matches!(result, SearchResult::File(candidate) if candidate.name == "first.rs")
+        ));
     });
 }
 
@@ -315,10 +471,11 @@ fn line_column_entry_for_unsupported_item_has_no_navigation_result(cx: &mut Test
             focus: cx.focus_handle(),
         });
         search.focus_line_column(Box::new(item), window, cx);
-        assert!(!search.mode.line_column_supported(cx));
-        search.input.set_text("42:8", cx);
-        search.refresh_results(cx);
-        assert!(search.results.is_empty());
+        search.picker.update(cx, |picker, cx| {
+            assert!(!picker.delegate().mode.line_column_supported(cx));
+            picker.set_query("42:8", cx);
+            assert!(picker.delegate().results.is_empty());
+        });
     });
 }
 
@@ -329,7 +486,7 @@ struct OffsetQuickAccessHost {
 }
 
 impl Render for OffsetQuickAccessHost {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .child(div().track_focus(&self.previous))
@@ -338,6 +495,7 @@ impl Render for OffsetQuickAccessHost {
                     .ml(px(220.0))
                     .mt(px(180.0))
                     .w(SEARCH_WIDTH)
+                    .max_w(window.viewport_size().width - px(240.0))
                     .child(self.search.clone()),
             )
     }
@@ -501,7 +659,9 @@ fn command_candidates_come_from_described_actions(cx: &mut TestAppContext) {
             cx,
         )
     });
-    cx.read_entity(&search, |search, _| {
+    cx.read_entity(&search, |search, cx| {
+        let picker = search.picker.read(cx);
+        let search = picker.delegate();
         assert!(
             search
                 .commands
@@ -523,7 +683,7 @@ fn command_candidates_come_from_described_actions(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn results_start_at_the_top_bar_input_bottom(cx: &mut TestAppContext) {
+fn results_align_with_input_and_keep_a_gap(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
@@ -553,6 +713,7 @@ fn results_start_at_the_top_bar_input_bottom(cx: &mut TestAppContext) {
     search.update_in(visual, |search, window, cx| search.focus(window, cx));
     visual.run_until_parked();
 
+    let gap = visual.update(|window, _| scale::to_pixels(scale::S2, window));
     let input = visual
         .debug_bounds("quick-access-input")
         .expect("搜索框必须完成布局");
@@ -564,36 +725,59 @@ fn results_start_at_the_top_bar_input_bottom(cx: &mut TestAppContext) {
         "搜索结果应与输入框左侧对齐：输入框 {input:?}，结果 {results:?}"
     );
     assert!(
-        (results.top() - input.bottom()).abs() <= px(1.0),
-        "搜索结果应紧贴顶栏输入框下边缘：输入框 {input:?}，结果 {results:?}"
+        (results.top() - input.bottom() - gap).abs() <= px(1.0),
+        "搜索结果与输入框之间应保留间距：输入框 {input:?}，结果 {results:?}"
+    );
+
+    assert!(
+        (results.right() - input.right()).abs() <= px(1.0),
+        "搜索结果应与输入框右侧对齐：输入框 {input:?}，结果 {results:?}"
     );
 
     visual.simulate_click(results.center(), Modifiers::default());
     visual.read_entity(&search, |search, _| assert!(search.host.is_open()));
 
     search.update(visual, |search, cx| {
-        search.state.set_files(
-            vec![
-                PathBuf::from("/project/main-one.rs"),
-                PathBuf::from("/project/main-two.rs"),
-            ],
-            &[PathBuf::from("/project")],
-        );
-        search.input.set_text("main-", cx);
-        search.refresh_results(cx);
+        search.picker.update(cx, |picker, cx| {
+            picker.delegate_mut().state.set_files(
+                vec![
+                    PathBuf::from("/project/main-one.rs"),
+                    PathBuf::from("/project/main-two.rs"),
+                ],
+                &[PathBuf::from("/project")],
+            );
+            picker.set_query("main-", cx);
+        });
     });
     let row = visual
-        .debug_bounds("quick-access-result-1")
+        .debug_bounds("picker-match-1")
         .expect("第二个搜索结果应可见");
     visual.simulate_mouse_move(row.center(), None, Modifiers::default());
-    visual.read_entity(&search, |search, _| {
+    visual.read_entity(&search, |search, cx| {
         assert!(search.host.is_open(), "移过候选项不应执行确认");
-        assert_eq!(search.selected_index, 1);
+        assert_eq!(search.picker.read(cx).delegate().selected_index, 1);
     });
     visual.dispatch_action(PickerSelectNext);
-    visual.read_entity(&search, |search, _| {
-        assert_eq!(search.selected_index, 0, "键盘应从鼠标选中项继续导航");
+    visual.read_entity(&search, |search, cx| {
+        assert_eq!(
+            search.picker.read(cx).delegate().selected_index,
+            0,
+            "键盘应从鼠标选中项继续导航"
+        );
     });
+
+    for width in [540.0, 900.0] {
+        visual.simulate_window_resize(window, size(px(width), px(600.0)));
+        visual.run_until_parked();
+        let input = visual.debug_bounds("quick-access-input").unwrap();
+        let results = visual.debug_bounds("overlay-panel").unwrap();
+        assert_eq!(results.left(), input.left(), "调整窗口后左侧应对齐");
+        assert_eq!(results.right(), input.right(), "调整窗口后右侧应对齐");
+        assert!(
+            (results.top() - input.bottom() - gap).abs() <= px(1.0),
+            "调整窗口后仍应保留输入框下方间距，允许像素取整误差"
+        );
+    }
 
     visual.simulate_click(point(px(20.0), px(20.0)), Modifiers::default());
     visual.run_until_parked();
@@ -602,49 +786,67 @@ fn results_start_at_the_top_bar_input_bottom(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn confirming_a_match_requests_open_for_its_absolute_path(cx: &mut TestAppContext) {
-    let opened = Rc::new(RefCell::new(None));
-    let on_open: OnFileOpen = {
-        let opened = opened.clone();
-        Box::new(move |path, _, _| *opened.borrow_mut() = Some(path))
-    };
-    let mut search = FileSearchState::new(on_open);
-    search.set_files(
-        vec![PathBuf::from("/project/src/main.rs")],
-        &[PathBuf::from("/project")],
-    );
-    assert_eq!(
-        ranked_results(&search.files, &[], "main"),
-        vec![SearchResult::File(search.files[0].clone())]
-    );
-
-    let window = cx.add_window(|_, _| TestView);
-    window
-        .update(cx, |_, window, cx| {
-            search.confirm(&search.files[0], window, cx)
-        })
-        .expect("测试窗口应可更新");
-    assert_eq!(
-        opened.borrow().as_deref(),
-        Some(Path::new("/project/src/main.rs"))
-    );
-
-    search.set_files(Vec::new(), &[PathBuf::from("/project")]);
-    assert!(
-        ranked_results(&search.files, &[], "main").is_empty(),
-        "文件移除后不能保留旧候选"
-    );
+fn confirming_a_file_result_opens_the_workspace_document(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let languages = Arc::new(LanguageRegistry::new());
+    cx.update(|cx| zcv_editor::init(cx, languages.clone()));
+    let directory = tempfile::tempdir().expect("应能创建项目目录");
+    let file = directory.path().join("main.rs");
+    fs::write(&file, "fn main() {}\n").expect("应能创建源文件");
+    let file = file.canonicalize().expect("测试路径应可规范化");
+    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    let (host, visual) = cx.add_window_view(|window, cx| {
+        let workspace = cx.new(|cx| empty_workspace(languages, window, cx));
+        FocusHost {
+            search: cx.new(|cx| {
+                QuickAccess::new(
+                    workspace.read(cx).project().clone(),
+                    workspace.downgrade(),
+                    PopoverLayer::default(),
+                    window,
+                    cx,
+                )
+            }),
+            _workspace: workspace,
+            previous: cx.focus_handle(),
+            other: cx.focus_handle(),
+        }
+    });
+    let (search, workspace) = visual.read_entity(&host, |host, _| {
+        (host.search.clone(), host._workspace.clone())
+    });
+    search.update_in(visual, |search, window, cx| {
+        search.focus(window, cx);
+        search.picker.update(cx, |picker, cx| {
+            picker
+                .delegate_mut()
+                .state
+                .set_files(vec![file.clone()], &[root]);
+            picker.set_query("main.rs", cx);
+        });
+    });
+    visual.dispatch_action(PickerConfirm);
+    visual.run_until_parked();
+    visual.read_entity(&workspace, |workspace, cx| {
+        let pane = workspace.pane().read(cx);
+        let active = pane.active_item().expect("确认文件后应打开标签");
+        assert_eq!(active.item_path(cx), Some(file));
+    });
 }
 
 #[test]
 fn ranked_file_result_survives_file_cache_replacement() {
-    let mut state = FileSearchState::new(Box::new(|_, _, _| {}));
+    let mut state = FileSearchState::new();
     state.set_files(
         vec![PathBuf::from("/project/src/main.rs")],
         &[PathBuf::from("/project")],
     );
     let results = ranked_results(&state.files, &[], "main");
     state.begin_scan();
+    assert!(
+        ranked_results(&state.files, &[], "main").is_empty(),
+        "刷新缓存后不应继续产出旧候选"
+    );
 
     let SearchResult::File(file) = &results[0] else {
         panic!("文件搜索结果应保留文件候选");

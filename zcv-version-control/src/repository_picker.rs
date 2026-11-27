@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use gpui::{App, Context, Entity, Render, Subscription, Window, div, prelude::*};
+use gpui::{App, Context, DismissEvent, Entity, Render, Subscription, Window, div, prelude::*};
 use zcv_fuzzy::Matcher;
 use zcv_path::AbsolutePathBuf;
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, toggle_picker};
@@ -128,17 +128,16 @@ impl PickerDelegate for RepositoryPickerDelegate {
         self.selected_index = index;
     }
 
-    fn update_matches(&mut self, query: String) {
+    fn update_matches(&mut self, query: String, _cx: &mut Context<Picker<Self>>) {
         self.reload_filter(&query);
     }
 
-    fn confirm(&mut self, window: &mut Window, cx: &mut App) {
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
         if let Some(workdir) = self.selected_workdir() {
             (self.on_select)(workdir, window, cx);
         }
+        cx.emit(DismissEvent);
     }
-
-    fn dismissed(&mut self) {}
 
     fn render_match(
         &self,
@@ -173,6 +172,7 @@ pub(crate) struct RepositoryPicker {
     picker: Entity<Picker<RepositoryPickerDelegate>>,
     git_store: Entity<GitStore>,
     _git_subscription: Subscription,
+    _dismiss_subscription: Subscription,
 }
 
 impl RepositoryPicker {
@@ -188,9 +188,10 @@ impl RepositoryPicker {
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
         let host = PopoverHost::new(cx.focus_handle(), picker_layer);
-        picker.update(cx, |picker, _| {
-            picker.set_on_dismiss(host.on_dismiss_handler())
-        });
+        let dismiss_subscription =
+            cx.subscribe_in(&picker, window, |host, _, _: &DismissEvent, window, cx| {
+                host.host.dismiss(window, cx);
+            });
 
         let git_subscription =
             cx.subscribe(&git_store, |picker, store, event: &GitStoreEvent, cx| {
@@ -219,6 +220,7 @@ impl RepositoryPicker {
             picker,
             git_store,
             _git_subscription: git_subscription,
+            _dismiss_subscription: dismiss_subscription,
         }
     }
 

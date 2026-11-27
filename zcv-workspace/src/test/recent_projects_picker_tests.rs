@@ -7,13 +7,28 @@ use std::{
     time::Duration,
 };
 
-use gpui::{AppContext, Context, Modifiers, TestAppContext, div, px, size};
+use gpui::{AppContext, Modifiers, TestAppContext, px, size};
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::LanguageRegistry;
 use zcv_settings::{SettingsStore, UserSettings};
 
 use super::*;
 use crate::test_support::empty_workspace;
+
+fn filter_query(delegate: &mut RecentProjectsDelegate, query: String) {
+    delegate.query = query;
+    delegate.do_filter();
+}
+
+fn confirm_delegate(delegate: RecentProjectsDelegate, cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    cx.update(|cx| zcv_editor::init(cx, Arc::new(LanguageRegistry::new())));
+    let (picker, visual) =
+        cx.add_window_view(|window, cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
+    let input = visual.read_entity(&picker, |picker, _| picker.search_input().clone());
+    visual.update(|window, cx| window.focus(&input.focus_handle(cx), cx));
+    visual.dispatch_action(zcv_actions::PickerConfirm);
+}
 
 struct QuietWatcher;
 
@@ -46,15 +61,6 @@ fn test_project_roots(
     })
 }
 
-#[derive(Default)]
-struct TestView;
-
-impl Render for TestView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
-
 #[gpui::test]
 fn confirm_invokes_on_selected(cx: &mut TestAppContext) {
     let triggered = Rc::new(Cell::new(None::<Vec<PathBuf>>));
@@ -62,7 +68,7 @@ fn confirm_invokes_on_selected(cx: &mut TestAppContext) {
         let triggered = triggered.clone();
         Rc::new(move |paths, _window, _cx| triggered.set(Some(paths)))
     };
-    let mut delegate = cx.update(|cx| {
+    let delegate = cx.update(|cx| {
         RecentProjectsDelegate::new(
             cx.new(|cx| {
                 Project::empty_with_watcher(
@@ -79,10 +85,7 @@ fn confirm_invokes_on_selected(cx: &mut TestAppContext) {
             cx,
         )
     });
-    let window = cx.add_window(|_window, _cx| TestView);
-    let _ = window.update(cx, |_, window, cx| {
-        delegate.confirm(window, cx);
-    });
+    confirm_delegate(delegate, cx);
     assert_eq!(
         triggered.take(),
         Some(vec![PathBuf::from("/tmp/test-project")])
@@ -197,7 +200,7 @@ fn test_delegate(cx: &mut App) -> RecentProjectsDelegate {
 #[gpui::test]
 fn remove_project_drops_entry_and_keeps_filter(cx: &mut TestAppContext) {
     let mut delegate = cx.update(test_delegate);
-    delegate.update_matches("tmp".into());
+    filter_query(&mut delegate, "tmp".into());
     delegate.remove_project_in_memory(2);
     assert_eq!(delegate.projects.len(), 2);
     assert!(
@@ -233,7 +236,7 @@ fn project_query_matches_noncontiguous_name_characters(cx: &mut TestAppContext) 
             cx,
         )
     });
-    delegate.update_matches("apj".into());
+    filter_query(&mut delegate, "apj".into());
     assert_eq!(delegate.filtered, vec![0]);
 }
 

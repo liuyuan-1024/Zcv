@@ -1,35 +1,27 @@
 //! 顶栏统一入口：普通访问聚合文件和命令，行列入口复用输入和结果面板。
 
 use std::{
-    cell::Cell,
     path::{Path, PathBuf},
-    rc::Rc,
     sync::Arc,
 };
 
 use gpui::{
-    App, Bounds, Context, Entity, ListAlignment, ListOffset, ListSizingBehavior, ListState,
-    MouseButton, Pixels, Render, Subscription, Task, WeakEntity, Window, canvas, div, list, point,
-    prelude::*, px,
+    AnyElement, App, AvailableSpace, Bounds, Context, DismissEvent, Entity, MouseButton, Pixels,
+    Render, Subscription, Task, WeakEntity, Window, canvas, div, point, prelude::*, size,
 };
-use zcv_actions::{
-    MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev, commands,
-};
+use zcv_actions::commands;
 use zcv_fuzzy::{MatchScore, Matcher};
+use zcv_picker::{Picker, PickerDelegate};
 use zcv_project::{Project, ProjectEvent, owning_workspace_root};
-use zcv_theme::{FileIcons, color, scale};
+use zcv_theme::{FileIcons, color, fixed, scale};
 use zcv_ui::{
-    EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, ListItem, OverlayAnchor, OverlayOutside,
-    PopoverHost, PopoverLayer, SvgIcon, overlay,
+    ListItem, OverlayAnchor, OverlayOutside, PopoverHost, PopoverLayer, SvgIcon, overlay,
 };
 
 use crate::{ItemHandle, Workspace, typography_for_window};
 
 const SEARCH_WIDTH: gpui::DefiniteLength = scale::structural(420.0);
 const MAX_RESULTS: usize = 100;
-const RESULTS_MAX_HEIGHT: Pixels = px(420.0);
-
-type OnFileOpen = Box<dyn Fn(PathBuf, &mut Window, &mut App)>;
 
 fn search_height(window: &Window, cx: &App) -> Pixels {
     typography_for_window(window, cx).ui_line() + scale::to_pixels(scale::S4, window) * 2.0
@@ -79,7 +71,6 @@ impl CommandCandidate {
 }
 
 struct FileSearchState {
-    on_open: OnFileOpen,
     files: Vec<Arc<FileCandidate>>,
     load_state: FileLoadState,
 }
@@ -148,20 +139,6 @@ enum SearchResult {
     LineColumn { line: usize, column: usize },
 }
 
-enum MatchCandidate {
-    File(Arc<FileCandidate>),
-    Command(usize),
-}
-
-impl MatchCandidate {
-    fn sort_name<'a>(&'a self, commands: &'a [CommandCandidate]) -> &'a str {
-        match self {
-            Self::File(file) => &file.relative,
-            Self::Command(index) => commands[*index].action_name,
-        }
-    }
-}
-
 fn ranked_results(
     files: &[Arc<FileCandidate>],
     commands: &[CommandCandidate],
@@ -175,42 +152,38 @@ fn ranked_results(
     let Some(mut matcher) = Matcher::new(query) else {
         return Vec::new();
     };
-    let mut scored: Vec<(MatchScore, MatchCandidate)> = Vec::new();
+    let mut scored: Vec<(MatchScore, &str, SearchResult)> = Vec::new();
     if matches!(mode, InputMode::Mixed(_)) {
         scored.extend(files.iter().filter_map(|file| {
-            file.match_score(&mut matcher)
-                .map(|score| (score, MatchCandidate::File(file.clone())))
+            file.match_score(&mut matcher).map(|score| {
+                (
+                    score,
+                    file.relative.as_str(),
+                    SearchResult::File(file.clone()),
+                )
+            })
         }));
     }
     scored.extend(commands.iter().enumerate().filter_map(|(index, command)| {
         command
             .match_score(&mut matcher)
-            .map(|score| (score, MatchCandidate::Command(index)))
+            .map(|score| (score, command.action_name, SearchResult::Command(index)))
     }));
-    let compare = |left: &(MatchScore, MatchCandidate), right: &(MatchScore, MatchCandidate)| {
-        right
-            .0
-            .cmp(&left.0)
-            .then_with(|| left.1.sort_name(commands).cmp(right.1.sort_name(commands)))
+    let compare = |left: &(MatchScore, &str, SearchResult),
+                   right: &(MatchScore, &str, SearchResult)| {
+        right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
     };
     if scored.len() > MAX_RESULTS {
         scored.select_nth_unstable_by(MAX_RESULTS, compare);
         scored.truncate(MAX_RESULTS);
     }
     scored.sort_unstable_by(compare);
-    scored
-        .into_iter()
-        .map(|(_, candidate)| match candidate {
-            MatchCandidate::File(file) => SearchResult::File(file),
-            MatchCandidate::Command(index) => SearchResult::Command(index),
-        })
-        .collect()
+    scored.into_iter().map(|(_, _, result)| result).collect()
 }
 
 impl FileSearchState {
-    fn new(on_open: OnFileOpen) -> Self {
+    fn new() -> Self {
         Self {
-            on_open,
             files: Vec::new(),
             load_state: FileLoadState::Stale,
         }
@@ -233,109 +206,50 @@ impl FileSearchState {
             .collect();
         self.load_state = FileLoadState::Ready;
     }
-
-    fn confirm(&self, file: &FileCandidate, window: &mut Window, cx: &mut App) {
-        let path = file.path.clone();
-        (self.on_open)(path, window, cx);
-    }
 }
 
-/// 搜索输入和结果由本组件持有；顶栏只决定它的布局位置。
-pub(crate) struct QuickAccess {
-    input: Arc<dyn ErasedEditor>,
-    host: PopoverHost,
+/// 快速访问的业务数据；输入、列表和通用选择交互由 Picker 拥有。
+struct QuickAccessDelegate {
     state: FileSearchState,
+    workspace: WeakEntity<Workspace>,
     commands: Vec<CommandCandidate>,
     results: Vec<SearchResult>,
     selected_index: usize,
-    list_state: ListState,
-    workspace: WeakEntity<Workspace>,
     mode: AccessMode,
     project: Entity<Project>,
-    _focus_subscription: Subscription,
-    _blur_subscription: Subscription,
-    _input_subscription: Subscription,
-    _project_subscription: Subscription,
     scan_task: Option<Task<()>>,
+    _project_subscription: Subscription,
 }
 
-impl QuickAccess {
-    pub(crate) fn new(
+impl QuickAccessDelegate {
+    fn new(
         project: Entity<Project>,
         workspace: WeakEntity<Workspace>,
-        picker_layer: PopoverLayer,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<Picker<Self>>,
     ) -> Self {
-        let workspace_for_open = workspace.clone();
-        let on_open: OnFileOpen = Box::new(move |path, window, cx| {
-            workspace_for_open
-                .update(cx, |workspace, cx| {
-                    workspace.open_path(path, true, window, cx)
-                })
-                .ok();
-        });
-        let factory = EDITOR_FACTORY
-            .get()
-            .expect("顶栏统一入口需要 zcv_editor::init 注入编辑器工厂");
-        let input = factory(cx);
-        let input_focus = input.focus_handle(cx);
-        let host = PopoverHost::new(input_focus.clone(), picker_layer);
-        let focus_subscription = cx.on_focus(&input_focus, window, |search, _, cx| {
-            if matches!(search.mode, AccessMode::Mixed)
-                && matches!(input_mode(&search.input.text(cx)), InputMode::Mixed(_))
-            {
-                search.refresh_files(cx);
-            } else {
-                search.refresh_results(cx);
-            }
-            cx.notify();
-        });
-        let blur_subscription = cx.on_blur(&input_focus, window, |search, _, cx| {
-            search.host.clear();
-            cx.notify();
-        });
-        let weak = cx.weak_entity();
-        let input_subscription = input.subscribe(
-            Box::new(move |ErasedEditorEvent::Edited, _, cx| {
-                weak.update(cx, |search, cx| {
-                    let query = search.input.text(cx);
-                    if matches!(search.mode, AccessMode::Mixed)
+        let project_subscription =
+            cx.subscribe_in(&project, window, |picker, _, event, window, cx| {
+                if matches!(
+                    event,
+                    ProjectEvent::FileSystemChanged
+                        | ProjectEvent::WorktreeAdded { .. }
+                        | ProjectEvent::WorktreeRemoved { .. }
+                        | ProjectEvent::WorktreeRootChanged { .. }
+                ) {
+                    picker.delegate_mut().invalidate_files();
+                    let query = picker.search_input().text(cx);
+                    if picker.search_input().focus_handle(cx).is_focused(window)
+                        && matches!(picker.delegate().mode, AccessMode::Mixed)
                         && matches!(input_mode(&query), InputMode::Mixed(_))
-                        && search.state.load_state == FileLoadState::Stale
                     {
-                        search.refresh_files(cx);
-                    } else {
-                        search.refresh_results(cx);
+                        picker.refresh(cx);
                     }
-                })
-                .ok();
-            }),
-            window,
-            cx,
-        );
-        let project_subscription = cx.subscribe(&project, |search, _, event, cx| {
-            if matches!(
-                event,
-                ProjectEvent::FileSystemChanged
-                    | ProjectEvent::WorktreeAdded { .. }
-                    | ProjectEvent::WorktreeRemoved { .. }
-                    | ProjectEvent::WorktreeRootChanged { .. }
-            ) {
-                search.scan_task.take();
-                search.state.invalidate();
-                if matches!(search.mode, AccessMode::Mixed)
-                    && search.host.is_open()
-                    && matches!(input_mode(&search.input.text(cx)), InputMode::Mixed(_))
-                {
-                    search.refresh_files(cx);
                 }
-            }
-        });
+            });
         Self {
-            input,
-            host,
-            state: FileSearchState::new(on_open),
+            state: FileSearchState::new(),
+            workspace,
             commands: commands()
                 .map(|metadata| CommandCandidate {
                     action_name: metadata.action_name,
@@ -345,42 +259,19 @@ impl QuickAccess {
                 .collect(),
             results: Vec::new(),
             selected_index: 0,
-            list_state: ListState::new(0, ListAlignment::Top, px(100.0)),
-            workspace,
             mode: AccessMode::Mixed,
             project,
-            _focus_subscription: focus_subscription,
-            _blur_subscription: blur_subscription,
-            _input_subscription: input_subscription,
-            _project_subscription: project_subscription,
             scan_task: None,
+            _project_subscription: project_subscription,
         }
     }
 
-    pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.mode, AccessMode::Mixed) {
-            self.mode = AccessMode::Mixed;
-            self.input.set_text("", cx);
-            self.refresh_results(cx);
-        }
-        self.host.activate(window, cx);
-        window.focus(&self.input.focus_handle(cx), cx);
+    fn invalidate_files(&mut self) {
+        self.scan_task = None;
+        self.state.invalidate();
     }
 
-    pub(crate) fn focus_line_column(
-        &mut self,
-        target: Box<dyn ItemHandle>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.mode = AccessMode::LineColumn(target);
-        self.input.set_text("", cx);
-        self.refresh_results(cx);
-        self.host.activate(window, cx);
-        window.focus(&self.input.focus_handle(cx), cx);
-    }
-
-    fn refresh_files(&mut self, cx: &mut Context<Self>) {
+    fn start_scan(&mut self, cx: &mut Context<Picker<Self>>) {
         let roots: Vec<PathBuf> = self
             .project
             .read(cx)
@@ -388,27 +279,44 @@ impl QuickAccess {
             .map(Path::to_path_buf)
             .collect();
         if roots.is_empty() {
-            self.scan_task.take();
             self.state.set_files(Vec::new(), &[]);
-            self.refresh_results(cx);
             return;
         }
         let scan = self.project.read(cx).searchable_file_paths(cx);
         self.state.begin_scan();
-        self.refresh_results(cx);
-        self.scan_task = Some(cx.spawn(async move |search, cx| {
+        self.scan_task = Some(cx.spawn(async move |picker, cx| {
             let files = scan.await;
-            search
-                .update(cx, |search, cx| {
-                    search.state.set_files(files, &roots);
-                    search.refresh_results(cx);
-                })
-                .ok();
+            let _ = picker.update(cx, |picker, cx| {
+                let delegate = picker.delegate_mut();
+                delegate.scan_task = None;
+                delegate.state.set_files(files, &roots);
+                picker.refresh(cx);
+            });
         }));
     }
+}
 
-    fn refresh_results(&mut self, cx: &mut Context<Self>) {
-        let query = self.input.text(cx);
+impl PickerDelegate for QuickAccessDelegate {
+    fn match_count(&self) -> usize {
+        self.results.len()
+    }
+    fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+    fn set_selected_index(&mut self, index: usize) {
+        self.selected_index = index;
+    }
+    fn placeholder_text(&self) -> &str {
+        ""
+    }
+
+    fn update_matches(&mut self, query: String, cx: &mut Context<Picker<Self>>) {
+        if matches!(self.mode, AccessMode::Mixed)
+            && matches!(input_mode(&query), InputMode::Mixed(_))
+            && self.state.load_state == FileLoadState::Stale
+        {
+            self.start_scan(cx);
+        }
         self.results = match &self.mode {
             AccessMode::Mixed => ranked_results(&self.state.files, &self.commands, &query),
             AccessMode::LineColumn(_) => {
@@ -421,169 +329,224 @@ impl QuickAccess {
                 }
             }
         };
-        let count = self.results.len();
         self.selected_index = 0;
-        self.list_state.reset(count);
-        self.list_state.scroll_to(ListOffset {
-            item_ix: 0,
-            offset_in_item: Pixels::ZERO,
-        });
-        cx.notify();
     }
 
-    fn select_next(&mut self, _: &PickerSelectNext, _: &mut Window, cx: &mut Context<Self>) {
-        let count = self.results.len();
-        if count > 0 {
-            let index = (self.selected_index + 1) % count;
-            self.select_result(index, true, cx);
-        }
-    }
-
-    fn select_prev(&mut self, _: &PickerSelectPrev, _: &mut Window, cx: &mut Context<Self>) {
-        let count = self.results.len();
-        if count > 0 {
-            let index = (self.selected_index + count - 1) % count;
-            self.select_result(index, true, cx);
-        }
-    }
-
-    fn select_result(&mut self, index: usize, reveal: bool, cx: &mut Context<Self>) {
-        if self.selected_index == index && !reveal {
-            return;
-        }
-        self.selected_index = index;
-        if reveal {
-            self.list_state.scroll_to_reveal_item(index);
-        }
-        cx.notify();
-    }
-
-    fn editor_move_down(&mut self, _: &MoveDown, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_next(&PickerSelectNext, window, cx);
-    }
-
-    fn editor_move_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_prev(&PickerSelectPrev, window, cx);
-    }
-
-    fn confirm(&mut self, _: &PickerConfirm, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
         let Some(result) = self.results.get(self.selected_index).cloned() else {
             return;
         };
         match result {
-            SearchResult::File(file) => self.state.confirm(&file, window, cx),
+            SearchResult::File(file) => {
+                let _ = self.workspace.update(cx, |workspace, cx| {
+                    workspace.open_path(file.path.clone(), true, window, cx)
+                });
+            }
             SearchResult::Command(index) => {
-                let name = self.commands[index].action_name;
-                let Ok(action) = cx.build_action(name, None) else {
+                let Ok(action) = cx.build_action(self.commands[index].action_name, None) else {
                     return;
                 };
-                self.restore_focus(window, cx);
+                // 先结束选择会话并归还焦点，再把命令分发给其实际目标。
+                cx.emit(DismissEvent);
                 window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
             }
             SearchResult::LineColumn { line, column } => {
                 if let AccessMode::LineColumn(target) = &self.mode
                     && target.navigate_to_line_column(line, column, cx)
                 {
-                    self.restore_focus(window, cx);
+                    cx.emit(DismissEvent);
                 }
             }
         }
     }
 
+    fn render_empty(&self, query: &str, cx: &App) -> Option<AnyElement> {
+        let text = match (&self.mode, input_mode(query)) {
+            (AccessMode::LineColumn(_), _) if !self.mode.line_column_supported(cx) => {
+                "该文件不支持跳转到指定行列"
+            }
+            (AccessMode::LineColumn(_), InputMode::Empty) => "输入行列数字，例如 42:8、第42行第8列",
+            (AccessMode::LineColumn(_), _) => "请输入有效的行号或行列",
+            (AccessMode::Mixed, InputMode::Empty) => "输入文件或命令 · > 仅搜索命令",
+            (AccessMode::Mixed, InputMode::Commands("")) => "输入命令名称",
+            (AccessMode::Mixed, InputMode::Mixed(_))
+                if self.state.load_state == FileLoadState::Loading =>
+            {
+                "正在查找文件…"
+            }
+            _ => "无搜索结果",
+        };
+        Some(
+            div()
+                .w_full()
+                .p(scale::S8)
+                .text_color(color::current(cx).text_placeholder)
+                .child(text)
+                .into_any_element(),
+        )
+    }
+
+    fn render_match(
+        &self,
+        index: usize,
+        selected: bool,
+        _: &mut Context<Picker<Self>>,
+    ) -> AnyElement {
+        let item = match &self.results[index] {
+            SearchResult::Command(command) => ListItem::new(("quick-access-command", index))
+                .toggle_state(selected)
+                .start_slot(SvgIcon::new("icons/chevron_right.svg"))
+                .child(self.commands[*command].title)
+                .subtitle(self.commands[*command].description),
+            SearchResult::File(file) => ListItem::new(("quick-access-file", index))
+                .toggle_state(selected)
+                .start_slot(SvgIcon::new(FileIcons::get_icon(&file.path)))
+                .child(file.name.clone())
+                .subtitle(file.relative.clone()),
+            SearchResult::LineColumn { line, column } => {
+                ListItem::new(("quick-access-line-column", index))
+                    .toggle_state(selected)
+                    .start_slot(SvgIcon::new("icons/chevron_right.svg"))
+                    .child(format!("跳转到第 {} 行，第 {} 列", line + 1, column + 1))
+            }
+        };
+        item.into_any_element()
+    }
+}
+
+/// 常驻顶栏入口及结果浮层的布局宿主；不持有输入、选中索引或列表状态。
+pub(crate) struct QuickAccess {
+    picker: Entity<Picker<QuickAccessDelegate>>,
+    host: PopoverHost,
+    workspace: WeakEntity<Workspace>,
+    _focus_subscription: Subscription,
+    _blur_subscription: Subscription,
+    _picker_subscription: Subscription,
+    _dismiss_subscription: Subscription,
+}
+
+impl QuickAccess {
+    pub(crate) fn new(
+        project: Entity<Project>,
+        workspace: WeakEntity<Workspace>,
+        picker_layer: PopoverLayer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let picker = cx.new(|cx| {
+            let delegate = QuickAccessDelegate::new(project, workspace.clone(), window, cx);
+            Picker::new(delegate, scale::to_pixels(SEARCH_WIDTH, window), window, cx)
+        });
+        let input_focus = picker.read(cx).search_input().focus_handle(cx);
+        let host = PopoverHost::new(input_focus.clone(), picker_layer);
+        let focus_subscription = cx.on_focus(&input_focus, window, |search, _, cx| {
+            search.picker.update(cx, |picker, cx| {
+                let query = picker.search_input().text(cx);
+                if matches!(picker.delegate().mode, AccessMode::Mixed)
+                    && matches!(input_mode(&query), InputMode::Mixed(_))
+                {
+                    picker.delegate_mut().invalidate_files();
+                }
+                picker.refresh(cx);
+            });
+            cx.notify();
+        });
+        let blur_subscription = cx.on_blur(&input_focus, window, |search, _, cx| {
+            search.host.clear();
+            cx.notify();
+        });
+        let picker_subscription = cx.observe(&picker, |_, _, cx| cx.notify());
+        let dismiss_subscription = cx.subscribe_in(
+            &picker,
+            window,
+            |search, _, _: &DismissEvent, window, cx| {
+                search.restore_focus(window, cx);
+            },
+        );
+        Self {
+            picker,
+            host,
+            workspace,
+            _focus_subscription: focus_subscription,
+            _blur_subscription: blur_subscription,
+            _picker_subscription: picker_subscription,
+            _dismiss_subscription: dismiss_subscription,
+        }
+    }
+
+    pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.picker.update(cx, |picker, cx| {
+            if !matches!(picker.delegate().mode, AccessMode::Mixed) {
+                picker.delegate_mut().mode = AccessMode::Mixed;
+                picker.set_query("", cx);
+            }
+        });
+        self.host.activate(window, cx);
+        window.focus(&self.picker.read(cx).search_input().focus_handle(cx), cx);
+    }
+
+    pub(crate) fn focus_line_column(
+        &mut self,
+        target: Box<dyn ItemHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker.update(cx, |picker, cx| {
+            picker.delegate_mut().mode = AccessMode::LineColumn(target);
+            picker.set_query("", cx);
+        });
+        self.host.activate(window, cx);
+        window.focus(&self.picker.read(cx).search_input().focus_handle(cx), cx);
+    }
+
     fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.host.dismiss(window, cx);
-        self.mode = AccessMode::Mixed;
-        self.input.set_text("", cx);
-        self.refresh_results(cx);
-        if self.input.focus_handle(cx).is_focused(window)
+        self.picker.update(cx, |picker, cx| {
+            picker.delegate_mut().mode = AccessMode::Mixed;
+            picker.set_query("", cx);
+        });
+        if self
+            .picker
+            .read(cx)
+            .search_input()
+            .focus_handle(cx)
+            .is_focused(window)
             && let Some(workspace) = self.workspace.upgrade()
         {
             workspace.update(cx, |workspace, cx| workspace.focus_center_pane(window, cx));
         }
-    }
-
-    fn cancel(&mut self, _: &PickerCancel, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.input.focus_handle(cx).is_focused(window) {
-            return;
-        }
-        self.restore_focus(window, cx);
+        cx.notify();
     }
 
     fn results(
         &self,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
-        input_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
-    ) -> impl IntoElement {
-        let query = self.input.text(cx);
-        let width = scale::to_pixels(SEARCH_WIDTH, window);
-        let result_list = list(
-            self.list_state.clone(),
-            cx.processor(move |search, index, _, cx| {
-                let command_marker = SvgIcon::new("icons/chevron_right.svg");
-                div()
-                    .id(("quick-access-result", index))
-                    .debug_selector(move || format!("quick-access-result-{index}"))
-                    .w(width)
-                    .on_mouse_move(cx.listener(move |search, _, _, cx| {
-                        search.select_result(index, false, cx);
-                    }))
-                    .on_click(cx.listener(move |search, _, window, cx| {
-                        search.select_result(index, false, cx);
-                        search.confirm(&PickerConfirm, window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .child(match &search.results[index] {
-                        SearchResult::Command(command) => {
-                            ListItem::new(("quick-access-command", index))
-                                .toggle_state(index == search.selected_index)
-                                .start_slot(command_marker)
-                                .child(search.commands[*command].title)
-                                .subtitle(search.commands[*command].description)
-                                .into_any_element()
-                        }
-                        SearchResult::File(file) => ListItem::new(("quick-access-file", index))
-                            .toggle_state(index == search.selected_index)
-                            .start_slot(SvgIcon::new(FileIcons::get_icon(&file.path)))
-                            .child(file.name.clone())
-                            .subtitle(file.relative.clone())
-                            .into_any_element(),
-                        SearchResult::LineColumn { line, column } => {
-                            ListItem::new(("quick-access-line-column", index))
-                                .toggle_state(index == search.selected_index)
-                                .start_slot(command_marker)
-                                .child(format!("跳转到第 {} 行，第 {} 列", line + 1, column + 1))
-                                .into_any_element()
-                        }
-                    })
-                    .into_any_element()
-            }),
-        )
-        .with_sizing_behavior(ListSizingBehavior::Infer)
-        .flex_grow(1.0)
-        .min_h_0();
+        input_bounds: Bounds<Pixels>,
+    ) -> AnyElement {
+        let width = input_bounds.size.width;
+        let content = self.picker.update(cx, |picker, cx| {
+            picker.set_width(width - fixed::HAIRLINE * 2.0);
+            picker.render_results(window, cx)
+        });
         let weak = cx.weak_entity();
         overlay(window)
-            .anchor(OverlayAnchor::AtLocalPosition(point(
-                Pixels::ZERO,
-                search_height(window, cx),
+            .anchor(OverlayAnchor::AtPosition(point(
+                input_bounds.left(),
+                input_bounds.bottom() + scale::to_pixels(scale::S2, window),
             )))
             .min_width(width)
             .outside(OverlayOutside::Passthrough(Box::new(
                 move |event, window, cx| {
-                    let bounds = input_bounds.get().expect("快捷访问输入区域必须完成布局");
-                    if bounds.contains(&event.position) {
+                    if input_bounds.contains(&event.position) {
                         return;
                     }
-                    if let Some(search) = weak.upgrade() {
-                        search.update(cx, |search, cx| search.restore_focus(window, cx));
-                    }
+                    let _ = weak.update(cx, |search, cx| search.restore_focus(window, cx));
                 },
             )))
             .child(
                 div()
-                    .w_full()
-                    .max_h(RESULTS_MAX_HEIGHT.min(window.viewport_size().height))
+                    .w(width)
                     .flex()
                     .flex_col()
                     .overflow_hidden()
@@ -593,53 +556,20 @@ impl QuickAccess {
                     .bg(color::current(cx).elevated_surface_background)
                     .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .when(self.results.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .w_full()
-                                .p(scale::S8)
-                                .text_color(color::current(cx).text_placeholder)
-                                .child(match (&self.mode, input_mode(&query)) {
-                                    (AccessMode::LineColumn(_), _)
-                                        if !self.mode.line_column_supported(cx) =>
-                                    {
-                                        "该文件不支持跳转到指定行列".to_string()
-                                    }
-                                    (AccessMode::LineColumn(_), InputMode::Empty) => {
-                                        "输入行列数字，例如 42:8、第42行第8列".to_string()
-                                    }
-                                    (AccessMode::LineColumn(_), _) => {
-                                        "请输入有效的行号或行列".to_string()
-                                    }
-                                    (AccessMode::Mixed, InputMode::Empty) => {
-                                        "输入文件或命令 · > 仅搜索命令".to_string()
-                                    }
-                                    (AccessMode::Mixed, InputMode::Commands("")) => {
-                                        "输入命令名称".to_string()
-                                    }
-                                    (AccessMode::Mixed, InputMode::Mixed(_))
-                                        if self.state.load_state == FileLoadState::Loading =>
-                                    {
-                                        "正在查找文件…".to_string()
-                                    }
-                                    _ => "无搜索结果".to_string(),
-                                }),
-                        )
-                    })
-                    .when(!self.results.is_empty(), |el| el.child(result_list)),
+                    .child(content),
             )
+            .into_any_element()
     }
 }
 
 impl Render for QuickAccess {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let input = self.picker.update(cx, |picker, cx| picker.render_input(cx));
+        let weak = cx.weak_entity();
         let colors = color::current(cx);
-        let input_bounds = Rc::new(Cell::new(None));
-        let measured_bounds = input_bounds.clone();
         div()
             .id("top-bar.quick-access")
             .debug_selector(|| "quick-access-input".into())
-            .key_context("Picker")
             .relative()
             .flex()
             .items_center()
@@ -652,48 +582,51 @@ impl Render for QuickAccess {
             .border_1()
             .border_color(colors.border)
             .bg(colors.panel_background)
-            .on_action(cx.listener(Self::select_next))
-            .on_action(cx.listener(Self::select_prev))
-            .on_action(cx.listener(Self::editor_move_down))
-            .on_action(cx.listener(Self::editor_move_up))
-            .on_action(cx.listener(Self::confirm))
-            .on_action(cx.listener(Self::cancel))
             .capture_any_mouse_down(cx.listener(|search, _, window, cx| {
-                if search.input.focus_handle(cx).is_focused(window) {
+                if search
+                    .picker
+                    .read(cx)
+                    .search_input()
+                    .focus_handle(cx)
+                    .is_focused(window)
+                {
                     search.host.activate(window, cx);
                 } else {
                     search.focus(window, cx);
                 }
             }))
             .on_click(cx.listener(|search, _, window, cx| {
-                window.focus(&search.input.focus_handle(cx), cx);
+                window.focus(&search.picker.read(cx).search_input().focus_handle(cx), cx);
                 cx.stop_propagation();
             }))
-            .child(
-                canvas(
-                    move |bounds, _, _| measured_bounds.set(Some(bounds)),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .top(Pixels::ZERO)
-                .left(Pixels::ZERO)
-                .w_full()
-                .h_full(),
-            )
             .child(
                 SvgIcon::new("icons/magnifying_glass.svg")
                     .size(window.rem_size())
                     .color(colors.icon_muted),
             )
-            .child(div().flex_1().min_w_0().child(self.input.render()))
+            .child(div().flex_1().min_w_0().child(input))
             .when(self.host.is_open(), |el| {
                 el.child(
-                    div()
-                        .absolute()
-                        .top(Pixels::ZERO)
-                        .left(Pixels::ZERO)
-                        .w_full()
-                        .child(self.results(window, cx, input_bounds)),
+                    // 顶栏可压缩，浮层与列表必须使用本帧布局后的输入宽度。
+                    canvas(
+                        move |bounds, window, cx| {
+                            // 绝对定位区域不含父容器边框，锚定时还原输入框外边界。
+                            let bounds = bounds.dilate(fixed::HAIRLINE);
+                            let mut results = weak
+                                .update(cx, |search, cx| search.results(window, cx, bounds))
+                                .expect("快速访问在当前帧必须存活");
+                            results.prepaint_as_root(
+                                point(Pixels::ZERO, Pixels::ZERO),
+                                size(AvailableSpace::MaxContent, AvailableSpace::MaxContent),
+                                window,
+                                cx,
+                            );
+                            results
+                        },
+                        |_, mut results, window, cx| results.paint(window, cx),
+                    )
+                    .absolute()
+                    .inset_0(),
                 )
             })
     }

@@ -12,8 +12,8 @@ use std::{
 };
 
 use gpui::{
-    Action, AnyElement, App, ClickEvent, Context, Entity, Pixels, Render, Subscription, WeakEntity,
-    Window, div, prelude::*, px,
+    Action, AnyElement, App, ClickEvent, Context, DismissEvent, Entity, Pixels, Render,
+    Subscription, WeakEntity, Window, div, prelude::*, px,
 };
 use zcv_actions::{
     AddDirectoryToProject, DeleteRecentProject, OpenLocalDirectory, OpenLocalFile,
@@ -234,12 +234,12 @@ impl PickerDelegate for RecentProjectsDelegate {
         self.selected_index = ix;
     }
 
-    fn update_matches(&mut self, query: String) {
+    fn update_matches(&mut self, query: String, _cx: &mut Context<Picker<Self>>) {
         self.query = query;
         self.do_filter();
     }
 
-    fn confirm(&mut self, window: &mut Window, cx: &mut App) {
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
         if self.filtered.is_empty() {
             return;
         }
@@ -247,9 +247,8 @@ impl PickerDelegate for RecentProjectsDelegate {
         // 由回调（Workspace::switch_project）负责持久化最近项目
         let cb = self.on_selected.clone();
         cb(entry.paths.iter().map(PathBuf::from).collect(), window, cx);
+        cx.emit(DismissEvent);
     }
-
-    fn dismissed(&mut self) {}
 
     fn render_match(
         &self,
@@ -433,14 +432,15 @@ impl RecentProjects {
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
         let host = PopoverHost::new(cx.focus_handle(), picker_layer);
-        picker.update(cx, |picker, _| {
-            picker.set_on_dismiss(host.on_dismiss_handler())
-        });
+        let dismiss_subscription =
+            cx.subscribe_in(&picker, window, |host, _, _: &DismissEvent, window, cx| {
+                host.host.dismiss(window, cx);
+            });
 
         Self {
             host,
             picker,
-            _subscriptions: vec![git_subscription, project_subscription],
+            _subscriptions: vec![git_subscription, project_subscription, dismiss_subscription],
         }
     }
 

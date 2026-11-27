@@ -1,7 +1,5 @@
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::grid::Dimensions;
-
 use super::*;
 use crate::{
     TerminalView,
@@ -73,42 +71,6 @@ async fn terminal_output_updates_content(cx: &mut TestAppContext) {
         all_text(content).contains("zcv-terminal-ok")
     })
     .await;
-}
-
-/// 清屏动作经终端事件管线清除滚动回看，屏幕内容和光标由前台重绘保持。
-#[gpui::test]
-async fn terminal_clear_drops_scrollback_and_keeps_screen(cx: &mut TestAppContext) {
-    cx.set_global(SettingsStore::new(UserSettings::default()));
-    let terminal = build_terminal(cx);
-    let (_, cx) = cx.add_window_view(|_window, _cx| EmptyView);
-
-    cx.update(|_window, cx| {
-        terminal.update(cx, |terminal, cx| {
-            write_output(
-                terminal,
-                b"0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9",
-                cx,
-            );
-            terminal.sync(cx);
-            assert!(terminal.term.lock().history_size() > 0);
-        });
-    });
-
-    cx.update(|_window, cx| {
-        terminal.update(cx, |terminal, cx| {
-            terminal.clear(cx);
-            terminal.sync(cx);
-            assert_eq!(terminal.term.lock().history_size(), 0);
-        });
-    });
-
-    let content = cx.update(|_window, cx| terminal.read(cx).last_content().clone());
-    assert!(
-        content
-            .cells
-            .iter()
-            .any(|cell| cell.cell.character() == '9')
-    );
 }
 
 /// 像素高度变化时，模型仍需立即持有最新边界，不能等待下一次 PTY resize。

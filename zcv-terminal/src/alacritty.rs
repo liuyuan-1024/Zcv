@@ -11,12 +11,12 @@ use alacritty_terminal::{
     event::{Event as AlacTermEvent, EventListener, Notify, WindowSize},
     event_loop::{EventLoop, Msg, Notifier},
     grid::{Dimensions, Scroll as AlacScroll},
-    index::{Direction, Point as AlacPoint},
+    index::{Direction, Line, Point as AlacPoint},
     selection::{Selection as AlacSelection, SelectionType as AlacSelectionType},
     sync::FairMutex,
     term::{Config, Osc52, SEMANTIC_ESCAPE_CHARS, Term, TermMode, cell::Cell as AlacCell},
     tty,
-    vte::ansi::{CursorShape, CursorStyle, Handler, NamedPrivateMode, PrivateMode},
+    vte::ansi::{ClearMode, CursorShape, CursorStyle, Handler, NamedPrivateMode, PrivateMode},
 };
 use anyhow::Context as _;
 use async_channel::Sender;
@@ -203,6 +203,38 @@ pub(super) fn spawn_event_loop(
 
 pub(super) fn resize(term: &mut AlacrittyTerm, bounds: &TerminalBounds) {
     term.resize(*bounds);
+}
+
+/// 清除其他内容，保留光标所在的完整逻辑行及其折行属性。
+/// 普通屏幕的 ANSI 全屏擦除会把旧内容推入历史，因此直接更新模型，不依赖前台重绘。
+pub(super) fn clear_screen(term: &mut AlacrittyTerm) {
+    let cursor = term.grid().cursor.point;
+    let start = term.line_search_left(cursor).line;
+    let end = term.line_search_right(cursor).line;
+    // 逻辑行的前缀可能已经滚入历史，必须在清除历史之前取得完整范围。
+    let rows = (start.0..=end.0)
+        .map(|line| term.grid()[Line(line)].clone())
+        .collect::<Vec<_>>();
+    let screen_lines = term.screen_lines();
+    let history_lines = rows.len().saturating_sub(screen_lines);
+
+    term.clear_screen(ClearMode::Saved);
+    let grid = term.grid_mut();
+    grid.reset_region(..);
+    // 超过一屏的逻辑行仍需要历史空间；只为保留的行分配，不带回此前输出。
+    let region = Line(0)..Line(screen_lines as i32);
+    let mut remaining = history_lines;
+    while remaining > 0 {
+        let count = remaining.min(screen_lines);
+        grid.scroll_up(&region, count);
+        remaining -= count;
+    }
+    let first_line = -(history_lines as i32);
+    for (index, row) in rows.into_iter().enumerate() {
+        grid[Line(first_line + index as i32)] = row;
+    }
+    grid.cursor.point.line = Line(first_line + cursor.line.0 - start.0);
+    term.selection = None;
 }
 
 /// 更新既有选择到新位置；没有进行中的选择时返回 false。

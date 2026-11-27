@@ -26,7 +26,7 @@ use std::{
 
 use alacritty_terminal::{
     term::cell::Flags,
-    vte::ansi::{ClearMode, Color, CursorShape, Handler, Rgb},
+    vte::ansi::{Color, CursorShape, Rgb},
 };
 use anyhow::{Context as _, Result};
 use async_channel::{Receiver, unbounded};
@@ -52,9 +52,6 @@ const DEBUG_CELL_WIDTH: f32 = 5.;
 const DEBUG_LINE_HEIGHT: f32 = 5.;
 /// 创建时未确定窗口 id 时的占位值（unix 上无实际用途）。
 const DUMMY_WINDOW_ID: u64 = 0;
-
-/// ASCII FORM FEED（FF，0x0c），前台行编辑器按终端惯例把它解释为 clear-screen。
-const CLEAR_SCREEN_CONTROL: &[u8] = b"\x0c";
 
 fn scroll_lines_for_pixels(
     remainder: &mut Pixels,
@@ -776,9 +773,14 @@ impl Terminal {
                     alacritty::resize(&mut self.term.lock(), &bounds);
                 }
                 InternalEvent::Clear => {
-                    self.term.lock().clear_screen(ClearMode::Saved);
-                    // 视口和提示符由前台程序重绘；这里只负责终端模型与 PTY 输入。
-                    self.pty_resources.notify(CLEAR_SCREEN_CONTROL);
+                    alacritty::clear_screen(&mut self.term.lock());
+                    self.scroll_px = Pixels::ZERO;
+                    self.selection_drag = None;
+                    self.selection_autoscroll_task = None;
+                    if matches!(self.mouse_gesture, Some(MouseGesture::Selecting)) {
+                        self.mouse_gesture = None;
+                    }
+                    cx.emit(Event::SelectionsChanged);
                 }
                 InternalEvent::PtyWrite(bytes) => self.pty_resources.notify(bytes),
                 InternalEvent::Scroll(scroll) => {
@@ -1079,7 +1081,7 @@ impl Terminal {
         }
     }
 
-    /// 清除滚动回看，并请求前台程序重绘。
+    /// 清除其他内容，保留当前完整逻辑行；不向前台程序发送输入。
     pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
         self.events.push_back(InternalEvent::Clear);
         cx.notify();

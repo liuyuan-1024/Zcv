@@ -55,6 +55,8 @@ EditorElement
 
 工具栏按语义事件刷新，展开状态读取块摘要；保存状态读取去重的源摘要。滚动重绘不会让宿主重复枚举所有文件。
 
+全部文件的折叠与展开由 `Editor::set_all_buffers_folded` 和 `Editor::toggle_all_buffers_folded` 统一执行：命令先同步显示快照，再确定当前文件集合，并一次提交折叠策略。宿主不枚举 excerpts、不保存展开状态副本。
+
 ## 创建方式
 
 `Editor` 提供三类入口：

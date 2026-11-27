@@ -86,7 +86,7 @@ fn git_graph_find_from_content_focuses_its_search_bar(cx: &mut TestAppContext) {
     let project = test_project(directory.path().to_path_buf(), cx);
     let (host, cx) = cx.add_window_view(move |_, cx| GitGraphSearchHost {
         view: cx.new(|cx| GitGraphView::new(project, cx)),
-        toolbar: cx.new(|_| GitGraphToolbar::new()),
+        toolbar: cx.new(GitGraphToolbar::new),
     });
     let (view, toolbar) = host.read_with(cx, |host, _| (host.view.clone(), host.toolbar.clone()));
     cx.update(|window, cx| {
@@ -221,7 +221,7 @@ fn git_graph_view_and_search_bar_release_together(cx: &mut TestAppContext) {
 
     // 模拟工具项激活：搜索栏把视图登记为自搜索目标。
     let (_, visual) = cx.add_window_view(|window, cx| {
-        let toolbar = cx.new(|_| GitGraphToolbar::new());
+        let toolbar = cx.new(GitGraphToolbar::new);
         toolbar.update(cx, |toolbar, cx| {
             toolbar.set_active_pane_item(Some(&view as &dyn ItemHandle), window, cx);
         });

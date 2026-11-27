@@ -967,11 +967,8 @@ fn batch_file_folding_publishes_one_semantic_change(cx: &mut TestAppContext) {
             }
         })
     });
-    let ids = cx.read_entity(&editor, |editor, cx| editor.file_buffer_ids(cx));
     let before = cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx));
-    editor.update(cx, |editor, cx| {
-        editor.set_buffers_folded(ids.clone(), true, cx)
-    });
+    editor.update(cx, |editor, cx| editor.set_all_buffers_folded(true, cx));
     cx.run_until_parked();
     assert_eq!(events.get(), 1);
     let folded = cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx));
@@ -987,19 +984,82 @@ fn batch_file_folding_publishes_one_semantic_change(cx: &mut TestAppContext) {
             .should_refresh()),
         "显示配置提交后必须失效滚动条几何"
     );
-    editor.update(cx, |editor, cx| {
-        editor.set_buffers_folded(ids.clone(), true, cx)
-    });
+    editor.update(cx, |editor, cx| editor.set_all_buffers_folded(true, cx));
     cx.run_until_parked();
     assert_eq!(events.get(), 1, "未变化策略不得重复发布");
     assert_eq!(
         cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx).version()),
         folded.version()
     );
-    editor.update(cx, |editor, cx| editor.set_buffers_folded(ids, false, cx));
+    editor.update(cx, |editor, cx| editor.set_all_buffers_folded(false, cx));
     cx.run_until_parked();
     assert_eq!(events.get(), 2);
     assert!(cx.read_entity(&editor, |editor, cx| editor.has_expanded_buffers(cx)));
+}
+
+#[gpui::test]
+fn toggle_all_file_folding_uses_current_files_and_mixed_state(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let combined = cx.new(MultiBuffer::empty);
+    let mut sources = Vec::new();
+    for file in 0..2 {
+        let source = test_buffer(cx, "one\ntwo\n".to_owned());
+        source.update(cx, |source, cx| {
+            source.set_file_path(format!("src/{file}.rs").into(), cx)
+        });
+        combined.update(cx, |buffer, cx| {
+            buffer
+                .set_excerpts_for_path(vec![ExcerptRange::line_range(source.clone(), 0..2, cx)], cx)
+        });
+        sources.push(source);
+    }
+    let editor = cx.new(|cx| Editor::for_multi_buffer(combined.clone(), cx));
+    let initial_version = cx.read_entity(&sources[0], |source, _| source.text_snapshot().version());
+    let first_id = cx.read_entity(&sources[0], |source, _| source.buffer_id());
+    editor.update(cx, |editor, cx| editor.toggle_buffer_fold(first_id, cx));
+    assert!(cx.read_entity(&editor, |editor, cx| editor.has_expanded_buffers(cx)));
+    editor.update(cx, |editor, cx| editor.toggle_all_buffers_folded(cx));
+    assert!(!cx.read_entity(&editor, |editor, cx| editor.has_expanded_buffers(cx)));
+
+    let added = test_buffer(cx, "new file\n".to_owned());
+    added.update(cx, |source, cx| {
+        source.set_file_path("src/added.rs".into(), cx)
+    });
+    let added_id = cx.read_entity(&added, |source, _| source.buffer_id());
+    combined.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(added, 0..1, cx)], cx)
+    });
+    // 源变更的通知尚未派发，命令也必须包含刚加入的文件。
+    editor.update(cx, |editor, cx| editor.toggle_all_buffers_folded(cx));
+    assert!(cx.read_entity(&editor, |editor, cx| editor.is_buffer_folded(added_id, cx)));
+    editor.update(cx, |editor, cx| editor.toggle_all_buffers_folded(cx));
+    cx.read_entity(&editor, |editor, cx| {
+        assert!(
+            editor
+                .file_buffer_ids(cx)
+                .iter()
+                .all(|id| !editor.is_buffer_folded(*id, cx))
+        );
+    });
+    assert_eq!(
+        sources[0].read_with(cx, |source, _| source.text_snapshot().version()),
+        initial_version
+    );
+}
+
+#[gpui::test]
+fn folding_all_files_in_an_empty_document_does_not_change_display(cx: &mut TestAppContext) {
+    cx.set_global(SettingsStore::new(UserSettings::default()));
+    let combined = cx.new(MultiBuffer::empty);
+    let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
+    let before = cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx).version());
+    editor.update(cx, |editor, cx| {
+        editor.set_all_buffers_folded(true, cx);
+        editor.set_all_buffers_folded(false, cx);
+        editor.toggle_all_buffers_folded(cx);
+    });
+    let after = cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx).version());
+    assert_eq!(before, after, "空文档不存在可提交的文件折叠变化");
 }
 
 #[gpui::test]

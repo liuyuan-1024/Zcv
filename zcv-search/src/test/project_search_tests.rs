@@ -141,18 +141,18 @@ fn project_search_folds_all_files_in_one_display_update(cx: &mut TestAppContext)
             }
         })
     });
-    view.update(cx, |view, cx| view.set_all_files_folded(true, cx));
+    editor.update(cx, |editor, cx| editor.set_all_buffers_folded(true, cx));
     cx.run_until_parked();
     assert_eq!(events.get(), 1, "折叠全部文件只发布一次事件");
     cx.read_entity(&editor, |editor, cx| {
         assert!(ids.iter().all(|id| editor.is_buffer_folded(*id, cx)));
     });
 
-    view.update(cx, |view, cx| view.set_all_files_folded(true, cx));
+    editor.update(cx, |editor, cx| editor.set_all_buffers_folded(true, cx));
     cx.run_until_parked();
     assert_eq!(events.get(), 1, "重复折叠不产生事件");
 
-    view.update(cx, |view, cx| view.set_all_files_folded(false, cx));
+    editor.update(cx, |editor, cx| editor.set_all_buffers_folded(false, cx));
     cx.run_until_parked();
     assert_eq!(events.get(), 2, "展开全部文件也只发布一次事件");
     cx.read_entity(&editor, |editor, cx| {
@@ -418,7 +418,7 @@ fn project_search_view_and_search_bar_release_together(cx: &mut TestAppContext) 
 
     // 模拟工具项激活：搜索栏把视图登记为自搜索目标。
     let (_, visual) = cx.add_window_view(|window, cx| {
-        let toolbar = cx.new(|_| ProjectSearchToolbar::new());
+        let toolbar = cx.new(ProjectSearchToolbar::new);
         toolbar.update(cx, |toolbar, cx| {
             toolbar.set_active_pane_item(Some(&view as &dyn ItemHandle), window, cx);
         });
@@ -426,6 +426,10 @@ fn project_search_view_and_search_bar_release_together(cx: &mut TestAppContext) 
     });
     visual.run_until_parked();
 
+    assert!(
+        !search_bar.read_with(visual, |bar, _| bar.has_target()),
+        "工具栏释放时应解绑仍然存活的视图会话"
+    );
     drop(search_bar);
     drop(view);
     // 实体释放分多轮 effect 完成：逐轮刷新直到视图与搜索栏都被回收。

@@ -6,11 +6,13 @@
 mod document_search;
 mod project_search;
 mod search_bar;
+mod search_bar_binding;
 
 #[cfg(test)]
 mod test;
 
 pub use search_bar::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
+pub use search_bar_binding::SearchBarBinding;
 
 use gpui::{App, AppContext, Context, Window};
 use zcv_actions::{DeployFind, DeployProjectSearch, DeployReplace};
@@ -52,7 +54,7 @@ pub fn install(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<
     let document_search_button = document_search::install(workspace, cx);
     let document_search_row =
         document_search_button.update(cx, |toolbar, cx| toolbar.search_row(cx));
-    let project_search_toolbar = cx.new(|_| ProjectSearchToolbar::new());
+    let project_search_toolbar = cx.new(ProjectSearchToolbar::new);
     pane.update(cx, |pane, cx| {
         pane.toolbar().update(cx, |toolbar, cx| {
             toolbar.add_item(document_search_button.clone(), window, cx);

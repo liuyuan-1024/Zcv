@@ -7,8 +7,8 @@
 //! 目标在宿主解析后经 SearchBar::set_target 注入；搜索栏不反向依赖任何具体 Item。
 
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, KeyContext, ParentElement, Styled, Subscription,
-    Window, div, prelude::*,
+    AnyElement, App, Context, ElementId, Entity, FocusHandle, KeyContext, ParentElement, Styled,
+    Subscription, Window, div, prelude::*,
 };
 use std::sync::Arc;
 use zcv_actions::{
@@ -51,6 +51,34 @@ pub struct SearchBarSlots {
     pub leading: Option<AnyElement>,
     /// 命中计数与替换开关之后的宿主控件（如「重做全部」）。
     pub external: Vec<AnyElement>,
+}
+
+impl SearchBarSlots {
+    /// 文件折叠控件只读取编辑器状态，点击时由编辑器按当前文档统一切换。
+    pub fn file_folding(id: impl Into<ElementId>, editor: &Entity<Editor>, cx: &App) -> Self {
+        let expanded = editor.read(cx).has_expanded_buffers(cx);
+        let editor = editor.downgrade();
+        let button = Button::icon(
+            id,
+            if expanded {
+                "icons/chevron_down_up.svg"
+            } else {
+                "icons/chevron_up_down.svg"
+            },
+        )
+        .label(if expanded {
+            "折叠全部文件"
+        } else {
+            "展开全部文件"
+        })
+        .on_click(move |_, _, cx| {
+            let _ = editor.update(cx, |editor, cx| editor.toggle_all_buffers_folded(cx));
+        });
+        Self {
+            leading: Some(button.into_any_element()),
+            external: Vec::new(),
+        }
+    }
 }
 
 /// 共享搜索栏会话。
@@ -145,13 +173,24 @@ impl SearchBar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if target.is_none() {
+            self.clear_target(cx);
+            return;
+        }
         self.ensure_input_subscription(window, cx);
-        self.target_subscription = None;
         let item_changed = match (&self.target, &target) {
             (Some(old), Some(new)) => old.id() != new.id(),
             (None, None) => false,
             _ => true,
         };
+        if !item_changed {
+            if self.show_replace && !self.supports_replace(cx) {
+                self.show_replace = false;
+                cx.notify();
+            }
+            return;
+        }
+        self.target_subscription = None;
         if let Some(item) = target.as_ref().and_then(|target| target.upgrade()) {
             let weak = cx.weak_entity();
             self.target_subscription = Some(item.subscribe_to_search_events(
@@ -168,10 +207,19 @@ impl SearchBar {
         if !self.supports_replace(cx) {
             self.show_replace = false;
         }
-        if item_changed && self.visible {
+        if self.visible {
             self.run_search(window, cx);
         }
         cx.notify();
+    }
+
+    /// 结束目标绑定及事件订阅，不改变会话的查询、选项和可见性。
+    pub(crate) fn clear_target(&mut self, cx: &mut Context<Self>) {
+        if self.target.take().is_some() {
+            self.target_subscription = None;
+            self.show_replace = false;
+            cx.notify();
+        }
     }
 
     /// 恢复持久化状态：写入查询与匹配选项（不触发聚焦；随后由宿主注入目标并重搜）。

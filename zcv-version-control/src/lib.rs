@@ -31,8 +31,8 @@ pub fn init(cx: &mut App) {
 /// 工具项是持久实体，依据活动 Item 决定显隐，不由具体视图返回一次性工具区视图。
 pub fn install(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let pane = workspace.pane().clone();
-    let project_diff_toolbar = cx.new(|_| project_diff::ProjectDiffToolbar::new());
-    let git_graph_toolbar = cx.new(|_| git_graph::GitGraphToolbar::new());
+    let project_diff_toolbar = cx.new(project_diff::ProjectDiffToolbar::new);
+    let git_graph_toolbar = cx.new(git_graph::GitGraphToolbar::new);
     pane.update(cx, |pane, cx| {
         pane.toolbar().update(cx, |toolbar, cx| {
             toolbar.add_item(project_diff_toolbar, window, cx);

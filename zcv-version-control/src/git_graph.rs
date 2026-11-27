@@ -22,7 +22,9 @@ use zcv_git::GraphCommit;
 
 use crate::graph::{GraphLayoutState, GraphLine, GraphRowLayout};
 use zcv_project::{GitStoreEvent, Project, SearchQuery};
-use zcv_search::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
+use zcv_search::{
+    SearchBar, SearchBarBinding, SearchBarConfig, SearchBarPresentation, SearchBarSlots,
+};
 use zcv_theme::{
     color::{self, ThemeColors},
     fixed, scale, typography,
@@ -128,14 +130,16 @@ pub(crate) struct GitGraphView {
 /// 搜索目标是提交图视图自身（它实现 SearchableItem，命中计算保留在视图领域逻辑中）。
 pub(crate) struct GitGraphToolbar {
     active_view: Option<Entity<GitGraphView>>,
-    search_bar: Option<Entity<SearchBar>>,
+    binding: SearchBarBinding,
 }
 
 impl GitGraphToolbar {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        cx.on_release(|toolbar, cx| toolbar.binding.clear(cx))
+            .detach();
         Self {
             active_view: None,
-            search_bar: None,
+            binding: SearchBarBinding::default(),
         }
     }
 }
@@ -150,29 +154,21 @@ impl ToolbarItemView for GitGraphToolbar {
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
         self.active_view = item.and_then(|item| item.act_as::<GitGraphView>(cx));
-        let Some(view) = self.active_view.clone() else {
-            if let Some(bar) = self.search_bar.take() {
-                bar.update(cx, |bar, cx| bar.set_target(None, window, cx));
-            }
+        let active = self.active_view.as_ref().and_then(|view| {
+            let target = view.as_searchable(cx)?.downgrade();
+            Some((view.read(cx).search_bar.clone(), target))
+        });
+        self.binding.set_active(active, window, cx);
+        if self.binding.active_bar().is_none() {
             return ToolbarItemLocation::Hidden;
-        };
-        let bar = view.read(cx).search_bar.clone();
-        // 同一视图重复激活时保留搜索会话；切换到另一视图时解除旧栏目标绑定。
-        if let Some(previous) = self.search_bar.replace(bar.clone())
-            && previous.entity_id() != bar.entity_id()
-        {
-            previous.update(cx, |bar, cx| bar.set_target(None, window, cx));
         }
-        // 搜索目标按 Item 协议解析为提交图自身，弱句柄避免与搜索栏成环。
-        let target = view.as_searchable(cx).map(|handle| handle.downgrade());
-        bar.update(cx, |bar, cx| bar.set_target(target, window, cx));
         ToolbarItemLocation::PrimaryLeft
     }
 }
 
 impl Render for GitGraphToolbar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(search_bar) = self.search_bar.clone() else {
+        let Some(search_bar) = self.binding.active_bar().cloned() else {
             return div().into_any_element();
         };
         search_bar

@@ -343,3 +343,5 @@ fn document_toolbar_deploys_search_on_the_active_item(cx: &mut TestAppContext) {
         TestView
     });
 }
+
+mod search_bar_binding_tests;

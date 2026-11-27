@@ -461,6 +461,20 @@ impl Editor {
             .collect()
     }
 
+    /// 折叠或展开当前组合文档的全部文件，由显示快照统一确定文件集合。
+    pub fn set_all_buffers_folded(&mut self, folded: bool, cx: &mut Context<Self>) {
+        self.advance_snapshots(cx);
+        let ids = self.file_buffer_ids(cx);
+        self.set_buffers_folded(ids, folded, cx);
+    }
+
+    /// 有展开文件时全部折叠，否则全部展开。
+    pub fn toggle_all_buffers_folded(&mut self, cx: &mut Context<Self>) {
+        self.advance_snapshots(cx);
+        let folded = self.has_expanded_buffers(cx);
+        self.set_all_buffers_folded(folded, cx);
+    }
+
     /// 一次提交整组文件折叠策略，共用同一条显示同步路径。
     pub fn set_buffers_folded(
         &mut self,

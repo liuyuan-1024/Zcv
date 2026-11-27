@@ -22,7 +22,7 @@ use zcv_workspace::{
     ToolbarItemLocation, ToolbarItemView, Workspace,
 };
 
-use crate::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
+use crate::{SearchBar, SearchBarBinding, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
 
 const PROJECT_SEARCH_SERIALIZED_KIND: &str = "project-search";
 
@@ -69,14 +69,16 @@ pub(crate) struct ProjectSearchView {
 /// 搜索目标是项目搜索视图本身（它实现 SearchableItem，驱动项目级搜索）。
 pub(crate) struct ProjectSearchToolbar {
     active_view: Option<Entity<ProjectSearchView>>,
-    search_bar: Option<Entity<SearchBar>>,
+    binding: SearchBarBinding,
 }
 
 impl ProjectSearchToolbar {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        cx.on_release(|toolbar, cx| toolbar.binding.clear(cx))
+            .detach();
         Self {
             active_view: None,
-            search_bar: None,
+            binding: SearchBarBinding::default(),
         }
     }
 }
@@ -91,23 +93,14 @@ impl ToolbarItemView for ProjectSearchToolbar {
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
         self.active_view = item.and_then(|item| item.act_as::<ProjectSearchView>(cx));
-        let Some(view) = self.active_view.clone() else {
-            if let Some(bar) = self.search_bar.take() {
-                bar.update(cx, |bar, cx| bar.set_target(None, window, cx));
-            }
+        let active = self.active_view.as_ref().and_then(|view| {
+            let target = view.as_searchable(cx)?.downgrade();
+            Some((view.read(cx).search_bar.clone(), target))
+        });
+        self.binding.set_active(active, window, cx);
+        if self.binding.active_bar().is_none() {
             return ToolbarItemLocation::Hidden;
-        };
-        let bar = view.read(cx).search_bar.clone();
-        // 同一视图重复激活时保留搜索会话；
-        // 切换到另一视图时解除旧栏目标绑定，仅保留各视图自身的会话状态。
-        if let Some(previous) = self.search_bar.replace(bar.clone())
-            && previous.entity_id() != bar.entity_id()
-        {
-            previous.update(cx, |bar, cx| bar.set_target(None, window, cx));
         }
-        // 搜索目标按 Item 协议解析为项目搜索视图自身，弱句柄避免与搜索栏成环。
-        let target = view.as_searchable(cx).map(|handle| handle.downgrade());
-        bar.update(cx, |bar, cx| bar.set_target(target, window, cx));
         ToolbarItemLocation::PrimaryLeft
     }
 }
@@ -117,44 +110,14 @@ impl Render for ProjectSearchToolbar {
         let Some(view) = self.active_view.clone() else {
             return div().into_any_element();
         };
-        let Some(search_bar) = self.search_bar.clone() else {
+        let Some(search_bar) = self.binding.active_bar().cloned() else {
             return div().into_any_element();
         };
-        // 折叠全部文件属于宿主领域逻辑，作为搜索栏左侧插槽。
-        let leading = {
-            let weak = view.downgrade();
-            let results_editor = view.read(cx).results_editor.clone();
-            let excerpts = view.read(cx).excerpts.clone();
-            let snapshot = excerpts.update(cx, |buffer, cx| buffer.snapshot(cx));
-            let expanded = snapshot.excerpts().any(|excerpt| {
-                !results_editor
-                    .read(cx)
-                    .is_buffer_folded(excerpt.buffer_id(), cx)
-            });
-            Button::icon(
-                "project-search-expansion",
-                if expanded {
-                    "icons/chevron_down_up.svg"
-                } else {
-                    "icons/chevron_up_down.svg"
-                },
-            )
-            .label(if expanded {
-                "折叠全部文件"
-            } else {
-                "展开全部文件"
-            })
-            .on_click(move |_, _, cx| {
-                if let Some(view) = weak.upgrade() {
-                    view.update(cx, |view, cx| view.set_all_files_folded(expanded, cx));
-                }
-            })
-            .into_any_element()
-        };
-        let slots = SearchBarSlots {
-            leading: Some(leading),
-            external: Vec::new(),
-        };
+        let slots = SearchBarSlots::file_folding(
+            "project-search-expansion",
+            &view.read(cx).results_editor,
+            cx,
+        );
         search_bar
             .update(cx, |bar, cx| bar.render(slots, window, cx))
             .into_any_element()
@@ -236,15 +199,6 @@ impl ProjectSearchView {
             }),
             _subscriptions: subscriptions,
         }
-    }
-
-    fn set_all_files_folded(&mut self, folded: bool, cx: &mut Context<Self>) {
-        let buffer_ids = self.excerpts.update(cx, |buffer, cx| {
-            buffer.snapshot(cx).file_buffer_ids().collect::<Vec<_>>()
-        });
-        self.results_editor.update(cx, |editor, cx| {
-            editor.set_buffers_folded(buffer_ids, folded, cx);
-        });
     }
 
     fn run_search(&mut self, query: SearchQuery, window: &mut Window, cx: &mut Context<Self>) {

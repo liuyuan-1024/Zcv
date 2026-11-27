@@ -1918,7 +1918,8 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
             .expect("修改文件应有 excerpt")
             .buffer_id()
     });
-    cx.update_entity(&view, |view, cx| view.set_all_files_folded(true, cx));
+    cx.read_entity(&view, |view, _| view.editor.clone())
+        .update(cx, |editor, cx| editor.set_all_buffers_folded(true, cx));
     cx.read_entity(&view, |view, cx| {
         assert!(
             view.editor
@@ -1927,7 +1928,8 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
             "折叠全部文件后应折叠文件块"
         );
     });
-    cx.update_entity(&view, |view, cx| view.set_all_files_folded(false, cx));
+    cx.read_entity(&view, |view, _| view.editor.clone())
+        .update(cx, |editor, cx| editor.set_all_buffers_folded(false, cx));
     cx.read_entity(&view, |view, cx| {
         assert!(
             !view
@@ -2141,7 +2143,7 @@ fn project_diff_toolbar_follows_active_item(cx: &mut TestAppContext) {
     cx.set_global(SettingsStore::new(UserSettings::default()));
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = test_project(directory.path().to_path_buf(), cx);
-    let toolbar = cx.new(|_| ProjectDiffToolbar::new());
+    let toolbar = cx.new(ProjectDiffToolbar::new);
     let (view, cx) =
         cx.add_window_view(move |_, cx| DiffView::new(ProjectDiffKind::Staged, project, cx));
     cx.update(|window, cx| {
@@ -2182,7 +2184,7 @@ fn assert_project_diff_find_seeds_query_from_editor_selection(
     let project = test_project(directory.path().to_path_buf(), cx);
     let (host, cx) = cx.add_window_view(move |_, cx| DiffSearchHost {
         view: cx.new(|cx| DiffView::new(kind, project, cx)),
-        toolbar: cx.new(|_| ProjectDiffToolbar::new()),
+        toolbar: cx.new(ProjectDiffToolbar::new),
     });
     let (view, toolbar) = host.read_with(cx, |host, _| (host.view.clone(), host.toolbar.clone()));
     view.update(cx, |view, cx| {
@@ -2308,7 +2310,10 @@ fn diff_view_scroll_keeps_host_quiet_and_folding_notifies(cx: &mut TestAppContex
         visual.run_until_parked();
     }
     assert_eq!(notifications.get(), 0, "滚动重绘不得通知宿主重建工具栏");
-    view.update(&mut *visual, |view, cx| view.set_all_files_folded(true, cx));
+    let editor = visual.read_entity(&view, |view, _| view.editor.clone());
+    editor.update(&mut *visual, |editor, cx| {
+        editor.set_all_buffers_folded(true, cx)
+    });
     visual.run_until_parked();
     assert!(notifications.get() > 0, "文件折叠语义变化必须刷新宿主");
     assert!(!visual.read_entity(&view, |view, cx| {

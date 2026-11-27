@@ -30,7 +30,9 @@ use zcv_path::{AbsolutePathBuf, compare_tree_entries};
 use zcv_project::{
     ConflictSet, ConflictSetSnapshot, FileSaveConflictPolicy, GitStoreEvent, Project,
 };
-use zcv_search::{SearchBar, SearchBarConfig, SearchBarPresentation, SearchBarSlots};
+use zcv_search::{
+    SearchBar, SearchBarBinding, SearchBarConfig, SearchBarPresentation, SearchBarSlots,
+};
 use zcv_text::{BufferId, ByteOffset, Snapshot, TextRange};
 use zcv_theme::{color, scale};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, Checkbox, SvgIcon};
@@ -397,14 +399,16 @@ struct DiffView {
 /// 搜索目标解析为差异视图暴露的内层编辑器。
 pub(crate) struct ProjectDiffToolbar {
     active_view: Option<Entity<DiffView>>,
-    search_bar: Option<Entity<SearchBar>>,
+    binding: SearchBarBinding,
 }
 
 impl ProjectDiffToolbar {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        cx.on_release(|toolbar, cx| toolbar.binding.clear(cx))
+            .detach();
         Self {
             active_view: None,
-            search_bar: None,
+            binding: SearchBarBinding::default(),
         }
     }
 }
@@ -419,25 +423,14 @@ impl ToolbarItemView for ProjectDiffToolbar {
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
         self.active_view = item.and_then(|item| item.act_as::<DiffView>(cx));
-        let Some(view) = self.active_view.clone() else {
-            if let Some(bar) = self.search_bar.take() {
-                bar.update(cx, |bar, cx| bar.set_target(None, window, cx));
-            }
+        let active = self.active_view.as_ref().and_then(|view| {
+            let target = item?.as_searchable(cx)?.downgrade();
+            Some((view.read(cx).search_bar.clone(), target))
+        });
+        self.binding.set_active(active, window, cx);
+        if self.binding.active_bar().is_none() {
             return ToolbarItemLocation::Hidden;
-        };
-        let bar = view.read(cx).search_bar.clone();
-        // 切换差异视图（暂存/未暂存/冲突）时先清除旧栏目标，搜索会话仍归各视图所有。
-        if let Some(previous) = self.search_bar.replace(bar.clone())
-            && previous.entity_id() != bar.entity_id()
-        {
-            previous.update(cx, |bar, cx| bar.set_target(None, window, cx));
         }
-        // 差异搜索的目标是内层编辑器：差异视图把它经 as_searchable 暴露出来。
-        // 搜索栏保存弱目标，内层编辑器释放后搜索自然停止。
-        let target = item
-            .and_then(|item| item.as_searchable(cx))
-            .map(|handle| handle.downgrade());
-        bar.update(cx, |bar, cx| bar.set_target(target, window, cx));
         ToolbarItemLocation::PrimaryRight
     }
 }
@@ -447,34 +440,11 @@ impl Render for ProjectDiffToolbar {
         let Some(view) = self.active_view.clone() else {
             return div().into_any_element();
         };
-        let Some(search_bar) = self.search_bar.clone() else {
+        let Some(search_bar) = self.binding.active_bar().cloned() else {
             return div().into_any_element();
         };
-        // 折叠全部文件：宿主领域逻辑，作为搜索栏左侧插槽。
-        let leading = {
-            let weak = view.downgrade();
-            let editor = view.read(cx).editor.clone();
-            let expanded = editor.read(cx).has_expanded_buffers(cx);
-            Button::icon(
-                "project-diff-expansion",
-                if expanded {
-                    "icons/chevron_down_up.svg"
-                } else {
-                    "icons/chevron_up_down.svg"
-                },
-            )
-            .label(if expanded {
-                "折叠全部文件"
-            } else {
-                "展开全部文件"
-            })
-            .on_click(move |_, _, cx| {
-                if let Some(view) = weak.upgrade() {
-                    view.update(cx, |view, cx| view.set_all_files_folded(expanded, cx));
-                }
-            })
-            .into_any_element()
-        };
+        let mut slots =
+            SearchBarSlots::file_folding("project-diff-expansion", &view.read(cx).editor, cx);
         // 重做全部仅未暂存差异可用：作为搜索栏计数之后的宿主插槽。
         let external = (view.read(cx).kind == ProjectDiffKind::Unstaged).then(|| {
             let weak = view.downgrade();
@@ -494,10 +464,7 @@ impl Render for ProjectDiffToolbar {
                 })
                 .into_any_element()
         });
-        let slots = SearchBarSlots {
-            leading: Some(leading),
-            external: external.into_iter().collect(),
-        };
+        slots.external = external.into_iter().collect();
         search_bar
             .update(cx, |bar, cx| bar.render(slots, window, cx))
             .into_any_element()
@@ -523,17 +490,6 @@ impl DiffView {
         }
         self.sync_conflict_projection(cx);
         cx.notify();
-    }
-
-    fn set_all_files_folded(&mut self, folded: bool, cx: &mut Context<Self>) {
-        let buffer_ids = self.file_buffer_ids(cx);
-        self.editor.update(cx, |editor, cx| {
-            editor.set_buffers_folded(buffer_ids, folded, cx)
-        });
-    }
-
-    fn file_buffer_ids(&self, cx: &App) -> Vec<BufferId> {
-        self.editor.read(cx).file_buffer_ids(cx)
     }
 
     /// 重做全部文件：先按文件聚合、解析出全部源 hunk，再逐个文件一次性提交。

@@ -3,15 +3,11 @@
 //! 标签元数据（标题、路径、脏状态等）全部转发给源码 Item；
 //! [`Item::source_item`] 让 Pane 能在预览与源码之间切换而不依赖具体视图类型。
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Image, ImageFormat, IntoElement,
-    ObjectFit, Render, RenderImage, SharedString, Styled, StyledImage, Subscription, Task, Window,
-    div, img, prelude::*, size,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ObjectFit, Render,
+    SharedString, Styled, StyledImage, Subscription, Task, Window, div, img, prelude::*, size,
 };
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
@@ -21,17 +17,12 @@ use zcv_workspace::{
     PreviewViewportOptions,
 };
 
-use crate::renderer::{SVG_PREVIEW_MIN_DISPLAY_EDGE, rasterize_svg};
+use crate::renderer::{RasterizedSvg, SVG_PREVIEW_MIN_DISPLAY_EDGE, rasterize_svg};
 
 enum SvgPreviewState {
     Loading,
-    Ready(RenderedSvg),
+    Ready(RasterizedSvg),
     Error(String),
-}
-
-struct RenderedSvg {
-    image: Arc<RenderImage>,
-    raster_scale: f32,
 }
 
 pub(crate) struct SvgPreviewView {
@@ -120,17 +111,8 @@ impl SvgPreviewView {
             self.state = SvgPreviewState::Loading;
         }
 
-        let renderer = cx.svg_renderer();
-        let render_task = cx.background_spawn(async move {
-            let rasterized = rasterize_svg(&bytes, resources_dir, raster_scale)?;
-            let image = Image::from_bytes(ImageFormat::Png, rasterized.png)
-                .to_image_data(renderer)
-                .map_err(|error| error.to_string())?;
-            Ok(RenderedSvg {
-                image,
-                raster_scale: rasterized.scale,
-            })
-        });
+        let render_task =
+            cx.background_spawn(async move { rasterize_svg(&bytes, resources_dir, raster_scale) });
         self.render_task = Some(cx.spawn(async move |this, cx| {
             let rendered = render_task.await;
             let _ = this.update(cx, |view, cx| {

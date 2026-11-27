@@ -20,6 +20,7 @@
 - 画布预览必须经 `zcv_workspace::PreviewViewport` 展示。
 - 源码与预览切换由 `zcv_workspace::PreviewToolbar` 作为 Pane 工具项统一承担，预览视图不持有也不返回工具栏视图。
 - 光栅化在后台执行，渲染线程不阻塞。
+- 光栅化直接产出 GPUI 的 `RenderImage`，沿用 tiny-skia 的去预乘舍入规则并转换为 BGRA；不经 PNG 编码和图片解码中转。图像与光栅比例作为同一结果发布，由预览视图持有。
 
 ## 验证
 

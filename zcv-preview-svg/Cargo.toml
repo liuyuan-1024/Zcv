@@ -10,6 +10,7 @@ path = "src/preview_svg.rs"
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true
+image = { version = "0.25", default-features = false }
 resvg.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-project.workspace = true
@@ -17,6 +18,7 @@ zcv-theme.workspace = true
 zcv-workspace.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 zcv-settings.workspace = true
 zcv-fs-watch.workspace = true
 futures.workspace = true

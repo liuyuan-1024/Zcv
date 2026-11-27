@@ -3,12 +3,15 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+use gpui::RenderImage;
+use image::{Frame, RgbaImage};
+
 const SVG_PREVIEW_MAX_RASTER_EDGE: f32 = 2048.0;
 pub(crate) const SVG_PREVIEW_MIN_DISPLAY_EDGE: f32 = 32.0;
 
 pub(crate) struct RasterizedSvg {
-    pub(crate) png: Vec<u8>,
-    pub(crate) scale: f32,
+    pub(crate) image: Arc<RenderImage>,
+    pub(crate) raster_scale: f32,
 }
 
 pub(crate) fn rasterize_svg(
@@ -33,8 +36,21 @@ pub(crate) fn rasterize_svg(
         .ok_or_else(|| "SVG 预览尺寸无效".to_string())?;
     let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
-    let png = pixmap.encode_png().map_err(|error| error.to_string())?;
-    Ok(RasterizedSvg { png, scale })
+    // 沿用 tiny-skia PNG 输出的去预乘舍入规则，直接生成 GPUI 消费的非预乘 BGRA。
+    let pixels = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|pixel| {
+            let color = pixel.demultiply();
+            [color.blue(), color.green(), color.red(), color.alpha()]
+        })
+        .collect();
+    let buffer =
+        RgbaImage::from_raw(width, height, pixels).expect("Pixmap 的像素长度必须与光栅尺寸一致");
+    Ok(RasterizedSvg {
+        image: Arc::new(RenderImage::new(vec![Frame::new(buffer)])),
+        raster_scale: scale,
+    })
 }
 
 fn system_font_database() -> Arc<resvg::usvg::fontdb::Database> {
